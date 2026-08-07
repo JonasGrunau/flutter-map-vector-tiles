@@ -54,8 +54,7 @@ PlacedSymbol _lineSymbol(
 }) {
   final d = pathDistance ?? path.length / 2;
   final anchor = path.pointAt(d);
-  final transform =
-      TileTransform(origin: Offset.zero, scale: 1, rotation: 0);
+  final transform = TileTransform(origin: Offset.zero, scale: 1, rotation: 0);
   return PlacedSymbol(
     instance: SymbolInstance(
       layer: layer,
@@ -145,12 +144,11 @@ void main() {
     final points = <Offset>[];
     for (var i = 0; i <= 24; i++) {
       final a = -math.pi / 6 + (math.pi / 3) * i / 24;
-      points
-          .add(const Offset(200, 400) + Offset(math.sin(a), -math.cos(a)) * 240);
+      points.add(
+          const Offset(200, 400) + Offset(math.sin(a), -math.cos(a)) * 240);
     }
     final layer = _lineLayer();
-    final placed =
-        _paint([_lineSymbol(layer, _path(points), 'Ringstraße')]);
+    final placed = _paint([_lineSymbol(layer, _path(points), 'Ringstraße')]);
     expect(placed, hasLength(1));
   });
 

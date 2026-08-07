@@ -51,8 +51,7 @@ PlacedSymbol _symbolAt(
       screenAngle: 0,
     );
 
-List<PlacedSymbol> _paint(
-    SymbolThemeLayer layer, List<PlacedSymbol> symbols) {
+List<PlacedSymbol> _paint(SymbolThemeLayer layer, List<PlacedSymbol> symbols) {
   final painter = LabelPainter();
   final recorder = ui.PictureRecorder();
   final placed = painter.paint(

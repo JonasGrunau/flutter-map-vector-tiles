@@ -1,8 +1,8 @@
 import '../../core/cancellation.dart';
 import '../prepared_tile.dart';
 import '../tile_processor.dart';
-import 'direct_executor.dart'
-    if (dart.library.io) 'isolate_executor.dart' as impl;
+import 'direct_executor.dart' if (dart.library.io) 'isolate_executor.dart'
+    as impl;
 
 /// Runs tile preparation off the UI thread where the platform allows.
 ///

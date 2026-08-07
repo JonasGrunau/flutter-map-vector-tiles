@@ -178,8 +178,8 @@ class TileRasterizer {
       }
       final paint = fillPaint ??
           (Paint()
-            ..color = _withOpacity(layer.color.eval(ctx),
-                layer.opacity.eval(ctx).clamp(0.0, 1.0))
+            ..color = _withOpacity(
+                layer.color.eval(ctx), layer.opacity.eval(ctx).clamp(0.0, 1.0))
             ..isAntiAlias = layer.antialias);
       if (paint.color.a > 0) {
         canvas.drawPath(path, paint);
@@ -279,8 +279,8 @@ class TileRasterizer {
       );
       final radius = layer.radius.eval(ctx);
       if (radius <= 0) return;
-      final fill = _withOpacity(layer.color.eval(ctx),
-          layer.opacity.eval(ctx).clamp(0.0, 1.0));
+      final fill = _withOpacity(
+          layer.color.eval(ctx), layer.opacity.eval(ctx).clamp(0.0, 1.0));
       final strokeWidth = layer.strokeWidth.eval(ctx);
       final stroke = strokeWidth > 0
           ? _withOpacity(layer.strokeColor.eval(ctx),
@@ -411,12 +411,10 @@ class _TileTransform {
 
   _TileTransform(this.scale, this.offsetX, this.offsetY);
 
-  factory _TileTransform.forDisplay(
-      TileKey display, TileKey data, int extent) {
+  factory _TileTransform.forDisplay(TileKey display, TileKey data, int extent) {
     final frac = display.fractionOf(data);
     // logical = ((coord/extent) - dx) / fracScale * tileSize
-    final scale =
-        TileRasterizer.logicalTileSize / (extent * frac.scale);
+    final scale = TileRasterizer.logicalTileSize / (extent * frac.scale);
     return _TileTransform(
       scale,
       -frac.dx * TileRasterizer.logicalTileSize / frac.scale,

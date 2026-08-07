@@ -13,6 +13,9 @@
   straight placement so glyphs are never mis-joined; labels longer than
   their line are dropped instead of sticking out (matches MapLibre).
 - Along-line labels no longer wrap to multiple lines.
+- ⬆️ `latlong2` constraint widened to `>=0.9.1 <0.11.0`, so 0.10.x resolves.
+  Still compatible with flutter_map 8.2.0+, which pins `^0.9.1` until 8.3.1.
+- 🧹 Source reformatted with the Dart formatter (no behaviour change).
 
 ## 0.2.0
 

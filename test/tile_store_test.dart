@@ -15,7 +15,10 @@ Uint8List _tileBytes() => MvtTileBuilder()
       cmd(1, 1), zig(0), zig(0), //
       cmd(2, 3), zig(100), zig(0), zig(0), zig(100), zig(-100), zig(0),
       cmd(7, 1),
-    ], properties: {'class': 'lake', 'name': 'Ammersee'})
+    ], properties: {
+      'class': 'lake',
+      'name': 'Ammersee'
+    })
     .done()
     .layer('unused_layer')
     .feature(type: 1, geometry: [cmd(1, 1), zig(5), zig(5)])
@@ -69,8 +72,7 @@ void main() {
   test('cancellation resolves null silently', () async {
     final s = store();
     final token = CancellationToken()..cancel();
-    final tile =
-        await s.obtain(const TileKey(2, 1, 1), cancellation: token);
+    final tile = await s.obtain(const TileKey(2, 1, 1), cancellation: token);
     expect(tile, null);
     s.dispose();
   });
@@ -85,8 +87,7 @@ void main() {
   test('dataKeyFor applies zoom offset and wraps x', () {
     final s = store();
     expect(s.dataKeyFor(const TileKey(5, 8, 8), -1), const TileKey(4, 4, 4));
-    expect(
-        s.dataKeyFor(const TileKey(2, -1, 1), 0), const TileKey(2, 3, 1));
+    expect(s.dataKeyFor(const TileKey(2, -1, 1), 0), const TileKey(2, 3, 1));
     s.dispose();
   });
 

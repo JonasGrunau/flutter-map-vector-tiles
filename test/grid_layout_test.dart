@@ -51,14 +51,14 @@ void main() {
     final rotated = GridLayout.forCamera(camera(rotation: 45));
     final straightCount = (straight.maxX - straight.minX + 1) *
         (straight.maxY - straight.minY + 1);
-    final rotatedCount = (rotated.maxX - rotated.minX + 1) *
-        (rotated.maxY - rotated.minY + 1);
+    final rotatedCount =
+        (rotated.maxX - rotated.minX + 1) * (rotated.maxY - rotated.minY + 1);
     expect(rotatedCount, greaterThanOrEqualTo(straightCount));
   });
 
   test('y is clamped to the world, x is not (wrapping)', () {
-    final layout = GridLayout.forCamera(
-        camera(center: const LatLng(84, -179.9), zoom: 2));
+    final layout =
+        GridLayout.forCamera(camera(center: const LatLng(84, -179.9), zoom: 2));
     expect(layout.minY, greaterThanOrEqualTo(0));
     // Near the antimeridian the x range may extend below zero.
     expect(layout.minX, lessThan(4));
@@ -71,10 +71,9 @@ void main() {
     final cx = (layout.minX + layout.maxX) / 2;
     final cy = (layout.minY + layout.maxY) / 2;
     for (final key in keys.skip(1)) {
-      final dFirst = (first.x - cx) * (first.x - cx) +
-          (first.y - cy) * (first.y - cy);
-      final d =
-          (key.x - cx) * (key.x - cx) + (key.y - cy) * (key.y - cy);
+      final dFirst =
+          (first.x - cx) * (first.x - cx) + (first.y - cy) * (first.y - cy);
+      final d = (key.x - cx) * (key.x - cx) + (key.y - cy) * (key.y - cy);
       expect(dFirst, lessThanOrEqualTo(d));
     }
   });

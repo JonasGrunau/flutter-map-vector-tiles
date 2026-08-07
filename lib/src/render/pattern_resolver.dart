@@ -33,8 +33,7 @@ class PatternResolver {
         Paint(),
       );
       final picture = recorder.endRecording();
-      image = picture.toImageSync(
-          sprite.width.round(), sprite.height.round());
+      image = picture.toImageSync(sprite.width.round(), sprite.height.round());
       picture.dispose();
     }
     _cache[name] = image;

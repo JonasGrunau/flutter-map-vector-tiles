@@ -38,9 +38,8 @@ class SymbolPath {
   Offset pointAt(double d) {
     final i = segmentAt(d);
     final segment = cumulative[i + 1] - cumulative[i];
-    final f = segment <= 0
-        ? 0.0
-        : ((d - cumulative[i]) / segment).clamp(0.0, 1.0);
+    final f =
+        segment <= 0 ? 0.0 : ((d - cumulative[i]) / segment).clamp(0.0, 1.0);
     return Offset(
       points[i * 2] + (points[i * 2 + 2] - points[i * 2]) * f,
       points[i * 2 + 1] + (points[i * 2 + 3] - points[i * 2 + 1]) * f,
@@ -128,10 +127,8 @@ class SymbolLayouter {
       final frac = data.displayKey.fractionOf(tile.key);
       final scale =
           TileRasterizer.logicalTileSize / (sourceLayer.extent * frac.scale);
-      final offsetX =
-          -frac.dx * TileRasterizer.logicalTileSize / frac.scale;
-      final offsetY =
-          -frac.dy * TileRasterizer.logicalTileSize / frac.scale;
+      final offsetX = -frac.dx * TileRasterizer.logicalTileSize / frac.scale;
+      final offsetY = -frac.dy * TileRasterizer.logicalTileSize / frac.scale;
 
       for (final feature in sourceLayer.features) {
         final ctx = EvalContext(
@@ -175,8 +172,7 @@ class SymbolLayouter {
             path: path,
             pathDistance: pathDistance,
             text: text,
-            iconName:
-                (iconName == null || iconName.isEmpty) ? null : iconName,
+            iconName: (iconName == null || iconName.isEmpty) ? null : iconName,
             sortKey: sortKey,
             properties: feature.properties,
             geometryType: feature.geometryType,
@@ -184,8 +180,7 @@ class SymbolLayouter {
           ));
         }
 
-        if (placement == 'point' ||
-            feature.type == PreparedGeomType.point) {
+        if (placement == 'point' || feature.type == PreparedGeomType.point) {
           for (final part in feature.parts) {
             if (feature.type == PreparedGeomType.polygon) {
               // Label polygons at their centroid (first exterior ring).
@@ -200,22 +195,23 @@ class SymbolLayouter {
             if (feature.type == PreparedGeomType.line) {
               // point placement on a line: use the midpoint.
               final mid = _midpoint(part);
-              add(Offset(mid.dx * scale + offsetX, mid.dy * scale + offsetY),
-                  0, false);
+              add(Offset(mid.dx * scale + offsetX, mid.dy * scale + offsetY), 0,
+                  false);
               continue;
             }
             for (var p = 0; p + 1 < part.length; p += 2) {
               add(
-                  Offset(part[p] * scale + offsetX,
-                      part[p + 1] * scale + offsetY),
+                  Offset(
+                      part[p] * scale + offsetX, part[p + 1] * scale + offsetY),
                   0,
                   false);
             }
           }
         } else {
           // line / line-center placement
-          final spacing =
-              placement == 'line-center' ? double.infinity : layer.spacing.eval(ctx);
+          final spacing = placement == 'line-center'
+              ? double.infinity
+              : layer.spacing.eval(ctx);
           for (final part in feature.parts) {
             _placeAlongLine(part, scale, offsetX, offsetY, spacing, add);
           }
@@ -267,8 +263,7 @@ class SymbolLayouter {
     }
 
     for (final d in targets) {
-      add(path.pointAt(d), path.angleAt(d), true,
-          path: path, pathDistance: d);
+      add(path.pointAt(d), path.angleAt(d), true, path: path, pathDistance: d);
     }
   }
 

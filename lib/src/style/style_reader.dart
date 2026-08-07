@@ -199,8 +199,7 @@ class StyleReader {
         : '${base.substring(0, q)}$suffix${base.substring(q)}';
   }
 
-  String _substitute(String url) =>
-      url.replaceAll('{key}', apiKey ?? '');
+  String _substitute(String url) => url.replaceAll('{key}', apiKey ?? '');
 
   /// Resolves relative and scheme-relative URLs against the style URL.
   static String _resolve(String url, String baseUrl) {
@@ -215,8 +214,7 @@ class StyleReader {
     return base.resolve(url).toString();
   }
 
-  Future<Map<String, Object?>> _loadJson(
-      http.Client client, String url) async {
+  Future<Map<String, Object?>> _loadJson(http.Client client, String url) async {
     final text = utf8.decode(await _loadBytes(client, url));
     final decoded = jsonDecode(text);
     if (decoded is! Map) {

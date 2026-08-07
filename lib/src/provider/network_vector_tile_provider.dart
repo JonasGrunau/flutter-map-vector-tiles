@@ -49,8 +49,7 @@ class NetworkVectorTileProvider extends VectorTileProvider {
       .replaceAll('{y}', tile.y.toString());
 
   @override
-  Future<TileResponse> load(TileKey tile,
-      {CancellationToken? cancellation}) {
+  Future<TileResponse> load(TileKey tile, {CancellationToken? cancellation}) {
     final url = _url(tile);
     final pending = _inFlight[url];
     if (pending != null) return pending;
@@ -72,8 +71,7 @@ class NetworkVectorTileProvider extends VectorTileProvider {
       }
       Object error;
       try {
-        final response =
-            await _client.get(Uri.parse(url), headers: headers);
+        final response = await _client.get(Uri.parse(url), headers: headers);
         if (_disposed || token.isCancelled) {
           return const TileResponseCancelled();
         }
@@ -99,8 +97,7 @@ class NetworkVectorTileProvider extends VectorTileProvider {
         logger.warn('tile request failed: $url ($error)');
         return TileResponseError(error);
       }
-      await Future<void>.delayed(
-          Duration(milliseconds: 250 * (1 << attempt)));
+      await Future<void>.delayed(Duration(milliseconds: 250 * (1 << attempt)));
     }
   }
 

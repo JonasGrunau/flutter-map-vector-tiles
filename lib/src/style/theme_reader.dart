@@ -58,8 +58,8 @@ class ThemeReader {
           minzoom: minzoom,
           maxzoom: maxzoom,
           filter: filter,
-          color: _color(parser, paint['background-color'],
-              const Color(0xff000000)),
+          color: _color(
+              parser, paint['background-color'], const Color(0xff000000)),
           opacity: _double(parser, paint['background-opacity'], 1),
         );
       case 'fill':
@@ -72,13 +72,13 @@ class ThemeReader {
           minzoom: minzoom,
           maxzoom: maxzoom,
           filter: filter,
-          color: _color(
-              parser, paint['$prefix-color'], const Color(0xff000000)),
+          color:
+              _color(parser, paint['$prefix-color'], const Color(0xff000000)),
           opacity: _double(parser, paint['$prefix-opacity'], 1),
           outlineColor: paint['fill-outline-color'] == null
               ? null
-              : _color(parser, paint['fill-outline-color'],
-                  const Color(0x00000000)),
+              : _color(
+                  parser, paint['fill-outline-color'], const Color(0x00000000)),
           antialias: paint['fill-antialias'] != false,
           pattern: paint['$prefix-pattern'] == null
               ? null
@@ -92,8 +92,7 @@ class ThemeReader {
           minzoom: minzoom,
           maxzoom: maxzoom,
           filter: filter,
-          color:
-              _color(parser, paint['line-color'], const Color(0xff000000)),
+          color: _color(parser, paint['line-color'], const Color(0xff000000)),
           width: _double(parser, paint['line-width'], 1),
           opacity: _double(parser, paint['line-opacity'], 1),
           gapWidth: _double(parser, paint['line-gap-width'], 0),
@@ -112,8 +111,7 @@ class ThemeReader {
           maxzoom: maxzoom,
           filter: filter,
           radius: _double(parser, paint['circle-radius'], 5),
-          color:
-              _color(parser, paint['circle-color'], const Color(0xff000000)),
+          color: _color(parser, paint['circle-color'], const Color(0xff000000)),
           opacity: _double(parser, paint['circle-opacity'], 1),
           strokeColor: _color(
               parser, paint['circle-stroke-color'], const Color(0xff000000)),
@@ -136,8 +134,7 @@ class ThemeReader {
           textFont: _stringList(
               parser, layout['text-font'], const ['Open Sans Regular']),
           textMaxWidth: _double(parser, layout['text-max-width'], 10),
-          textLetterSpacing:
-              _double(parser, layout['text-letter-spacing'], 0),
+          textLetterSpacing: _double(parser, layout['text-letter-spacing'], 0),
           textTransform: _string(parser, layout['text-transform'], 'none'),
           textAnchor: _string(parser, layout['text-anchor'], 'center'),
           textVariableAnchor: layout['text-variable-anchor'] == null
@@ -151,8 +148,7 @@ class ThemeReader {
             const [0, 0],
           ),
           textPadding: _double(parser, layout['text-padding'], 2),
-          textAllowOverlap:
-              _bool(parser, layout['text-allow-overlap'], false),
+          textAllowOverlap: _bool(parser, layout['text-allow-overlap'], false),
           textOptional: _bool(parser, layout['text-optional'], false),
           textMaxAngle: _double(parser, layout['text-max-angle'], 45),
           textKeepUpright: _bool(parser, layout['text-keep-upright'], true),
@@ -169,12 +165,11 @@ class ThemeReader {
                 : parser.parse(layout['icon-offset']),
             const [0, 0],
           ),
-          iconAllowOverlap:
-              _bool(parser, layout['icon-allow-overlap'], false),
+          iconAllowOverlap: _bool(parser, layout['icon-allow-overlap'], false),
           textColor:
               _color(parser, paint['text-color'], const Color(0xff000000)),
-          textHaloColor: _color(
-              parser, paint['text-halo-color'], const Color(0x00000000)),
+          textHaloColor:
+              _color(parser, paint['text-halo-color'], const Color(0x00000000)),
           textHaloWidth: _double(parser, paint['text-halo-width'], 0),
           textOpacity: _double(parser, paint['text-opacity'], 1),
           iconOpacity: _double(parser, paint['icon-opacity'], 1),

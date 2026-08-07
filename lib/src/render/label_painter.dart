@@ -78,8 +78,7 @@ class LabelPainter {
       ..sort((a, b) {
         final byLayer = b.instance.layerIndex - a.instance.layerIndex;
         if (byLayer != 0) return byLayer;
-        final bySortKey =
-            a.instance.sortKey.compareTo(b.instance.sortKey);
+        final bySortKey = a.instance.sortKey.compareTo(b.instance.sortKey);
         if (bySortKey != 0) return bySortKey;
         return a.screenAnchor.dy.compareTo(b.screenAnchor.dy);
       });
@@ -91,8 +90,8 @@ class LabelPainter {
       if (drawable != null) toDraw.add(drawable);
     }
     // Draw bottom style layers first so upper layers paint on top.
-    toDraw.sort((a, b) => a.symbol.instance.layerIndex
-        .compareTo(b.symbol.instance.layerIndex));
+    toDraw.sort((a, b) =>
+        a.symbol.instance.layerIndex.compareTo(b.symbol.instance.layerIndex));
     final drawn = <PlacedSymbol>[];
     for (final drawable in toDraw) {
       drawable.draw(canvas);
@@ -201,11 +200,8 @@ class LabelPainter {
         angle = lineTextAngle;
         // Along-line text is centered on the anchor.
         textRect = Rect.fromCenter(
-            center: anchor,
-            width: text.size.width,
-            height: text.size.height);
-        boxes.add(_rotatedBounds(textRect, anchor, angle)
-            .inflate(padding));
+            center: anchor, width: text.size.width, height: text.size.height);
+        boxes.add(_rotatedBounds(textRect, anchor, angle).inflate(padding));
       } else {
         boxes.add(textRect.inflate(padding));
       }
@@ -254,8 +250,8 @@ class LabelPainter {
     final allowOverlap = layer.textAllowOverlap.eval(ctx);
     for (final anchorName in anchors) {
       final shifted = placed.screenAnchor + _radialShift(anchorName, radial);
-      final textRect = _anchoredRect(
-          anchorName, shifted, text.size.width, text.size.height);
+      final textRect =
+          _anchoredRect(anchorName, shifted, text.size.width, text.size.height);
       final boxes = [
         textRect.inflate(padding),
         if (icon != null) icon.rect.inflate(2),
@@ -341,9 +337,8 @@ class LabelPainter {
     var maxDeviation = 0.0;
     double? firstAngle;
     for (final cluster in clusters) {
-      final d = reversed
-          ? d1 - cluster.center / scale
-          : d0 + cluster.center / scale;
+      final d =
+          reversed ? d1 - cluster.center / scale : d0 + cluster.center / scale;
       var angle = path.angleAt(d) + transform.rotation;
       if (reversed) angle += math.pi;
       angle = _foldAngle(angle);
@@ -353,8 +348,8 @@ class LabelPainter {
       }
       previousAngle = angle;
       firstAngle ??= angle;
-      maxDeviation = math.max(
-          maxDeviation, _foldAngle(angle - firstAngle).abs());
+      maxDeviation =
+          math.max(maxDeviation, _foldAngle(angle - firstAngle).abs());
       var pos = transform.apply(path.pointAt(d));
       if (perp != 0) {
         pos += Offset(-math.sin(angle), math.cos(angle)) * perp;
@@ -739,8 +734,7 @@ class _DrawableSymbol {
       // neighbour's fill.
       for (var pass = 0; pass < 2; pass++) {
         for (final glyph in glyphs) {
-          final painter =
-              pass == 0 ? glyph.painters.halo : glyph.painters.fill;
+          final painter = pass == 0 ? glyph.painters.halo : glyph.painters.fill;
           if (painter == null) continue;
           canvas.save();
           canvas.translate(glyph.position.dx, glyph.position.dy);

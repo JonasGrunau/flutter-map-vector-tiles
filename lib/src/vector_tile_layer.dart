@@ -134,8 +134,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     try {
       final dir = widget.cacheFolder != null
           ? await widget.cacheFolder!()
-          : Directory(
-              '${(await getTemporaryDirectory()).path}'
+          : Directory('${(await getTemporaryDirectory()).path}'
               '${Platform.pathSeparator}flutter_map_vector_tiles');
       final cache = DiskCache(
         directory: dir,
@@ -283,8 +282,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   void _pruneRetained(MapCamera camera, GridLayout layout) {
     if (_retained.isEmpty) return;
-    final allReady = _tiles.values
-        .every((t) => t.state != _TileState.loading);
+    final allReady = _tiles.values.every((t) => t.state != _TileState.loading);
     final viewport = camera.pixelBounds;
     final toRemove = <TileKey>[];
     _retained.forEach((key, tile) {
@@ -303,8 +301,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     final generation = _generation;
     final priority = layout.priorityOf(tile.key);
     final sources = <String, PreparedTile>{};
-    final pending =
-        <String, Future<PreparedTile?>>{};
+    final pending = <String, Future<PreparedTile?>>{};
 
     for (final entry in _stores.entries) {
       final dataKey =
@@ -363,8 +360,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       theme: widget.theme,
       data: data,
       styleZoom: styleZoom,
-      devicePixelRatio:
-          MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0,
+      devicePixelRatio: MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0,
       patterns: _patternResolver,
     );
     final symbols = widget.showLabels && sources.isNotEmpty
@@ -461,8 +457,7 @@ class _DisplayTile {
   double fadeProgress(DateTime now, Duration duration) {
     final start = readyAt;
     if (start == null || duration <= Duration.zero) return 1;
-    final t =
-        now.difference(start).inMilliseconds / duration.inMilliseconds;
+    final t = now.difference(start).inMilliseconds / duration.inMilliseconds;
     return t.clamp(0.0, 1.0);
   }
 
@@ -487,8 +482,8 @@ class _VectorMapPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final now = DateTime.now();
-    final styleZoom = math.max(
-        0.0, camera.zoom + state.widget.tileOffset.zoomOffset);
+    final styleZoom =
+        math.max(0.0, camera.zoom + state.widget.tileOffset.zoomOffset);
 
     // 1. Solid background so gaps between tiles never flash white.
     final background = state.widget.theme.backgroundColor(styleZoom);
@@ -510,8 +505,8 @@ class _VectorMapPainter extends CustomPainter {
       _drawTileImage(canvas, entry.value, 1);
     }
     for (final tile in state._tiles.values) {
-      _drawTileImage(canvas,
-          tile, tile.fadeProgress(now, state.widget.tileFadeDuration));
+      _drawTileImage(
+          canvas, tile, tile.fadeProgress(now, state.widget.tileFadeDuration));
     }
     canvas.restore();
 
@@ -533,8 +528,7 @@ class _VectorMapPainter extends CustomPainter {
     }
     canvas.drawImageRect(
       image,
-      Rect.fromLTWH(
-          0, 0, image.width.toDouble(), image.height.toDouble()),
+      Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
       rect,
       paint,
     );

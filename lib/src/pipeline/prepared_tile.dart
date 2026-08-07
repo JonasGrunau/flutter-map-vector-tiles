@@ -29,7 +29,8 @@ class PreparedTile {
     required this.byteSize,
   });
 
-  static const empty = PreparedTile(key: TileKey(0, 0, 0), layers: {}, byteSize: 64);
+  static const empty =
+      PreparedTile(key: TileKey(0, 0, 0), layers: {}, byteSize: 64);
 }
 
 class PreparedSourceLayer {

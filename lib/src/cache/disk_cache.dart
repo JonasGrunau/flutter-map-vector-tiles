@@ -35,8 +35,8 @@ class DiskCache {
     }
   }
 
-  File _fileFor(String key) => File(
-      '${directory.path}${Platform.pathSeparator}${_fnv1a(key)}.bin');
+  File _fileFor(String key) =>
+      File('${directory.path}${Platform.pathSeparator}${_fnv1a(key)}.bin');
 
   Future<Uint8List?> get(String key) async {
     try {

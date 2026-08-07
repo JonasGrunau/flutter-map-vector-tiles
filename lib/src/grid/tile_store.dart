@@ -115,8 +115,7 @@ class TileStore {
     if (_disposed || (cancellation?.isCancelled ?? false)) return null;
 
     if (bytes == null) {
-      final response =
-          await provider.load(dataKey, cancellation: cancellation);
+      final response = await provider.load(dataKey, cancellation: cancellation);
       if (_disposed) return null;
       if (response is TileResponseData) {
         bytes = response.bytes;

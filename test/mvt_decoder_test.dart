@@ -77,8 +77,7 @@ void main() {
 
     final feature = decodeMvt(bytes).layers.single.features.single;
     expect(feature.type, MvtGeomType.polygon);
-    expect(feature.parts.single,
-        [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]);
+    expect(feature.parts.single, [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]);
     expect(feature.ringAreas.single, greaterThan(0));
   });
 
@@ -98,8 +97,8 @@ void main() {
     final tile = decodeMvt(bytes);
     expect(tile.layers.map((l) => l.name), ['a', 'b']);
     expect(tile.layer('b')!.extent, 512);
-    final props = tile.layers.first.features.single
-        .decodeProperties(tile.layers.first);
+    final props =
+        tile.layers.first.features.single.decodeProperties(tile.layers.first);
     expect(props['height'], 12.5);
   });
 

@@ -53,7 +53,9 @@ void main() {
           'text-font': ['Noto Sans Bold', 'Noto Sans Regular'],
           'text-offset': [0, 0.6],
         },
-        'paint': {'line-dasharray': [2, 1]},
+        'paint': {
+          'line-dasharray': [2, 1]
+        },
       },
       {
         'id': 'hidden',
@@ -121,8 +123,8 @@ void main() {
     final theme = const ThemeReader().read(style);
     final labels = theme.layers[3] as SymbolThemeLayer;
     expect(
-        labels.textField.eval(const EvalContext(
-            zoom: 10, properties: {'name': 'München'})),
+        labels.textField
+            .eval(const EvalContext(zoom: 10, properties: {'name': 'München'})),
         'München');
     expect(labels.referencedProperties, contains('name'));
   });
@@ -133,8 +135,7 @@ void main() {
     final theme = const ThemeReader().read(style);
     final labels = theme.layers[3] as SymbolThemeLayer;
     const ctx = EvalContext(zoom: 10);
-    expect(labels.textFont.eval(ctx),
-        ['Noto Sans Bold', 'Noto Sans Regular']);
+    expect(labels.textFont.eval(ctx), ['Noto Sans Bold', 'Noto Sans Regular']);
     expect(labels.textOffset.eval(ctx), [0, 0.6]);
   });
 

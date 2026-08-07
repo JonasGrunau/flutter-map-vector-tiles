@@ -80,7 +80,8 @@ Color? _parseHsl(String s) {
   final l = _number(parts[2]);
   final a = parts.length > 3 ? _number(parts[3]) : 1.0;
   if (h == null || sat == null || l == null || a == null) return null;
-  return _hslToColor(h, sat.clamp(0.0, 1.0), l.clamp(0.0, 1.0), a.clamp(0.0, 1.0));
+  return _hslToColor(
+      h, sat.clamp(0.0, 1.0), l.clamp(0.0, 1.0), a.clamp(0.0, 1.0));
 }
 
 Color _hslToColor(double h, double s, double l, double a) {

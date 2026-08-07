@@ -25,8 +25,8 @@ class PlatformExecutor implements TilePrepareExecutor {
     CancellationToken? cancellation,
   }) {
     if (_disposed) return Future.value(null);
-    final job = _Job(input, priority, cancellation ?? CancellationToken.none,
-        Completer());
+    final job = _Job(
+        input, priority, cancellation ?? CancellationToken.none, Completer());
     _queue
       ..add(job)
       ..sort((a, b) => a.priority.compareTo(b.priority));

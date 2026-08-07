@@ -16,8 +16,8 @@ import 'package:flutter_test/flutter_test.dart';
 SpriteAtlas _atlas() {
   final recorder = ui.PictureRecorder();
   final canvas = Canvas(recorder);
-  canvas.drawRect(
-      const Rect.fromLTWH(0, 0, 8, 8), Paint()..color = const Color(0xffff0000));
+  canvas.drawRect(const Rect.fromLTWH(0, 0, 8, 8),
+      Paint()..color = const Color(0xffff0000));
   canvas.drawRect(const Rect.fromLTWH(8, 8, 8, 8),
       Paint()..color = const Color(0xff00ff00));
   final picture = recorder.endRecording();

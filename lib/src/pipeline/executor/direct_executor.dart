@@ -42,10 +42,9 @@ class PlatformExecutor implements TilePrepareExecutor {
       // Yield to the event loop so input/raster events are not starved.
       await Future<void>.delayed(Duration.zero);
       try {
-        job.completer.complete(
-            _disposed || job.cancellation.isCancelled
-                ? null
-                : prepareTileSync(job.input));
+        job.completer.complete(_disposed || job.cancellation.isCancelled
+            ? null
+            : prepareTileSync(job.input));
       } catch (_) {
         job.completer.complete(null);
       }

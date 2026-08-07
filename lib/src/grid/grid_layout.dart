@@ -25,8 +25,7 @@ class GridLayout {
   });
 
   factory GridLayout.forCamera(MapCamera camera, {int buffer = 0}) {
-    final displayZoom =
-        camera.zoom.floor().clamp(0, 30);
+    final displayZoom = camera.zoom.floor().clamp(0, 30);
     final scale = camera.getZoomScale(camera.zoom, displayZoom.toDouble());
     final pixelCenter =
         camera.projectAtZoom(camera.center, displayZoom.toDouble());

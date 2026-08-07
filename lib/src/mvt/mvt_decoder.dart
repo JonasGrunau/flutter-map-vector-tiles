@@ -194,8 +194,7 @@ MvtFeature? _decodeGeometry(
     type: type,
     tags: tags,
     parts: parts,
-    ringAreas:
-        areas.isNotEmpty ? Float64List.fromList(areas) : Float64List(0),
+    ringAreas: areas.isNotEmpty ? Float64List.fromList(areas) : Float64List(0),
   );
 }
 

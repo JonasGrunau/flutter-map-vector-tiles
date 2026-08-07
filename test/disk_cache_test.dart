@@ -43,8 +43,8 @@ void main() {
   });
 
   test('survives unwritable directory without throwing', () async {
-    final cache = DiskCache(
-        directory: Directory('${dir.path}/definitely/missing/deep'));
+    final cache =
+        DiskCache(directory: Directory('${dir.path}/definitely/missing/deep'));
     // No initialize → directory absent.
     await cache.put('k', Uint8List.fromList([1]));
     expect(await cache.get('k'), null);

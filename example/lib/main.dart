@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart'
-    as vt;
+import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart' as vt;
 import 'package:latlong2/latlong.dart';
 
 /// Run with your MapTiler key (any MapLibre style URL works):
@@ -14,8 +13,7 @@ import 'package:latlong2/latlong.dart';
 const _apiKey = String.fromEnvironment('MAPTILER_KEY');
 const _styleUrl = String.fromEnvironment(
   'STYLE_URL',
-  defaultValue:
-      'https://api.maptiler.com/maps/streets-v2/style.json?key={key}',
+  defaultValue: 'https://api.maptiler.com/maps/streets-v2/style.json?key={key}',
 );
 
 void main() => runApp(const ExampleApp());
@@ -78,8 +76,7 @@ class _VectorMapPageState extends State<VectorMapPage> {
           }
           return FlutterMap(
             options: MapOptions(
-              initialCenter:
-                  style.center ?? const LatLng(48.137, 11.575),
+              initialCenter: style.center ?? const LatLng(48.137, 11.575),
               initialZoom: style.zoom ?? 12,
               maxZoom: 21,
               minZoom: 2,

@@ -5,7 +5,9 @@ import 'package:flutter_map_vector_tiles/src/style/expression_parser.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  Object? eval(Object? json, {double zoom = 10, Map<String, Object?>? props,
+  Object? eval(Object? json,
+      {double zoom = 10,
+      Map<String, Object?>? props,
       String geometryType = 'Point'}) {
     return ExpressionParser().parse(json)(EvalContext(
       zoom: zoom,
@@ -44,18 +46,53 @@ void main() {
 
     test('zoom and geometry-type', () {
       expect(eval(['zoom'], zoom: 7.5), 7.5);
-      expect(eval(['geometry-type'], geometryType: 'LineString'),
-          'LineString');
+      expect(eval(['geometry-type'], geometryType: 'LineString'), 'LineString');
     });
   });
 
   group('decisions', () {
     test('comparisons', () {
-      expect(eval(['==', ['get', 'a'], 1], props: {'a': 1}), true);
-      expect(eval(['==', ['get', 'a'], 1], props: {'a': 2}), false);
-      expect(eval(['!=', ['get', 'a'], 1], props: {'a': 2}), true);
-      expect(eval(['>', ['zoom'], 5], zoom: 6), true);
-      expect(eval(['<=', ['zoom'], 5], zoom: 5), true);
+      expect(
+          eval([
+            '==',
+            ['get', 'a'],
+            1
+          ], props: {
+            'a': 1
+          }),
+          true);
+      expect(
+          eval([
+            '==',
+            ['get', 'a'],
+            1
+          ], props: {
+            'a': 2
+          }),
+          false);
+      expect(
+          eval([
+            '!=',
+            ['get', 'a'],
+            1
+          ], props: {
+            'a': 2
+          }),
+          true);
+      expect(
+          eval([
+            '>',
+            ['zoom'],
+            5
+          ], zoom: 6),
+          true);
+      expect(
+          eval([
+            '<=',
+            ['zoom'],
+            5
+          ], zoom: 5),
+          true);
       expect(eval(['<', 'apple', 'banana']), true);
     });
 
@@ -63,10 +100,16 @@ void main() {
       expect(
           eval([
             'case',
-            ['==', ['get', 'class'], 'motorway'],
+            [
+              '==',
+              ['get', 'class'],
+              'motorway'
+            ],
             'red',
             'blue',
-          ], props: {'class': 'motorway'}),
+          ], props: {
+            'class': 'motorway'
+          }),
           'red');
       expect(
           eval([
@@ -77,13 +120,28 @@ void main() {
             'motorway',
             2,
             0,
-          ], props: {'class': 'secondary'}),
+          ], props: {
+            'class': 'secondary'
+          }),
           1);
-      expect(eval(['coalesce', null, ['get', 'x'], 'fallback']), 'fallback');
+      expect(
+          eval([
+            'coalesce',
+            null,
+            ['get', 'x'],
+            'fallback'
+          ]),
+          'fallback');
     });
 
     test('all / any / !', () {
-      expect(eval(['all', true, ['>', 2, 1]]), true);
+      expect(
+          eval([
+            'all',
+            true,
+            ['>', 2, 1]
+          ]),
+          true);
       expect(eval(['all', true, false]), false);
       expect(eval(['any', false, true]), true);
       expect(eval(['!', false]), true);
@@ -92,7 +150,15 @@ void main() {
 
   group('ramps', () {
     test('step', () {
-      final expr = ['step', ['zoom'], 'a', 10, 'b', 14, 'c'];
+      final expr = [
+        'step',
+        ['zoom'],
+        'a',
+        10,
+        'b',
+        14,
+        'c'
+      ];
       expect(eval(expr, zoom: 5), 'a');
       expect(eval(expr, zoom: 10), 'b');
       expect(eval(expr, zoom: 13.9), 'b');
@@ -100,7 +166,15 @@ void main() {
     });
 
     test('linear interpolate on numbers', () {
-      final expr = ['interpolate', ['linear'], ['zoom'], 10, 0, 20, 100];
+      final expr = [
+        'interpolate',
+        ['linear'],
+        ['zoom'],
+        10,
+        0,
+        20,
+        100
+      ];
       expect(eval(expr, zoom: 5), 0);
       expect(eval(expr, zoom: 15), 50);
       expect(eval(expr, zoom: 20), 100);
@@ -111,7 +185,10 @@ void main() {
         'interpolate',
         ['exponential', 2],
         ['zoom'],
-        10, 100, 12, 400,
+        10,
+        100,
+        12,
+        400,
       ];
       final mid = eval(expr, zoom: 11)! as double;
       // base 2: t = (2^1 - 1) / (2^2 - 1) = 1/3
@@ -120,8 +197,13 @@ void main() {
 
     test('interpolate on colors', () {
       final expr = [
-        'interpolate', ['linear'], ['zoom'],
-        0, '#000000', 10, '#ffffff',
+        'interpolate',
+        ['linear'],
+        ['zoom'],
+        0,
+        '#000000',
+        10,
+        '#ffffff',
       ];
       final color = eval(expr, zoom: 5)! as Color;
       expect((color.r * 255).round(), closeTo(128, 12));
@@ -158,17 +240,15 @@ void main() {
 
   group('legacy filters', () {
     test('property equality', () {
-      expect(evalFilter(['==', 'class', 'park'], props: {'class': 'park'}),
-          true);
-      expect(evalFilter(['==', 'class', 'park'], props: {'class': 'x'}),
-          false);
+      expect(
+          evalFilter(['==', 'class', 'park'], props: {'class': 'park'}), true);
+      expect(evalFilter(['==', 'class', 'park'], props: {'class': 'x'}), false);
     });
 
     test(r'$type matching', () {
       expect(evalFilter(['==', r'$type', 'Point']), true);
       expect(
-          evalFilter(['==', r'$type', 'Polygon'],
-              geometryType: 'LineString'),
+          evalFilter(['==', r'$type', 'Polygon'], geometryType: 'LineString'),
           false);
     });
 
@@ -176,8 +256,7 @@ void main() {
       expect(
           evalFilter(['in', 'class', 'a', 'b'], props: {'class': 'b'}), true);
       expect(
-          evalFilter(['!in', 'class', 'a', 'b'], props: {'class': 'b'}),
-          false);
+          evalFilter(['!in', 'class', 'a', 'b'], props: {'class': 'b'}), false);
     });
 
     test('has / !has and nested all', () {
@@ -187,7 +266,9 @@ void main() {
             'all',
             ['==', r'$type', 'Point'],
             ['!has', 'hidden'],
-          ], props: {'name': 'x'}),
+          ], props: {
+            'name': 'x'
+          }),
           true);
     });
 
@@ -232,14 +313,17 @@ void main() {
       parser.parse(['get', 'name']);
       parser.parseFilter(['==', 'class', 'park']);
       parser.parse(['has', 'ele']);
-      expect(parser.referencedProperties,
-          containsAll(['name', 'class', 'ele']));
+      expect(
+          parser.referencedProperties, containsAll(['name', 'class', 'ele']));
       expect(parser.referencesAllProperties, false);
     });
 
     test('dynamic access flags all properties', () {
       final parser = ExpressionParser();
-      parser.parse(['get', ['get', 'keyName']]);
+      parser.parse([
+        'get',
+        ['get', 'keyName']
+      ]);
       // outer get has non-literal name
       expect(parser.referencesAllProperties, true);
     });
