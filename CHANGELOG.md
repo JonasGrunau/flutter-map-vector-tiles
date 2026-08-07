@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0
+
+- ✨ Curved line text: road labels now follow their line glyph by glyph,
+  with MapLibre semantics — `text-max-angle` (labels on too-sharp bends
+  are not placed), `text-keep-upright` (reading direction flips so text
+  is never upside-down) and `text-rotation-alignment: viewport`
+  (horizontal shield text). Glyph spacing/kerning comes from the full
+  string layout; per-glyph collision boxes; nearly straight labels are
+  drawn as a single rotated string for speed.
+- Scripts with contextual shaping (Arabic, Indic, Thai, …) fall back to
+  straight placement so glyphs are never mis-joined; labels longer than
+  their line are dropped instead of sticking out (matches MapLibre).
+- Along-line labels no longer wrap to multiple lines.
+
 ## 0.2.0
 
 - ✨ `text-variable-anchor` + `text-radial-offset`: labels try alternate

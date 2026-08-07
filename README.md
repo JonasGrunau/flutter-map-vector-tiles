@@ -35,7 +35,7 @@ your other layers; this package only draws the map. 🎯
 ```yaml
 dependencies:
   flutter_map: ^8.2.0
-  flutter_map_vector_tiles: ^0.1.0
+  flutter_map_vector_tiles: ^0.3.0
 ```
 
 ### 2. Load a style & drop in the layer
@@ -162,18 +162,25 @@ PMTiles, …).
 ## 🎨 Style support
 
 **Layer types:** `background`, `fill` (incl. `fill-pattern`), `line`,
-`symbol` (incl. `text-variable-anchor` / `text-radial-offset`), `circle`
-(`fill-extrusion` renders as flat fill; `raster`, `hillshade`, `heatmap`
-and `sky` are skipped with a log line).
+`symbol` (incl. curved line text ✍️, `text-variable-anchor` /
+`text-radial-offset`), `circle` (`fill-extrusion` renders as flat fill;
+`raster`, `hillshade`, `heatmap` and `sky` are skipped with a log line).
+
+Road labels curve glyph-by-glyph along their line with MapLibre
+semantics: `text-max-angle` rejects labels on sharp bends,
+`text-keep-upright` flips reading direction, and
+`text-rotation-alignment: viewport` keeps shield text horizontal.
+Nearly straight windows are drawn as a single rotated string for speed;
+scripts with contextual shaping (Arabic, Indic, …) fall back to straight
+placement so glyphs are never mis-joined.
 
 **Expressions:** the practical MapLibre set — `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,
 exponential, cubic-bezier), math, string & color operators, `let`/`var`,
 legacy filters, legacy `{stops}` functions and `{token}` templates.
 
-**Not (yet) supported:** 🚧 curved line text (line labels are placed
-straight at the local segment angle), `line-pattern`, raster sources
-inside vector styles, and **web** (the disk cache and isolate pool are
+**Not (yet) supported:** 🚧 `line-pattern`, raster sources inside
+vector styles, and **web** (the disk cache and isolate pool are
 `dart:io`-based).
 
 ## 🏗️ Architecture

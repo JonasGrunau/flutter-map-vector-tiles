@@ -154,6 +154,10 @@ class ThemeReader {
           textAllowOverlap:
               _bool(parser, layout['text-allow-overlap'], false),
           textOptional: _bool(parser, layout['text-optional'], false),
+          textMaxAngle: _double(parser, layout['text-max-angle'], 45),
+          textKeepUpright: _bool(parser, layout['text-keep-upright'], true),
+          textRotationAlignment:
+              _string(parser, layout['text-rotation-alignment'], 'auto'),
           iconImage: layout['icon-image'] == null
               ? null
               : _string(parser, layout['icon-image'], ''),

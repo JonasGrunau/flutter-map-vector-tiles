@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:characters/characters.dart';
 import 'package:flutter/painting.dart';
 
 import '../cache/lru_cache.dart';
@@ -8,6 +9,29 @@ import '../style/expression.dart';
 import '../style/sprite_atlas.dart';
 import '../style/theme.dart';
 import 'symbol_layouter.dart';
+
+/// The affine transform from a display tile's logical coordinates to
+/// screen pixels: uniform scale, rotation, translation. Lengths scale
+/// by [scale]; angles shift by [rotation].
+class TileTransform {
+  final Offset origin;
+  final double scale;
+  final double rotation;
+  final double _cosR;
+  final double _sinR;
+
+  TileTransform({
+    required this.origin,
+    required this.scale,
+    required this.rotation,
+  })  : _cosR = math.cos(rotation),
+        _sinR = math.sin(rotation);
+
+  Offset apply(Offset p) => Offset(
+        origin.dx + (p.dx * _cosR - p.dy * _sinR) * scale,
+        origin.dy + (p.dx * _sinR + p.dy * _cosR) * scale,
+      );
+}
 
 /// A symbol candidate projected to screen coordinates.
 class PlacedSymbol {
@@ -17,10 +41,15 @@ class PlacedSymbol {
   /// Screen-space baseline angle for along-line labels (radians).
   final double screenAngle;
 
+  /// Tile→screen transform, present for along-line symbols so curved
+  /// text can project the line geometry.
+  final TileTransform? transform;
+
   const PlacedSymbol({
     required this.instance,
     required this.screenAnchor,
     required this.screenAngle,
+    this.transform,
   });
 }
 
@@ -29,6 +58,7 @@ class PlacedSymbol {
 /// crisp at fractional zoom and upright under rotation.
 class LabelPainter {
   final _textCache = LruCache<String, _LaidOutText>(maxEntries: 800);
+  final _glyphCache = LruCache<String, _GlyphText>(maxEntries: 1500);
 
   /// [styleZoom] is the fractional style zoom used for size expressions.
   ///
@@ -137,6 +167,21 @@ class LabelPainter {
           placed, layer, ctx, text, icon, variableAnchors, collision);
     }
 
+    // Along-line text follows the line glyph by glyph, unless the style
+    // pins it to the viewport or the script needs shaping we can't
+    // preserve per-glyph.
+    var lineTextAngle = 0.0;
+    if (text != null && instance.alongLine) {
+      if (layer.textRotationAlignment.eval(ctx) != 'viewport') {
+        if (instance.path != null &&
+            placed.transform != null &&
+            _curveSafe(instance.text)) {
+          return _prepareCurved(placed, layer, ctx, text, icon, collision);
+        }
+        lineTextAngle = _uprightAngle(placed.screenAngle);
+      }
+    }
+
     // Compute collision boxes.
     final boxes = <Rect>[];
     var textRect = Rect.zero;
@@ -153,7 +198,7 @@ class LabelPainter {
       textRect = _anchoredRect(layer.textAnchor.eval(ctx), shifted,
           text.size.width, text.size.height);
       if (instance.alongLine) {
-        angle = _uprightAngle(placed.screenAngle);
+        angle = lineTextAngle;
         // Along-line text is centered on the anchor.
         textRect = Rect.fromCenter(
             center: anchor,
@@ -246,6 +291,160 @@ class LabelPainter {
     };
   }
 
+  /// Curved line text: each glyph cluster is placed and rotated
+  /// individually along the projected line. Labels that don't fit their
+  /// line or bend sharper than `text-max-angle` are not placed, matching
+  /// MapLibre.
+  _DrawableSymbol? _prepareCurved(
+    PlacedSymbol placed,
+    SymbolThemeLayer layer,
+    EvalContext ctx,
+    _LaidOutText text,
+    _DrawableIcon? icon,
+    _CollisionIndex collision,
+  ) {
+    final instance = placed.instance;
+    final path = instance.path!;
+    final transform = placed.transform!;
+    final clusters = text.clusters;
+    if (clusters.isEmpty) return null;
+
+    _DrawableSymbol? iconFallback() {
+      if (icon != null &&
+          layer.textOptional.eval(ctx) &&
+          collision.tryPlaceAll([icon.rect.inflate(2)])) {
+        return _DrawableSymbol(placed, icon: icon);
+      }
+      return null;
+    }
+
+    // The label occupies [d0, d1] along the path, in logical units.
+    final scale = transform.scale;
+    final halfW = text.size.width / 2 / scale;
+    final d0 = instance.pathDistance - halfW;
+    final d1 = instance.pathDistance + halfW;
+    if (d0 < 0 || d1 > path.length) return iconFallback();
+
+    // Reading direction: walk the path backwards when the label would
+    // come out upside-down on screen.
+    final s0 = transform.apply(path.pointAt(d0));
+    final s1 = transform.apply(path.pointAt(d1));
+    final reversed = layer.textKeepUpright.eval(ctx) && s1.dx < s0.dx;
+
+    final offset = layer.textOffset.eval(ctx);
+    final perp = offset.length > 1 ? offset[1] * text.fontSize : 0.0;
+    final maxAngle = layer.textMaxAngle.eval(ctx) * math.pi / 180;
+
+    final placements =
+        <({String grapheme, Offset pos, double angle, double width})>[];
+    var previousAngle = double.nan;
+    var maxDeviation = 0.0;
+    double? firstAngle;
+    for (final cluster in clusters) {
+      final d = reversed
+          ? d1 - cluster.center / scale
+          : d0 + cluster.center / scale;
+      var angle = path.angleAt(d) + transform.rotation;
+      if (reversed) angle += math.pi;
+      angle = _foldAngle(angle);
+      if (!previousAngle.isNaN &&
+          _foldAngle(angle - previousAngle).abs() > maxAngle) {
+        return iconFallback(); // line bends too sharply for this label
+      }
+      previousAngle = angle;
+      firstAngle ??= angle;
+      maxDeviation = math.max(
+          maxDeviation, _foldAngle(angle - firstAngle).abs());
+      var pos = transform.apply(path.pointAt(d));
+      if (perp != 0) {
+        pos += Offset(-math.sin(angle), math.cos(angle)) * perp;
+      }
+      placements.add((
+        grapheme: cluster.grapheme,
+        pos: pos,
+        angle: angle,
+        width: cluster.width,
+      ));
+    }
+    if (placements.isEmpty) return null;
+
+    final padding = layer.textPadding.eval(ctx);
+    final allowOverlap = layer.textAllowOverlap.eval(ctx);
+
+    // The window under the label is essentially straight: draw it as a
+    // single rotated string, which is much cheaper.
+    if (maxDeviation < 0.02 && perp == 0) {
+      final angle = _uprightAngle(placed.screenAngle);
+      final textRect = Rect.fromCenter(
+          center: placed.screenAnchor,
+          width: text.size.width,
+          height: text.size.height);
+      final boxes = [
+        _rotatedBounds(textRect, placed.screenAnchor, angle).inflate(padding),
+        if (icon != null) icon.rect.inflate(2),
+      ];
+      if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
+        return iconFallback();
+      }
+      return _DrawableSymbol(placed,
+          icon: icon, text: text, textRect: textRect, textAngle: angle);
+    }
+
+    // Per-glyph collision boxes.
+    final glyphHeight = text.fontSize * 1.2;
+    final boxes = <Rect>[
+      for (final p in placements)
+        _rotatedBounds(
+                Rect.fromCenter(
+                    center: p.pos, width: p.width, height: glyphHeight),
+                p.pos,
+                p.angle)
+            .inflate(padding),
+      if (icon != null) icon.rect.inflate(2),
+    ];
+    if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
+      return iconFallback();
+    }
+
+    final glyphs = [
+      for (final p in placements)
+        _CurvedGlyph(
+          painters: _glyphPainters(p.grapheme, text),
+          position: p.pos,
+          angle: p.angle,
+        ),
+    ];
+    return _DrawableSymbol(placed, icon: icon, curvedGlyphs: glyphs);
+  }
+
+  /// Per-glyph rendering re-shapes each cluster in isolation, which is
+  /// only safe for scripts without contextual joining (Latin, Greek,
+  /// Cyrillic, CJK). Everything else falls back to straight placement.
+  static bool _curveSafe(String text) {
+    for (final r in text.runes) {
+      final ok = r < 0x0590 || // Latin, Greek, Cyrillic, combining marks
+          (r >= 0x1e00 && r <= 0x2bff) || // Latin/Greek ext., punctuation
+          (r >= 0x2e80 && r <= 0xa4cf) || // CJK
+          (r >= 0xac00 && r <= 0xd7ff) || // Hangul
+          (r >= 0xf900 && r <= 0xfaff) || // CJK compatibility
+          (r >= 0xff00 && r <= 0xffef); // half/fullwidth forms
+      if (!ok) return false;
+    }
+    return true;
+  }
+
+  /// Folds an angle into (-π, π].
+  static double _foldAngle(double angle) {
+    var a = angle;
+    while (a <= -math.pi) {
+      a += 2 * math.pi;
+    }
+    while (a > math.pi) {
+      a -= 2 * math.pi;
+    }
+    return a;
+  }
+
   _LaidOutText _layoutText(
     SymbolInstance instance,
     SymbolThemeLayer layer,
@@ -258,48 +457,81 @@ class LabelPainter {
     final fonts = layer.textFont.eval(ctx);
     final letterSpacingEm = layer.textLetterSpacing.eval(ctx);
     final maxWidthEm = layer.textMaxWidth.eval(ctx);
+    // Along-line labels never wrap.
+    final singleLine = instance.alongLine;
 
-    final cacheKey = '${instance.text}|${fontSize.toStringAsFixed(1)}|'
+    final styleKey = '${fontSize.toStringAsFixed(1)}|'
         '${color.toARGB32()}|${haloColor.toARGB32()}|$haloWidth|'
-        '${fonts.join(',')}|$letterSpacingEm|$maxWidthEm';
+        '${fonts.join(',')}|$letterSpacingEm';
+    final cacheKey = '${instance.text}|$styleKey|$maxWidthEm|$singleLine';
     final cached = _textCache.get(cacheKey);
     if (cached != null) return cached;
 
+    final maxLines = singleLine ? 1 : 4;
+    final maxWidth = singleLine
+        ? double.infinity
+        : math.max(fontSize * maxWidthEm, fontSize * 2);
     final style = _textStyle(fonts, fontSize, letterSpacingEm, color);
     final fill = TextPainter(
       text: TextSpan(text: instance.text, style: style),
       textDirection: TextDirection.ltr,
       textAlign: TextAlign.center,
-      maxLines: 4,
-    )..layout(maxWidth: math.max(fontSize * maxWidthEm, fontSize * 2));
+      maxLines: maxLines,
+    )..layout(maxWidth: maxWidth);
 
     TextPainter? halo;
+    TextStyle? haloStyle;
     if (haloWidth > 0 && haloColor.a > 0) {
+      haloStyle = style.copyWith(
+        foreground: Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = haloWidth * 2
+          ..strokeJoin = StrokeJoin.round
+          ..color = haloColor,
+      );
       halo = TextPainter(
-        text: TextSpan(
-          text: instance.text,
-          style: style.copyWith(
-            foreground: Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = haloWidth * 2
-              ..strokeJoin = StrokeJoin.round
-              ..color = haloColor,
-          ),
-        ),
+        text: TextSpan(text: instance.text, style: haloStyle),
         textDirection: TextDirection.ltr,
         textAlign: TextAlign.center,
-        maxLines: 4,
-      )..layout(maxWidth: math.max(fontSize * maxWidthEm, fontSize * 2));
+        maxLines: maxLines,
+      )..layout(maxWidth: maxWidth);
     }
 
     final laidOut = _LaidOutText(
+      text: instance.text,
       fill: fill,
       halo: halo,
       size: fill.size,
       fontSize: fontSize,
+      styleKey: styleKey,
+      fillStyle: style,
+      haloStyle: haloStyle,
     );
     _textCache.put(cacheKey, laidOut);
     return laidOut;
+  }
+
+  /// Painters for a single glyph cluster, cached across labels — the
+  /// same characters repeat constantly in map text.
+  _GlyphText _glyphPainters(String grapheme, _LaidOutText text) {
+    final key = '${text.styleKey}#$grapheme';
+    final cached = _glyphCache.get(key);
+    if (cached != null) return cached;
+
+    final fill = TextPainter(
+      text: TextSpan(text: grapheme, style: text.fillStyle),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    TextPainter? halo;
+    if (text.haloStyle != null) {
+      halo = TextPainter(
+        text: TextSpan(text: grapheme, style: text.haloStyle),
+        textDirection: TextDirection.ltr,
+      )..layout();
+    }
+    final glyph = _GlyphText(fill: fill, halo: halo);
+    _glyphCache.put(key, glyph);
+    return glyph;
   }
 
   static TextStyle _textStyle(
@@ -376,20 +608,89 @@ class LabelPainter {
 
   void dispose() {
     _textCache.clear();
+    _glyphCache.clear();
   }
 }
 
 class _LaidOutText {
+  final String text;
   final TextPainter fill;
   final TextPainter? halo;
   final Size size;
   final double fontSize;
+  final String styleKey;
+  final TextStyle fillStyle;
+  final TextStyle? haloStyle;
 
-  const _LaidOutText({
+  List<_Cluster>? _clusters;
+
+  _LaidOutText({
+    required this.text,
     required this.fill,
     required this.halo,
     required this.size,
     required this.fontSize,
+    required this.styleKey,
+    required this.fillStyle,
+    required this.haloStyle,
+  });
+
+  /// Grapheme clusters with their advance-centre x positions in the
+  /// laid-out string — spacing and kerning come from the full layout,
+  /// so curved glyphs keep the string's metrics. Whitespace clusters
+  /// are omitted (their advance still separates the neighbours).
+  List<_Cluster> get clusters => _clusters ??= _computeClusters();
+
+  List<_Cluster> _computeClusters() {
+    final result = <_Cluster>[];
+    var start = 0;
+    for (final grapheme in text.characters) {
+      final end = start + grapheme.length;
+      if (grapheme.trim().isNotEmpty) {
+        final boxes = fill.getBoxesForSelection(
+            TextSelection(baseOffset: start, extentOffset: end));
+        if (boxes.isNotEmpty) {
+          var left = double.infinity;
+          var right = -double.infinity;
+          for (final box in boxes) {
+            left = math.min(left, box.left);
+            right = math.max(right, box.right);
+          }
+          result.add(_Cluster(grapheme, (left + right) / 2, right - left));
+        }
+      }
+      start = end;
+    }
+    return result;
+  }
+}
+
+class _Cluster {
+  final String grapheme;
+
+  /// Centre of the cluster's advance, from the string's left edge.
+  final double center;
+  final double width;
+
+  const _Cluster(this.grapheme, this.center, this.width);
+}
+
+class _GlyphText {
+  final TextPainter fill;
+  final TextPainter? halo;
+
+  const _GlyphText({required this.fill, required this.halo});
+}
+
+class _CurvedGlyph {
+  final _GlyphText painters;
+  final Offset position;
+  final double angle;
+
+  const _CurvedGlyph({
+    required this.painters,
+    required this.position,
+    required this.angle,
   });
 }
 
@@ -413,6 +714,7 @@ class _DrawableSymbol {
   final _LaidOutText? text;
   final Rect textRect;
   final double textAngle;
+  final List<_CurvedGlyph>? curvedGlyphs;
 
   const _DrawableSymbol(
     this.symbol, {
@@ -420,6 +722,7 @@ class _DrawableSymbol {
     this.text,
     this.textRect = Rect.zero,
     this.textAngle = 0,
+    this.curvedGlyphs,
   });
 
   void draw(Canvas canvas) {
@@ -429,6 +732,25 @@ class _DrawableSymbol {
         ..filterQuality = FilterQuality.medium
         ..color = Color.fromRGBO(255, 255, 255, i.opacity);
       canvas.drawImageRect(i.atlas.image, i.sprite.sourceRect, i.rect, paint);
+    }
+    final glyphs = curvedGlyphs;
+    if (glyphs != null) {
+      // All halos first: a glyph's halo must never cut into its
+      // neighbour's fill.
+      for (var pass = 0; pass < 2; pass++) {
+        for (final glyph in glyphs) {
+          final painter =
+              pass == 0 ? glyph.painters.halo : glyph.painters.fill;
+          if (painter == null) continue;
+          canvas.save();
+          canvas.translate(glyph.position.dx, glyph.position.dy);
+          canvas.rotate(glyph.angle);
+          painter.paint(
+              canvas, Offset(-painter.width / 2, -painter.height / 2));
+          canvas.restore();
+        }
+      }
+      return;
     }
     final t = text;
     if (t == null) return;

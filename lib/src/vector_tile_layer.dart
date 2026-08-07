@@ -556,20 +556,21 @@ class _VectorMapPainter extends CustomPainter {
       if (tile.symbols.isEmpty) continue;
       final rect = displayTileRect(tile.key, camera.zoom);
       final tileScale = rect.width / TileRasterizer.logicalTileSize;
-      for (final symbol in tile.symbols) {
-        final world = Offset(
-          rect.left + symbol.anchor.dx * tileScale,
-          rect.top + symbol.anchor.dy * tileScale,
-        );
-        final d = world - worldCenter;
-        final screen = Offset(
+      final d = rect.topLeft - worldCenter;
+      final transform = TileTransform(
+        origin: Offset(
           screenCenter.dx + d.dx * cosR - d.dy * sinR,
           screenCenter.dy + d.dx * sinR + d.dy * cosR,
-        );
+        ),
+        scale: tileScale,
+        rotation: rotation,
+      );
+      for (final symbol in tile.symbols) {
         placed.add(PlacedSymbol(
           instance: symbol,
-          screenAnchor: screen,
+          screenAnchor: transform.apply(symbol.anchor),
           screenAngle: symbol.alongLine ? symbol.angle + rotation : 0,
+          transform: symbol.alongLine ? transform : null,
         ));
       }
     }

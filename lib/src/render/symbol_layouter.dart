@@ -8,6 +8,53 @@ import '../style/theme.dart';
 import 'display_tile_data.dart';
 import 'tile_rasterizer.dart';
 
+/// A polyline in logical display-tile coordinates with precomputed
+/// cumulative distances, shared by all anchors placed along it.
+class SymbolPath {
+  /// Interleaved x,y vertex coordinates.
+  final Float32List points;
+
+  /// Distance from the path start to each vertex.
+  final Float32List cumulative;
+
+  const SymbolPath(this.points, this.cumulative);
+
+  double get length => cumulative[cumulative.length - 1];
+
+  /// Index of the segment containing distance [d] (clamped).
+  int segmentAt(double d) {
+    var lo = 0, hi = cumulative.length - 2;
+    while (lo < hi) {
+      final mid = (lo + hi + 1) >> 1;
+      if (cumulative[mid] <= d) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return lo;
+  }
+
+  Offset pointAt(double d) {
+    final i = segmentAt(d);
+    final segment = cumulative[i + 1] - cumulative[i];
+    final f = segment <= 0
+        ? 0.0
+        : ((d - cumulative[i]) / segment).clamp(0.0, 1.0);
+    return Offset(
+      points[i * 2] + (points[i * 2 + 2] - points[i * 2]) * f,
+      points[i * 2 + 1] + (points[i * 2 + 3] - points[i * 2 + 1]) * f,
+    );
+  }
+
+  /// Baseline angle (radians) of the segment containing distance [d].
+  double angleAt(double d) {
+    final i = segmentAt(d);
+    return math.atan2(points[i * 2 + 3] - points[i * 2 + 1],
+        points[i * 2 + 2] - points[i * 2]);
+  }
+}
+
 /// A single label/icon placement candidate within a display tile,
 /// in logical tile coordinates (0..256).
 class SymbolInstance {
@@ -21,6 +68,13 @@ class SymbolInstance {
   /// [alongLine] is true.
   final double angle;
   final bool alongLine;
+
+  /// The line this anchor sits on (for curved text); null for point
+  /// placements.
+  final SymbolPath? path;
+
+  /// Distance of [anchor] along [path], in logical pixels.
+  final double pathDistance;
   final String text;
   final String? iconName;
   final double sortKey;
@@ -34,6 +88,8 @@ class SymbolInstance {
     required this.anchor,
     required this.angle,
     required this.alongLine,
+    this.path,
+    this.pathDistance = 0,
     required this.text,
     required this.iconName,
     required this.sortKey,
@@ -102,7 +158,8 @@ class SymbolLayouter {
         final placement = layer.placement.eval(ctx);
         final sortKey = layer.sortKey.eval(ctx);
 
-        void add(Offset anchor, double angle, bool alongLine) {
+        void add(Offset anchor, double angle, bool alongLine,
+            {SymbolPath? path, double pathDistance = 0}) {
           if (anchor.dx < -_buffer ||
               anchor.dy < -_buffer ||
               anchor.dx >= TileRasterizer.logicalTileSize + _buffer ||
@@ -115,6 +172,8 @@ class SymbolLayouter {
             anchor: anchor,
             angle: angle,
             alongLine: alongLine,
+            path: path,
+            pathDistance: pathDistance,
             text: text,
             iconName:
                 (iconName == null || iconName.isEmpty) ? null : iconName,
@@ -174,17 +233,29 @@ class SymbolLayouter {
     double offsetX,
     double offsetY,
     double spacing,
-    void Function(Offset anchor, double angle, bool alongLine) add,
+    void Function(Offset anchor, double angle, bool alongLine,
+            {SymbolPath? path, double pathDistance})
+        add,
   ) {
     if (part.length < 4) return;
-    // Total length in logical px.
+    // Transform into logical display-tile coordinates once; the path is
+    // shared by every anchor placed on it (and by the curved-text pass).
+    final n = part.length ~/ 2;
+    final points = Float32List(n * 2);
+    final cumulative = Float32List(n);
     var total = 0.0;
-    for (var i = 0; i + 3 < part.length; i += 2) {
-      final dx = (part[i + 2] - part[i]) * scale;
-      final dy = (part[i + 3] - part[i + 1]) * scale;
-      total += math.sqrt(dx * dx + dy * dy);
+    for (var i = 0; i < n; i++) {
+      points[i * 2] = part[i * 2] * scale + offsetX;
+      points[i * 2 + 1] = part[i * 2 + 1] * scale + offsetY;
+      if (i > 0) {
+        final dx = points[i * 2] - points[i * 2 - 2];
+        final dy = points[i * 2 + 1] - points[i * 2 - 1];
+        total += math.sqrt(dx * dx + dy * dy);
+      }
+      cumulative[i] = total;
     }
     if (total < 1) return;
+    final path = SymbolPath(points, cumulative);
 
     final targets = <double>[];
     if (!spacing.isFinite || spacing <= 0 || total < spacing) {
@@ -195,28 +266,9 @@ class SymbolLayouter {
       }
     }
 
-    var travelled = 0.0;
-    var t = 0;
-    for (var i = 0; i + 3 < part.length && t < targets.length; i += 2) {
-      final x0 = part[i] * scale + offsetX;
-      final y0 = part[i + 1] * scale + offsetY;
-      final x1 = part[i + 2] * scale + offsetX;
-      final y1 = part[i + 3] * scale + offsetY;
-      final segment = math.sqrt(
-          (x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
-      while (t < targets.length &&
-          targets[t] <= travelled + segment &&
-          segment > 0) {
-        final f = (targets[t] - travelled) / segment;
-        final angle = math.atan2(y1 - y0, x1 - x0);
-        add(
-          Offset(x0 + (x1 - x0) * f, y0 + (y1 - y0) * f),
-          angle,
-          true,
-        );
-        t++;
-      }
-      travelled += segment;
+    for (final d in targets) {
+      add(path.pointAt(d), path.angleAt(d), true,
+          path: path, pathDistance: d);
     }
   }
 

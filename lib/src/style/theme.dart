@@ -184,6 +184,12 @@ class SymbolThemeLayer extends ThemeLayer {
   final DoubleProp textPadding;
   final BoolProp textAllowOverlap;
   final BoolProp textOptional;
+
+  /// `text-max-angle`: maximum angle change (degrees) between adjacent
+  /// glyphs of curved line text; sharper labels are not placed.
+  final DoubleProp textMaxAngle;
+  final BoolProp textKeepUpright;
+  final StringProp textRotationAlignment; // auto | map | viewport
   final StringProp? iconImage;
   final DoubleProp iconSize;
   final StringProp iconAnchor;
@@ -219,6 +225,9 @@ class SymbolThemeLayer extends ThemeLayer {
     required this.textPadding,
     required this.textAllowOverlap,
     required this.textOptional,
+    required this.textMaxAngle,
+    required this.textKeepUpright,
+    required this.textRotationAlignment,
     required this.iconImage,
     required this.iconSize,
     required this.iconAnchor,
