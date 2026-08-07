@@ -1,0 +1,98 @@
+# Architecture
+
+`flutter_map_vector_tiles` is a clean-room rewrite of the ideas behind
+`vector_map_tiles`, designed for flutter_map ≥ 8 and modern Flutter
+(Impeller). It is a single self-contained package: MVT decoding, the
+MapLibre style engine, the tile pipeline and rendering all live here.
+
+## Data flow
+
+```
+style.json ──► StyleReader ──► Theme (compiled layers + expressions)
+                                  │
+camera ──► TileGrid (visible display tiles at floor(zoom))
+                                  │
+display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
+     │
+     ├─ TileStore (memory LRU of PreparedTile)
+     │      └─ miss: bytes ◄─ DiskCache ◄─ VectorTileProvider (network…)
+     │              └─ IsolatePool: decode MVT + filter per theme layer
+     │                             └─ PreparedTile (compact, transferable)
+     │
+     ├─ TileRasterizer: PreparedTile ─► ui.Picture ─► toImageSync (GPU)
+     │       one raster per *display* tile at tileSize·dpr, evaluated at
+     │       the display zoom (crisp overzoom via subdivision, not scaling)
+     │
+     └─ symbols: SymbolPlacer collects label/icon anchors per tile
+             └─ LabelLayer: per-frame screen-space pass, global collision
+                grid across all tiles, upright text under rotation
+```
+
+## Rendering model
+
+Geometry (background/fill/line) is rasterized **once** per display tile
+into a GPU-resident `ui.Image` via `Picture.toImageSync`; the per-frame
+cost of pan/zoom/rotate is just textured quads, like a raster tile layer.
+Between integer zooms the images scale (max 2×) exactly as raster maps
+do; on crossing a zoom level, new display tiles are rasterized from the
+already-decoded data tile, while the previous zoom's images are retained
+and drawn underneath until replacements are ready (no white flicker).
+
+Labels and icons are **not** baked into the tile images. They are drawn
+each frame in screen space:
+
+* text stays crisp at fractional zoom and upright under map rotation;
+* collision detection runs globally across tile borders, so labels never
+  duplicate or clip at tile seams;
+* fade transitions don't require re-rasterizing geometry.
+
+The whole layer is one `CustomPaint` — no per-tile widget churn, one
+repaint boundary. The painter applies the camera transform (translate ·
+rotate about the screen centre) itself; `MobileLayerTransformer` is not
+used.
+
+## Concurrency
+
+MVT decoding and per-layer feature filtering run on a small isolate pool
+with a priority queue (tiles closest to the camera centre first) and
+*silent* cancellation — a cancelled job never surfaces an exception.
+`PreparedTile` keeps geometry in `Float32List`s (tile-extent units) so
+isolate transfer is cheap, and only the feature properties referenced by
+the theme are retained.
+
+On web (no isolate support for this workload) the pool degrades to
+chunked event-loop execution.
+
+## Caching
+
+| layer | keyed by | bounded by |
+| --- | --- | --- |
+| memory: `PreparedTile` | data tile + theme id | entry count + bytes |
+| memory: raster `ui.Image` | display tile + int zoom + theme | entry count (images disposed on evict) |
+| disk: raw tile bytes | url hash | TTL + total size sweep |
+
+All caches are plain deterministic LRU implementations — no external
+cache framework. Every `ui.Image` has exactly one owner and is disposed
+on eviction or layer dispose; disposing the layer tears down isolates,
+pending requests and caches (verified by tests).
+
+## Style engine
+
+The style reader accepts real-world MapLibre/Mapbox GL styles and is
+deliberately tolerant: unknown layer types, unknown paint properties and
+unparseable expressions degrade per-layer (with a log), never failing the
+whole style. Expressions are compiled once into Dart closures; both the
+modern expression array syntax and the legacy filter syntax are
+supported. Sources are resolved through TileJSON when `url` is present,
+including `{key}` substitution.
+
+## What was deliberately changed vs. vector_map_tiles
+
+* one package instead of three (`vector_map_tiles`, `vector_tile_renderer`,
+  `executor_lib`), one rendering mode instead of three;
+* `stash` replaced by ~200 lines of deterministic cache code;
+* labels moved out of tile rasters into a global screen-space pass;
+* cancellation is a state, not an exception;
+* tile substitution (parent/child retention) is part of the core grid
+  logic instead of an afterthought;
+* `Picture.toImageSync` keeps rasters on the GPU (no async readback).

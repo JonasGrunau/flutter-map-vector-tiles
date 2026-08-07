@@ -1,0 +1,34 @@
+name: flutter_map_vector_tiles
+description: >-
+  Vector tiles for flutter_map: a clean, self-contained MapLibre-style
+  vector tile layer with isolate-based decoding, raster tile caching and
+  screen-space label collision.
+version: 0.1.0
+repository: https://github.com/JonasGrunau/flutter-map-vector-tiles
+issue_tracker: https://github.com/JonasGrunau/flutter-map-vector-tiles/issues
+topics:
+  - flutter-map
+  - vector-tiles
+  - maplibre
+  - maps
+  - mvt
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"
+  flutter: ">=3.27.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_map: ^8.2.0
+  http: ^1.2.0
+  latlong2: ^0.9.1
+  meta: ^1.11.0
+  path_provider: ^2.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter: {}
