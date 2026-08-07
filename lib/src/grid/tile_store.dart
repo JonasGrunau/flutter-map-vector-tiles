@@ -18,7 +18,11 @@ import '../provider/vector_tile_provider.dart';
 class TileStore {
   final VectorTileProvider provider;
   final TilePrepareExecutor executor;
-  final DiskCache? diskCache;
+
+  /// Mutable: the disk cache initializes asynchronously and is attached
+  /// to already-running stores once ready, so the map never rebuilds
+  /// (and blanks) just because the cache arrived.
+  DiskCache? diskCache;
 
   /// Per source-layer property keep-lists derived from the theme.
   final Map<String, Set<String>?> layerProperties;

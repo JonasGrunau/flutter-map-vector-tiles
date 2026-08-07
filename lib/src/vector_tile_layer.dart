@@ -108,7 +108,7 @@ class VectorTileLayer extends StatefulWidget {
 }
 
 class _VectorTileLayerState extends State<VectorTileLayer>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late TilePrepareExecutor _executor;
   DiskCache? _diskCache;
   final _stores = <String, TileStore>{};
@@ -117,10 +117,14 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// Tiles of other zoom levels kept until the current level is ready.
   final _retained = <TileKey, _DisplayTile>{};
 
+  /// Tiles with decoded data waiting to be rasterized, a few per frame.
+  final _rasterQueue = <_DisplayTile, _RasterJob>{};
+
   final _repaint = _RepaintNotifier();
   final _labelPainter = LabelPainter();
   PatternResolver? _patterns;
   late final Ticker _fadeTicker;
+  late final Ticker _rasterTicker;
   var _fading = false;
   int? _currentZoom;
   var _generation = 0;
@@ -130,6 +134,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     super.initState();
     _executor = TilePrepareExecutor(concurrency: widget.concurrency);
     _fadeTicker = createTicker(_onFadeTick);
+    _rasterTicker = createTicker(_pumpRasterQueue);
     _initCaches();
     _buildStores();
   }
@@ -152,7 +157,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         return;
       }
       _diskCache = cache;
-      _buildStores();
+      // Attach to the live stores instead of rebuilding them: a rebuild
+      // disposes every rendered tile, blanking the map moments after
+      // first paint.
+      for (final store in _stores.values) {
+        store.diskCache = cache;
+      }
     } catch (e) {
       widget.logger.warn('disk cache unavailable: $e');
     }
@@ -199,6 +209,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   }
 
   void _clearTiles() {
+    _rasterQueue.clear();
     for (final tile in _tiles.values) {
       tile.dispose();
     }
@@ -233,6 +244,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   @override
   void dispose() {
     _fadeTicker.dispose();
+    _rasterTicker.dispose();
     _clearTiles();
     for (final store in _stores.values) {
       store.dispose();
@@ -287,7 +299,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   void _pruneRetained(MapCamera camera, GridLayout layout) {
     if (_retained.isEmpty) return;
-    final allReady = _tiles.values.every((t) => t.state != _TileState.loading);
+    // The old level stays until the new one is rasterized AND fully
+    // faded in — dropping it mid-fade dips to the background color,
+    // which reads as a blink on every zoom level change.
+    final now = DateTime.now();
+    final allReady = _tiles.values.every((t) =>
+        t.state != _TileState.loading &&
+        t.fadeProgress(now, widget.tileFadeDuration) >= 1);
     final viewport = camera.pixelBounds;
     final toRemove = <TileKey>[];
     _retained.forEach((key, tile) {
@@ -337,7 +355,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         if (ancestor != null) provisionalSources[sourceId] = ancestor;
       }
       if (provisionalSources.isNotEmpty) {
-        _rasterize(tile, provisionalSources, provisional: true);
+        _enqueueRaster(tile, provisionalSources,
+            provisional: true, priority: priority);
       }
       for (final entry in pending.entries) {
         final prepared = await entry.value;
@@ -350,15 +369,58 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         tile.cancellation.isCancelled) {
       return;
     }
-    _rasterize(tile, sources, provisional: false);
+    _enqueueRaster(tile, sources, provisional: false, priority: priority);
   }
 
-  void _rasterize(
+  /// Rasterization happens on the UI thread (`Picture.toImageSync`), so
+  /// completed tiles are queued and processed within a per-frame time
+  /// budget instead of all at once — with warm caches a zoom-level
+  /// change completes every tile in the same instant, and rasterizing
+  /// ~20 tiles in one frame drops frames.
+  void _enqueueRaster(
+    _DisplayTile tile,
+    Map<String, PreparedTile> sources, {
+    required bool provisional,
+    required int priority,
+  }) {
+    if (tile.cancellation.isCancelled) return;
+    final existing = _rasterQueue[tile];
+    // Never replace a queued final raster with a provisional one.
+    if (existing != null && !existing.provisional && provisional) return;
+    _rasterQueue[tile] = _RasterJob(
+        sources: sources, provisional: provisional, priority: priority);
+    if (!_rasterTicker.isActive) _rasterTicker.start();
+  }
+
+  void _pumpRasterQueue(Duration _) {
+    final stopwatch = Stopwatch()..start();
+    var processed = 0;
+    // At least one tile per frame, more while within the time budget:
+    // the viewport centre comes first.
+    while (_rasterQueue.isNotEmpty &&
+        (processed == 0 || stopwatch.elapsedMicroseconds < 4000)) {
+      _DisplayTile? best;
+      _RasterJob? bestJob;
+      _rasterQueue.forEach((tile, job) {
+        if (bestJob == null || job.priority < bestJob!.priority) {
+          best = tile;
+          bestJob = job;
+        }
+      });
+      final tile = best!;
+      final job = _rasterQueue.remove(tile)!;
+      if (tile.cancellation.isCancelled) continue;
+      _rasterizeNow(tile, job.sources, provisional: job.provisional);
+      processed++;
+    }
+    if (_rasterQueue.isEmpty) _rasterTicker.stop();
+  }
+
+  void _rasterizeNow(
     _DisplayTile tile,
     Map<String, PreparedTile> sources, {
     required bool provisional,
   }) {
-    if (tile.cancellation.isCancelled) return;
     final styleZoom = _styleZoomOf(tile.key.z.toDouble());
     final data = DisplayTileData(displayKey: tile.key, sources: sources);
     final image = TileRasterizer.rasterize(
@@ -424,6 +486,18 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
 class _RepaintNotifier extends ChangeNotifier {
   void trigger() => notifyListeners();
+}
+
+class _RasterJob {
+  final Map<String, PreparedTile> sources;
+  final bool provisional;
+  final int priority;
+
+  const _RasterJob({
+    required this.sources,
+    required this.provisional,
+    required this.priority,
+  });
 }
 
 enum _TileState { loading, ready, empty }
@@ -551,8 +625,8 @@ class _VectorMapPainter extends CustomPainter {
     final sinR = math.sin(rotation);
     final placed = <PlacedSymbol>[];
 
-    for (final tile in state._tiles.values) {
-      if (tile.symbols.isEmpty) continue;
+    void addSymbols(_DisplayTile tile) {
+      if (tile.symbols.isEmpty) return;
       final rect = displayTileRect(tile.key, camera.zoom);
       final tileScale = rect.width / TileRasterizer.logicalTileSize;
       final d = rect.topLeft - worldCenter;
@@ -573,6 +647,17 @@ class _VectorMapPainter extends CustomPainter {
         ));
       }
     }
+
+    for (final tile in state._tiles.values) {
+      addSymbols(tile);
+    }
+    // While a zoom level change is in flight, keep the previous level's
+    // labels wherever the new level has no label data yet — otherwise
+    // every label blinks out for a few frames on zoom. Current-level
+    // symbols are added first, so they win collisions.
+    for (final retained in state._retained.values) {
+      if (_retainedSymbolsNeeded(retained)) addSymbols(retained);
+    }
     if (placed.isEmpty) return;
     state._labelPainter.paint(
       canvas: canvas,
@@ -581,6 +666,30 @@ class _VectorMapPainter extends CustomPainter {
       symbols: placed,
       sprites: state.widget.sprites,
     );
+  }
+
+  /// A retained tile keeps contributing labels while some overlapping
+  /// current tile has no label data yet (still loading, no provisional
+  /// symbols) — or when nothing of the current level overlaps it at all.
+  bool _retainedSymbolsNeeded(_DisplayTile retained) {
+    if (retained.symbols.isEmpty) return false;
+    var overlapsAny = false;
+    for (final current in state._tiles.values) {
+      if (!_tilesOverlap(retained.key, current.key)) continue;
+      overlapsAny = true;
+      if (current.symbols.isEmpty && current.state == _TileState.loading) {
+        return true;
+      }
+    }
+    return !overlapsAny;
+  }
+
+  static bool _tilesOverlap(TileKey a, TileKey b) {
+    if (a.z == b.z) return a.x == b.x && a.y == b.y;
+    final hi = a.z > b.z ? a : b;
+    final lo = a.z > b.z ? b : a;
+    final shift = hi.z - lo.z;
+    return (hi.x >> shift) == lo.x && (hi.y >> shift) == lo.y;
   }
 
   @override

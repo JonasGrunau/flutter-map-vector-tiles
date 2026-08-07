@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.1
+
+- 🐛 The map no longer blanks and reloads moments after first paint:
+  the async disk-cache initialization now attaches to the running tile
+  stores instead of rebuilding them (which disposed every rendered
+  tile).
+- 🐛 No more flash on zoom level changes: the previous level's imagery
+  is kept until the new tiles are rasterized *and* fully faded in —
+  it used to be dropped mid-fade, dipping to the background color.
+- 🐛 Labels no longer blink out on zoom level changes: the previous
+  level's labels keep drawing wherever the new level has no label data
+  yet (current-level labels win collisions as they arrive).
+- ⚡ Smoother zooming: tiles are rasterized through a priority queue
+  with a per-frame time budget (viewport centre first) instead of all
+  in one frame. With warm caches, a zoom change used to rasterize the
+  entire grid synchronously in a single frame, dropping frames.
+
 ## 0.4.0
 
 - ✈️ Offline support for recently visited places:
