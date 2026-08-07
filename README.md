@@ -161,7 +161,8 @@ PMTiles, …).
 
 ## 🎨 Style support
 
-**Layer types:** `background`, `fill`, `line`, `symbol`, `circle`
+**Layer types:** `background`, `fill` (incl. `fill-pattern`), `line`,
+`symbol` (incl. `text-variable-anchor` / `text-radial-offset`), `circle`
 (`fill-extrusion` renders as flat fill; `raster`, `hillshade`, `heatmap`
 and `sky` are skipped with a log line).
 
@@ -170,10 +171,10 @@ and `sky` are skipped with a log line).
 exponential, cubic-bezier), math, string & color operators, `let`/`var`,
 legacy filters, legacy `{stops}` functions and `{token}` templates.
 
-**Not (yet) supported:** 🚧 fill patterns, curved line text (line labels
-are placed straight at the local segment angle), `text-variable-anchor`,
-raster sources inside vector styles, and **web** (the disk cache and
-isolate pool are `dart:io`-based for now).
+**Not (yet) supported:** 🚧 curved line text (line labels are placed
+straight at the local segment angle), `line-pattern`, raster sources
+inside vector styles, and **web** (the disk cache and isolate pool are
+`dart:io`-based).
 
 ## 🏗️ Architecture
 

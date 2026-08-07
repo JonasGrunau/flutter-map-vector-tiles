@@ -80,6 +80,9 @@ class ThemeReader {
               : _color(parser, paint['fill-outline-color'],
                   const Color(0x00000000)),
           antialias: paint['fill-antialias'] != false,
+          pattern: paint['$prefix-pattern'] == null
+              ? null
+              : _string(parser, paint['$prefix-pattern'], ''),
         );
       case 'line':
         layer = LineThemeLayer(
@@ -130,17 +133,17 @@ class ThemeReader {
           spacing: _double(parser, layout['symbol-spacing'], 250),
           textField: _string(parser, layout['text-field'], ''),
           textSize: _double(parser, layout['text-size'], 16),
-          textFont: StringListProp(
-            layout['text-font'] == null
-                ? constExpr(null)
-                : parser.parse(layout['text-font']),
-            const ['Open Sans Regular'],
-          ),
+          textFont: _stringList(
+              parser, layout['text-font'], const ['Open Sans Regular']),
           textMaxWidth: _double(parser, layout['text-max-width'], 10),
           textLetterSpacing:
               _double(parser, layout['text-letter-spacing'], 0),
           textTransform: _string(parser, layout['text-transform'], 'none'),
           textAnchor: _string(parser, layout['text-anchor'], 'center'),
+          textVariableAnchor: layout['text-variable-anchor'] == null
+              ? null
+              : _stringList(parser, layout['text-variable-anchor'], const []),
+          textRadialOffset: _double(parser, layout['text-radial-offset'], 0),
           textOffset: NumListProp(
             layout['text-offset'] == null
                 ? constExpr(null)
@@ -224,6 +227,22 @@ class ThemeReader {
       return StringProp(_tokenExpr(parser, json), fallback);
     }
     return StringProp(parser.parse(json), fallback);
+  }
+
+  /// String-array layout properties (font stacks, anchor lists): a bare
+  /// array of strings whose head is not an expression operator is a
+  /// literal value, not an expression.
+  static StringListProp _stringList(
+      ExpressionParser parser, Object? json, List<String> fallback) {
+    if (json == null) return StringListProp(constExpr(null), fallback);
+    if (json is List &&
+        json.isNotEmpty &&
+        json.every((e) => e is String) &&
+        !ExpressionParser.operators.contains(json.first)) {
+      final list = json.cast<String>();
+      return StringListProp((_) => list, list);
+    }
+    return StringListProp(parser.parse(json), fallback);
   }
 
   static BoolProp _bool(ExpressionParser parser, Object? json, bool fallback) {

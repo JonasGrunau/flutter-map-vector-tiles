@@ -20,6 +20,23 @@ class ExpressionParser {
   bool referencesAllProperties = false;
   final List<String> warnings = [];
 
+  /// Every operator [_parseOp] understands. Used to disambiguate literal
+  /// string arrays (`['top', 'bottom']`, font stacks) from expressions.
+  static const operators = {
+    'literal', 'get', 'has', 'properties', 'id', 'geometry-type', 'zoom',
+    'let', 'var', '!', '==', '!=', '<', '<=', '>', '>=', 'all', 'any',
+    'case', 'match', 'coalesce', 'within', 'step', 'interpolate',
+    'interpolate-hcl', 'interpolate-lab', 'in', 'index-of', 'at', 'slice',
+    'length', 'to-string', 'to-number', 'to-boolean', 'to-color', 'typeof',
+    'string', 'number', 'boolean', 'object', 'array', 'image', 'format',
+    'concat', 'upcase', 'downcase', 'is-supported-script',
+    'resolved-locale', 'collator', 'rgb', 'rgba', 'to-rgba', '+', '*', '-',
+    '/', '%', '^', 'abs', 'ceil', 'floor', 'round', 'sqrt', 'ln', 'log2',
+    'log10', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'min', 'max',
+    'e', 'pi', 'ln2', 'feature-state', 'heatmap-density', 'line-progress',
+    'accumulated',
+  };
+
   Expr parse(Object? json) {
     if (json == null) return (_) => null;
     if (json is num) {
@@ -31,7 +48,9 @@ class ExpressionParser {
     if (json is List) {
       if (json.isEmpty) return _unsupported('empty expression');
       final op = json[0];
-      if (op is! String) return _unsupported('non-string operator $op');
+      // A bare array whose head is not a string (e.g. `[0, 0.6]` for
+      // text-offset) is a legacy literal value, not an expression.
+      if (op is! String) return (_) => json;
       return _parseOp(op, json);
     }
     return _unsupported('unrecognized expression $json');

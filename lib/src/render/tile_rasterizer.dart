@@ -8,6 +8,7 @@ import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
 import 'display_tile_data.dart';
+import 'pattern_resolver.dart';
 
 /// Renders the geometry layers (background/fill/line/circle) of one
 /// display tile into a GPU-resident [ui.Image].
@@ -27,6 +28,7 @@ class TileRasterizer {
     required DisplayTileData data,
     required double styleZoom,
     required double devicePixelRatio,
+    PatternResolver? patterns,
   }) {
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
@@ -40,6 +42,7 @@ class TileRasterizer {
       theme: theme,
       data: data,
       styleZoom: styleZoom,
+      patterns: patterns,
     );
 
     final picture = recorder.endRecording();
@@ -59,6 +62,7 @@ class TileRasterizer {
     required Theme theme,
     required DisplayTileData data,
     required double styleZoom,
+    PatternResolver? patterns,
   }) {
     var painted = false;
     final zoomCtx = EvalContext(zoom: styleZoom);
@@ -77,7 +81,7 @@ class TileRasterizer {
           );
           painted = true;
         case FillThemeLayer():
-          painted |= _paintFill(canvas, layer, data, styleZoom);
+          painted |= _paintFill(canvas, layer, data, styleZoom, patterns);
         case LineThemeLayer():
           painted |= _paintLine(canvas, layer, data, styleZoom);
         case CircleThemeLayer():
@@ -127,10 +131,14 @@ class TileRasterizer {
     FillThemeLayer layer,
     DisplayTileData data,
     double styleZoom,
+    PatternResolver? patterns,
   ) {
     var painted = false;
     final zoomCtx = EvalContext(zoom: styleZoom);
-    final constant = layer.color.isConstant && layer.opacity.isConstant;
+    final patternProp = layer.pattern;
+    final constant = patternProp == null &&
+        layer.color.isConstant &&
+        layer.opacity.isConstant;
     Paint? fillPaint;
     if (constant) {
       final color = _withOpacity(layer.color.eval(zoomCtx),
@@ -150,6 +158,24 @@ class TileRasterizer {
         geometryType: feature.geometryType,
         featureId: feature.id,
       );
+      if (patternProp != null && patterns != null) {
+        final name = patternProp.eval(ctx);
+        final image = name.isEmpty ? null : patterns.imageFor(name);
+        if (image != null) {
+          final opacity = layer.opacity.eval(ctx).clamp(0.0, 1.0);
+          if (opacity > 0) {
+            canvas.drawPath(
+              path,
+              _patternPaint(image, patterns.pixelRatio, opacity,
+                  data.displayKey, layer.antialias),
+            );
+            painted = true;
+          }
+          // Per spec, fill-pattern disables fill-color and outline.
+          return;
+        }
+        // Sprite missing: fall through to the color fill.
+      }
       final paint = fillPaint ??
           (Paint()
             ..color = _withOpacity(layer.color.eval(ctx),
@@ -332,6 +358,32 @@ class TileRasterizer {
       }
     }
     return result;
+  }
+
+  /// A paint that tiles [image] as a repeating pattern, anchored to the
+  /// world grid at the display zoom so patterns line up across tile
+  /// seams. The pattern keeps the sprite's logical size regardless of
+  /// overzoom.
+  static Paint _patternPaint(
+    ui.Image image,
+    double pixelRatio,
+    double opacity,
+    TileKey displayKey,
+    bool antialias,
+  ) {
+    final s = 1.0 / pixelRatio;
+    final w = image.width * s;
+    final h = image.height * s;
+    final tx = -((displayKey.x * logicalTileSize) % w);
+    final ty = -((displayKey.y * logicalTileSize) % h);
+    final matrix = Float64List.fromList(
+        [s, 0, 0, 0, 0, s, 0, 0, 0, 0, 1, 0, tx, ty, 0, 1]);
+    return Paint()
+      ..shader = ui.ImageShader(
+          image, ui.TileMode.repeated, ui.TileMode.repeated, matrix)
+      ..color = Color.fromRGBO(255, 255, 255, opacity)
+      ..filterQuality = FilterQuality.medium
+      ..isAntiAlias = antialias;
   }
 
   static StrokeCap _cap(String value) => switch (value) {

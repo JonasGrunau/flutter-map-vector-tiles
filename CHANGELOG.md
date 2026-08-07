@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0
+
+- ✨ `text-variable-anchor` + `text-radial-offset`: labels try alternate
+  anchors before being dropped on collision — dense areas keep far more
+  POI and place labels visible (matches MapLibre behaviour).
+- ✨ `fill-pattern` (and `fill-extrusion-pattern`): polygon fills render
+  repeating sprite patterns (wetlands, glaciers, pedestrian zones),
+  world-grid aligned across tile seams; missing sprites fall back to the
+  color fill.
+- 🐛 Bare literal arrays in style JSON (`text-offset: [0, 0.6]`,
+  `text-font: [...]`, `line-dasharray: [2, 1]`, anchor lists) were
+  mis-parsed as expressions and silently fell back to defaults —
+  affected font stacks and label offsets in most real styles.
+- `LabelPainter.paint` now returns the symbols that were actually drawn.
+
 ## 0.1.0
 
 Initial release. 🎉

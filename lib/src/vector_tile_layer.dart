@@ -18,6 +18,7 @@ import 'pipeline/executor/executor.dart';
 import 'pipeline/prepared_tile.dart';
 import 'render/display_tile_data.dart';
 import 'render/label_painter.dart';
+import 'render/pattern_resolver.dart';
 import 'render/symbol_layouter.dart';
 import 'render/tile_rasterizer.dart';
 import 'style/sprite_atlas.dart';
@@ -113,6 +114,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   final _repaint = _RepaintNotifier();
   final _labelPainter = LabelPainter();
+  PatternResolver? _patterns;
   late final Ticker _fadeTicker;
   var _fading = false;
   int? _currentZoom;
@@ -207,11 +209,21 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   @override
   void didUpdateWidget(covariant VectorTileLayer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.sprites != widget.sprites) {
+      _patterns?.dispose();
+      _patterns = null;
+    }
     if (oldWidget.theme != widget.theme ||
         oldWidget.tileProviders != widget.tileProviders ||
         oldWidget.tileOffset.zoomOffset != widget.tileOffset.zoomOffset) {
       _buildStores();
     }
+  }
+
+  PatternResolver? get _patternResolver {
+    final sprites = widget.sprites;
+    if (sprites == null) return null;
+    return _patterns ??= PatternResolver(sprites);
   }
 
   @override
@@ -224,6 +236,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _stores.clear();
     _executor.dispose();
     _labelPainter.dispose();
+    _patterns?.dispose();
     _repaint.dispose();
     super.dispose();
   }
@@ -352,6 +365,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       styleZoom: styleZoom,
       devicePixelRatio:
           MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0,
+      patterns: _patternResolver,
     );
     final symbols = widget.showLabels && sources.isNotEmpty
         ? SymbolLayouter.layout(

@@ -93,6 +93,10 @@ class FillThemeLayer extends ThemeLayer {
   final ColorProp? outlineColor;
   final bool antialias;
 
+  /// Sprite name for `fill-pattern`. When set (and the sprite resolves),
+  /// the pattern replaces the color fill and outline, per spec.
+  final StringProp? pattern;
+
   FillThemeLayer({
     required super.id,
     required super.source,
@@ -104,6 +108,7 @@ class FillThemeLayer extends ThemeLayer {
     required this.opacity,
     required this.outlineColor,
     required this.antialias,
+    this.pattern,
   });
 }
 
@@ -169,6 +174,12 @@ class SymbolThemeLayer extends ThemeLayer {
   final DoubleProp textLetterSpacing; // ems
   final StringProp textTransform; // none | uppercase | lowercase
   final StringProp textAnchor;
+
+  /// `text-variable-anchor`: ordered anchor candidates tried until one
+  /// fits without collision. When set, [textAnchor] and [textOffset] are
+  /// ignored and [textRadialOffset] is used instead, per spec.
+  final StringListProp? textVariableAnchor;
+  final DoubleProp textRadialOffset; // ems
   final NumListProp textOffset; // ems
   final DoubleProp textPadding;
   final BoolProp textAllowOverlap;
@@ -202,6 +213,8 @@ class SymbolThemeLayer extends ThemeLayer {
     required this.textLetterSpacing,
     required this.textTransform,
     required this.textAnchor,
+    this.textVariableAnchor,
+    required this.textRadialOffset,
     required this.textOffset,
     required this.textPadding,
     required this.textAllowOverlap,

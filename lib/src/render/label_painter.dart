@@ -31,7 +31,10 @@ class LabelPainter {
   final _textCache = LruCache<String, _LaidOutText>(maxEntries: 800);
 
   /// [styleZoom] is the fractional style zoom used for size expressions.
-  void paint({
+  ///
+  /// Returns the symbols that survived collision and were drawn, in
+  /// draw order — useful for tests and future hit-testing.
+  List<PlacedSymbol> paint({
     required Canvas canvas,
     required Size screenSize,
     required double styleZoom,
@@ -60,9 +63,12 @@ class LabelPainter {
     // Draw bottom style layers first so upper layers paint on top.
     toDraw.sort((a, b) => a.symbol.instance.layerIndex
         .compareTo(b.symbol.instance.layerIndex));
+    final drawn = <PlacedSymbol>[];
     for (final drawable in toDraw) {
       drawable.draw(canvas);
+      drawn.add(drawable.symbol);
     }
+    return drawn;
   }
 
   _DrawableSymbol? _prepare(
@@ -122,6 +128,15 @@ class LabelPainter {
 
     if (text == null && icon == null) return null;
 
+    // Variable anchors: try each candidate until one fits.
+    final variableAnchors = text != null && !instance.alongLine
+        ? layer.textVariableAnchor?.eval(ctx)
+        : null;
+    if (text != null && variableAnchors != null && variableAnchors.isNotEmpty) {
+      return _prepareVariableAnchor(
+          placed, layer, ctx, text, icon, variableAnchors, collision);
+    }
+
     // Compute collision boxes.
     final boxes = <Rect>[];
     var textRect = Rect.zero;
@@ -175,6 +190,60 @@ class LabelPainter {
       textRect: textRect,
       textAngle: angle,
     );
+  }
+
+  /// `text-variable-anchor` placement: anchors are tried in style order;
+  /// the first whose boxes fit the collision index wins. `text-offset`
+  /// is ignored in this mode; `text-radial-offset` applies per anchor.
+  _DrawableSymbol? _prepareVariableAnchor(
+    PlacedSymbol placed,
+    SymbolThemeLayer layer,
+    EvalContext ctx,
+    _LaidOutText text,
+    _DrawableIcon? icon,
+    List<String> anchors,
+    _CollisionIndex collision,
+  ) {
+    final padding = layer.textPadding.eval(ctx);
+    final radial = layer.textRadialOffset.eval(ctx) * text.fontSize;
+    final allowOverlap = layer.textAllowOverlap.eval(ctx);
+    for (final anchorName in anchors) {
+      final shifted = placed.screenAnchor + _radialShift(anchorName, radial);
+      final textRect = _anchoredRect(
+          anchorName, shifted, text.size.width, text.size.height);
+      final boxes = [
+        textRect.inflate(padding),
+        if (icon != null) icon.rect.inflate(2),
+      ];
+      if (allowOverlap || collision.tryPlaceAll(boxes)) {
+        return _DrawableSymbol(placed,
+            icon: icon, text: text, textRect: textRect);
+      }
+    }
+    if (icon != null &&
+        layer.textOptional.eval(ctx) &&
+        collision.tryPlaceAll([icon.rect.inflate(2)])) {
+      return _DrawableSymbol(placed, icon: icon);
+    }
+    return null;
+  }
+
+  /// Shift that moves the text box away from the anchor point by
+  /// [r] pixels, in the direction implied by the anchor name.
+  static Offset _radialShift(String anchorName, double r) {
+    if (r == 0) return Offset.zero;
+    const d = 0.7071067811865476; // 1/sqrt(2)
+    return switch (anchorName) {
+      'top' => Offset(0, r),
+      'bottom' => Offset(0, -r),
+      'left' => Offset(r, 0),
+      'right' => Offset(-r, 0),
+      'top-left' => Offset(r * d, r * d),
+      'top-right' => Offset(-r * d, r * d),
+      'bottom-left' => Offset(r * d, -r * d),
+      'bottom-right' => Offset(-r * d, -r * d),
+      _ => Offset.zero, // center
+    };
   }
 
   _LaidOutText _layoutText(
