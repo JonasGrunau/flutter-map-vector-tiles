@@ -188,6 +188,11 @@ PMTiles, …).
 `text-radial-offset`), `circle` (`fill-extrusion` renders as flat fill;
 `raster`, `hillshade`, `heatmap` and `sky` are skipped with a log line).
 
+**Icons:** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
+per `icon-color`, `icon-halo-color` and `icon-halo-width` — dark
+MapLibre styles ship their icons this way. Ordinary sprites are drawn
+with the colours baked into the sheet.
+
 Road labels curve glyph-by-glyph along their line with MapLibre
 semantics: `text-max-angle` rejects labels on sharp bends,
 `text-keep-upright` flips reading direction, and

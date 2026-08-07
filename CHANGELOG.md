@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.0.0
+
+First stable release: the public API is now considered settled and will
+follow semantic versioning from here.
+
+- ✨ `icon-color`, `icon-halo-color` and `icon-halo-width` are supported
+  for SDF sprite sheets (see the rendering fix below).
+- 🐛 The map no longer shakes while zooming and no longer slides out
+  from under its labels while dragging. Tile rectangles are now made
+  camera-relative in Dart before they reach the canvas: world pixel
+  coordinates pass 2^24 around zoom 16, and the canvas transform is
+  float32, so absolute coordinates were snapping the imagery onto a
+  grid — 0.25 px at zoom 14, but 4 px at zoom 18 and 16 px at zoom 20.
+  The label pass does its own float64 arithmetic, so the two drifted
+  apart. This is why the artifacts only appeared when heavily zoomed
+  in.
+- 🐛 SDF sprites are rendered correctly instead of as dark blobs.
+  Sheets flagged `"sdf": true` store a distance field in the alpha
+  channel over flat RGB; they were being blitted directly, which
+  painted the raw field. They are now thresholded and tinted, adding
+  support for `icon-color`, `icon-halo-color` and `icon-halo-width`.
+  Ordinary sprites are unaffected. Dark MapLibre styles are typically
+  entirely SDF, which is why icons looked correct in light styles and
+  wrong in dark ones.
+- 🐛 `text-opacity` is now applied. Labels the style fades out are also
+  no longer laid out at all, so they stop reserving collision space and
+  suppressing the visible labels around them.
+
 ## 0.4.1
 
 - 🐛 The map no longer blanks and reloads moments after first paint:

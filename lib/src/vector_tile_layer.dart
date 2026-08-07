@@ -12,6 +12,7 @@ import 'cache/disk_cache.dart';
 import 'core/cancellation.dart';
 import 'core/tile_key.dart';
 import 'grid/grid_layout.dart';
+import 'grid/tile_retention.dart';
 import 'grid/tile_store.dart';
 import 'logger.dart';
 import 'pipeline/executor/executor.dart';
@@ -297,15 +298,20 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _pruneRetained(camera, layout);
   }
 
+  /// The current-level tiles, described for the retention rules in
+  /// `grid/tile_retention.dart`.
+  Iterable<CurrentTileStatus> _currentStatuses(DateTime now) =>
+      _tiles.values.map((t) => (
+            key: t.key,
+            isLoading: t.state == _TileState.loading,
+            hasSymbols: t.symbols.isNotEmpty,
+            isFadedIn: t.fadeProgress(now, widget.tileFadeDuration) >= 1,
+          ));
+
   void _pruneRetained(MapCamera camera, GridLayout layout) {
     if (_retained.isEmpty) return;
-    // The old level stays until the new one is rasterized AND fully
-    // faded in — dropping it mid-fade dips to the background color,
-    // which reads as a blink on every zoom level change.
     final now = DateTime.now();
-    final allReady = _tiles.values.every((t) =>
-        t.state != _TileState.loading &&
-        t.fadeProgress(now, widget.tileFadeDuration) >= 1);
+    final allReady = currentLevelReady(_currentStatuses(now));
     final viewport = camera.pixelBounds;
     final toRemove = <TileKey>[];
     _retained.forEach((key, tile) {
@@ -427,7 +433,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       theme: widget.theme,
       data: data,
       styleZoom: styleZoom,
-      devicePixelRatio: MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0,
+      devicePixelRatio: _devicePixelRatio,
       patterns: _patternResolver,
     );
     final symbols = widget.showLabels && sources.isNotEmpty
@@ -468,6 +474,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
   }
 
+  double get _devicePixelRatio =>
+      MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
+
   @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
@@ -478,6 +487,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       painter: _VectorMapPainter(
         state: this,
         camera: camera,
+        devicePixelRatio: _devicePixelRatio,
         repaint: _repaint,
       ),
     );
@@ -551,10 +561,12 @@ class _DisplayTile {
 class _VectorMapPainter extends CustomPainter {
   final _VectorTileLayerState state;
   final MapCamera camera;
+  final double devicePixelRatio;
 
   _VectorMapPainter({
     required this.state,
     required this.camera,
+    required this.devicePixelRatio,
     required Listenable repaint,
   }) : super(repaint: repaint);
 
@@ -570,22 +582,28 @@ class _VectorMapPainter extends CustomPainter {
       canvas.drawRect(Offset.zero & size, Paint()..color = background);
     }
 
-    // 2. Geometry rasters in map space.
+    // 2. Geometry rasters in map space. Tile rectangles are made
+    // relative to the camera centre in Dart (float64) *before* they
+    // reach the canvas: world pixel coordinates pass 2^24 around zoom
+    // 16, and the canvas transform is float32, so absolute coordinates
+    // would snap tiles onto a 2-8 px grid. That snapping is what reads
+    // as the map shaking while zooming, and — because the label pass
+    // below does its own float64 arithmetic — as the imagery sliding
+    // out from under the labels while panning.
     final screenCenter = size.center(Offset.zero);
     final worldCenter = camera.projectAtZoom(camera.center, camera.zoom);
     canvas.save();
     canvas.translate(screenCenter.dx, screenCenter.dy);
     if (camera.rotation != 0) canvas.rotate(camera.rotationRad);
-    canvas.translate(-worldCenter.dx, -worldCenter.dy);
 
     final retained = state._retained.entries.toList()
       ..sort((a, b) => a.key.z.compareTo(b.key.z));
     for (final entry in retained) {
-      _drawTileImage(canvas, entry.value, 1);
+      _drawTileImage(canvas, entry.value, 1, worldCenter);
     }
     for (final tile in state._tiles.values) {
-      _drawTileImage(
-          canvas, tile, tile.fadeProgress(now, state.widget.tileFadeDuration));
+      _drawTileImage(canvas, tile,
+          tile.fadeProgress(now, state.widget.tileFadeDuration), worldCenter);
     }
     canvas.restore();
 
@@ -595,10 +613,11 @@ class _VectorMapPainter extends CustomPainter {
     }
   }
 
-  void _drawTileImage(Canvas canvas, _DisplayTile tile, double opacity) {
+  void _drawTileImage(
+      Canvas canvas, _DisplayTile tile, double opacity, Offset worldCenter) {
     final image = tile.image;
     if (image == null || opacity <= 0) return;
-    final rect = displayTileRect(tile.key, camera.zoom);
+    final rect = displayTileRect(tile.key, camera.zoom).shift(-worldCenter);
     final paint = Paint()
       ..filterQuality = FilterQuality.medium
       ..isAntiAlias = false;
@@ -655,8 +674,15 @@ class _VectorMapPainter extends CustomPainter {
     // labels wherever the new level has no label data yet — otherwise
     // every label blinks out for a few frames on zoom. Current-level
     // symbols are added first, so they win collisions.
+    final current = state._currentStatuses(DateTime.now()).toList();
     for (final retained in state._retained.values) {
-      if (_retainedSymbolsNeeded(retained)) addSymbols(retained);
+      if (retainedSymbolsNeeded(
+        retainedKey: retained.key,
+        hasSymbols: retained.symbols.isNotEmpty,
+        current: current,
+      )) {
+        addSymbols(retained);
+      }
     }
     if (placed.isEmpty) return;
     state._labelPainter.paint(
@@ -665,34 +691,13 @@ class _VectorMapPainter extends CustomPainter {
       styleZoom: styleZoom,
       symbols: placed,
       sprites: state.widget.sprites,
+      devicePixelRatio: devicePixelRatio,
     );
-  }
-
-  /// A retained tile keeps contributing labels while some overlapping
-  /// current tile has no label data yet (still loading, no provisional
-  /// symbols) — or when nothing of the current level overlaps it at all.
-  bool _retainedSymbolsNeeded(_DisplayTile retained) {
-    if (retained.symbols.isEmpty) return false;
-    var overlapsAny = false;
-    for (final current in state._tiles.values) {
-      if (!_tilesOverlap(retained.key, current.key)) continue;
-      overlapsAny = true;
-      if (current.symbols.isEmpty && current.state == _TileState.loading) {
-        return true;
-      }
-    }
-    return !overlapsAny;
-  }
-
-  static bool _tilesOverlap(TileKey a, TileKey b) {
-    if (a.z == b.z) return a.x == b.x && a.y == b.y;
-    final hi = a.z > b.z ? a : b;
-    final lo = a.z > b.z ? b : a;
-    final shift = hi.z - lo.z;
-    return (hi.x >> shift) == lo.x && (hi.y >> shift) == lo.y;
   }
 
   @override
   bool shouldRepaint(covariant _VectorMapPainter oldDelegate) =>
-      oldDelegate.camera != camera || oldDelegate.state != state;
+      oldDelegate.camera != camera ||
+      oldDelegate.state != state ||
+      oldDelegate.devicePixelRatio != devicePixelRatio;
 }

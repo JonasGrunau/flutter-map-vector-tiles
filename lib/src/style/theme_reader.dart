@@ -173,6 +173,11 @@ class ThemeReader {
           textHaloWidth: _double(parser, paint['text-halo-width'], 0),
           textOpacity: _double(parser, paint['text-opacity'], 1),
           iconOpacity: _double(parser, paint['icon-opacity'], 1),
+          iconColor:
+              _color(parser, paint['icon-color'], const Color(0xff000000)),
+          iconHaloColor:
+              _color(parser, paint['icon-halo-color'], const Color(0x00000000)),
+          iconHaloWidth: _double(parser, paint['icon-halo-width'], 0),
         );
       case 'raster':
       case 'hillshade':

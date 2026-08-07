@@ -64,12 +64,15 @@ class LabelPainter {
   ///
   /// Returns the symbols that survived collision and were drawn, in
   /// draw order — useful for tests and future hit-testing.
+  /// [devicePixelRatio] only sharpens SDF icon edges; it does not scale
+  /// anything, so 1 is a safe default.
   List<PlacedSymbol> paint({
     required Canvas canvas,
     required Size screenSize,
     required double styleZoom,
     required List<PlacedSymbol> symbols,
     SpriteAtlas? sprites,
+    double devicePixelRatio = 1,
   }) {
     final collision = _CollisionIndex(screenSize);
     // Placement priority: topmost style layers first (they win space),
@@ -94,7 +97,7 @@ class LabelPainter {
         a.symbol.instance.layerIndex.compareTo(b.symbol.instance.layerIndex));
     final drawn = <PlacedSymbol>[];
     for (final drawable in toDraw) {
-      drawable.draw(canvas);
+      drawable.draw(canvas, devicePixelRatio);
       drawn.add(drawable.symbol);
     }
     return drawn;
@@ -125,8 +128,11 @@ class LabelPainter {
       return null;
     }
 
+    // A label the style has faded out is skipped rather than laid out:
+    // reserving collision space for invisible text would suppress the
+    // visible labels around it.
     _LaidOutText? text;
-    if (instance.text.isNotEmpty) {
+    if (instance.text.isNotEmpty && layer.textOpacity.eval(ctx) > 0) {
       text = _layoutText(instance, layer, ctx);
     }
 
@@ -150,6 +156,12 @@ class LabelPainter {
             sprite: sprite,
             rect: rect,
             opacity: opacity,
+            // Only SDF sheets are recolourable; ordinary sprites already
+            // carry their own colours.
+            tint: sprite.sdf ? layer.iconColor.eval(ctx) : null,
+            haloColor: sprite.sdf ? layer.iconHaloColor.eval(ctx) : null,
+            haloWidth: sprite.sdf ? layer.iconHaloWidth.eval(ctx) : 0,
+            iconSize: iconSize,
           );
         }
       }
@@ -446,8 +458,11 @@ class LabelPainter {
     EvalContext ctx,
   ) {
     final fontSize = layer.textSize.eval(ctx).clamp(4.0, 96.0);
-    final color = layer.textColor.eval(ctx);
-    final haloColor = layer.textHaloColor.eval(ctx);
+    // `text-opacity` is folded into the colours, so it lands in the
+    // cache key below along with them.
+    final opacity = layer.textOpacity.eval(ctx).clamp(0.0, 1.0);
+    final color = _withOpacity(layer.textColor.eval(ctx), opacity);
+    final haloColor = _withOpacity(layer.textHaloColor.eval(ctx), opacity);
     final haloWidth = layer.textHaloWidth.eval(ctx).clamp(0.0, 8.0);
     final fonts = layer.textFont.eval(ctx);
     final letterSpacingEm = layer.textLetterSpacing.eval(ctx);
@@ -593,6 +608,9 @@ class LabelPainter {
     return a;
   }
 
+  static Color _withOpacity(Color color, double opacity) =>
+      opacity >= 1 ? color : color.withValues(alpha: color.a * opacity);
+
   static Rect _rotatedBounds(Rect rect, Offset pivot, double angle) {
     final cosA = math.cos(angle).abs();
     final sinA = math.sin(angle).abs();
@@ -690,17 +708,89 @@ class _CurvedGlyph {
 }
 
 class _DrawableIcon {
+  /// MapLibre's `symbol_sdf` encoding: the alpha channel ramps across 8
+  /// atlas texels and the shape's edge sits at 6/8 of the range. A halo
+  /// of width `w` (in `icon-size` units) simply moves the cutoff `w`
+  /// texels further out.
+  static const double _sdfTexels = 8;
+  static const double _sdfEdge = 6 / _sdfTexels;
+
   final SpriteAtlas atlas;
   final Sprite sprite;
   final Rect rect;
   final double opacity;
+
+  /// `icon-color`, for SDF sprites only; null draws the sprite as-is.
+  final Color? tint;
+  final Color? haloColor;
+  final double haloWidth;
+
+  /// `icon-size`, which `icon-halo-width` is measured relative to.
+  final double iconSize;
 
   const _DrawableIcon({
     required this.atlas,
     required this.sprite,
     required this.rect,
     required this.opacity,
+    this.tint,
+    this.haloColor,
+    this.haloWidth = 0,
+    this.iconSize = 1,
   });
+
+  void draw(Canvas canvas, double devicePixelRatio) {
+    final color = tint;
+    if (color == null) {
+      canvas.drawImageRect(
+        atlas.image,
+        sprite.sourceRect,
+        rect,
+        Paint()
+          ..filterQuality = FilterQuality.medium
+          ..color = Color.fromRGBO(255, 255, 255, opacity),
+      );
+      return;
+    }
+    final halo = haloColor;
+    if (halo != null && halo.a > 0 && haloWidth > 0) {
+      canvas.drawImageRect(
+        atlas.image,
+        sprite.sourceRect,
+        rect,
+        _sdfPaint(
+          halo,
+          ((6 - haloWidth / iconSize) / _sdfTexels).clamp(0.0, _sdfEdge),
+          devicePixelRatio,
+        ),
+      );
+    }
+    canvas.drawImageRect(atlas.image, sprite.sourceRect, rect,
+        _sdfPaint(color, _sdfEdge, devicePixelRatio));
+  }
+
+  /// Thresholds the distance field at [edge] and tints what survives
+  /// with [color]. A colour matrix is applied *after* texture sampling,
+  /// so the threshold lands on interpolated distances and the edge stays
+  /// crisp at any scale — the same reason MapLibre does this in a
+  /// fragment shader. The ramp is steepened to span roughly one device
+  /// pixel at the size this icon is drawn, which is what antialiases it.
+  Paint _sdfPaint(Color color, double edge, double devicePixelRatio) {
+    final drawnPerTexel = rect.width * devicePixelRatio / sprite.width;
+    final slope = (_sdfTexels * drawnPerTexel).clamp(4.0, 128.0);
+    final shift = 0.5 - edge * slope;
+    return Paint()
+      // Bilinear only: mipmaps blur the field, which erodes the shape.
+      ..filterQuality = FilterQuality.low
+      ..color =
+          Color.fromRGBO(255, 255, 255, (opacity * color.a).clamp(0.0, 1.0))
+      ..colorFilter = ColorFilter.matrix(<double>[
+        0, 0, 0, 0, color.r * 255, //
+        0, 0, 0, 0, color.g * 255, //
+        0, 0, 0, 0, color.b * 255, //
+        0, 0, 0, slope, shift * 255, //
+      ]);
+  }
 }
 
 class _DrawableSymbol {
@@ -720,14 +810,8 @@ class _DrawableSymbol {
     this.curvedGlyphs,
   });
 
-  void draw(Canvas canvas) {
-    final i = icon;
-    if (i != null) {
-      final paint = Paint()
-        ..filterQuality = FilterQuality.medium
-        ..color = Color.fromRGBO(255, 255, 255, i.opacity);
-      canvas.drawImageRect(i.atlas.image, i.sprite.sourceRect, i.rect, paint);
-    }
+  void draw(Canvas canvas, double devicePixelRatio) {
+    icon?.draw(canvas, devicePixelRatio);
     final glyphs = curvedGlyphs;
     if (glyphs != null) {
       // All halos first: a glyph's halo must never cut into its

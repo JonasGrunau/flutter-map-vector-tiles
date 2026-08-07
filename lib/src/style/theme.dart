@@ -202,6 +202,12 @@ class SymbolThemeLayer extends ThemeLayer {
   final DoubleProp textOpacity;
   final DoubleProp iconOpacity;
 
+  /// `icon-color`/`icon-halo-*` only apply to SDF sprites (see
+  /// [Sprite.sdf]); ordinary sprites carry their own colours.
+  final ColorProp iconColor;
+  final ColorProp iconHaloColor;
+  final DoubleProp iconHaloWidth;
+
   SymbolThemeLayer({
     required super.id,
     required super.source,
@@ -238,5 +244,8 @@ class SymbolThemeLayer extends ThemeLayer {
     required this.textHaloWidth,
     required this.textOpacity,
     required this.iconOpacity,
+    required this.iconColor,
+    required this.iconHaloColor,
+    required this.iconHaloWidth,
   });
 }

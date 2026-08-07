@@ -32,6 +32,7 @@ class SpriteAtlas {
             width: w.toDouble(),
             height: h.toDouble(),
             pixelRatio: (v['pixelRatio'] as num?)?.toDouble() ?? 1,
+            sdf: v['sdf'] == true,
           );
         }
       }
@@ -47,12 +48,21 @@ class Sprite {
   final double height;
   final double pixelRatio;
 
+  /// Whether the sheet stores this image as a signed distance field
+  /// (`"sdf": true` in the index). SDF sprites carry their shape in the
+  /// alpha channel — the sheet's RGB is a single flat colour — and must
+  /// be thresholded and tinted with `icon-color`. Blitting one directly
+  /// paints the raw field: a fuzzy silhouette in the sheet's flat
+  /// colour, which on dark styles reads as a dark blob.
+  final bool sdf;
+
   const Sprite({
     required this.x,
     required this.y,
     required this.width,
     required this.height,
     required this.pixelRatio,
+    this.sdf = false,
   });
 
   ui.Rect get sourceRect => ui.Rect.fromLTWH(x, y, width, height);
