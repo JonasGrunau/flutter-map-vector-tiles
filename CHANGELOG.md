@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0
+
+- ✈️ Offline support for recently visited places:
+  - `StyleReader` now caches the style bundle (style.json, TileJSON,
+    sprites) on disk with stale-while-revalidate: the cached copy is
+    served instantly — including fully offline — and refreshed in the
+    background once older than `refreshAfter` (12 h default). Opt out
+    with `cache: false`.
+  - Tiles: when a network fetch fails, an expired disk-cache entry is
+    served instead of a blank tile. `diskCacheTtl` is now a freshness
+    window — stale tiles are kept (up to the size cap, evicted oldest
+    first) as the offline fallback instead of being deleted by age.
+  - The default cache folder moved from the system temp directory to
+    the application support directory, which the OS doesn't purge.
+    Existing temp-dir caches are simply abandoned and refetched once.
+
 ## 0.3.0
 
 - ✨ Curved line text: road labels now follow their line glyph by glyph,

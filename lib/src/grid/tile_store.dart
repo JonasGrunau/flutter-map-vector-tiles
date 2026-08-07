@@ -128,8 +128,13 @@ class TileStore {
       } else if (response is TileResponseCancelled) {
         return null;
       } else {
-        _failedAt[dataKey] = DateTime.now();
-        return null;
+        // Network failure: serve an expired cache entry if one exists —
+        // stale map data beats a blank map when offline.
+        bytes = await diskCache?.getStale(cacheKey);
+        if (bytes == null) {
+          _failedAt[dataKey] = DateTime.now();
+          return null;
+        }
       }
     }
 

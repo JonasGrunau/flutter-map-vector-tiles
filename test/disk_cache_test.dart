@@ -33,6 +33,49 @@ void main() {
     expect(await cache.get('k'), null);
   });
 
+  test('expired entries stay readable via getStale', () async {
+    final cache =
+        DiskCache(directory: dir, ttl: const Duration(milliseconds: 1));
+    await cache.initialize();
+    await cache.put('k', Uint8List.fromList([7]));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(await cache.get('k'), null);
+    expect((await cache.getStale('k'))!.first, 7);
+    // A repeated fresh get must not have deleted the file.
+    expect((await cache.getStale('k'))!.first, 7);
+    expect(await cache.getStale('missing'), null);
+  });
+
+  test('sweep keeps expired entries while under the size cap', () async {
+    final cache = DiskCache(
+      directory: dir,
+      ttl: const Duration(milliseconds: 1),
+      maxSizeBytes: 1024,
+    );
+    await cache.initialize();
+    await cache.put('k', Uint8List.fromList([1, 2, 3]));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    // Force enough writes to trigger an opportunistic sweep.
+    for (var i = 0; i < 10; i++) {
+      await cache.put('other$i', Uint8List.fromList(List.filled(20, i)));
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect((await cache.getStale('k'))!.first, 1);
+  });
+
+  test('size sweep evicts oldest entries first', () async {
+    final cache = DiskCache(directory: dir, maxSizeBytes: 300);
+    await cache.initialize();
+    await cache.put('old', Uint8List.fromList(List.filled(200, 1)));
+    // Ensure a strictly older mtime for the first entry.
+    await Future<void>.delayed(const Duration(milliseconds: 1100));
+    await cache.put('new', Uint8List.fromList(List.filled(200, 2)));
+    // Writes exceeded the cap; sweep runs opportunistically.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(await cache.getStale('old'), null);
+    expect((await cache.getStale('new'))!.first, 2);
+  });
+
   test('different keys use different files', () async {
     final cache = DiskCache(directory: dir);
     await cache.initialize();

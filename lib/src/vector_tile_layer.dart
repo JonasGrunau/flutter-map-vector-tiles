@@ -64,11 +64,16 @@ class VectorTileLayer extends StatefulWidget {
   /// caching.
   final int diskCacheMaximumSizeInBytes;
 
-  /// Time-to-live for disk-cached tiles. Mind your tile provider's terms.
+  /// Freshness window for disk-cached tiles: tiles younger than this are
+  /// served without touching the network. Older tiles are refetched, but
+  /// kept on disk (up to the size cap) and served when the network is
+  /// unavailable. Mind your tile provider's terms.
   final Duration diskCacheTtl;
 
   /// Resolves the disk cache folder; defaults to a subdirectory of the
-  /// system temporary directory.
+  /// application support directory, which — unlike the temporary
+  /// directory — the OS does not purge, so recently viewed areas stay
+  /// available offline.
   final Future<Directory> Function()? cacheFolder;
 
   /// Memory budget for decoded tile data, per source.
@@ -134,7 +139,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     try {
       final dir = widget.cacheFolder != null
           ? await widget.cacheFolder!()
-          : Directory('${(await getTemporaryDirectory()).path}'
+          : Directory('${(await getApplicationSupportDirectory()).path}'
               '${Platform.pathSeparator}flutter_map_vector_tiles');
       final cache = DiskCache(
         directory: dir,

@@ -4,10 +4,13 @@ import 'dart:typed_data';
 
 import '../logger.dart';
 
-/// A byte cache on disk with TTL and a size cap.
+/// A byte cache on disk with a freshness TTL and a size cap.
 ///
 /// Entries are single files named by an FNV-1a hash of the key; freshness
-/// uses the file's modification time. A size sweep runs opportunistically
+/// uses the file's modification time. [get] only returns entries within
+/// [ttl]; older entries are *kept* and remain readable via [getStale] so
+/// callers can fall back to them when the network is unavailable. The
+/// size cap is what actually deletes data: a sweep runs opportunistically
 /// after writes and deletes the oldest files first. There is no index
 /// file to corrupt — the filesystem is the index.
 class DiskCache {
@@ -38,16 +41,26 @@ class DiskCache {
   File _fileFor(String key) =>
       File('${directory.path}${Platform.pathSeparator}${_fnv1a(key)}.bin');
 
+  /// Returns the entry if it is fresher than [ttl], else null. Expired
+  /// entries are left in place for [getStale].
   Future<Uint8List?> get(String key) async {
     try {
       final file = _fileFor(key);
       final stat = await file.stat();
       if (stat.type == FileSystemEntityType.notFound) return null;
-      if (DateTime.now().difference(stat.modified) > ttl) {
-        unawaited(file.delete().catchError((_) => file));
-        return null;
-      }
+      if (DateTime.now().difference(stat.modified) > ttl) return null;
       return await file.readAsBytes();
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// Returns the entry regardless of age — the offline fallback when a
+  /// network fetch fails.
+  Future<Uint8List?> getStale(String key) async {
+    try {
+      final file = _fileFor(key);
+      return await file.exists() ? await file.readAsBytes() : null;
     } catch (e) {
       return null;
     }
@@ -70,23 +83,19 @@ class DiskCache {
     }
   }
 
-  /// Deletes expired entries, then oldest entries until under the cap.
+  /// Deletes the oldest entries until the cache is under the size cap.
+  /// Age alone never deletes: stale entries are the offline safety net.
   Future<void> _sweep() => _sweepInFlight ??= _doSweep().whenComplete(() {
         _sweepInFlight = null;
       });
 
   Future<void> _doSweep() async {
     try {
-      final now = DateTime.now();
       final files = <({File file, DateTime modified, int size})>[];
       await for (final entity in directory.list()) {
         if (entity is! File || !entity.path.endsWith('.bin')) continue;
         final stat = await entity.stat();
-        if (now.difference(stat.modified) > ttl) {
-          await entity.delete().catchError((_) => entity);
-        } else {
-          files.add((file: entity, modified: stat.modified, size: stat.size));
-        }
+        files.add((file: entity, modified: stat.modified, size: stat.size));
       }
       var total = files.fold(0, (sum, f) => sum + f.size);
       if (total <= maxSizeBytes) return;

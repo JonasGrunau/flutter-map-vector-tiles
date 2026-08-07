@@ -25,7 +25,8 @@ your other layers; this package only draws the map. 🎯
 | 🌫️ **No white flashes** | New tiles fade in while ancestor imagery is kept underneath; fast zoom-ins render instantly from already-decoded parent tiles |
 | 🎚️ **Correct MapLibre zoom semantics** | The default `TileOffset.maplibre` renders 512px-convention styles *exactly* as their authors designed them |
 | 🧵 **Isolate pipeline** | Tiles are decoded & trimmed on a worker-isolate pool, viewport-centre first; cancellation is a state, **never an exception** in your crash reporting |
-| 💾 **Deterministic caching** | LRU memory caches with byte budgets + a TTL/size-capped disk cache with no index files to corrupt; every `ui.Image` is disposed on eviction |
+| 💾 **Deterministic caching** | LRU memory caches with byte budgets + a size-capped disk cache with no index files to corrupt; every `ui.Image` is disposed on eviction |
+| ✈️ **Works offline** | The style bundle and recently viewed tiles are cached on disk: places you visited keep rendering with no network at all |
 | 🛡️ **Tolerant style reader** | Unknown layer types and exotic expressions degrade per-layer with a warning — one weird layer never kills your whole map |
 
 ## 🚀 Quick start
@@ -35,7 +36,7 @@ your other layers; this package only draws the map. 🎯
 ```yaml
 dependencies:
   flutter_map: ^8.2.0
-  flutter_map_vector_tiles: ^0.3.0
+  flutter_map_vector_tiles: ^0.4.0
 ```
 
 ### 2. Load a style & drop in the layer
@@ -120,8 +121,8 @@ vt.VectorTileLayer(
 | `tileOffset` | `TileOffset.maplibre` | zoom relation between map and style — see below 👇 |
 | `concurrency` | `3` | worker isolates decoding tiles off the UI thread |
 | `diskCacheMaximumSizeInBytes` | 50 MB | `0` disables disk caching |
-| `diskCacheTtl` | 14 days | ⚠️ respect your tile provider's terms |
-| `cacheFolder` | system temp | supply your own directory to control/clear it |
+| `diskCacheTtl` | 14 days | freshness window: younger tiles skip the network; older ones are refetched but kept as offline fallback — ⚠️ respect your tile provider's terms |
+| `cacheFolder` | app support dir | supply your own directory to control/clear it |
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source |
 | `tileFadeDuration` | 150 ms | `Duration.zero` disables fade-in |
 | `showLabels` | `true` | disables the whole symbol pass when `false` |
@@ -137,6 +138,27 @@ authored against that convention.
 - `TileOffset.none` — evaluates the style at flutter_map's zoom directly;
   everything appears one zoom earlier/larger (the legacy
   `vector_map_tiles` default, if you need visual parity with it).
+
+## ✈️ Offline behaviour
+
+Everything you looked at recently keeps working without network:
+
+- **Style bundle** — `StyleReader` caches style.json, TileJSON and
+  sprites on disk (stale-while-revalidate): the cached copy is served
+  instantly — including fully offline — and refreshed in the background
+  once older than `refreshAfter` (12 h default). Opt out with
+  `StyleReader(cache: false)`.
+- **Tiles** — served from the disk cache while fresh; when a network
+  fetch fails, an expired cached tile is served instead of a blank one.
+  Stale tiles are only ever deleted by the size cap (oldest first),
+  never by age alone.
+- **Durable location** — both caches default to the application support
+  directory, which the OS doesn't purge (unlike the temp directory).
+
+This is a *visited-places* cache, not region pre-download. For
+guaranteed offline regions, bundle tiles and serve them through the
+`VectorTileProvider` interface (e.g. MBTiles/PMTiles) alongside an
+`asset://` style.
 
 ## 🔌 Custom tile sources
 
