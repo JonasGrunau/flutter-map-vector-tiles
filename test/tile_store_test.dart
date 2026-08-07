@@ -27,6 +27,25 @@ class _FailingProvider extends VectorTileProvider {
       TileResponseError(Exception('offline'));
 }
 
+/// Serves tiles and records how often it was asked to.
+class _CountingProvider extends VectorTileProvider {
+  var loads = 0;
+
+  @override
+  int get maximumZoom => 14;
+  @override
+  int get minimumZoom => 0;
+  @override
+  String get cacheKey => 'counting';
+
+  @override
+  Future<TileResponse> load(TileKey tile,
+      {CancellationToken? cancellation}) async {
+    loads++;
+    return TileResponseData(_tileBytes());
+  }
+}
+
 Uint8List _tileBytes() => MvtTileBuilder()
     .layer('water')
     .feature(type: 3, geometry: [
@@ -46,7 +65,13 @@ Uint8List _tileBytes() => MvtTileBuilder()
 void main() {
   late TilePrepareExecutor executor;
 
-  setUp(() => executor = TilePrepareExecutor(concurrency: 1));
+  setUp(() {
+    executor = TilePrepareExecutor(concurrency: 1);
+    // Decoded tiles are shared process-wide and deliberately outlive
+    // dispose(), so without this each test would start on the previous
+    // test's cache.
+    TileStore.clearMemoryCaches();
+  });
   tearDown(() => executor.dispose());
 
   TileStore store({int maxZoom = 14}) => TileStore(
@@ -133,7 +158,7 @@ void main() {
         layerProperties: {
           'water': {'class'},
         },
-        diskCache: cache,
+        diskCache: Future.value(cache),
       );
       final tile = await s.obtain(const TileKey(2, 1, 1));
       expect(tile, isNotNull);
@@ -142,6 +167,71 @@ void main() {
     } finally {
       await dir.delete(recursive: true);
     }
+  });
+
+  test('a disk cache that resolves late is awaited, not raced past', () async {
+    final dir = await Directory.systemTemp.createTemp('fmvt_race');
+    try {
+      final cache = DiskCache(directory: dir);
+      await cache.initialize();
+      await cache.put('counting/2/1/1', _tileBytes());
+
+      final provider = _CountingProvider();
+      final s = TileStore(
+        provider: provider,
+        executor: executor,
+        layerProperties: {
+          'water': {'class'},
+        },
+        // Resolves several event-loop turns late, exactly like the real
+        // cache waiting on a platform channel while the first frame is
+        // already asking for tiles.
+        diskCache:
+            Future.delayed(const Duration(milliseconds: 20), () => cache),
+      );
+
+      final tile = await s.obtain(const TileKey(2, 1, 1));
+      expect(tile, isNotNull);
+      expect(provider.loads, 0, reason: 'the tile was already on disk');
+      s.dispose();
+    } finally {
+      await dir.delete(recursive: true);
+    }
+  });
+
+  test('decoded tiles are reused by the next store over the same source',
+      () async {
+    final first = store();
+    final tile = await first.obtain(const TileKey(2, 1, 1));
+    first.dispose();
+
+    // Synchronously present, so a reopened map paints without decoding.
+    final second = store();
+    expect(identical(second.peek(const TileKey(2, 1, 1)), tile), true);
+    second.dispose();
+  });
+
+  test('stores trimming different properties do not share tiles', () async {
+    final trimmed = store();
+    await trimmed.obtain(const TileKey(2, 1, 1));
+    trimmed.dispose();
+
+    final wider = TileStore(
+      provider: MemoryVectorTileProvider(
+        tiles: {const TileKey(2, 1, 1): _tileBytes()},
+      ),
+      executor: executor,
+      layerProperties: {
+        'water': {'class', 'name'},
+      },
+    );
+    expect(wider.peek(const TileKey(2, 1, 1)), isNull);
+    final tile = await wider.obtain(const TileKey(2, 1, 1));
+    expect(
+      tile!.layers['water']!.features.single.properties,
+      {'class': 'lake', 'name': 'Ammersee'},
+    );
+    wider.dispose();
   });
 
   test('network failure without any cache entry resolves null', () async {
@@ -155,7 +245,7 @@ void main() {
         layerProperties: {
           'water': {'class'},
         },
-        diskCache: cache,
+        diskCache: Future.value(cache),
       );
       expect(await s.obtain(const TileKey(2, 1, 1)), null);
       s.dispose();

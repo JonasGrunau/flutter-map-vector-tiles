@@ -6,6 +6,7 @@ import 'package:flutter/material.dart' hide Theme;
 import 'package:flutter/rendering.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart';
+import 'package:flutter_map_vector_tiles/src/cache/disk_cache.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 
@@ -157,6 +158,14 @@ Future<Set<Color>> _sampleDuring(
 }
 
 void main() {
+  // Decoded tiles and disk caches are shared process-wide and outlive the
+  // layer on purpose, so without this each test would inherit the previous
+  // test's warm cache — and the load counts below would all read zero.
+  setUp(() {
+    VectorTileLayer.clearMemoryCache();
+    DiskCacheRegistry.reset();
+  });
+
   // Every test fixes the surface size, so the tile grid is the same on
   // every machine.
   Future<void> withMap(
@@ -258,43 +267,83 @@ void main() {
     });
   });
 
-  testWidgets('attaching the disk cache after first paint does not blank it',
+  testWidgets('a reopened map paints from cache without refetching',
       (tester) async {
-    // The 0.4.1 blanking: disk-cache initialization is async, and
-    // completing it used to rebuild the tile stores, which disposed
-    // every already-rendered tile moments after first paint.
-    //
-    // The bug is a race, so the test has to force the losing order —
-    // left to run at its natural speed the cache is ready long before
-    // the first tile paints, and the rebuild destroys nothing.
-    final dir = Directory.systemTemp.createTempSync('fmvt_lifecycle');
+    // Reopening the map screen builds a whole new layer, and everything it
+    // needs was already fetched a moment ago. Two caches have to survive
+    // that teardown for it to paint straight away — and the disk one has to
+    // be *awaited*: tiles are requested on the first frame, while the cache
+    // is still resolving its directory through a platform channel. Reading
+    // it as a plain field there yields null and sends the opening screenful
+    // to the network despite it sitting on disk.
+    final dir = Directory.systemTemp.createTempSync('fmvt_reopen');
     addTearDown(() {
       if (dir.existsSync()) dir.deleteSync(recursive: true);
     });
-    final cacheReady = Completer<void>();
 
     tester.view.physicalSize = const Size(600, 600);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
 
-    final provider = _EverywhereProvider(_fullTile());
+    final first = _EverywhereProvider(_fullTile());
+    await tester.pumpWidget(
+      _app(MapController(), first, cacheFolder: () async => dir),
+    );
+    await _settle(tester);
+    expect(first.loads, greaterThan(0), reason: 'nothing was cached yet');
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+
+    // Force the disk to be the only thing that can answer the second open,
+    // and make it resolve late — the exact window the first frame's tiles
+    // used to race past.
+    VectorTileLayer.clearMemoryCache();
+    DiskCacheRegistry.reset();
+    final cacheReady = Completer<void>();
+    final second = _EverywhereProvider(_fullTile());
     await tester.pumpWidget(_app(
       MapController(),
-      provider,
+      second,
       cacheFolder: () async {
         await cacheReady.future;
         return dir;
       },
     ));
-
-    await _settle(tester);
-    expect(await _centrePixel(tester), _land, reason: 'tiles painted first');
-
-    // Now let the cache attach, and watch every frame after it.
+    await tester.pump();
     cacheReady.complete();
-    final seen = await _sampleDuring(tester, frames: 40);
-    expect(seen, {_land},
-        reason: 'the map must stay painted while the cache attaches');
+    await _settle(tester);
+
+    expect(await _centrePixel(tester), _land);
+    expect(second.loads, 0, reason: 'the screenful was already on disk');
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('decoded tiles outlive the layer that loaded them',
+      (tester) async {
+    // The memory half of the same story: with the tiles still decoded, a
+    // reopen needs neither the network nor the disk.
+    final provider = _EverywhereProvider(_fullTile());
+
+    tester.view.physicalSize = const Size(600, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(_app(MapController(), provider));
+    await _settle(tester);
+    final afterFirstOpen = provider.loads;
+    expect(afterFirstOpen, greaterThan(0));
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+
+    await tester.pumpWidget(_app(MapController(), provider));
+    await _settle(tester);
+
+    expect(await _centrePixel(tester), _land);
+    expect(provider.loads, afterFirstOpen);
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump();

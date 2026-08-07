@@ -19,13 +19,28 @@ class TileStore {
   final VectorTileProvider provider;
   final TilePrepareExecutor executor;
 
-  /// Mutable: the disk cache initializes asynchronously and is attached
-  /// to already-running stores once ready, so the map never rebuilds
-  /// (and blanks) just because the cache arrived.
-  DiskCache? diskCache;
+  /// Resolved lazily, and awaited on the load path rather than read as a
+  /// plain field: the cache initializes asynchronously (its directory comes
+  /// from a platform channel) while the first tiles are already being
+  /// requested. Reading it too early yields null, which would send the
+  /// opening screenful of every map to the network despite it sitting on
+  /// disk. Resolves to null when disk caching is off or unavailable.
+  final Future<DiskCache?> diskCache;
 
   /// Per source-layer property keep-lists derived from the theme.
   final Map<String, Set<String>?> layerProperties;
+
+  /// Decoded tiles, shared process-wide between every store built on the
+  /// same source *and* the same property keep-lists.
+  ///
+  /// Holding this outside the instance is what makes a reopened map paint at
+  /// once: the layer — and with it this store — is rebuilt every time the
+  /// screen is mounted, and re-decoding tiles that were already in memory a
+  /// moment ago is the bulk of that delay. Entries therefore survive
+  /// [dispose] and live for the process lifetime, bounded by the byte budget
+  /// of whichever store created the cache first. [clearMemoryCaches] drops
+  /// them.
+  static final _memoryCaches = <String, LruCache<TileKey, PreparedTile>>{};
 
   final LruCache<TileKey, PreparedTile> _memory;
   final _inFlight = <TileKey, Future<PreparedTile?>>{};
@@ -38,13 +53,46 @@ class TileStore {
     required this.provider,
     required this.executor,
     required this.layerProperties,
-    this.diskCache,
+    Future<DiskCache?>? diskCache,
     int memoryCacheMaxBytes = 32 * 1024 * 1024,
-  }) : _memory = LruCache(
-          maxEntries: 256,
-          maxCost: memoryCacheMaxBytes,
-          costOf: (tile) => tile.byteSize,
+  })  : diskCache = diskCache ?? Future.value(),
+        _memory = _memoryCaches.putIfAbsent(
+          _memorySignature(provider, layerProperties),
+          () => LruCache(
+            maxEntries: 256,
+            maxCost: memoryCacheMaxBytes,
+            costOf: (tile) => tile.byteSize,
+          ),
         );
+
+  /// Identifies a shared memory cache.
+  ///
+  /// The source alone is not enough: prepared tiles are trimmed to the
+  /// properties the theme reads, so two themes over the same source produce
+  /// different content for the same key. The details and monitoring styles of
+  /// one map provider are exactly that case.
+  static String _memorySignature(
+    VectorTileProvider provider,
+    Map<String, Set<String>?> layerProperties,
+  ) {
+    final buffer = StringBuffer(provider.cacheKey);
+    for (final sourceLayer in layerProperties.keys.toList()..sort()) {
+      final properties = layerProperties[sourceLayer];
+      buffer.write('|$sourceLayer:');
+      buffer.write(
+          properties == null ? '*' : (properties.toList()..sort()).join(','));
+    }
+    return buffer.toString();
+  }
+
+  /// Empties every shared decoded-tile cache, so the next map open re-reads
+  /// from disk. For memory-pressure handling and tests.
+  static void clearMemoryCaches() {
+    for (final cache in _memoryCaches.values) {
+      cache.clear();
+    }
+    _memoryCaches.clear();
+  }
 
   /// Resolves the data tile key serving [displayKey] with [zoomOffset]
   /// applied, clamped to the provider's zoom range. Returns null when
@@ -115,7 +163,10 @@ class TileStore {
     final cacheKey = '${provider.cacheKey}/${dataKey.z}'
         '/${dataKey.x}/${dataKey.y}';
 
-    var bytes = await diskCache?.get(cacheKey);
+    final cache = await diskCache;
+    if (_disposed || (cancellation?.isCancelled ?? false)) return null;
+
+    var bytes = await cache?.get(cacheKey);
     if (_disposed || (cancellation?.isCancelled ?? false)) return null;
 
     if (bytes == null) {
@@ -123,7 +174,7 @@ class TileStore {
       if (_disposed) return null;
       if (response is TileResponseData) {
         bytes = response.bytes;
-        unawaited(diskCache?.put(cacheKey, response.bytes));
+        unawaited(cache?.put(cacheKey, response.bytes));
       } else if (response is TileResponseNotFound) {
         final empty =
             PreparedTile(key: dataKey, layers: const {}, byteSize: 64);
@@ -134,7 +185,7 @@ class TileStore {
       } else {
         // Network failure: serve an expired cache entry if one exists —
         // stale map data beats a blank map when offline.
-        bytes = await diskCache?.getStale(cacheKey);
+        bytes = await cache?.getStale(cacheKey);
         if (bytes == null) {
           _failedAt[dataKey] = DateTime.now();
           return null;
@@ -166,9 +217,12 @@ class TileStore {
     return prepared;
   }
 
+  /// Stops this store. The decoded tiles stay in the shared memory cache on
+  /// purpose — they are what lets the next map over this source paint
+  /// immediately. Use [clearMemoryCaches] to release them.
   void dispose() {
     _disposed = true;
-    _memory.clear();
     _inFlight.clear();
+    _failedAt.clear();
   }
 }

@@ -104,6 +104,16 @@ class VectorTileLayer extends StatefulWidget {
     this.logger = const Logger.noop(),
   });
 
+  /// Releases the decoded tiles held in memory between map opens.
+  ///
+  /// Decoded tiles outlive the layer that loaded them so that reopening a map
+  /// paints immediately instead of decoding everything again. They are capped
+  /// by [memoryCacheMaxBytes] per source and style, but nothing else frees
+  /// them — call this from a memory-pressure handler if that budget is too
+  /// generous for your app. Visible maps keep their rasterized imagery; only
+  /// tiles panned to afterwards are re-read from disk.
+  static void clearMemoryCache() => TileStore.clearMemoryCaches();
+
   @override
   State<VectorTileLayer> createState() => _VectorTileLayerState();
 }
@@ -111,7 +121,7 @@ class VectorTileLayer extends StatefulWidget {
 class _VectorTileLayerState extends State<VectorTileLayer>
     with TickerProviderStateMixin {
   late TilePrepareExecutor _executor;
-  DiskCache? _diskCache;
+  late final Future<DiskCache?> _diskCache;
   final _stores = <String, TileStore>{};
   final _tiles = <TileKey, _DisplayTile>{};
 
@@ -136,38 +146,27 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _executor = TilePrepareExecutor(concurrency: widget.concurrency);
     _fadeTicker = createTicker(_onFadeTick);
     _rasterTicker = createTicker(_pumpRasterQueue);
-    _initCaches();
+    _diskCache = _obtainDiskCache();
     _buildStores();
   }
 
-  Future<void> _initCaches() async {
-    if (widget.diskCacheMaximumSizeInBytes <= 0) return;
-    try {
-      final dir = widget.cacheFolder != null
-          ? await widget.cacheFolder!()
-          : Directory('${(await getApplicationSupportDirectory()).path}'
-              '${Platform.pathSeparator}flutter_map_vector_tiles');
-      final cache = DiskCache(
-        directory: dir,
-        ttl: widget.diskCacheTtl,
-        maxSizeBytes: widget.diskCacheMaximumSizeInBytes,
-        logger: widget.logger,
-      );
-      await cache.initialize();
-      if (!mounted) {
-        return;
-      }
-      _diskCache = cache;
-      // Attach to the live stores instead of rebuilding them: a rebuild
-      // disposes every rendered tile, blanking the map moments after
-      // first paint.
-      for (final store in _stores.values) {
-        store.diskCache = cache;
-      }
-    } catch (e) {
-      widget.logger.warn('disk cache unavailable: $e');
-    }
+  /// The stores hold this future and await it before reaching for the
+  /// network, so tiles requested on the first frame — before the cache has
+  /// finished initializing — still come off disk.
+  Future<DiskCache?> _obtainDiskCache() {
+    if (widget.diskCacheMaximumSizeInBytes <= 0) return Future.value();
+    return DiskCacheRegistry.obtain(
+      folder: widget.cacheFolder ?? _defaultCacheFolder,
+      ttl: widget.diskCacheTtl,
+      maxSizeBytes: widget.diskCacheMaximumSizeInBytes,
+      logger: widget.logger,
+    );
   }
+
+  static Future<Directory> _defaultCacheFolder() async => Directory(
+        '${(await getApplicationSupportDirectory()).path}'
+        '${Platform.pathSeparator}flutter_map_vector_tiles',
+      );
 
   void _buildStores() {
     for (final store in _stores.values) {

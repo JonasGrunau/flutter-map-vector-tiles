@@ -42,6 +42,12 @@ abstract class VectorTileProvider {
   int get minimumZoom;
 
   /// A stable identity for cache keys (e.g. the URL template).
+  ///
+  /// Both the disk cache and the process-wide decoded-tile cache key off
+  /// this, so two providers sharing a [cacheKey] are taken to serve the same
+  /// bytes for the same coordinates — including across layers, and after the
+  /// layer that loaded them is gone. Give genuinely different sources
+  /// different keys.
   String get cacheKey;
 
   Future<TileResponse> load(TileKey tile, {CancellationToken? cancellation});

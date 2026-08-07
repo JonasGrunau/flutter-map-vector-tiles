@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:meta/meta.dart';
+
 import '../logger.dart';
 
 /// A byte cache on disk with a freshness TTL and a size cap.
@@ -124,5 +126,80 @@ class DiskCache {
       hash = (hash * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF;
     }
     return hash.toRadixString(16).padLeft(16, '0');
+  }
+}
+
+/// Process-wide [DiskCache] instances, one per cache directory.
+///
+/// A cache can never be handed out synchronously — resolving its directory
+/// goes through a platform channel — but tiles are requested on the very
+/// first frame. Callers therefore hold the *future* and await it on the load
+/// path, so the opening screenful is served from disk instead of racing
+/// initialization and going to the network for tiles that are already there.
+///
+/// Instances are shared and never evicted, so reopening a map reuses an
+/// initialized cache rather than repeating the directory setup. The first
+/// caller for a directory fixes its [DiskCache.ttl] and
+/// [DiskCache.maxSizeBytes]; a later caller naming the same directory gets
+/// that instance whatever settings it asked for.
+abstract final class DiskCacheRegistry {
+  static final _caches = <String, DiskCache>{};
+  static final _pending = <String, Future<DiskCache>>{};
+
+  /// The cache for the directory [folder] resolves to, creating and
+  /// initializing it on first use.
+  ///
+  /// Returns null when the directory cannot be resolved or created; the
+  /// caller then runs without a disk cache rather than failing.
+  static Future<DiskCache?> obtain({
+    required Future<Directory> Function() folder,
+    Duration ttl = const Duration(days: 14),
+    int maxSizeBytes = 50 * 1024 * 1024,
+    Logger logger = const Logger.noop(),
+  }) async {
+    try {
+      final directory = await folder();
+      final path = directory.path;
+      final existing = _caches[path];
+      if (existing != null) return existing;
+      final pending = _pending[path];
+      if (pending != null) return await pending;
+      final creation = _create(directory, ttl, maxSizeBytes, logger);
+      _pending[path] = creation;
+      return await creation;
+    } catch (e) {
+      logger.warn('disk cache unavailable: $e');
+      return null;
+    }
+  }
+
+  static Future<DiskCache> _create(
+    Directory directory,
+    Duration ttl,
+    int maxSizeBytes,
+    Logger logger,
+  ) async {
+    final cache = DiskCache(
+      directory: directory,
+      ttl: ttl,
+      maxSizeBytes: maxSizeBytes,
+      logger: logger,
+    );
+    try {
+      await cache.initialize();
+      _caches[directory.path] = cache;
+      return cache;
+    } finally {
+      // Dropping the entry, not awaiting it — this *is* that future.
+      _pending.remove(directory.path)?.ignore();
+    }
+  }
+
+  /// Forgets every registered instance so the next [obtain] initializes
+  /// afresh. The files on disk are untouched. Intended for tests.
+  @visibleForTesting
+  static void reset() {
+    _caches.clear();
+    _pending.clear();
   }
 }

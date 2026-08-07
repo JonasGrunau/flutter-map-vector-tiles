@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.1.0
+
+Reopening a map is now nearly instant. Both caches used to die with the
+layer, so every time a map screen was pushed it started from nothing.
+
+- ⚡ The disk cache is awaited rather than raced. It initializes
+  asynchronously — its directory comes from a platform channel — but tiles
+  are requested on the very first frame, and the load path read it as a
+  plain field that was still null. Every map open therefore fetched its
+  opening screenful over the network, with the tiles already on disk. The
+  stores now hold the pending cache and await it.
+- ⚡ Decoded tiles are cached process-wide instead of per layer, so a
+  reopened map paints without decoding anything again. Entries are keyed by
+  source *and* by the properties the theme reads — two styles over one
+  source do not share trimmed tiles — and are capped by
+  `VectorTileLayer.memoryCacheMaxBytes` per key. They outlive the layer by
+  design; `VectorTileLayer.clearMemoryCache()` releases them, e.g. from a
+  memory-pressure handler.
+- ⚡ `DiskCache` instances are shared per directory, so a second layer over
+  the same folder reuses an initialized cache instead of setting up its own.
+- 📝 `VectorTileProvider.cacheKey` now also identifies the in-memory cache.
+  Providers serving different bytes must not share one.
+
 ## 1.0.0
 
 First stable release: the public API is now considered settled and will

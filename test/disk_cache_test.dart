@@ -92,4 +92,42 @@ void main() {
     await cache.put('k', Uint8List.fromList([1]));
     expect(await cache.get('k'), null);
   });
+
+  group('registry', () {
+    setUp(DiskCacheRegistry.reset);
+    tearDown(DiskCacheRegistry.reset);
+
+    test('hands the same instance to every caller for a directory', () async {
+      // Concurrent, because that is how two map layers built in the same
+      // frame reach it.
+      final caches = await Future.wait([
+        DiskCacheRegistry.obtain(folder: () async => dir),
+        DiskCacheRegistry.obtain(folder: () async => dir),
+      ]);
+      expect(caches.first, isNotNull);
+      expect(identical(caches.first, caches.last), true);
+
+      // And once more after both resolved, off the in-flight path.
+      expect(
+        identical(await DiskCacheRegistry.obtain(folder: () async => dir),
+            caches.first),
+        true,
+      );
+    });
+
+    test('keeps separate instances per directory', () async {
+      final nested = Directory('${dir.path}${Platform.pathSeparator}style');
+      final tiles = await DiskCacheRegistry.obtain(folder: () async => dir);
+      final styles = await DiskCacheRegistry.obtain(folder: () async => nested);
+      expect(identical(tiles, styles), false);
+      expect(await nested.exists(), true);
+    });
+
+    test('resolves null when the folder cannot be resolved', () async {
+      final cache = await DiskCacheRegistry.obtain(
+        folder: () async => throw const FileSystemException('no path'),
+      );
+      expect(cache, null);
+    });
+  });
 }
