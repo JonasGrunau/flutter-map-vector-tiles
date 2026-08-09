@@ -1,3 +1,7 @@
+# Changing this file? .pubignore repeats these entries and REPLACES this file
+# when pub builds the package — update it too, or the entry you add here still
+# ships to pub.dev.
+
 .DS_Store
 .dart_tool/
 .packages

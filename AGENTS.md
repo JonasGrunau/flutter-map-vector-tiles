@@ -25,6 +25,8 @@ collision pass; cancellation is a **state**, never an exception; every
 | `CHANGELOG.md` | One section per released version; every user-visible change lands here |
 | `CLAUDE.md` | Agent working agreements — doc-sync rules, README/version rules, release gate. Imports this file via `@AGENTS.md` |
 | `analysis_options.yaml` | `flutter_lints` + strict casts/inference/raw-types, plus `prefer_final_locals`, `unawaited_futures`, `avoid_print`, `directives_ordering` |
+| `.gitignore` | Repo exclusions |
+| `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs |
 | `LICENSE` | BSD-3-Clause |
 
 ## Subdirectories
@@ -46,6 +48,11 @@ collision pass; cancellation is a **state**, never an exception; every
 - **Version identity.** The install snippet in `README.md` must match
   `version:` in `pubspec.yaml`, as must the `flutter_map` constraint shown
   there. Bumping one without the other is an incomplete change.
+- **Ignore files come in pairs.** Pub reads `.pubignore` *instead of*
+  `.gitignore` for this directory — not in addition to it. Any entry added to
+  `.gitignore` must be added to `.pubignore` as well, or the thing you just
+  excluded from the repo still ships to pub.dev. Verify with
+  `dart pub publish --dry-run`, which prints the exact file list.
 - **There is no CI.** Every gate is local and must be run by hand.
 - **The public API is what `lib/flutter_map_vector_tiles.dart` exports.**
   Anything else under `lib/src/` is private and may be changed freely; adding
