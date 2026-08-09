@@ -205,11 +205,16 @@ class StyleReader {
     var minZoom = (source['minzoom'] as num?)?.toInt();
     var maxZoom = (source['maxzoom'] as num?)?.toInt();
 
+    // Relative tile templates resolve against the document that declared
+    // them: the style for inline `tiles`, the TileJSON document otherwise
+    // (ArcGIS declares `"url": "../../"` and `tile/{z}/{y}/{x}.pbf`).
+    var templateBase = styleUrl;
     final tileJsonUrl = source['url'] as String?;
     if (tiles == null && tileJsonUrl != null) {
-      final resolved = _resolve(tileJsonUrl, styleUrl);
+      final resolved = _substitute(_resolve(tileJsonUrl, styleUrl));
       final tileJson = await loader.loadJson(resolved);
       tiles = tileJson['tiles'] as List<Object?>?;
+      templateBase = resolved;
       minZoom ??= (tileJson['minzoom'] as num?)?.toInt();
       maxZoom ??= (tileJson['maxzoom'] as num?)?.toInt();
     }
@@ -217,7 +222,7 @@ class StyleReader {
     if (template == null) return null;
 
     return NetworkVectorTileProvider(
-      urlTemplate: _substitute(_resolve(template, styleUrl)),
+      urlTemplate: _substitute(_resolveTemplate(template, templateBase)),
       minimumZoom: minZoom ?? 0,
       maximumZoom: maxZoom ?? defaultMaxZoom,
       logger: logger,
@@ -262,6 +267,12 @@ class StyleReader {
   }
 
   String _substitute(String url) => url.replaceAll('{key}', apiKey ?? '');
+
+  /// Like [_resolve] for tile URL templates: `Uri.resolve` percent-encodes
+  /// the `{z}`/`{x}`/`{y}` braces, which would defeat placeholder
+  /// substitution, so they are restored after resolution.
+  static String _resolveTemplate(String url, String baseUrl) =>
+      _resolve(url, baseUrl).replaceAll('%7B', '{').replaceAll('%7D', '}');
 
   /// Resolves relative and scheme-relative URLs against the style URL.
   static String _resolve(String url, String baseUrl) {

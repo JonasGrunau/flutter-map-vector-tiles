@@ -14,7 +14,7 @@ happens once at read time; nothing here re-parses JSON per frame.
 
 | File | Description |
 |------|-------------|
-| `style_reader.dart` | `StyleReader` / `Style` — fetches the style document, resolves sources through TileJSON, substitutes `{key}`, builds `TileProviders` and `RasterTileSource`s, loads sprites, and owns stale-while-revalidate disk caching via `_Loader`. Throws `StyleReaderException`; redacts API keys in logs |
+| `style_reader.dart` | `StyleReader` / `Style` — fetches the style document, resolves sources through TileJSON, substitutes `{key}`, builds `TileProviders` and `RasterTileSource`s, loads sprites, and owns stale-while-revalidate disk caching via `_Loader`. Relative URLs resolve against the declaring document (tile templates against the TileJSON URL when they came from one — the ArcGIS `"url": "../../"` shape); template braces are restored after `Uri.resolve` percent-encodes them. Throws `StyleReaderException`; redacts API keys in logs |
 | `expression_parser.dart` | `ExpressionParser` — the largest file here (~950 lines). Compiles modern expression arrays *and* legacy function/filter syntax into `Expr` closures: `let`/`var`, comparisons, `case`, `match`, `step`, `interpolate` (incl. cubic-bezier easing), the full math operator set, and property references |
 | `expression.dart` | The compiled-expression runtime: `typedef Expr`, `EvalContext` (feature properties + zoom + vars), coercions (`toBoolean`/`toNumber`/`toColor`/`toStringValue`), and the typed property wrappers `DoubleProp`, `ColorProp`, `StringProp`, `BoolProp`, `NumListProp`, `StringListProp` — each with a fallback and an `isConstant` fast path |
 | `theme.dart` | The compiled style model: `Theme` and the sealed `ThemeLayer` hierarchy — `BackgroundThemeLayer`, `FillThemeLayer`, `LineThemeLayer`, `RasterThemeLayer`, `CircleThemeLayer`, `SymbolThemeLayer`, with `coversZoom()` and `matches()` |
@@ -50,6 +50,9 @@ happens once at read time; nothing here re-parses JSON per frame.
 - `test/theme_reader_test.dart` — layer parsing and defaults
 - `test/css_color_test.dart` — every colour syntax
 - `test/style_reader_cache_test.dart` — stale-while-revalidate behaviour
+- `test/style_reader_sources_test.dart` — source URL resolution: relative
+  TileJSON and tile templates (ArcGIS `root.json` shape), `{key}`
+  substitution in TileJSON URLs
 
 New expression operators need a case in `expression_test.dart` *and* an
 explicit unsupported-input case proving the degradation path.

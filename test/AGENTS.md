@@ -27,6 +27,7 @@ lifecycle or painting is covered by widget tests that pump a real
 | `line_pattern_test.dart`, `fill_pattern_test.dart` | Pattern paints |
 | `disk_cache_test.dart`, `lru_cache_test.dart` | Cache eviction, TTL, size sweep |
 | `style_reader_cache_test.dart` | Stale-while-revalidate style loading |
+| `style_reader_sources_test.dart` | Source URL resolution: relative TileJSON/tile templates (ArcGIS `root.json` shape), `{key}` substitution |
 | `mvt_decoder_test.dart` | MVT decoding against independently built fixtures |
 | `variable_anchor_test.dart` | Variable text anchors |
 | `tile_precision_test.dart` | Tile transform precision |

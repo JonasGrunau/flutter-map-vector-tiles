@@ -91,7 +91,11 @@ unparseable expressions degrade per-layer (with a log), never failing the
 whole style. Expressions are compiled once into Dart closures; both the
 modern expression array syntax and the legacy filter syntax are
 supported. Sources are resolved through TileJSON when `url` is present,
-including `{key}` substitution.
+including `{key}` substitution. Relative URLs resolve against the
+document that declared them — sprite and source URLs against the style
+URL, tile templates against the TileJSON URL when they came from one
+(ArcGIS declares `"url": "../../"` and `tile/{z}/{y}/{x}.pbf`) — and
+the `{z}`/`{x}`/`{y}` braces survive resolution un-percent-encoded.
 
 ## What was deliberately changed vs. vector_map_tiles
 

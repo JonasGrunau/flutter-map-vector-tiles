@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.0.1
+
+Real-world style compatibility: ArcGIS/Esri `root.json` styles now work.
+
+- 🐛 Relative tile URL templates from TileJSON documents now resolve
+  against the TileJSON URL instead of the style URL. ArcGIS vector tile
+  services (`…/VectorTileServer/resources/styles/root.json`) declare
+  their source as `"url": "../../"` with a relative
+  `tile/{z}/{y}/{x}.pbf` template, which previously produced 404s for
+  every tile.
+- 🐛 Relative tile templates no longer break on `{z}`/`{x}`/`{y}`
+  placeholders: URL resolution percent-encoded the braces to `%7Bz%7D`,
+  defeating placeholder substitution.
+- 🐛 `{key}` is now substituted in TileJSON source URLs
+  (`"url": "https://…/tiles.json?key={key}"`), not only in the style
+  URL and the tile templates.
+- 📚 The README provider table now lists ArcGIS/Esri and self-hosted
+  servers as verified (Esri `World_Basemap_v2`, MapLibre demo tiles)
+  and documents that Protomaps `pmtiles://` archives are not supported.
+
 ## 2.0.0
 
 The layer now runs on Flutter web.

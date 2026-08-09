@@ -37,7 +37,7 @@ your other layers; this package only draws the map. 🎯
 ```yaml
 dependencies:
   flutter_map: ^8.2.0
-  flutter_map_vector_tiles: ^2.0.0
+  flutter_map_vector_tiles: ^2.0.1
 ```
 
 ### 2. Load a style & drop in the layer
@@ -96,7 +96,13 @@ flutter run --dart-define=MAPTILER_KEY=yourKey
 | 🟢 [MapTiler](https://maptiler.com) | `https://api.maptiler.com/maps/<mapId>/style.json?key={key}` | works with custom map styles |
 | 🟢 [OpenFreeMap](https://openfreemap.org) | `https://tiles.openfreemap.org/styles/liberty` | free, no key needed |
 | 🟢 [Stadia Maps](https://stadiamaps.com) | `https://tiles.stadiamaps.com/styles/osm_bright.json?api_key={key}` | |
-| 🟡 Others (Protomaps, ArcGIS, self-hosted) | any MapLibre `style.json` | tolerant reader; unsupported layer types are skipped with a warning |
+| 🟢 ArcGIS / Esri | `https://…/VectorTileServer/resources/styles/root.json` | relative `../../` sources, `tile/{z}/{y}/{x}` templates and sprites resolve correctly — verified against `World_Basemap_v2` |
+| 🟢 Self-hosted (TileServer GL, Martin, …) | any MapLibre `style.json` | verified against the MapLibre demo tiles; relative tile templates supported |
+| 🟡 [Protomaps](https://protomaps.com) | `https://api.protomaps.com/styles/…?key={key}` | the hosted API uses the same URL shapes and should work (untested); `pmtiles://` archives are **not** supported |
+
+The reader is tolerant either way: unsupported layer types, paint
+properties and expressions are skipped per-layer with a warning — one
+weird layer never kills the whole style.
 
 ## ⚙️ Configuration
 
@@ -137,7 +143,7 @@ is **one lower** than flutter_map's. Styles from MapTiler & friends are
 authored against that convention.
 
 - `TileOffset.maplibre` *(default)* — text sizes, road widths and layer
-  zoom ranges match the style author's intent exactly. ✅
+  zoom ranges match the style author's intent exactly.
 - `TileOffset.none` — evaluates the style at flutter_map's zoom directly;
   everything appears one zoom earlier/larger (the legacy
   `vector_map_tiles` default, if you need visual parity with it).
