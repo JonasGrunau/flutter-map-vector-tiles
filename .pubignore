@@ -1,0 +1,22 @@
+# Files excluded from the published package.
+#
+# NOTE: pub uses .pubignore *instead of* .gitignore for this directory, not in
+# addition to it — so every .gitignore entry has to be repeated here. Keep the
+# two in sync when either changes.
+
+# --- mirrors .gitignore ---
+.DS_Store
+.dart_tool/
+.packages
+build/
+pubspec.lock
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+.idea/
+.omc/
+coverage/
+
+# --- agent-facing documentation (useful in the repo, noise in the tarball) ---
+AGENTS.md
+CLAUDE.md
