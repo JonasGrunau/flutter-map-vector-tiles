@@ -24,9 +24,10 @@ your other layers; this package only draws the map. 🎯
 | 🔍 **Crisp labels** | Text & icons are drawn per-frame in screen space: upright under rotation, sharp at fractional zoom, with **one global collision pass** — no duplicated or clipped labels at tile seams |
 | 🌫️ **No white flashes** | New tiles fade in while ancestor imagery is kept underneath; fast zoom-ins render instantly from already-decoded parent tiles |
 | 🎚️ **Correct MapLibre zoom semantics** | The default `TileOffset.maplibre` renders 512px-convention styles *exactly* as their authors designed them |
-| 🧵 **Isolate pipeline** | Tiles are decoded & trimmed on a worker-isolate pool, viewport-centre first; cancellation is a state, **never an exception** in your crash reporting |
+| 🧵 **Isolate pipeline** | Tiles are decoded & trimmed on a worker-isolate pool (a yielding event-loop queue on web), viewport-centre first; cancellation is a state, **never an exception** in your crash reporting |
 | 💾 **Deterministic caching** | LRU memory caches with byte budgets + a size-capped disk cache with no index files to corrupt; every `ui.Image` is disposed on eviction |
-| ✈️ **Works offline** | The style bundle and recently viewed tiles are cached on disk: places you visited keep rendering with no network at all |
+| ✈️ **Works offline** | The style bundle and recently viewed tiles are cached on disk (native platforms): places you visited keep rendering with no network at all |
+| 🌐 **All six platforms** | Android, iOS, macOS, Linux, Windows and web — see [Web support](#-web-support) for what differs in the browser |
 | 🛡️ **Tolerant style reader** | Unknown layer types and exotic expressions degrade per-layer with a warning — one weird layer never kills your whole map |
 
 ## 🚀 Quick start
@@ -36,7 +37,7 @@ your other layers; this package only draws the map. 🎯
 ```yaml
 dependencies:
   flutter_map: ^8.2.0
-  flutter_map_vector_tiles: ^1.2.0
+  flutter_map_vector_tiles: ^2.0.0
 ```
 
 ### 2. Load a style & drop in the layer
@@ -121,10 +122,10 @@ vt.VectorTileLayer(
 | Parameter | Default | What it does |
 |---|---|---|
 | `tileOffset` | `TileOffset.maplibre` | zoom relation between map and style — see below 👇 |
-| `concurrency` | `3` | worker isolates decoding tiles off the UI thread |
-| `diskCacheMaximumSizeInBytes` | 50 MB | `0` disables disk caching |
+| `concurrency` | `3` | worker isolates decoding tiles off the UI thread (ignored on web) |
+| `diskCacheMaximumSizeInBytes` | 50 MB | `0` disables disk caching (no effect on web) |
 | `diskCacheTtl` | 14 days | freshness window: younger tiles skip the network; older ones are refetched but kept as offline fallback — ⚠️ respect your tile provider's terms |
-| `cacheFolder` | app support dir | supply your own directory to control/clear it |
+| `cachePath` | app support dir | supply your own directory path to control/clear it (ignored on web) |
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source |
 | `tileFadeDuration` | 150 ms | `Duration.zero` disables fade-in |
 | `showLabels` | `true` | disables the whole symbol pass when `false` |
@@ -161,6 +162,27 @@ This is a *visited-places* cache, not region pre-download. For
 guaranteed offline regions, bundle tiles and serve them through the
 `VectorTileProvider` interface (e.g. MBTiles/PMTiles) alongside an
 `asset://` style.
+
+Disk caching — and with it the offline behaviour above — is native-only;
+see [Web support](#-web-support) for what applies in the browser.
+
+## 🌐 Web support
+
+The layer runs on Flutter web with the CanvasKit/Skwasm renderer — the
+default since Flutter 3.29. (Do not force the removed HTML renderer on
+Flutter 3.27/3.28: it lacks `Picture.toImageSync`.) What differs from
+native:
+
+- **No persistent cache** — `cachePath`, `diskCacheTtl`,
+  `diskCacheMaximumSizeInBytes` and `StyleReader(cache: …)` are no-ops.
+  Tiles and the style bundle rely on the in-memory caches plus the
+  browser's own HTTP cache instead.
+- **Decoding runs on the event loop** — a yielding queue replaces the
+  worker-isolate pool (`concurrency` is ignored).
+- **CORS** — the browser fetches style.json, TileJSON, sprites and tiles
+  directly, so every host involved must send
+  `Access-Control-Allow-Origin`. MapTiler, OpenFreeMap and Stadia do;
+  self-hosted tile servers need it configured.
 
 ## 🔌 Custom tile sources
 
@@ -212,9 +234,6 @@ placement so glyphs are never mis-joined.
 exponential, cubic-bezier), math, string & color operators, `let`/`var`,
 legacy filters, legacy `{stops}` functions and `{token}` templates.
 
-**Not (yet) supported:** 🚧 **web** (the disk cache and isolate pool
-are `dart:io`-based).
-
 ## 🏗️ Architecture
 
 ```
@@ -224,6 +243,9 @@ camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
    PreparedTile ─► rasterize once ─► GPU image ─► textured quad per frame
    symbols ─────► per-frame screen-space label pass (global collision)
 ```
+
+On web the disk cache tier is absent and decoding runs on a yielding
+event-loop queue instead of isolates; everything else is identical.
 
 The full rendering model and the reasoning behind each departure from
 `vector_map_tiles` is documented in
@@ -250,13 +272,18 @@ The full rendering model and the reasoning behind each departure from
   `TileOffset.none` with a 512px-convention style; use the default.
 - **Stale data after changing styles** → the disk cache keys by URL; a
   changed `{key}` or map id is a different URL, so usually nothing to do.
-  Supply `cacheFolder` if you want to wipe it yourself.
+  Supply `cachePath` if you want to wipe it yourself.
+- **Blank map on web** → open the browser console; missing
+  `Access-Control-Allow-Origin` headers on the style or tile host block
+  every request (see [Web support](#-web-support)).
 
 ## 🤝 Contributing
 
 Issues and PRs are welcome! Please run
 `dart analyze && flutter test` before submitting — the suite covers the
-MVT decoder, expression engine, caches, grid math and tile store.
+MVT decoder, expression engine, caches, grid math and tile store. Run
+`flutter test --platform chrome` too when touching anything
+platform-sensitive (requires Chrome).
 
 ## 📄 License
 

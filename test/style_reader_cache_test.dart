@@ -1,3 +1,6 @@
+@TestOn('vm')
+library;
+
 import 'dart:convert';
 import 'dart:io';
 
@@ -57,7 +60,7 @@ void main() {
         httpClient: client,
         cache: cache,
         refreshAfter: refreshAfter,
-        cacheFolder: () async => dir,
+        cachePath: () async => dir.path,
       );
 
   test('fresh cache serves the style with no network at all', () async {

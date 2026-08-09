@@ -10,6 +10,9 @@ import 'package:latlong2/latlong.dart';
 ///   --dart-define=MAPTILER_KEY=yourKey \
 ///   --dart-define=STYLE_URL=https://api.maptiler.com/maps/streets-v2/style.json?key={key}
 /// ```
+///
+/// On web (`flutter run -d chrome --dart-define=MAPTILER_KEY=yourKey`)
+/// the style and tile hosts must send CORS headers — MapTiler does.
 const _apiKey = String.fromEnvironment('MAPTILER_KEY');
 const _styleUrl = String.fromEnvironment(
   'STYLE_URL',

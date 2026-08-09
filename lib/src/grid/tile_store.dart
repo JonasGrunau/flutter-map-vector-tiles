@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import '../cache/disk_cache.dart';
+import '../cache/byte_cache.dart';
 import '../cache/lru_cache.dart';
 import '../core/cancellation.dart';
 import '../core/tile_key.dart';
@@ -25,7 +25,7 @@ class TileStore {
   /// requested. Reading it too early yields null, which would send the
   /// opening screenful of every map to the network despite it sitting on
   /// disk. Resolves to null when disk caching is off or unavailable.
-  final Future<DiskCache?> diskCache;
+  final Future<ByteCache?> diskCache;
 
   /// Per source-layer property keep-lists derived from the theme.
   final Map<String, Set<String>?> layerProperties;
@@ -53,7 +53,7 @@ class TileStore {
     required this.provider,
     required this.executor,
     required this.layerProperties,
-    Future<DiskCache?>? diskCache,
+    Future<ByteCache?>? diskCache,
     int memoryCacheMaxBytes = 32 * 1024 * 1024,
   })  : diskCache = diskCache ?? Future.value(),
         _memory = _memoryCaches.putIfAbsent(

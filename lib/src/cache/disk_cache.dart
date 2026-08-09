@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:meta/meta.dart';
 
 import '../logger.dart';
+import 'byte_cache.dart';
 
 /// A byte cache on disk with a freshness TTL and a size cap.
 ///
@@ -15,7 +16,7 @@ import '../logger.dart';
 /// size cap is what actually deletes data: a sweep runs opportunistically
 /// after writes and deletes the oldest files first. There is no index
 /// file to corrupt — the filesystem is the index.
-class DiskCache {
+class DiskCache implements ByteCache {
   final Directory directory;
   final Duration ttl;
   final int maxSizeBytes;
@@ -45,6 +46,7 @@ class DiskCache {
 
   /// Returns the entry if it is fresher than [ttl], else null. Expired
   /// entries are left in place for [getStale].
+  @override
   Future<Uint8List?> get(String key) async {
     try {
       final file = _fileFor(key);
@@ -59,6 +61,7 @@ class DiskCache {
 
   /// Returns the entry regardless of age — the offline fallback when a
   /// network fetch fails.
+  @override
   Future<Uint8List?> getStale(String key) async {
     try {
       final file = _fileFor(key);
@@ -68,6 +71,7 @@ class DiskCache {
     }
   }
 
+  @override
   Future<void> put(String key, Uint8List bytes) async {
     try {
       final file = _fileFor(key);
@@ -119,11 +123,23 @@ class DiskCache {
     } catch (_) {}
   }
 
+  // FNV-1a 64-bit. The offset basis is assembled from two 32-bit halves
+  // because the literal 0xcbf29ce484222325 cannot be represented in
+  // JavaScript, and the web test bundle compiles this file even though
+  // only dart:io platforms ever run it. VM multiplication wraps at 64
+  // bits, so no mask is needed — hashes (and cache file names) are
+  // bit-identical to earlier releases.
+  // Not const: a const would be folded at compile time, and the web
+  // compiler folds with JavaScript semantics — the exact corruption the
+  // two-halves construction avoids.
+  // ignore: prefer_const_declarations
+  static final int _fnvOffsetBasis = (0xcbf29ce4 << 32) | 0x84222325;
+
   static String _fnv1a(String input) {
-    var hash = 0xcbf29ce484222325;
+    var hash = _fnvOffsetBasis;
     for (final unit in input.codeUnits) {
       hash ^= unit;
-      hash = (hash * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF;
+      hash *= 0x100000001b3;
     }
     return hash.toRadixString(16).padLeft(16, '0');
   }

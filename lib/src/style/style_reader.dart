@@ -1,15 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
-import 'package:path_provider/path_provider.dart';
 
-import '../cache/disk_cache.dart';
+import '../cache/byte_cache.dart';
+import '../cache/cache_resolver.dart';
 import '../logger.dart';
 import '../provider/network_vector_tile_provider.dart';
 import '../provider/vector_tile_provider.dart';
@@ -78,15 +77,19 @@ class StyleReader {
   /// including with no network at all — and refreshed in the background
   /// once older than [refreshAfter], so the map starts offline at any
   /// place whose style was loaded before.
+  ///
+  /// On web this flag is a no-op — there is no persistent style cache;
+  /// the browser HTTP cache applies instead.
   final bool cache;
 
   /// Age past which a cached style resource is revalidated in the
   /// background. Until then it is served from disk without any request.
   final Duration refreshAfter;
 
-  /// Resolves the style cache folder; defaults to a subdirectory of the
-  /// application support directory.
-  final Future<Directory> Function()? cacheFolder;
+  /// Resolves the style cache directory path; defaults to a subdirectory
+  /// of the application support directory. Ignored on web, which relies
+  /// on the browser HTTP cache instead.
+  final Future<String> Function()? cachePath;
 
   const StyleReader({
     required this.uri,
@@ -95,13 +98,17 @@ class StyleReader {
     this.httpClient,
     this.cache = true,
     this.refreshAfter = const Duration(hours: 12),
-    this.cacheFolder,
+    this.cachePath,
   });
 
   Future<Style> read() async {
     final client = httpClient ?? http.Client();
     final ownsClient = httpClient == null;
-    final loader = _Loader(client, cache ? await _openCache() : null, logger);
+    final styleCache = cache
+        ? await openStyleCache(
+            cachePath: cachePath, refreshAfter: refreshAfter, logger: logger)
+        : null;
+    final loader = _Loader(client, styleCache, logger);
     try {
       final styleUrl = _substitute(uri);
       final styleJson = await loader.loadJson(styleUrl);
@@ -185,28 +192,6 @@ class StyleReader {
           client.close();
         }));
       }
-    }
-  }
-
-  /// Opens the on-disk style cache; failures degrade to network-only.
-  Future<DiskCache?> _openCache() async {
-    try {
-      final dir = cacheFolder != null
-          ? await cacheFolder!()
-          : Directory('${(await getApplicationSupportDirectory()).path}'
-              '${Platform.pathSeparator}flutter_map_vector_tiles'
-              '${Platform.pathSeparator}style');
-      final diskCache = DiskCache(
-        directory: dir,
-        ttl: refreshAfter,
-        maxSizeBytes: 8 * 1024 * 1024,
-        logger: logger,
-      );
-      await diskCache.initialize();
-      return diskCache;
-    } catch (e) {
-      logger.warn('style cache unavailable: $e');
-      return null;
     }
   }
 
@@ -302,7 +287,7 @@ class StyleReader {
 /// request rewrites them for the next start; misses hit the network.
 class _Loader {
   final http.Client client;
-  final DiskCache? cache;
+  final ByteCache? cache;
   final Logger logger;
 
   /// In-flight background revalidations; awaited before an owned client
@@ -341,7 +326,7 @@ class _Loader {
     return bytes;
   }
 
-  Future<void> _refresh(DiskCache diskCache, String url) async {
+  Future<void> _refresh(ByteCache diskCache, String url) async {
     try {
       await diskCache.put(url, await _fetch(url));
     } catch (e) {

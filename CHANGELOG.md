@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.0.0
+
+The layer now runs on Flutter web.
+
+- 🌐 **Web support**: rendering, styles, labels and raster sources work
+  identically in the browser (CanvasKit/Skwasm renderer — the default
+  since Flutter 3.29; the removed HTML renderer lacks
+  `Picture.toImageSync`). Tile decoding runs on a yielding event-loop
+  queue instead of worker isolates (`concurrency` is ignored), and
+  there is no persistent cache on web: `cachePath`, `diskCacheTtl`,
+  `diskCacheMaximumSizeInBytes` and `StyleReader(cache: …)` are no-ops
+  there — tiles and the style bundle rely on the in-memory caches plus
+  the browser's own HTTP cache, so the disk-backed offline behaviour
+  remains native-only. Style, TileJSON, sprite and tile hosts must send
+  `Access-Control-Allow-Origin` (MapTiler, OpenFreeMap and Stadia do).
+- 💥 **Breaking**: the `cacheFolder` parameter
+  (`Future<Directory> Function()?`) on `VectorTileLayer` and
+  `StyleReader` is now `cachePath` (`Future<String> Function()?`), so
+  the public API no longer carries a `dart:io` type. Migration:
+  `cacheFolder: () async => dir` becomes
+  `cachePath: () async => dir.path`; if you never passed `cacheFolder`,
+  nothing changes — cache locations and defaults are identical, and
+  existing on-disk caches are reused as-is.
+- 🐛 MVT varint and zigzag decoding no longer relies on 64-bit bitwise
+  operations, which JavaScript truncates to 32 bits — negative
+  coordinate deltas decoded as huge positive values on web. Native
+  results are bit-identical.
+
 ## 1.2.0
 
 Two style features that used to be skipped now render.

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
-import '../cache/disk_cache.dart';
+import '../cache/byte_cache.dart';
 import '../cache/lru_cache.dart';
 import '../core/cancellation.dart';
 import '../core/tile_key.dart';
@@ -33,7 +33,7 @@ class RasterTile {
 /// eviction can never dispose pixels a queued rasterization still needs.
 class RasterTileStore {
   final RasterTileSource source;
-  final Future<DiskCache?> diskCache;
+  final Future<ByteCache?> diskCache;
 
   /// Decoded images, shared process-wide between stores on the same
   /// source. Entries survive [dispose] and live for the process lifetime;
@@ -50,7 +50,7 @@ class RasterTileStore {
 
   RasterTileStore({
     required this.source,
-    Future<DiskCache?>? diskCache,
+    Future<ByteCache?>? diskCache,
     int memoryCacheMaxBytes = 32 * 1024 * 1024,
   })  : diskCache = diskCache ?? Future.value(),
         _memory = _memoryCaches.putIfAbsent(

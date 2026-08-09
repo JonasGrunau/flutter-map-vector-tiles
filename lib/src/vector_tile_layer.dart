@@ -1,14 +1,13 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart' hide Theme;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:path_provider/path_provider.dart';
 
-import 'cache/disk_cache.dart';
+import 'cache/byte_cache.dart';
+import 'cache/cache_resolver.dart';
 import 'core/cancellation.dart';
 import 'core/tile_key.dart';
 import 'grid/grid_layout.dart';
@@ -70,20 +69,24 @@ class VectorTileLayer extends StatefulWidget {
   final int concurrency;
 
   /// Maximum size of the tile byte cache on disk. Zero disables disk
-  /// caching.
+  /// caching. Has no effect on web (no disk cache).
   final int diskCacheMaximumSizeInBytes;
 
   /// Freshness window for disk-cached tiles: tiles younger than this are
   /// served without touching the network. Older tiles are refetched, but
   /// kept on disk (up to the size cap) and served when the network is
-  /// unavailable. Mind your tile provider's terms.
+  /// unavailable. Mind your tile provider's terms. Has no effect on web
+  /// (no disk cache).
   final Duration diskCacheTtl;
 
-  /// Resolves the disk cache folder; defaults to a subdirectory of the
-  /// application support directory, which — unlike the temporary
+  /// Resolves the disk cache directory path; defaults to a subdirectory
+  /// of the application support directory, which — unlike the temporary
   /// directory — the OS does not purge, so recently viewed areas stay
   /// available offline.
-  final Future<Directory> Function()? cacheFolder;
+  ///
+  /// Ignored on web, which has no persistent tile cache: tiles fall back
+  /// to the in-memory cache and the browser's own HTTP cache.
+  final Future<String> Function()? cachePath;
 
   /// Memory budget for decoded tile data, per source.
   final int memoryCacheMaxBytes;
@@ -106,7 +109,7 @@ class VectorTileLayer extends StatefulWidget {
     this.concurrency = 3,
     this.diskCacheMaximumSizeInBytes = 50 * 1024 * 1024,
     this.diskCacheTtl = const Duration(days: 14),
-    this.cacheFolder,
+    this.cachePath,
     this.memoryCacheMaxBytes = 24 * 1024 * 1024,
     this.tileFadeDuration = const Duration(milliseconds: 150),
     this.showLabels = true,
@@ -133,7 +136,7 @@ class VectorTileLayer extends StatefulWidget {
 class _VectorTileLayerState extends State<VectorTileLayer>
     with TickerProviderStateMixin {
   late TilePrepareExecutor _executor;
-  late final Future<DiskCache?> _diskCache;
+  late final Future<ByteCache?> _diskCache;
   final _stores = <String, TileStore>{};
   final _rasterStores = <String, RasterTileStore>{};
   final _tiles = <TileKey, _DisplayTile>{};
@@ -166,20 +169,15 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// The stores hold this future and await it before reaching for the
   /// network, so tiles requested on the first frame — before the cache has
   /// finished initializing — still come off disk.
-  Future<DiskCache?> _obtainDiskCache() {
+  Future<ByteCache?> _obtainDiskCache() {
     if (widget.diskCacheMaximumSizeInBytes <= 0) return Future.value();
-    return DiskCacheRegistry.obtain(
-      folder: widget.cacheFolder ?? _defaultCacheFolder,
+    return obtainTileCache(
+      cachePath: widget.cachePath,
       ttl: widget.diskCacheTtl,
       maxSizeBytes: widget.diskCacheMaximumSizeInBytes,
       logger: widget.logger,
     );
   }
-
-  static Future<Directory> _defaultCacheFolder() async => Directory(
-        '${(await getApplicationSupportDirectory()).path}'
-        '${Platform.pathSeparator}flutter_map_vector_tiles',
-      );
 
   void _buildStores() {
     for (final store in _stores.values) {

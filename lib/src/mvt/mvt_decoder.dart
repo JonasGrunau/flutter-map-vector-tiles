@@ -211,7 +211,10 @@ double _shoelace(Float32List ring) {
   return sum / 2;
 }
 
-int _zigzag(int value) => (value >> 1) ^ -(value & 1);
+// Arithmetic instead of `(value >> 1) ^ -(value & 1)`: dart2js bitwise
+// ops truncate to unsigned 32 bits, which turned negative deltas into
+// huge positive coordinates on web.
+int _zigzag(int value) => value.isOdd ? -((value + 1) ~/ 2) : value ~/ 2;
 
 /// Minimal protobuf wire-format reader over a byte range.
 class _Reader {
@@ -228,18 +231,23 @@ class _Reader {
 
   bool get atEnd => _pos >= _end;
 
+  // Accumulates with multiply/add instead of `|` and `<<`: dart2js
+  // bitwise ops truncate to 32 bits, silently corrupting larger varints
+  // on web. Arithmetic is exact up to 2^53 on both platforms, which
+  // covers every value real MVT tiles carry.
   int readVarint() {
     var result = 0;
-    var shift = 0;
+    var multiplier = 1;
+    var length = 0;
     while (true) {
       if (_pos >= _end) {
         throw const FormatException('truncated varint');
       }
       final byte = _bytes[_pos++];
-      result |= (byte & 0x7f) << shift;
+      result += (byte & 0x7f) * multiplier;
       if (byte & 0x80 == 0) break;
-      shift += 7;
-      if (shift > 63) throw const FormatException('varint too long');
+      multiplier *= 128;
+      if (++length > 9) throw const FormatException('varint too long');
     }
     return result;
   }
@@ -286,13 +294,14 @@ class _Reader {
     final out = Uint32List(len);
     var n = 0;
     while (_pos < end) {
+      // Multiply/add for the same dart2js reason as [readVarint].
       var result = 0;
-      var shift = 0;
+      var multiplier = 1;
       while (true) {
         final byte = _bytes[_pos++];
-        result |= (byte & 0x7f) << shift;
+        result += (byte & 0x7f) * multiplier;
         if (byte & 0x80 == 0) break;
-        shift += 7;
+        multiplier *= 128;
       }
       out[n++] = result;
     }

@@ -77,6 +77,12 @@ cache framework. Every `ui.Image` has exactly one owner and is disposed
 on eviction or layer dispose; disposing the layer tears down isolates,
 pending requests and caches (verified by tests).
 
+On web the disk row is absent: the cache resolver
+(`cache_resolver_stub.dart` vs `cache_resolver_io.dart`, mirroring the
+executor's conditional import) resolves to no persistent cache, and
+`TileStore`/`StyleReader` already tolerate a null cache — tiles degrade
+to the memory LRU plus the browser's HTTP cache.
+
 ## Style engine
 
 The style reader accepts real-world MapLibre/Mapbox GL styles and is
