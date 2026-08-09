@@ -277,7 +277,7 @@ The full rendering model and the reasoning behind each departure from
 `vector_map_tiles` is documented in
 [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md). 📖
 
-## 🆚 vs. `vector_map_tiles`
+## 🆚 `vector_map_tiles`
 
 | | `vector_map_tiles` (stable) | this package |
 |---|---|---|
