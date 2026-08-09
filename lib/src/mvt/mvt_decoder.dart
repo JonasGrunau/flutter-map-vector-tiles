@@ -211,10 +211,20 @@ double _shoelace(Float32List ring) {
   return sum / 2;
 }
 
-// Arithmetic instead of `(value >> 1) ^ -(value & 1)`: dart2js bitwise
-// ops truncate to unsigned 32 bits, which turned negative deltas into
-// huge positive coordinates on web.
-int _zigzag(int value) => value.isOdd ? -((value + 1) ~/ 2) : value ~/ 2;
+// Arithmetic instead of `(value >> 1) ^ -(value & 1)`: dart2js truncates
+// the xor-with-negative to unsigned 32 bits, which turned negative deltas
+// into huge positive coordinates on web. `&` survives that truncation (it
+// keeps the low bits) and `~/` is exact to 2^53, so this form is
+// bit-identical on both platforms.
+//
+// Branchless on purpose: coordinate deltas alternate sign unpredictably,
+// so a `value.isOdd ? … : …` form costs ~5% of whole-tile decode time on
+// geometry-heavy tiles in mispredicted branches.
+int _zigzag(int value) {
+  final sign = value & 1;
+  final half = value ~/ 2;
+  return half - (half + half + 1) * sign;
+}
 
 /// Minimal protobuf wire-format reader over a byte range.
 class _Reader {

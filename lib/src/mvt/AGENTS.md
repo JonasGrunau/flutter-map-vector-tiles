@@ -40,6 +40,13 @@ package ships as a single dependency.
 don't share bugs. Add round-trip cases there for any new wire-format handling,
 including a truncated/garbage input case.
 
+Run the file under `--platform chrome` as well as the VM. Negative coordinate
+deltas are the tripwire: `int` is 64-bit on native but dart2js truncates
+bitwise ops to 32 bits, so a decoder change can be correct on the VM and
+silently wrong on web. `decodes negative coordinate deltas`, `zigzag
+round-trips the full delta range` and `decodes negative sint property
+values` exist to catch exactly that.
+
 ### Common Patterns
 
 - Geometry is accumulated into `Float32List` runs (not `List<Offset>`) so it

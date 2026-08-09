@@ -77,6 +77,10 @@ is no CI to catch either.
 - Plain `test()`/`testWidgets()` with `expect` — no mocks, no code generation.
 - Fixtures are built in-test from `fixtures/mvt_builder.dart` rather than
   checked in as binary blobs, so the input to a failing test is readable.
+- Fixture encoders must be web-safe too. `mvt_builder.dart`'s `zig()` uses
+  arithmetic, not `(v << 1) ^ (v >> 31)`: under dart2js the shift form
+  mis-encodes negative deltas, which would make the decoder's round-trip
+  tests pass on chrome for the wrong reason.
 
 ## Dependencies
 

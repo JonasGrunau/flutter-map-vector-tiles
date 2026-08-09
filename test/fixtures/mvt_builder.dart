@@ -94,8 +94,15 @@ class MvtLayerBuilder {
         final data = ByteData(8)..setFloat64(0, value, Endian.little);
         v.add(data.buffer.asUint8List());
       } else if (value is int) {
-        _writeTag(v, 4, 0);
-        _writeVarint(v, value);
+        if (value < 0) {
+          // sint_value, as real encoders write negatives; also exercises
+          // the decoder's second zigzag call site.
+          _writeTag(v, 6, 0);
+          _writeVarint(v, zig(value));
+        } else {
+          _writeTag(v, 4, 0);
+          _writeVarint(v, value);
+        }
       } else if (value is bool) {
         _writeTag(v, 7, 0);
         _writeVarint(v, value ? 1 : 0);
@@ -116,7 +123,13 @@ class MvtLayerBuilder {
 
 /// Geometry command helpers.
 int cmd(int id, int count) => (count << 3) | id;
-int zig(int v) => (v << 1) ^ (v >> 31);
+
+/// Zigzag-encodes [v], the inverse of the decoder's `_zigzag`.
+///
+/// Arithmetic rather than `(v << 1) ^ (v >> 31)`: dart2js truncates those
+/// bitwise ops to 32 bits, so the shift form encodes negative deltas wrongly
+/// on web and the round-trip tests would pass for the wrong reason there.
+int zig(int v) => v < 0 ? -2 * v - 1 : 2 * v;
 
 void _writeTag(BytesBuilder out, int field, int wire) =>
     _writeVarint(out, (field << 3) | wire);
@@ -125,7 +138,7 @@ void _writeVarint(BytesBuilder out, int value) {
   var v = value;
   while (v >= 0x80) {
     out.addByte((v & 0x7f) | 0x80);
-    v >>= 7;
+    v ~/= 128; // not `>>= 7`: dart2js shifts truncate to 32 bits
   }
   out.addByte(v);
 }
