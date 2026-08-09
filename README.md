@@ -37,7 +37,7 @@ your other layers; this package only draws the map. 🎯
 ```yaml
 dependencies:
   flutter_map: ^8.2.0
-  flutter_map_vector_tiles: ^2.0.1
+  flutter_map_vector_tiles: ^2.1.0
 ```
 
 ### 2. Load a style & drop in the layer
@@ -98,7 +98,7 @@ flutter run --dart-define=MAPTILER_KEY=yourKey
 | 🟢 [Stadia Maps](https://stadiamaps.com) | `https://tiles.stadiamaps.com/styles/osm_bright.json?api_key={key}` | |
 | 🟢 ArcGIS / Esri | `https://…/VectorTileServer/resources/styles/root.json` | relative `../../` sources, `tile/{z}/{y}/{x}` templates and sprites resolve correctly — verified against `World_Basemap_v2` |
 | 🟢 Self-hosted (TileServer GL, Martin, …) | any MapLibre `style.json` | verified against the MapLibre demo tiles; relative tile templates supported |
-| 🟡 [Protomaps](https://protomaps.com) | `https://api.protomaps.com/styles/…?key={key}` | the hosted API uses the same URL shapes and should work (untested); `pmtiles://` archives are **not** supported |
+| 🟢 [Protomaps](https://protomaps.com) / PMTiles | `pmtiles://https://…/planet.pmtiles` source URLs in any style | single-file archives served via HTTP range requests — verified against the Protomaps sample archives; gzip-internal archives only (brotli/zstd are rejected). The hosted `api.protomaps.com` styles use plain URL shapes and should also work (untested — needs a key) |
 
 The reader is tolerant either way: unsupported layer types, paint
 properties and expressions are skipped per-layer with a warning — one
@@ -188,7 +188,11 @@ native:
 - **CORS** — the browser fetches style.json, TileJSON, sprites and tiles
   directly, so every host involved must send
   `Access-Control-Allow-Origin`. MapTiler, OpenFreeMap and Stadia do;
-  self-hosted tile servers need it configured.
+  self-hosted tile servers need it configured. PMTiles archive hosts
+  additionally need range requests to pass CORS (`Range` in
+  `Access-Control-Allow-Headers` when preflighted).
+- **PMTiles gunzip** uses the browser's native `DecompressionStream`
+  (available in every browser that runs Flutter web).
 
 ## 🔌 Custom tile sources
 
@@ -207,9 +211,20 @@ vt.VectorTileLayer(
 )
 ```
 
+**PMTiles** single-file archives work out of the box: styles with
+`pmtiles://https://…/planet.pmtiles` source URLs just load, or open an
+archive directly:
+
+```dart
+final provider = await vt.PmTilesVectorTileProvider.open(
+  'https://tiles.example.com/planet.pmtiles',
+);
+// → vt.TileProviders({'mySource': provider})
+```
+
 There's also `MemoryVectorTileProvider` (tests, bundled offline regions)
-and a small `VectorTileProvider` interface for anything else (MBTiles,
-PMTiles, …).
+and a small `VectorTileProvider` interface for anything else
+(MBTiles, …).
 
 ## 🎨 Style support
 

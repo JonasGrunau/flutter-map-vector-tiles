@@ -97,6 +97,18 @@ URL, tile templates against the TileJSON URL when they came from one
 (ArcGIS declares `"url": "../../"` and `tile/{z}/{y}/{x}.pbf`) — and
 the `{z}`/`{x}`/`{y}` braces survive resolution un-percent-encoded.
 
+Sources whose `url` starts with `pmtiles://` bypass TileJSON entirely:
+`PmTilesVectorTileProvider` reads the single-file archive over HTTP
+range requests. Its `open()` fetches the 127-byte header plus root
+directory in one 16 KiB request (the spec guarantees both fit there);
+each tile then maps z/x/y onto the PMTiles Hilbert tile ID and costs at
+most two more range requests — an LRU-cached leaf directory and the
+tile blob. Directory and tile gunzip goes through a conditional import:
+`dart:io` zlib natively, the browser's `DecompressionStream` on web.
+All 64-bit offsets and tile IDs are computed with multiply/add
+arithmetic (exact to 2^53) rather than bitwise ops, which dart2js
+truncates to 32 bits — the same constraint the MVT decoder observes.
+
 ## What was deliberately changed vs. vector_map_tiles
 
 * one package instead of three (`vector_map_tiles`, `vector_tile_renderer`,

@@ -11,6 +11,7 @@ import '../cache/byte_cache.dart';
 import '../cache/cache_resolver.dart';
 import '../logger.dart';
 import '../provider/network_vector_tile_provider.dart';
+import '../provider/pmtiles/pmtiles_vector_tile_provider.dart';
 import '../provider/vector_tile_provider.dart';
 import '../tile_providers.dart';
 import 'sprite_atlas.dart';
@@ -57,9 +58,9 @@ class Style {
 ///
 /// Handles the URI conventions of real-world providers — MapTiler,
 /// OpenFreeMap, Stadia, ArcGIS, Protomaps — including `{key}`
-/// substitution, relative sprite URLs and TileJSON indirection. Designed
-/// to be tolerant: anything non-essential that fails to load is skipped
-/// with a warning.
+/// substitution, relative sprite URLs, TileJSON indirection and
+/// `pmtiles://` archive sources. Designed to be tolerant: anything
+/// non-essential that fails to load is skipped with a warning.
 class StyleReader {
   /// The style URL (`https://…/style.json?key={key}`), an
   /// `asset://path/to/style.json` URI, or `mapbox://styles/...` style id.
@@ -205,11 +206,26 @@ class StyleReader {
     var minZoom = (source['minzoom'] as num?)?.toInt();
     var maxZoom = (source['maxzoom'] as num?)?.toInt();
 
+    final sourceUrl = source['url'] as String?;
+    if (sourceUrl != null && sourceUrl.startsWith('pmtiles://')) {
+      final archive = _substitute(
+          _resolve(sourceUrl.substring('pmtiles://'.length), styleUrl));
+      return PmTilesVectorTileProvider.open(
+        archive,
+        minimumZoom: minZoom,
+        maximumZoom: maxZoom,
+        logger: logger,
+        // Only a caller-supplied client outlives read(); an owned one is
+        // closed after the style bundle refreshes.
+        client: httpClient,
+      );
+    }
+
     // Relative tile templates resolve against the document that declared
     // them: the style for inline `tiles`, the TileJSON document otherwise
     // (ArcGIS declares `"url": "../../"` and `tile/{z}/{y}/{x}.pbf`).
     var templateBase = styleUrl;
-    final tileJsonUrl = source['url'] as String?;
+    final tileJsonUrl = sourceUrl;
     if (tiles == null && tileJsonUrl != null) {
       final resolved = _substitute(_resolve(tileJsonUrl, styleUrl));
       final tileJson = await loader.loadJson(resolved);

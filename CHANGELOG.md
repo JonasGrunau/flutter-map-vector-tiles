@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.1.0
+
+PMTiles support: Protomaps-style single-file tile archives now work.
+
+- ✨ **PMTiles v3 archives**: styles with
+  `pmtiles://https://…/planet.pmtiles` source URLs load out of the box,
+  and `PmTilesVectorTileProvider.open(url)` serves any archive directly.
+  Tiles come from HTTP range requests — the header and root directory
+  are fetched once, leaf directories are LRU-cached, and each tile costs
+  at most two range requests. Works on all six platforms; on web the
+  archive host must allow ranged CORS requests, and gunzip uses the
+  browser's native `DecompressionStream`. Archives with brotli or zstd
+  internal compression are rejected with a clear error (gzip and
+  uncompressed are supported — Protomaps builds ship gzip).
+- The source's `minzoom`/`maxzoom` in the style override the archive
+  header, matching the behaviour of TileJSON sources.
+
 ## 2.0.1
 
 Real-world style compatibility: ArcGIS/Esri `root.json` styles now work.

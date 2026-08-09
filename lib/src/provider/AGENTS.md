@@ -18,6 +18,9 @@ imagery.
 | `vector_tile_provider.dart` | The contract: `abstract class VectorTileProvider` (`load(TileKey, {CancellationToken})`, `dispose()`) and the sealed `TileResponse` hierarchy — `TileResponseData`, `TileResponseNotFound`, `TileResponseCancelled`, `TileResponseError` |
 | `network_vector_tile_provider.dart` | HTTP provider over a `{z}/{x}/{y}` URL template; de-duplicates concurrent requests for the same URL, maps 404/204/empty to `NotFound`, 5xx and socket failures to `Error`, and honours the cancellation token |
 | `memory_vector_tile_provider.dart` | Serves tiles from an in-memory map — used by tests and for bundled/offline tile sets |
+| `pmtiles/pmtiles_format.dart` | PMTiles v3 binary format: 127-byte header, directory decoding (delta varints, run lengths, contiguous offsets), Hilbert z/x/y→TileID. Web-safe by construction — 64-bit values use multiply/add arithmetic, never bitwise ops |
+| `pmtiles/pmtiles_vector_tile_provider.dart` | `PmTilesVectorTileProvider` — serves tiles from a single-file PMTiles archive over HTTP range requests (`pmtiles://` sources). `open()` fetches header + root directory once; leaf directories are LRU-cached; gzip only (brotli/zstd rejected at open) |
+| `pmtiles/pmtiles_gunzip_io.dart` / `pmtiles_gunzip_web.dart` | Conditional-import gunzip: `dart:io` zlib natively, the browser's `DecompressionStream` on web |
 
 ## For AI Agents
 
