@@ -11,6 +11,7 @@ export 'src/provider/network_vector_tile_provider.dart';
 export 'src/provider/pmtiles/pmtiles_format.dart';
 export 'src/provider/pmtiles/pmtiles_vector_tile_provider.dart';
 export 'src/provider/vector_tile_provider.dart';
+export 'src/style/attribution.dart';
 export 'src/style/expression.dart' show EvalContext;
 export 'src/style/sprite_atlas.dart';
 export 'src/style/style_reader.dart';

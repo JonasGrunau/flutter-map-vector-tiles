@@ -28,6 +28,7 @@ lifecycle or painting is covered by widget tests that pump a real
 | `disk_cache_test.dart`, `lru_cache_test.dart` | Cache eviction, TTL, size sweep |
 | `style_reader_cache_test.dart` | Stale-while-revalidate style loading |
 | `style_reader_sources_test.dart` | Source URL resolution: relative TileJSON/tile templates (ArcGIS `root.json` shape), `{key}` substitution |
+| `attribution_test.dart` | `StyleAttribution.parse` (link spans, entities, stray markup) and the reader's collection: source over TileJSON, dedup, order |
 | `pmtiles_test.dart` | PMTiles: Hilbert tile IDs (spec anchors + bijection), directory decode/lookup, range-request provider (leaves, coalescing, cancellation), `pmtiles://` style wiring |
 | `pmtiles_gzip_test.dart` | VM-only: gzip-compressed archives via `dart:io` gzip; brotli/zstd rejection |
 | `pmtiles_gunzip_web_test.dart` | Browser-only: `DecompressionStream` gunzip round-trip |

@@ -14,7 +14,8 @@ happens once at read time; nothing here re-parses JSON per frame.
 
 | File | Description |
 |------|-------------|
-| `style_reader.dart` | `StyleReader` / `Style` — fetches the style document, resolves sources through TileJSON, substitutes `{key}`, builds `TileProviders` and `RasterTileSource`s, loads sprites, and owns stale-while-revalidate disk caching via `_Loader`. Relative URLs resolve against the declaring document (tile templates against the TileJSON URL when they came from one — the ArcGIS `"url": "../../"` shape); template braces are restored after `Uri.resolve` percent-encodes them. `pmtiles://` source URLs bypass TileJSON and open a `PmTilesVectorTileProvider`. Throws `StyleReaderException`; redacts API keys in logs |
+| `style_reader.dart` | `StyleReader` / `Style` — fetches the style document, resolves sources through TileJSON, substitutes `{key}`, builds `TileProviders` and `RasterTileSource`s, loads sprites, and owns stale-while-revalidate disk caching via `_Loader`. Relative URLs resolve against the declaring document (tile templates against the TileJSON URL when they came from one — the ArcGIS `"url": "../../"` shape); template braces are restored after `Uri.resolve` percent-encodes them. `pmtiles://` source URLs bypass TileJSON and open a `PmTilesVectorTileProvider`. Collects each source's `attribution` (the source's own value overriding its TileJSON's, as in MapLibre) into `Style.attributions`, deduplicated in document order. Throws `StyleReaderException`; redacts API keys in logs |
+| `attribution.dart` | `StyleAttribution` / `AttributionSpan` — style attribution is HTML by convention, so `StyleAttribution.parse` flattens it to `text` for a `Text` widget *and* keeps `spans` (text + link) for tappable rendering; `html` is the untouched declaration. Regex-based and forgiving: anything it cannot parse degrades to plain text |
 | `expression_parser.dart` | `ExpressionParser` — the largest file here (~950 lines). Compiles modern expression arrays *and* legacy function/filter syntax into `Expr` closures: `let`/`var`, comparisons, `case`, `match`, `step`, `interpolate` (incl. cubic-bezier easing), the full math operator set, and property references |
 | `expression.dart` | The compiled-expression runtime: `typedef Expr`, `EvalContext` (feature properties + zoom + vars), coercions (`toBoolean`/`toNumber`/`toColor`/`toStringValue`), and the typed property wrappers `DoubleProp`, `ColorProp`, `StringProp`, `BoolProp`, `NumListProp`, `StringListProp` — each with a fallback and an `isConstant` fast path |
 | `theme.dart` | The compiled style model: `Theme` and the sealed `ThemeLayer` hierarchy — `BackgroundThemeLayer`, `FillThemeLayer`, `LineThemeLayer`, `RasterThemeLayer`, `CircleThemeLayer`, `SymbolThemeLayer`, with `coversZoom()` and `matches()` |
@@ -53,6 +54,8 @@ happens once at read time; nothing here re-parses JSON per frame.
 - `test/style_reader_sources_test.dart` — source URL resolution: relative
   TileJSON and tile templates (ArcGIS `root.json` shape), `{key}`
   substitution in TileJSON URLs
+- `test/attribution_test.dart` — attribution parsing (links, entities,
+  stray markup) and collection (source over TileJSON, dedup, order)
 
 New expression operators need a case in `expression_test.dart` *and* an
 explicit unsupported-input case proving the degradation path.

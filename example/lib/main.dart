@@ -92,9 +92,14 @@ class _VectorMapPageState extends State<VectorMapPage> {
                 sprites: style.sprites,
                 logger: const vt.Logger.console(),
               ),
-              const SimpleAttributionWidget(
-                source: Text('© MapTiler © OpenStreetMap contributors'),
-              ),
+              // Whatever the style's sources declare — never a hardcoded
+              // provider name. Most providers' terms require showing it.
+              if (style.attributions.isNotEmpty)
+                SimpleAttributionWidget(
+                  source: Text(
+                    style.attributions.map((a) => a.text).join(' · '),
+                  ),
+                ),
             ],
           );
         },

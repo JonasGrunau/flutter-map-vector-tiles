@@ -14,6 +14,7 @@ import '../provider/network_vector_tile_provider.dart';
 import '../provider/pmtiles/pmtiles_vector_tile_provider.dart';
 import '../provider/vector_tile_provider.dart';
 import '../tile_providers.dart';
+import 'attribution.dart';
 import 'sprite_atlas.dart';
 import 'theme.dart';
 import 'theme_reader.dart';
@@ -32,6 +33,19 @@ class Style {
   final double? zoom;
   final String name;
 
+  /// Attribution declared by the style's sources (or the TileJSON they
+  /// point at), in document order, deduplicated by visible text —
+  /// several sources of the same provider usually repeat one string.
+  ///
+  /// Show it on the map: most providers' terms of use require it.
+  ///
+  /// ```dart
+  /// SimpleAttributionWidget(
+  ///   source: Text(style.attributions.map((a) => a.text).join(' · ')),
+  /// )
+  /// ```
+  final List<StyleAttribution> attributions;
+
   const Style({
     required this.theme,
     required this.providers,
@@ -40,6 +54,7 @@ class Style {
     this.center,
     this.zoom,
     this.name = '',
+    this.attributions = const [],
   });
 
   /// Releases providers and sprite images. Call after the map using this
@@ -119,6 +134,9 @@ class StyleReader {
       final sources = styleJson['sources'];
       final providers = <String, VectorTileProvider>{};
       final rasterSources = <String, RasterTileSource>{};
+      // Keyed by visible text so repeats across sources collapse even
+      // when their markup differs; a LinkedHashMap keeps document order.
+      final attributions = <String, StyleAttribution>{};
       if (sources is Map) {
         for (final entry in sources.entries) {
           final id = entry.key as String;
@@ -132,19 +150,32 @@ class StyleReader {
           }
           try {
             final map = source.cast<String, Object?>();
+            // The source's own attribution wins over the TileJSON's, as
+            // in MapLibre — that is how a style overrides its upstream.
+            final _Source? built;
             if (type == 'vector') {
-              final provider = await _createProvider(loader, map, styleUrl);
-              if (provider != null) providers[id] = provider;
+              built = await _createProvider(loader, map, styleUrl);
+              if (built != null) providers[id] = built.provider;
             } else {
               // MapLibre source default maxzoom is 22; rasters routinely
               // go deeper than the vector default of 14.
-              final provider = await _createProvider(loader, map, styleUrl,
+              built = await _createProvider(loader, map, styleUrl,
                   defaultMaxZoom: 22);
-              if (provider != null) {
+              if (built != null) {
                 rasterSources[id] = RasterTileSource(
-                  provider: provider,
+                  provider: built.provider,
                   tileSize: (map['tileSize'] as num?)?.toInt() ?? 512,
                 );
+              }
+            }
+            if (built != null) {
+              final declared =
+                  (map['attribution'] as String?) ?? built.attribution;
+              if (declared != null && declared.trim().isNotEmpty) {
+                final parsed = StyleAttribution.parse(declared);
+                if (parsed.text.isNotEmpty) {
+                  attributions.putIfAbsent(parsed.text, () => parsed);
+                }
               }
             }
           } catch (e) {
@@ -182,6 +213,7 @@ class StyleReader {
         center: center,
         zoom: (styleJson['zoom'] as num?)?.toDouble(),
         name: styleJson['name'] as String? ?? '',
+        attributions: List.unmodifiable(attributions.values),
       );
     } finally {
       if (ownsClient) {
@@ -196,7 +228,7 @@ class StyleReader {
     }
   }
 
-  Future<VectorTileProvider?> _createProvider(
+  Future<_Source?> _createProvider(
     _Loader loader,
     Map<String, Object?> source,
     String styleUrl, {
@@ -210,7 +242,9 @@ class StyleReader {
     if (sourceUrl != null && sourceUrl.startsWith('pmtiles://')) {
       final archive = _substitute(
           _resolve(sourceUrl.substring('pmtiles://'.length), styleUrl));
-      return PmTilesVectorTileProvider.open(
+      // Archives carry attribution in their metadata, but the style's own
+      // `attribution` is the only value read here.
+      return _Source(await PmTilesVectorTileProvider.open(
         archive,
         minimumZoom: minZoom,
         maximumZoom: maxZoom,
@@ -218,13 +252,14 @@ class StyleReader {
         // Only a caller-supplied client outlives read(); an owned one is
         // closed after the style bundle refreshes.
         client: httpClient,
-      );
+      ));
     }
 
     // Relative tile templates resolve against the document that declared
     // them: the style for inline `tiles`, the TileJSON document otherwise
     // (ArcGIS declares `"url": "../../"` and `tile/{z}/{y}/{x}.pbf`).
     var templateBase = styleUrl;
+    String? attribution;
     final tileJsonUrl = sourceUrl;
     if (tiles == null && tileJsonUrl != null) {
       final resolved = _substitute(_resolve(tileJsonUrl, styleUrl));
@@ -233,15 +268,19 @@ class StyleReader {
       templateBase = resolved;
       minZoom ??= (tileJson['minzoom'] as num?)?.toInt();
       maxZoom ??= (tileJson['maxzoom'] as num?)?.toInt();
+      attribution = tileJson['attribution'] as String?;
     }
     final template = tiles?.whereType<String>().firstOrNull;
     if (template == null) return null;
 
-    return NetworkVectorTileProvider(
-      urlTemplate: _substitute(_resolveTemplate(template, templateBase)),
-      minimumZoom: minZoom ?? 0,
-      maximumZoom: maxZoom ?? defaultMaxZoom,
-      logger: logger,
+    return _Source(
+      NetworkVectorTileProvider(
+        urlTemplate: _substitute(_resolveTemplate(template, templateBase)),
+        minimumZoom: minZoom ?? 0,
+        maximumZoom: maxZoom ?? defaultMaxZoom,
+        logger: logger,
+      ),
+      attribution: attribution,
     );
   }
 
@@ -370,6 +409,15 @@ class _Loader {
     }
     return response.bodyBytes;
   }
+}
+
+/// A built provider plus the attribution its TileJSON declared, if it
+/// went through one.
+class _Source {
+  final VectorTileProvider provider;
+  final String? attribution;
+
+  const _Source(this.provider, {this.attribution});
 }
 
 class StyleReaderException implements Exception {

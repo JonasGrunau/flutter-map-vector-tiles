@@ -14,7 +14,7 @@ only visible by driving a real map.
 
 | File | Description |
 |------|-------------|
-| `lib/main.dart` | The whole example: `ExampleApp`, a `FlutterMap` with a `VectorTileLayer`, style URL and API key supplied via `--dart-define` (`MAPTILER_KEY`, `STYLE_URL`), defaulting to MapTiler streets-v2 |
+| `lib/main.dart` | The whole example: `ExampleApp`, a `FlutterMap` with a `VectorTileLayer`, style URL and API key supplied via `--dart-define` (`MAPTILER_KEY`, `STYLE_URL`), defaulting to MapTiler streets-v2. Attribution comes from `style.attributions` — never hardcode a provider name here, the style URL is user-supplied |
 | `pubspec.yaml` | Depends on the parent package by path |
 
 ## For AI Agents

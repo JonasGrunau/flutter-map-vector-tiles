@@ -13,7 +13,7 @@ implementation detail.
 
 | File | Description |
 |------|-------------|
-| `flutter_map_vector_tiles.dart` | The public API barrel. Exports `VectorTileLayer`, `StyleReader`/`Style`, `Theme`/`ThemeReader`, the provider hierarchy, `TileKey`, `TileOffset`, `TileProviders`, `SpriteAtlas`, `Logger`, `CancellationToken` and `EvalContext` (that one `show`-limited from `src/style/expression.dart`) |
+| `flutter_map_vector_tiles.dart` | The public API barrel. Exports `VectorTileLayer`, `StyleReader`/`Style`, `Theme`/`ThemeReader`, the provider hierarchy, `TileKey`, `TileOffset`, `TileProviders`, `SpriteAtlas`, `StyleAttribution`/`AttributionSpan`, `Logger`, `CancellationToken` and `EvalContext` (that one `show`-limited from `src/style/expression.dart`) |
 
 ## Subdirectories
 

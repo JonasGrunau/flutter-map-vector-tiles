@@ -67,7 +67,11 @@ FlutterMap(
       rasterSources: style.rasterSources,
       sprites: style.sprites,
     ),
-    // ...your markers, polylines, attribution, etc.
+    // Show what the style's sources ask for — most providers require it.
+    SimpleAttributionWidget(
+      source: Text(style.attributions.map((a) => a.text).join(' · ')),
+    ),
+    // ...your markers, polylines, etc.
   ],
 );
 ```
@@ -98,7 +102,8 @@ flutter run --dart-define=MAPTILER_KEY=yourKey
 | 🟢 [Stadia Maps](https://stadiamaps.com) | `https://tiles.stadiamaps.com/styles/osm_bright.json?api_key={key}` | |
 | 🟢 ArcGIS / Esri | `https://…/VectorTileServer/resources/styles/root.json` | relative `../../` sources, `tile/{z}/{y}/{x}` templates and sprites resolve correctly — verified against `World_Basemap_v2` |
 | 🟢 Self-hosted (TileServer GL, Martin, …) | any MapLibre `style.json` | verified against the MapLibre demo tiles; relative tile templates supported |
-| 🟢 [Protomaps](https://protomaps.com) / PMTiles | `pmtiles://https://…/planet.pmtiles` source URLs in any style | single-file archives served via HTTP range requests — verified against the Protomaps sample archives; gzip-internal archives only (brotli/zstd are rejected). The hosted `api.protomaps.com` styles use plain URL shapes and should also work (untested — needs a key) |
+| 🟢 [Protomaps](https://protomaps.com) hosted API | `https://api.protomaps.com/styles/v5/light/en.json?key={key}` | verified against the v5 `light` style; the style embeds the key in an absolute `…/tiles/v4/{z}/{x}/{y}.mvt?key=…` template. On web, allow-list your origin per key in the Protomaps account portal — `localhost` is exempt |
+| 🟢 [PMTiles](https://docs.protomaps.com/pmtiles/) archives | `pmtiles://https://…/planet.pmtiles` source URLs in any style | single-file archives served via HTTP range requests — verified against the Protomaps sample archives; gzip-internal archives only (brotli/zstd are rejected) |
 
 The reader is tolerant either way: unsupported layer types, paint
 properties and expressions are skipped per-layer with a warning — one

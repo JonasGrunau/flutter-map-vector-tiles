@@ -91,7 +91,11 @@ unparseable expressions degrade per-layer (with a log), never failing the
 whole style. Expressions are compiled once into Dart closures; both the
 modern expression array syntax and the legacy filter syntax are
 supported. Sources are resolved through TileJSON when `url` is present,
-including `{key}` substitution. Relative URLs resolve against the
+including `{key}` substitution. Whatever a source (or its TileJSON)
+declares as `attribution` is collected into `Style.attributions`,
+deduplicated across sources; since that value is HTML by convention it
+is parsed into both flattened text and text-plus-link spans, because
+Flutter has no DOM to hand it to. Relative URLs resolve against the
 document that declared them — sprite and source URLs against the style
 URL, tile templates against the TileJSON URL when they came from one
 (ArcGIS declares `"url": "../../"` and `tile/{z}/{y}/{x}.pbf`) — and
