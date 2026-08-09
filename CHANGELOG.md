@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.1.1
+
+Style attribution and MVT decode performance.
+
+- ✨ **Style attribution**: `Style.attributions` exposes what the style's
+  sources (or the TileJSON they point at) declare, deduplicated and in
+  document order. Attribution is HTML by convention, so each
+  `StyleAttribution` carries the flattened `text` for a plain `Text`
+  widget and the `spans` — text plus link — if you want it tappable. A
+  source's own `attribution` overrides its TileJSON's, as in MapLibre.
+  The example app now shows this instead of a hardcoded string.
+- ⚡ Zigzag decoding is branchless again, recovering the ~5% of
+  whole-tile decode time that 2.0.0's web-safe rewrite spent on
+  mispredicted branches. Output is unchanged and still bit-identical
+  between native and web; a latent wrong-sign overflow at the int64
+  maximum is fixed as a side effect.
+
 ## 2.1.0
 
 PMTiles support: Protomaps-style single-file tile archives now work.
