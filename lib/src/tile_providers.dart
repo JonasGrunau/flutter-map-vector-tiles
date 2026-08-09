@@ -15,3 +15,22 @@ class TileProviders {
     }
   }
 }
+
+/// A raster tile source declared inside a vector style, referenced by
+/// `raster` layers (satellite/hybrid imagery, pre-rendered hillshading).
+///
+/// The [provider] serves encoded image bytes (PNG/JPEG/WebP) instead of
+/// MVT data — the [VectorTileProvider] interface is just bytes per tile
+/// coordinate, so `NetworkVectorTileProvider` works unchanged.
+class RasterTileSource {
+  final VectorTileProvider provider;
+
+  /// The source's `tileSize` (256 or 512). MapLibre's default is 512;
+  /// 256px sources are fetched one zoom level deeper for the same visual
+  /// scale.
+  final int tileSize;
+
+  const RasterTileSource({required this.provider, this.tileSize = 512});
+
+  void dispose() => provider.dispose();
+}

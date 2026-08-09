@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.2.0
+
+Two style features that used to be skipped now render.
+
+- 🎨 `line-pattern`: the sprite is stamped along the line, rotated to
+  the local direction and scaled so its height matches the line width
+  (MapLibre semantics, data-driven patterns included). Per spec the
+  pattern replaces `line-color` and `line-dasharray`; `line-opacity`
+  still applies. A missing sprite falls back to the color stroke.
+- 🛰️ Raster sources inside vector styles (satellite/hybrid imagery,
+  pre-rendered hillshade tiles): `raster` layers draw their tiles at
+  the correct position in the layer order. `raster-opacity`,
+  `raster-brightness-min`/`-max`, `raster-contrast`,
+  `raster-saturation` and `raster-hue-rotate` replicate MapLibre's
+  fragment-shader math (including its factor curves and spin weights).
+  Raster tiles share the tile disk cache, are decoded once and cached
+  process-wide (released by `VectorTileLayer.clearMemoryCache()`),
+  overzoom past the source maximum, respect the source `tileSize`
+  (512/256) under `TileOffset`, and render in-memory ancestors as
+  provisional imagery during zoom — the same lifecycle vector tiles
+  get. `StyleReader` picks raster sources up automatically (inline
+  `tiles` or TileJSON `url`); pass `style.rasterSources` to the new
+  `VectorTileLayer.rasterSources` parameter.
+
 ## 1.1.0
 
 Reopening a map is now nearly instant. Both caches used to die with the

@@ -85,6 +85,7 @@ class _VectorMapPageState extends State<VectorMapPage> {
               vt.VectorTileLayer(
                 theme: style.theme,
                 tileProviders: style.providers,
+                rasterSources: style.rasterSources,
                 sprites: style.sprites,
                 logger: const vt.Logger.console(),
               ),

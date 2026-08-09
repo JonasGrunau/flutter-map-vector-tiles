@@ -63,6 +63,7 @@ FlutterMap(
     vt.VectorTileLayer(
       theme: style.theme,
       tileProviders: style.providers,
+      rasterSources: style.rasterSources,
       sprites: style.sprites,
     ),
     // ...your markers, polylines, attribution, etc.
@@ -104,6 +105,7 @@ Everything has sensible defaults — override what you need:
 vt.VectorTileLayer(
   theme: style.theme,
   tileProviders: style.providers,
+  rasterSources: style.rasterSources,          // satellite/hybrid imagery
   sprites: style.sprites,
   tileOffset: vt.TileOffset.maplibre,          // 512px style convention (default)
   concurrency: 3,                              // decoding isolates
@@ -183,10 +185,14 @@ PMTiles, …).
 
 ## 🎨 Style support
 
-**Layer types:** `background`, `fill` (incl. `fill-pattern`), `line`,
-`symbol` (incl. curved line text ✍️, `text-variable-anchor` /
-`text-radial-offset`), `circle` (`fill-extrusion` renders as flat fill;
-`raster`, `hillshade`, `heatmap` and `sky` are skipped with a log line).
+**Layer types:** `background`, `fill` (incl. `fill-pattern`), `line`
+(incl. `line-pattern`, dashes, casing), `symbol` (incl. curved line
+text ✍️, `text-variable-anchor` / `text-radial-offset`), `circle`, and
+`raster` — raster sources inside vector styles 🛰️ (satellite/hybrid
+imagery) draw at their layer position with `raster-opacity`,
+brightness/contrast/saturation/hue-rotate matching MapLibre's shader
+math (`fill-extrusion` renders as flat fill; `hillshade`, `heatmap` and
+`sky` are skipped with a log line).
 
 **Icons:** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
 per `icon-color`, `icon-halo-color` and `icon-halo-width` — dark
@@ -206,9 +212,8 @@ placement so glyphs are never mis-joined.
 exponential, cubic-bezier), math, string & color operators, `let`/`var`,
 legacy filters, legacy `{stops}` functions and `{token}` templates.
 
-**Not (yet) supported:** 🚧 `line-pattern`, raster sources inside
-vector styles, and **web** (the disk cache and isolate pool are
-`dart:io`-based).
+**Not (yet) supported:** 🚧 **web** (the disk cache and isolate pool
+are `dart:io`-based).
 
 ## 🏗️ Architecture
 

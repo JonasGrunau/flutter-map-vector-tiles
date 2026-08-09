@@ -32,7 +32,9 @@ class TileResponseError extends TileResponse {
   const TileResponseError(this.error);
 }
 
-/// Provides raw vector tile (MVT) bytes for tile coordinates.
+/// Provides raw tile bytes for tile coordinates — MVT data for vector
+/// sources, encoded images (PNG/JPEG/WebP) when used in a
+/// `RasterTileSource`.
 abstract class VectorTileProvider {
   /// Highest zoom the source has native tiles for. Higher display zooms
   /// are served by overzooming this level's tiles.

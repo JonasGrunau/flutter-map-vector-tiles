@@ -12,6 +12,7 @@ import 'cache/disk_cache.dart';
 import 'core/cancellation.dart';
 import 'core/tile_key.dart';
 import 'grid/grid_layout.dart';
+import 'grid/raster_tile_store.dart';
 import 'grid/tile_retention.dart';
 import 'grid/tile_store.dart';
 import 'logger.dart';
@@ -37,6 +38,7 @@ import 'tile_providers.dart';
 ///     VectorTileLayer(
 ///       theme: style.theme,
 ///       tileProviders: style.providers,
+///       rasterSources: style.rasterSources,
 ///       sprites: style.sprites,
 ///     ),
 ///   ],
@@ -50,6 +52,12 @@ class VectorTileLayer extends StatefulWidget {
   /// ownership: dispose them (or the [Style] that created them) after
   /// the map is disposed.
   final TileProviders tileProviders;
+
+  /// Raster sources referenced by the style's `raster` layers, keyed by
+  /// style source id (satellite/hybrid imagery, pre-rendered
+  /// hillshading). Populated by `StyleReader` for styles that declare
+  /// them; the layer does not take ownership.
+  final Map<String, RasterTileSource> rasterSources;
 
   /// Sprite atlas for icon rendering (optional).
   final SpriteAtlas? sprites;
@@ -92,6 +100,7 @@ class VectorTileLayer extends StatefulWidget {
     super.key,
     required this.theme,
     required this.tileProviders,
+    this.rasterSources = const {},
     this.sprites,
     this.tileOffset = TileOffset.maplibre,
     this.concurrency = 3,
@@ -112,7 +121,10 @@ class VectorTileLayer extends StatefulWidget {
   /// them — call this from a memory-pressure handler if that budget is too
   /// generous for your app. Visible maps keep their rasterized imagery; only
   /// tiles panned to afterwards are re-read from disk.
-  static void clearMemoryCache() => TileStore.clearMemoryCaches();
+  static void clearMemoryCache() {
+    TileStore.clearMemoryCaches();
+    RasterTileStore.clearMemoryCaches();
+  }
 
   @override
   State<VectorTileLayer> createState() => _VectorTileLayerState();
@@ -123,6 +135,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   late TilePrepareExecutor _executor;
   late final Future<DiskCache?> _diskCache;
   final _stores = <String, TileStore>{};
+  final _rasterStores = <String, RasterTileStore>{};
   final _tiles = <TileKey, _DisplayTile>{};
 
   /// Tiles of other zoom levels kept until the current level is ready.
@@ -173,6 +186,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       store.dispose();
     }
     _stores.clear();
+    for (final store in _rasterStores.values) {
+      store.dispose();
+    }
+    _rasterStores.clear();
 
     // Per source: source-layer -> union of referenced property names.
     final propsBySource = <String, Map<String, Set<String>?>>{};
@@ -204,11 +221,27 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       );
     });
 
+    final rasterSourceIds = <String>{
+      for (final layer in widget.theme.layers)
+        if (layer is RasterThemeLayer && layer.source != null) layer.source!,
+    };
+    widget.rasterSources.forEach((sourceId, source) {
+      if (!rasterSourceIds.contains(sourceId)) return; // unused by theme
+      _rasterStores[sourceId] = RasterTileStore(
+        source: source,
+        diskCache: _diskCache,
+        memoryCacheMaxBytes: widget.memoryCacheMaxBytes,
+      );
+    });
+
     _generation++;
     _clearTiles();
   }
 
   void _clearTiles() {
+    for (final job in _rasterQueue.values) {
+      job.dispose();
+    }
     _rasterQueue.clear();
     for (final tile in _tiles.values) {
       tile.dispose();
@@ -230,6 +263,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
     if (oldWidget.theme != widget.theme ||
         oldWidget.tileProviders != widget.tileProviders ||
+        oldWidget.rasterSources != widget.rasterSources ||
         oldWidget.tileOffset.zoomOffset != widget.tileOffset.zoomOffset) {
       _buildStores();
     }
@@ -250,6 +284,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       store.dispose();
     }
     _stores.clear();
+    for (final store in _rasterStores.values) {
+      store.dispose();
+    }
+    _rasterStores.clear();
     _executor.dispose();
     _labelPainter.dispose();
     _patterns?.dispose();
@@ -330,6 +368,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     final priority = layout.priorityOf(tile.key);
     final sources = <String, PreparedTile>{};
     final pending = <String, Future<PreparedTile?>>{};
+    final rasters = <String, RasterTile>{};
+    final pendingRasters = <String, Future<RasterTile?>>{};
 
     for (final entry in _stores.entries) {
       final dataKey =
@@ -347,7 +387,20 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
     }
 
-    if (pending.isNotEmpty) {
+    for (final entry in _rasterStores.entries) {
+      final dataKey =
+          entry.value.dataKeyFor(tile.key, widget.tileOffset.zoomOffset);
+      if (dataKey == null) continue;
+      final cached = entry.value.peek(dataKey);
+      if (cached != null) {
+        rasters[entry.key] = cached;
+      } else {
+        pendingRasters[entry.key] =
+            entry.value.obtain(dataKey, cancellation: tile.cancellation);
+      }
+    }
+
+    if (pending.isNotEmpty || pendingRasters.isNotEmpty) {
       // Render a provisional image from already-decoded ancestors so
       // fast zoom-ins never show blank tiles.
       final provisionalSources = Map.of(sources);
@@ -359,22 +412,41 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             dataKey == null ? null : store.peekWithAncestors(dataKey);
         if (ancestor != null) provisionalSources[sourceId] = ancestor;
       }
-      if (provisionalSources.isNotEmpty) {
+      final provisionalRasters = <String, RasterTile>{
+        for (final entry in rasters.entries) entry.key: entry.value.retain(),
+      };
+      for (final sourceId in pendingRasters.keys) {
+        final store = _rasterStores[sourceId]!;
+        final dataKey =
+            store.dataKeyFor(tile.key, widget.tileOffset.zoomOffset);
+        final ancestor =
+            dataKey == null ? null : store.peekWithAncestors(dataKey);
+        if (ancestor != null) provisionalRasters[sourceId] = ancestor;
+      }
+      if (provisionalSources.isNotEmpty || provisionalRasters.isNotEmpty) {
         _enqueueRaster(tile, provisionalSources,
-            provisional: true, priority: priority);
+            rasters: provisionalRasters, provisional: true, priority: priority);
       }
       for (final entry in pending.entries) {
         final prepared = await entry.value;
         if (prepared != null) sources[entry.key] = prepared;
+      }
+      for (final entry in pendingRasters.entries) {
+        final raster = await entry.value;
+        if (raster != null) rasters[entry.key] = raster;
       }
     }
 
     if (!mounted ||
         generation != _generation ||
         tile.cancellation.isCancelled) {
+      for (final raster in rasters.values) {
+        raster.dispose();
+      }
       return;
     }
-    _enqueueRaster(tile, sources, provisional: false, priority: priority);
+    _enqueueRaster(tile, sources,
+        rasters: rasters, provisional: false, priority: priority);
   }
 
   /// Rasterization happens on the UI thread (`Picture.toImageSync`), so
@@ -382,18 +454,32 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// budget instead of all at once — with warm caches a zoom-level
   /// change completes every tile in the same instant, and rasterizing
   /// ~20 tiles in one frame drops frames.
+  /// Takes ownership of [rasters]: the handles are disposed with the job,
+  /// whether it is painted, replaced or rejected.
   void _enqueueRaster(
     _DisplayTile tile,
     Map<String, PreparedTile> sources, {
+    Map<String, RasterTile> rasters = const {},
     required bool provisional,
     required int priority,
   }) {
-    if (tile.cancellation.isCancelled) return;
+    final job = _RasterJob(
+        sources: sources,
+        rasters: rasters,
+        provisional: provisional,
+        priority: priority);
+    if (tile.cancellation.isCancelled) {
+      job.dispose();
+      return;
+    }
     final existing = _rasterQueue[tile];
     // Never replace a queued final raster with a provisional one.
-    if (existing != null && !existing.provisional && provisional) return;
-    _rasterQueue[tile] = _RasterJob(
-        sources: sources, provisional: provisional, priority: priority);
+    if (existing != null && !existing.provisional && provisional) {
+      job.dispose();
+      return;
+    }
+    existing?.dispose();
+    _rasterQueue[tile] = job;
     if (!_rasterTicker.isActive) _rasterTicker.start();
   }
 
@@ -414,9 +500,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       });
       final tile = best!;
       final job = _rasterQueue.remove(tile)!;
-      if (tile.cancellation.isCancelled) continue;
-      _rasterizeNow(tile, job.sources, provisional: job.provisional);
-      processed++;
+      if (!tile.cancellation.isCancelled) {
+        _rasterizeNow(tile, job.sources,
+            rasters: job.rasters, provisional: job.provisional);
+        processed++;
+      }
+      job.dispose();
     }
     if (_rasterQueue.isEmpty) _rasterTicker.stop();
   }
@@ -424,10 +513,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   void _rasterizeNow(
     _DisplayTile tile,
     Map<String, PreparedTile> sources, {
+    Map<String, RasterTile> rasters = const {},
     required bool provisional,
   }) {
     final styleZoom = _styleZoomOf(tile.key.z.toDouble());
-    final data = DisplayTileData(displayKey: tile.key, sources: sources);
+    final data = DisplayTileData(
+        displayKey: tile.key, sources: sources, rasters: rasters);
     final image = TileRasterizer.rasterize(
       theme: widget.theme,
       data: data,
@@ -499,14 +590,24 @@ class _RepaintNotifier extends ChangeNotifier {
 
 class _RasterJob {
   final Map<String, PreparedTile> sources;
+
+  /// Owned raster tile handles; disposed with the job.
+  final Map<String, RasterTile> rasters;
   final bool provisional;
   final int priority;
 
   const _RasterJob({
     required this.sources,
+    required this.rasters,
     required this.provisional,
     required this.priority,
   });
+
+  void dispose() {
+    for (final raster in rasters.values) {
+      raster.dispose();
+    }
+  }
 }
 
 enum _TileState { loading, ready, empty }

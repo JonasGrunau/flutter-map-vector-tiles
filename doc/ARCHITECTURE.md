@@ -69,6 +69,7 @@ chunked event-loop execution.
 | --- | --- | --- |
 | memory: `PreparedTile` | data tile + theme id | entry count + bytes |
 | memory: raster `ui.Image` | display tile + int zoom + theme | entry count (images disposed on evict) |
+| memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
 | disk: raw tile bytes | url hash | TTL + total size sweep |
 
 All caches are plain deterministic LRU implementations — no external

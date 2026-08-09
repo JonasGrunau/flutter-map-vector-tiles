@@ -1,4 +1,5 @@
 import '../core/tile_key.dart';
+import '../grid/raster_tile_store.dart';
 import '../pipeline/prepared_tile.dart';
 
 /// The prepared data backing one *display* tile, per style source.
@@ -12,7 +13,16 @@ class DisplayTileData {
   /// Source id → prepared data tile covering [displayKey].
   final Map<String, PreparedTile> sources;
 
-  const DisplayTileData({required this.displayKey, required this.sources});
+  /// Raster source id → decoded image tile covering [displayKey]. The
+  /// tiles are borrowed for the duration of the paint; ownership stays
+  /// with the caller.
+  final Map<String, RasterTile> rasters;
 
-  bool get isEmpty => sources.isEmpty;
+  const DisplayTileData({
+    required this.displayKey,
+    required this.sources,
+    this.rasters = const {},
+  });
+
+  bool get isEmpty => sources.isEmpty && rasters.isEmpty;
 }

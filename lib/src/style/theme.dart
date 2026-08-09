@@ -121,6 +121,10 @@ class LineThemeLayer extends ThemeLayer {
   final StringProp cap;
   final StringProp join;
 
+  /// Sprite name for `line-pattern`. When set (and the sprite resolves),
+  /// the pattern replaces the color stroke and dash array, per spec.
+  final StringProp? pattern;
+
   LineThemeLayer({
     required super.id,
     required super.source,
@@ -135,7 +139,34 @@ class LineThemeLayer extends ThemeLayer {
     required this.dashArray,
     required this.cap,
     required this.join,
+    this.pattern,
   });
+}
+
+/// A `raster` layer displaying image tiles from a raster source declared
+/// inside a vector style (satellite/hybrid styles, pre-rendered
+/// hillshading). Painted into the tile raster at its style position.
+class RasterThemeLayer extends ThemeLayer {
+  final DoubleProp opacity;
+  final DoubleProp brightnessMin;
+  final DoubleProp brightnessMax;
+  final DoubleProp contrast;
+  final DoubleProp saturation;
+  final DoubleProp hueRotate; // degrees
+
+  RasterThemeLayer({
+    required super.id,
+    required super.source,
+    required super.minzoom,
+    required super.maxzoom,
+    required super.filter,
+    required this.opacity,
+    required this.brightnessMin,
+    required this.brightnessMax,
+    required this.contrast,
+    required this.saturation,
+    required this.hueRotate,
+  }) : super(sourceLayer: null, referencedProperties: const {});
 }
 
 class CircleThemeLayer extends ThemeLayer {

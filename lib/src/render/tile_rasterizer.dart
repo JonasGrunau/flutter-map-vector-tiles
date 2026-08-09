@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -83,7 +84,9 @@ class TileRasterizer {
         case FillThemeLayer():
           painted |= _paintFill(canvas, layer, data, styleZoom, patterns);
         case LineThemeLayer():
-          painted |= _paintLine(canvas, layer, data, styleZoom);
+          painted |= _paintLine(canvas, layer, data, styleZoom, patterns);
+        case RasterThemeLayer():
+          painted |= _paintRaster(canvas, layer, data, zoomCtx);
         case CircleThemeLayer():
           painted |= _paintCircle(canvas, layer, data, styleZoom);
         case SymbolThemeLayer():
@@ -209,8 +212,10 @@ class TileRasterizer {
     LineThemeLayer layer,
     DisplayTileData data,
     double styleZoom,
+    PatternResolver? patterns,
   ) {
     var painted = false;
+    final patternProp = layer.pattern;
     _eachFeature(layer, data, styleZoom, null, (feature, transform) {
       if (feature.type == PreparedGeomType.point) return;
       final ctx = EvalContext(
@@ -222,6 +227,20 @@ class TileRasterizer {
       final width = layer.width.eval(ctx);
       if (width <= 0) return;
       final opacity = layer.opacity.eval(ctx).clamp(0.0, 1.0);
+      if (opacity <= 0) return;
+
+      if (patternProp != null && patterns != null) {
+        final name = patternProp.eval(ctx);
+        final image = name.isEmpty ? null : patterns.imageFor(name);
+        if (image != null) {
+          painted |= _stampLinePattern(
+              canvas, _linePath(feature, transform), image, width, opacity);
+          // Per spec, line-pattern disables line-color and dashes.
+          return;
+        }
+        // Sprite missing: fall through to the color stroke.
+      }
+
       final color = _withOpacity(layer.color.eval(ctx), opacity);
       if (color.a == 0) return;
 
@@ -260,6 +279,181 @@ class TileRasterizer {
       painted = true;
     });
     return painted;
+  }
+
+  /// Draws `line-pattern` by stamping the sprite along the path, scaled
+  /// so the sprite height matches the line width (aspect ratio kept) and
+  /// rotated to the local line direction — MapLibre semantics.
+  static bool _stampLinePattern(
+    Canvas canvas,
+    Path path,
+    ui.Image image,
+    double width,
+    double opacity,
+  ) {
+    final scale = width / image.height;
+    final stampLength = image.width * scale;
+    if (stampLength < 0.5) return false;
+    final src =
+        Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
+    final anchorX = image.width / 2;
+    final anchorY = image.height / 2;
+    final transforms = <ui.RSTransform>[];
+    final rects = <Rect>[];
+    for (final metric in path.computeMetrics()) {
+      for (var d = stampLength / 2; d < metric.length; d += stampLength) {
+        final tangent = metric.getTangentForOffset(d);
+        if (tangent == null) continue;
+        transforms.add(ui.RSTransform.fromComponents(
+          // Tangent.angle is measured y-up; canvas rotation is y-down.
+          rotation: -tangent.angle,
+          scale: scale,
+          anchorX: anchorX,
+          anchorY: anchorY,
+          translateX: tangent.position.dx,
+          translateY: tangent.position.dy,
+        ));
+        rects.add(src);
+      }
+    }
+    if (transforms.isEmpty) return false;
+    canvas.drawAtlas(
+      image,
+      transforms,
+      rects,
+      opacity < 1
+          ? List.filled(
+              transforms.length, Color.fromRGBO(255, 255, 255, opacity))
+          : null,
+      opacity < 1 ? BlendMode.modulate : null,
+      null,
+      Paint()..filterQuality = FilterQuality.medium,
+    );
+    return true;
+  }
+
+  static bool _paintRaster(
+    Canvas canvas,
+    RasterThemeLayer layer,
+    DisplayTileData data,
+    EvalContext zoomCtx,
+  ) {
+    final raster = data.rasters[layer.source];
+    if (raster == null) return false;
+    final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
+    if (opacity <= 0) return false;
+    final image = raster.image;
+    // The data tile may be an ancestor (overzoom / 512px convention):
+    // draw the sub-region covering this display tile.
+    final frac = data.displayKey.fractionOf(raster.key);
+    final src = Rect.fromLTWH(
+      frac.dx * image.width,
+      frac.dy * image.height,
+      frac.scale * image.width,
+      frac.scale * image.height,
+    );
+    final paint = Paint()
+      ..filterQuality = FilterQuality.medium
+      ..isAntiAlias = false
+      ..color = Color.fromRGBO(255, 255, 255, opacity)
+      ..colorFilter = _rasterColorFilter(layer, zoomCtx);
+    canvas.drawImageRect(image, src,
+        const Rect.fromLTWH(0, 0, logicalTileSize, logicalTileSize), paint);
+    return true;
+  }
+
+  /// Builds a color matrix replicating MapLibre's raster fragment shader:
+  /// hue-rotate (spin), then saturation, then contrast, then the
+  /// brightness-min/max mix — including MapLibre's exact factor formulas.
+  /// Returns null when every property is at its default.
+  static ui.ColorFilter? _rasterColorFilter(
+      RasterThemeLayer layer, EvalContext ctx) {
+    final hueRotate = layer.hueRotate.eval(ctx) % 360;
+    final saturation = layer.saturation.eval(ctx).clamp(-1.0, 1.0);
+    final contrast = layer.contrast.eval(ctx).clamp(-1.0, 1.0);
+    final brightnessMin = layer.brightnessMin.eval(ctx).clamp(0.0, 1.0);
+    final brightnessMax = layer.brightnessMax.eval(ctx).clamp(0.0, 1.0);
+    if (hueRotate == 0 &&
+        saturation == 0 &&
+        contrast == 0 &&
+        brightnessMin == 0 &&
+        brightnessMax == 1) {
+      return null;
+    }
+
+    List<double>? m;
+    List<double> apply(List<double> next) {
+      final current = m;
+      return current == null ? next : _multiplyColorMatrix(next, current);
+    }
+
+    if (hueRotate != 0) {
+      final rad = hueRotate * math.pi / 180;
+      final s = math.sin(rad);
+      final c = math.cos(rad);
+      // MapLibre's spin weights: an RGB rotation about the gray axis.
+      final w0 = (2 * c + 1) / 3;
+      final w1 = (-math.sqrt(3) * s - c + 1) / 3;
+      final w2 = (math.sqrt(3) * s - c + 1) / 3;
+      m = apply([
+        w0, w1, w2, 0, 0, //
+        w2, w0, w1, 0, 0, //
+        w1, w2, w0, 0, 0, //
+        0, 0, 0, 1, 0,
+      ]);
+    }
+    if (saturation != 0) {
+      // rgb += (average - rgb) * f, with MapLibre's factor curve.
+      final f = saturation > 0 ? 1 - 1 / (1.001 - saturation) : -saturation;
+      final d = 1 - f;
+      final a = f / 3;
+      m = apply([
+        d + a, a, a, 0, 0, //
+        a, d + a, a, 0, 0, //
+        a, a, d + a, 0, 0, //
+        0, 0, 0, 1, 0,
+      ]);
+    }
+    if (contrast != 0) {
+      // rgb = (rgb - 0.5) * f + 0.5, with MapLibre's factor curve.
+      final f =
+          (contrast > 0 ? 1 / (1 - contrast) : 1 + contrast).clamp(0.0, 1000.0);
+      final offset = (0.5 - 0.5 * f) * 255;
+      m = apply([
+        f, 0, 0, 0, offset, //
+        0, f, 0, 0, offset, //
+        0, 0, f, 0, offset, //
+        0, 0, 0, 1, 0,
+      ]);
+    }
+    if (brightnessMin != 0 || brightnessMax != 1) {
+      // rgb = mix(min, max, rgb).
+      final scale = brightnessMax - brightnessMin;
+      final offset = brightnessMin * 255;
+      m = apply([
+        scale, 0, 0, 0, offset, //
+        0, scale, 0, 0, offset, //
+        0, 0, scale, 0, offset, //
+        0, 0, 0, 1, 0,
+      ]);
+    }
+    return ui.ColorFilter.matrix(m!);
+  }
+
+  /// Composes two 4x5 color matrices: the result applies [b] first,
+  /// then [a].
+  static List<double> _multiplyColorMatrix(List<double> a, List<double> b) {
+    final out = List<double>.filled(20, 0);
+    for (var row = 0; row < 4; row++) {
+      for (var col = 0; col < 5; col++) {
+        var v = col == 4 ? a[row * 5 + 4] : 0.0;
+        for (var k = 0; k < 4; k++) {
+          v += a[row * 5 + k] * b[k * 5 + col];
+        }
+        out[row * 5 + col] = v;
+      }
+    }
+    return out;
   }
 
   static bool _paintCircle(

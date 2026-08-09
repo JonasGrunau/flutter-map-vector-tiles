@@ -101,6 +101,9 @@ class ThemeReader {
               : NumListProp(parser.parse(paint['line-dasharray']), const []),
           cap: _string(parser, layout['line-cap'], 'butt'),
           join: _string(parser, layout['line-join'], 'miter'),
+          pattern: paint['line-pattern'] == null
+              ? null
+              : _string(parser, paint['line-pattern'], ''),
         );
       case 'circle':
         layer = CircleThemeLayer(
@@ -180,6 +183,19 @@ class ThemeReader {
           iconHaloWidth: _double(parser, paint['icon-halo-width'], 0),
         );
       case 'raster':
+        layer = RasterThemeLayer(
+          id: id,
+          source: source,
+          minzoom: minzoom,
+          maxzoom: maxzoom,
+          filter: filter,
+          opacity: _double(parser, paint['raster-opacity'], 1),
+          brightnessMin: _double(parser, paint['raster-brightness-min'], 0),
+          brightnessMax: _double(parser, paint['raster-brightness-max'], 1),
+          contrast: _double(parser, paint['raster-contrast'], 0),
+          saturation: _double(parser, paint['raster-saturation'], 0),
+          hueRotate: _double(parser, paint['raster-hue-rotate'], 0),
+        );
       case 'hillshade':
       case 'heatmap':
       case 'sky':

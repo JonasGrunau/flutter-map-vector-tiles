@@ -23,6 +23,10 @@ import 'theme_reader.dart';
 class Style {
   final Theme theme;
   final TileProviders providers;
+
+  /// Raster sources declared in the style, referenced by its `raster`
+  /// layers. Pass to `VectorTileLayer.rasterSources`.
+  final Map<String, RasterTileSource> rasterSources;
   final SpriteAtlas? sprites;
   final LatLng? center;
   final double? zoom;
@@ -31,6 +35,7 @@ class Style {
   const Style({
     required this.theme,
     required this.providers,
+    this.rasterSources = const {},
     this.sprites,
     this.center,
     this.zoom,
@@ -41,6 +46,9 @@ class Style {
   /// style has been disposed.
   void dispose() {
     providers.dispose();
+    for (final source in rasterSources.values) {
+      source.dispose();
+    }
     sprites?.dispose();
   }
 }
@@ -102,28 +110,42 @@ class StyleReader {
 
       final sources = styleJson['sources'];
       final providers = <String, VectorTileProvider>{};
+      final rasterSources = <String, RasterTileSource>{};
       if (sources is Map) {
         for (final entry in sources.entries) {
           final id = entry.key as String;
           final source = entry.value;
           if (source is! Map) continue;
-          if (source['type'] != 'vector') {
-            logger.log('source "$id": type "${source['type']}" skipped '
-                '(only vector sources are rendered)');
+          final type = source['type'];
+          if (type != 'vector' && type != 'raster') {
+            logger.log('source "$id": type "$type" skipped '
+                '(only vector and raster sources are rendered)');
             continue;
           }
           try {
-            final provider = await _createProvider(
-                loader, source.cast<String, Object?>(), styleUrl);
-            if (provider != null) providers[id] = provider;
+            final map = source.cast<String, Object?>();
+            if (type == 'vector') {
+              final provider = await _createProvider(loader, map, styleUrl);
+              if (provider != null) providers[id] = provider;
+            } else {
+              // MapLibre source default maxzoom is 22; rasters routinely
+              // go deeper than the vector default of 14.
+              final provider = await _createProvider(loader, map, styleUrl,
+                  defaultMaxZoom: 22);
+              if (provider != null) {
+                rasterSources[id] = RasterTileSource(
+                  provider: provider,
+                  tileSize: (map['tileSize'] as num?)?.toInt() ?? 512,
+                );
+              }
+            }
           } catch (e) {
             logger.warn('source "$id" unavailable: $e');
           }
         }
       }
-      if (providers.isEmpty) {
-        throw const StyleReaderException(
-            'style contains no usable vector sources');
+      if (providers.isEmpty && rasterSources.isEmpty) {
+        throw const StyleReaderException('style contains no usable sources');
       }
 
       SpriteAtlas? sprites;
@@ -147,6 +169,7 @@ class StyleReader {
       return Style(
         theme: theme,
         providers: TileProviders(providers),
+        rasterSources: rasterSources,
         sprites: sprites,
         center: center,
         zoom: (styleJson['zoom'] as num?)?.toDouble(),
@@ -190,8 +213,9 @@ class StyleReader {
   Future<VectorTileProvider?> _createProvider(
     _Loader loader,
     Map<String, Object?> source,
-    String styleUrl,
-  ) async {
+    String styleUrl, {
+    int defaultMaxZoom = 14,
+  }) async {
     List<Object?>? tiles = source['tiles'] as List<Object?>?;
     var minZoom = (source['minzoom'] as num?)?.toInt();
     var maxZoom = (source['maxzoom'] as num?)?.toInt();
@@ -210,7 +234,7 @@ class StyleReader {
     return NetworkVectorTileProvider(
       urlTemplate: _substitute(_resolve(template, styleUrl)),
       minimumZoom: minZoom ?? 0,
-      maximumZoom: maxZoom ?? 14,
+      maximumZoom: maxZoom ?? defaultMaxZoom,
       logger: logger,
     );
   }
