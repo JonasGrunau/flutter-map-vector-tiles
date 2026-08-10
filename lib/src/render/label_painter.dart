@@ -57,8 +57,22 @@ class PlacedSymbol {
 /// with global collision detection across tile borders. Text stays
 /// crisp at fractional zoom and upright under rotation.
 class LabelPainter {
-  final _textCache = LruCache<String, _LaidOutText>(maxEntries: 800);
-  final _glyphCache = LruCache<String, _GlyphText>(maxEntries: 1500);
+  late final _textCache = LruCache<String, _LaidOutText>(
+      maxEntries: 800, onEvict: (_, text) => _retired.add(text.dispose));
+  late final _glyphCache = LruCache<String, _GlyphText>(
+      maxEntries: 1500, onEvict: (_, glyph) => _retired.add(glyph.dispose));
+
+  /// Evicted entries whose `TextPainter`s may still be referenced by
+  /// symbols prepared earlier in the same frame — disposed at the start
+  /// of the next [paint] instead of at eviction time.
+  final _retired = <void Function()>[];
+
+  void _disposeRetired() {
+    for (final dispose in _retired) {
+      dispose();
+    }
+    _retired.clear();
+  }
 
   /// [styleZoom] is the fractional style zoom used for size expressions.
   ///
@@ -74,6 +88,7 @@ class LabelPainter {
     SpriteAtlas? sprites,
     double devicePixelRatio = 1,
   }) {
+    _disposeRetired();
     final collision = _CollisionIndex(screenSize);
     // Placement priority: topmost style layers first (they win space),
     // then by symbol-sort-key, then stable by y for determinism.
@@ -622,6 +637,7 @@ class LabelPainter {
   void dispose() {
     _textCache.clear();
     _glyphCache.clear();
+    _disposeRetired();
   }
 }
 
@@ -653,6 +669,11 @@ class _LaidOutText {
   /// so curved glyphs keep the string's metrics. Whitespace clusters
   /// are omitted (their advance still separates the neighbours).
   List<_Cluster> get clusters => _clusters ??= _computeClusters();
+
+  void dispose() {
+    fill.dispose();
+    halo?.dispose();
+  }
 
   List<_Cluster> _computeClusters() {
     final result = <_Cluster>[];
@@ -693,6 +714,11 @@ class _GlyphText {
   final TextPainter? halo;
 
   const _GlyphText({required this.fill, required this.halo});
+
+  void dispose() {
+    fill.dispose();
+    halo?.dispose();
+  }
 }
 
 class _CurvedGlyph {

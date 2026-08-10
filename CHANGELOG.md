@@ -32,6 +32,10 @@
   which could render corrupt geometry — or crashing at the buffer end;
   and negative `int_value` properties (10-byte varints) decode to the
   correct negative number on web instead of a garbage positive one.
+- 🐛 The label painter's text and glyph caches now dispose their
+  `TextPainter`s on eviction and teardown instead of leaking the native
+  paragraph memory (flagged under Flutter leak tracking; panning across
+  label-dense areas grew it unboundedly).
 
 ## 2.1.1
 
