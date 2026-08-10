@@ -46,6 +46,20 @@ class GridLayout {
     );
   }
 
+  /// Value equality: the layer compares successive layouts to skip grid
+  /// maintenance on frames where the integer tile bounds are unchanged.
+  @override
+  bool operator ==(Object other) =>
+      other is GridLayout &&
+      other.displayZoom == displayZoom &&
+      other.minX == minX &&
+      other.maxX == maxX &&
+      other.minY == minY &&
+      other.maxY == maxY;
+
+  @override
+  int get hashCode => Object.hash(displayZoom, minX, maxX, minY, maxY);
+
   bool contains(TileKey key) =>
       key.z == displayZoom &&
       key.x >= minX &&

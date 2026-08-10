@@ -160,6 +160,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   int? _currentZoom;
   var _generation = 0;
 
+  /// The grid of the previous build — see `_updateGrid`'s early-out.
+  GridLayout? _lastLayout;
+
   /// Bounded retries for tiles that finalized with a source missing
   /// after a transient failure. Fired just past the stores' failure
   /// throttle, so each attempt can actually reach the network again.
@@ -261,6 +264,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
     _retained.clear();
     _currentZoom = null;
+    // Without this the next _updateGrid would see an unchanged grid and
+    // skip recreating the tiles it just cleared.
+    _lastLayout = null;
   }
 
   @override
@@ -339,6 +345,16 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   void _updateGrid(MapCamera camera) {
     final layout = GridLayout.forCamera(camera, buffer: 1);
+
+    // The integer tile bounds only change when the viewport crosses a
+    // tile boundary or the zoom floor moves; on most gesture frames the
+    // grid is identical and the remove/create scans (plus
+    // keysByDistance's allocation and sort) would be pure waste.
+    if (layout == _lastLayout) {
+      _pruneRetained(camera, layout);
+      return;
+    }
+    _lastLayout = layout;
 
     if (_currentZoom != layout.displayZoom) {
       // Keep the previous level's imagery underneath until the new level
@@ -823,10 +839,12 @@ class _VectorMapPainter extends CustomPainter {
     canvas.translate(screenCenter.dx, screenCenter.dy);
     if (camera.rotation != 0) canvas.rotate(camera.rotationRad);
 
-    final retained = state._retained.entries.toList()
-      ..sort((a, b) => a.key.z.compareTo(b.key.z));
-    for (final entry in retained) {
-      _drawTileImage(canvas, entry.value, 1, worldCenter);
+    if (state._retained.isNotEmpty) {
+      final retained = state._retained.entries.toList()
+        ..sort((a, b) => a.key.z.compareTo(b.key.z));
+      for (final entry in retained) {
+        _drawTileImage(canvas, entry.value, 1, worldCenter);
+      }
     }
     for (final tile in state._tiles.values) {
       _drawTileImage(canvas, tile,
@@ -840,22 +858,25 @@ class _VectorMapPainter extends CustomPainter {
     }
   }
 
+  /// Reused across tiles and frames — the canvas records a copy of the
+  /// paint at each draw call, so mutating it between calls is safe.
+  static final _tilePaint = Paint()
+    ..filterQuality = FilterQuality.medium
+    ..isAntiAlias = false;
+
   void _drawTileImage(
       Canvas canvas, _DisplayTile tile, double opacity, Offset worldCenter) {
     final image = tile.image;
     if (image == null || opacity <= 0) return;
     final rect = displayTileRect(tile.key, camera.zoom).shift(-worldCenter);
-    final paint = Paint()
-      ..filterQuality = FilterQuality.medium
-      ..isAntiAlias = false;
-    if (opacity < 1) {
-      paint.color = Color.fromRGBO(255, 255, 255, opacity);
-    }
+    _tilePaint.color = opacity < 1
+        ? Color.fromRGBO(255, 255, 255, opacity)
+        : const Color(0xffffffff);
     canvas.drawImageRect(
       image,
       Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
       rect,
-      paint,
+      _tilePaint,
     );
   }
 
@@ -900,15 +921,18 @@ class _VectorMapPainter extends CustomPainter {
     // While a zoom level change is in flight, keep the previous level's
     // labels wherever the new level has no label data yet — otherwise
     // every label blinks out for a few frames on zoom. Current-level
-    // symbols are added first, so they win collisions.
-    final current = state._currentStatuses(DateTime.now()).toList();
-    for (final retained in state._retained.values) {
-      if (retainedSymbolsNeeded(
-        retainedKey: retained.key,
-        hasSymbols: retained.symbols.isNotEmpty,
-        current: current,
-      )) {
-        addSymbols(retained);
+    // symbols are added first, so they win collisions. In steady state
+    // nothing is retained and the status records need not be built.
+    if (state._retained.isNotEmpty) {
+      final current = state._currentStatuses(DateTime.now()).toList();
+      for (final retained in state._retained.values) {
+        if (retainedSymbolsNeeded(
+          retainedKey: retained.key,
+          hasSymbols: retained.symbols.isNotEmpty,
+          current: current,
+        )) {
+          addSymbols(retained);
+        }
       }
     }
     if (placed.isEmpty) return;

@@ -45,8 +45,10 @@
   changes instead of every frame, the label collision index no
   longer allocates an iterator per collision box, curve-safety of
   label text is computed once per symbol instead of re-scanned per
-  frame, and the label pass sorts the per-frame symbol list in place
-  instead of copying it first.
+  frame, the label pass sorts the per-frame symbol list in place
+  instead of copying it first, and grid maintenance (visible-key
+  enumeration and sorting) is skipped on the ~95% of gesture frames
+  where the integer tile bounds are unchanged.
 - 🐛 Coalesced tile loads no longer inherit the first requester's
   cancellation: a display tile disposed mid-flight (panned away,
   zoomed past) used to cancel the shared load and leave every other
