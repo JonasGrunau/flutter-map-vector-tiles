@@ -9,6 +9,10 @@
 - ✨ `StyleReader` accepts `headers`, sent with the style, TileJSON and
   sprite requests and forwarded to the created tile providers — style
   loading now works end-to-end against header-authenticated services.
+- ⚡ MVT tile decoding is about twice as fast (measured 2.0–2.3× on
+  real tiles): geometry vertices accumulate into a reusable typed-data
+  scratch buffer instead of a growable `List<double>`, which boxed
+  every coordinate on the VM.
 - ⚡ Less per-frame and per-feature work: zoom-only line layers resolve
   their stroke style once per tile instead of per feature, circle
   paints are built per feature instead of per point, literal list

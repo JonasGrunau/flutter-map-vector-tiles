@@ -120,6 +120,21 @@ const int _cmdMoveTo = 1;
 const int _cmdLineTo = 2;
 const int _cmdClosePath = 7;
 
+/// Reusable per-isolate scratch for the vertices of the part currently
+/// being decoded. Accumulating into a growable `List<double>` instead
+/// boxed every coordinate on the VM, which cost roughly half of
+/// whole-tile decode time on geometry-heavy tiles. Safe as a global:
+/// decoding is synchronous and each isolate has its own statics.
+Float32List _scratch = Float32List(512);
+
+void _growScratch(int needed) {
+  var n = _scratch.length * 2;
+  while (n < needed) {
+    n *= 2;
+  }
+  _scratch = Float32List(n)..setRange(0, _scratch.length, _scratch);
+}
+
 MvtFeature? _decodeGeometry(
   int id,
   MvtGeomType type,
@@ -132,20 +147,20 @@ MvtFeature? _decodeGeometry(
   var x = 0;
   var y = 0;
   var i = 0;
-  List<double>? current;
+  var len = -1; // vertices*2 in _scratch; -1 when no part is open
 
   void flush() {
-    final c = current;
-    current = null;
-    if (c == null) return;
+    if (len < 0) return;
+    final c = len;
+    len = -1;
     // Points need 1 vertex, lines 2, rings 3.
     final minVertices = switch (type) {
       MvtGeomType.point => 1,
       MvtGeomType.lineString => 2,
       _ => 3,
     };
-    if (c.length < minVertices * 2) return;
-    final part = Float32List.fromList(c);
+    if (c < minVertices * 2) return;
+    final part = Float32List(c)..setRange(0, c, _scratch);
     if (type == MvtGeomType.polygon) {
       areas.add(_shoelace(part));
     }
@@ -156,29 +171,43 @@ MvtFeature? _decodeGeometry(
     final command = geometry[i++];
     final cmdId = command & 0x7;
     final count = command >> 3;
+    // Never trust the count past the data that is actually there — and
+    // never pre-grow the scratch beyond it.
+    final avail = (geometry.length - i) >> 1;
+    final take = count < avail ? count : avail;
     switch (cmdId) {
       case _cmdMoveTo:
-        for (var n = 0; n < count && i + 2 <= geometry.length; n++) {
-          x += _zigzag(geometry[i++]);
-          y += _zigzag(geometry[i++]);
-          if (type == MvtGeomType.point) {
-            (current ??= <double>[])
-              ..add(x.toDouble())
-              ..add(y.toDouble());
-          } else {
+        if (type == MvtGeomType.point) {
+          if (len < 0) len = 0;
+          if (len + take * 2 > _scratch.length) {
+            _growScratch(len + take * 2);
+          }
+          for (var n = 0; n < take; n++) {
+            x += _zigzag(geometry[i++]);
+            y += _zigzag(geometry[i++]);
+            _scratch[len++] = x.toDouble();
+            _scratch[len++] = y.toDouble();
+          }
+        } else {
+          for (var n = 0; n < take; n++) {
+            x += _zigzag(geometry[i++]);
+            y += _zigzag(geometry[i++]);
             flush();
-            current = <double>[x.toDouble(), y.toDouble()];
+            _scratch[0] = x.toDouble();
+            _scratch[1] = y.toDouble();
+            len = 2;
           }
         }
       case _cmdLineTo:
-        final c = current;
-        if (c == null) return null; // malformed: LineTo before MoveTo
-        for (var n = 0; n < count && i + 2 <= geometry.length; n++) {
+        if (len < 0) return null; // malformed: LineTo before MoveTo
+        if (len + take * 2 > _scratch.length) {
+          _growScratch(len + take * 2);
+        }
+        for (var n = 0; n < take; n++) {
           x += _zigzag(geometry[i++]);
           y += _zigzag(geometry[i++]);
-          c
-            ..add(x.toDouble())
-            ..add(y.toDouble());
+          _scratch[len++] = x.toDouble();
+          _scratch[len++] = y.toDouble();
         }
       case _cmdClosePath:
         // Rings are stored implicitly closed; nothing to append.
