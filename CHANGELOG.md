@@ -27,6 +27,11 @@
   changing `sprites` re-rasterizes live tiles so fill/line patterns
   from the old atlas don't linger. Neither refresh refetches or
   re-fades anything.
+- 🐛 MVT decoding: a packed field ending in a continuation byte now
+  fails as a decode error instead of silently reading past the field —
+  which could render corrupt geometry — or crashing at the buffer end;
+  and negative `int_value` properties (10-byte varints) decode to the
+  correct negative number on web instead of a garbage positive one.
 
 ## 2.1.1
 

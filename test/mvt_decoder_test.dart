@@ -1,8 +1,60 @@
+import 'dart:typed_data';
+
 import 'package:flutter_map_vector_tiles/src/mvt/mvt_decoder.dart';
 import 'package:flutter_map_vector_tiles/src/mvt/mvt_tile.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fixtures/mvt_builder.dart';
+
+void _varint(BytesBuilder out, int value) {
+  var v = value;
+  while (v >= 0x80) {
+    out.addByte((v & 0x7f) | 0x80);
+    v ~/= 128; // not `>>= 7`: dart2js shifts truncate to 32 bits
+  }
+  out.addByte(v);
+}
+
+/// The 10-byte two's-complement varint of `-magnitude`, built digit-wise
+/// (`2^64 - m == (2^64-1) - (m-1)`, and `2^64-1` is all-127 digits) so
+/// the test itself stays exact under dart2js.
+List<int> _negativeInt64Varint(int magnitude) {
+  var rest = magnitude - 1;
+  final bytes = <int>[];
+  for (var k = 0; k < 9; k++) {
+    bytes.add((127 - (rest % 128)) | 0x80);
+    rest ~/= 128;
+  }
+  bytes.add(1 - rest);
+  return bytes;
+}
+
+/// A one-layer tile whose single point feature carries one property
+/// with a hand-encoded protobuf `Value` message payload.
+Uint8List _tileWithRawValue(List<int> valueMessage) {
+  final feature = BytesBuilder()
+    ..add([0x12, 0x02, 0x00, 0x00]) // tags [0, 0]
+    ..add([0x18, 0x01]) // type: point
+    ..add([0x22, 0x03, 0x09, 0x00, 0x00]); // geometry: MoveTo(0, 0)
+  final featureBytes = feature.toBytes();
+
+  final layer = BytesBuilder()..add([0x0a, 0x01, 0x74]); // name: 't'
+  layer.addByte(0x12); // field 2: feature
+  _varint(layer, featureBytes.length);
+  layer.add(featureBytes);
+  layer.add([0x1a, 0x01, 0x6b]); // key: 'k'
+  layer.addByte(0x22); // field 4: value
+  _varint(layer, valueMessage.length);
+  layer.add(valueMessage);
+  layer.add([0x28, 0x80, 0x20]); // extent: 4096
+  layer.add([0x78, 0x02]); // version: 2
+  final layerBytes = layer.toBytes();
+
+  final tile = BytesBuilder()..addByte(0x1a); // field 3: layer
+  _varint(tile, layerBytes.length);
+  tile.add(layerBytes);
+  return tile.toBytes();
+}
 
 void main() {
   test('decodes a layer with a point feature and properties', () {
@@ -179,5 +231,54 @@ void main() {
     // Malformed feature dropped, valid one kept.
     expect(layer.features, hasLength(1));
     expect(layer.features.single.parts.single, [7.0, 7.0]);
+  });
+
+  test('a packed field ending in a continuation byte fails loudly', () {
+    // Regression: the packed-varint loop read past the declared slice —
+    // silently consuming the next fields' bytes (corrupt geometry), or
+    // crashing with a RangeError at the true end of the buffer.
+    final feature = <int>[
+      0x18, 0x01, // type: point
+      0x22, 0x02, 0x09, 0x80, // geometry, len 2: [0x09, 0x80…] truncated
+      0x18, 0x01, // trailing field the overrun used to swallow
+    ];
+    final layer = BytesBuilder()
+      ..add([0x0a, 0x01, 0x74]) // name 't'
+      ..addByte(0x12)
+      ..addByte(feature.length)
+      ..add(feature)
+      ..add([0x78, 0x02]); // version
+    final layerBytes = layer.toBytes();
+    final tile = BytesBuilder()
+      ..addByte(0x1a)
+      ..addByte(layerBytes.length)
+      ..add(layerBytes);
+
+    expect(() => decodeMvt(tile.toBytes()), throwsFormatException);
+  });
+
+  test('decodes negative int_value properties (10-byte varints)', () {
+    // Legal per spec, though most encoders zigzag negatives through
+    // sint_value instead. Regression: under dart2js the unsigned
+    // 2^64-range accumulation lost precision past 2^53, so -1 decoded
+    // as ~1.8e19.
+    for (final magnitude in [1, 42, 4294967296, 281474976710656]) {
+      final tile =
+          _tileWithRawValue([0x20, ..._negativeInt64Varint(magnitude)]);
+      final layer = decodeMvt(tile).layers.single;
+      expect(
+        layer.features.single.decodeProperties(layer),
+        {'k': -magnitude},
+        reason: 'int_value -$magnitude must survive the wire exactly',
+      );
+    }
+  });
+
+  test('decodes large positive int_value properties unchanged', () {
+    final value = BytesBuilder()..addByte(0x20);
+    _varint(value, 1125899906842624); // 2^50 — an 8-byte varint
+    final layer = decodeMvt(_tileWithRawValue(value.toBytes())).layers.single;
+    expect(
+        layer.features.single.decodeProperties(layer), {'k': 1125899906842624});
   });
 }

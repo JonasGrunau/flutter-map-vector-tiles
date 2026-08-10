@@ -243,24 +243,44 @@ class _Reader {
 
   // Accumulates with multiply/add instead of `|` and `<<`: dart2js
   // bitwise ops truncate to 32 bits, silently corrupting larger varints
-  // on web. Arithmetic is exact up to 2^53 on both platforms, which
-  // covers every value real MVT tiles carry.
+  // on web. Arithmetic is exact up to 2^53 on both platforms.
+  //
+  // Bytes 8-10 (bits 49+) accumulate separately in [high]: they appear
+  // in real data only for negative int64 `int_value`s, whose 2^64-range
+  // unsigned encoding a JS double cannot hold exactly. Splitting lets
+  // the sign bit be handled arithmetically, so small-magnitude negatives
+  // decode exactly on both platforms; magnitudes beyond 2^53 lose
+  // precision on web, as all JS integers do.
   int readVarint() {
     var result = 0;
     var multiplier = 1;
+    var high = 0;
+    var highMultiplier = 1;
     var length = 0;
     while (true) {
       if (_pos >= _end) {
         throw const FormatException('truncated varint');
       }
       final byte = _bytes[_pos++];
-      result += (byte & 0x7f) * multiplier;
+      if (length < 7) {
+        result += (byte & 0x7f) * multiplier;
+        multiplier *= 128;
+      } else {
+        high += (byte & 0x7f) * highMultiplier;
+        highMultiplier *= 128;
+      }
       if (byte & 0x80 == 0) break;
-      multiplier *= 128;
       if (++length > 9) throw const FormatException('varint too long');
     }
-    return result;
+    if (high == 0) return result;
+    // [high] holds bits 49..69; bit 63 — its bit 14 — is the int64 sign.
+    if (high & 0x4000 == 0) return result + high * _p49;
+    // Two's complement without materializing the unsigned 2^64-range
+    // value: -(2^64 - u) with the borrow folded into the high half.
+    return -((_p49 - result) + (0x7fff - high) * _p49);
   }
+
+  static const _p49 = 0x2000000000000; // 2^49, one bit per varint byte 0-6
 
   double readFloat() {
     if (_pos + 4 > _end) throw const FormatException('truncated float');
@@ -308,6 +328,12 @@ class _Reader {
       var result = 0;
       var multiplier = 1;
       while (true) {
+        if (_pos >= end) {
+          // A trailing continuation byte would otherwise run past the
+          // packed slice into the following fields — silently, since
+          // this buffer usually extends beyond [end].
+          throw const FormatException('truncated varint in packed field');
+        }
         final byte = _bytes[_pos++];
         result += (byte & 0x7f) * multiplier;
         if (byte & 0x80 == 0) break;
