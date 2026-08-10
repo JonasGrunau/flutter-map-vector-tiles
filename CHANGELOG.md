@@ -36,6 +36,17 @@
   `TextPainter`s on eviction and teardown instead of leaking the native
   paragraph memory (flagged under Flutter leak tracking; panning across
   label-dense areas grew it unboundedly).
+- 🐛 Legacy `interval` functions evaluated exactly on a middle stop
+  returned the previous band's output (wrong style values at every
+  integer zoom boundary); they now select the greatest stop ≤ input,
+  matching MapLibre.
+- 🐛 Legacy `identity` functions now return the feature property's raw
+  value; they — like every stop-less legacy function — used to be
+  silently compiled to a constant raw JSON map, making typed paint
+  properties fall back to their spec defaults with no warning.
+  Uncompilable function shapes now degrade with a parser warning.
+- 🐛 A tile property carrying `Infinity` no longer crashes the layer
+  when stringified into a `text-field` token.
 
 ## 2.1.1
 

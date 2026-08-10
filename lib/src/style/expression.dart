@@ -67,7 +67,12 @@ String toStringValue(Object? v) {
   if (v is String) return v;
   if (v is bool) return v ? 'true' : 'false';
   if (v is num) {
-    if (v is int || v == v.roundToDouble()) return v.round().toString();
+    // The finite check keeps Infinity out of round(), which throws —
+    // decoded tiles can legally carry non-finite doubles, and this runs
+    // uncaught on the main isolate via text-field tokens.
+    if (v is int || (v.isFinite && v == v.roundToDouble())) {
+      return v.round().toString();
+    }
     return v.toString();
   }
   if (v is Color) {

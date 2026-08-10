@@ -754,7 +754,24 @@ class ExpressionParser {
   Expr _parseLegacyFunction(Map<String, Object?> json) {
     final stopsJson = json['stops'];
     if (stopsJson is! List || stopsJson.isEmpty) {
-      // Could be a plain object value (e.g. constant) — pass through.
+      final property = json['property'] as String?;
+      if (json['type'] == 'identity') {
+        // Identity function: the feature property's raw value (the
+        // zoom when no property is named).
+        if (property == null) return (ctx) => ctx.zoom;
+        _refProp(property);
+        final defaultValue = json['default'];
+        return (ctx) => ctx.properties[property] ?? defaultValue;
+      }
+      if (json.containsKey('type') ||
+          json.containsKey('property') ||
+          json.containsKey('default')) {
+        // Function-shaped but not compilable: degrade with a warning,
+        // per the package contract — passing the raw map through would
+        // silently coerce to null in every typed property.
+        return _unsupported('unsupported legacy function $json');
+      }
+      // A plain object value (e.g. a constant) — pass through.
       return (_) => json;
     }
     final base = toNumber(json['base']) ?? 1.0;
@@ -789,7 +806,12 @@ class ExpressionParser {
       if (v <= stops.first) return outputs.first;
       if (v >= stops.last) return outputs.last;
       var hi = 1;
-      while (hi < stops.length && stops[hi] < v) {
+      // `<=`, not `<`: an input exactly on a middle stop belongs to that
+      // stop's band — 'interval' selects the greatest stop <= input, as
+      // MapLibre does. (For exponential stops the boundary is
+      // equivalent: t == 0 at the upper stop equals t == 1 at the
+      // lower.)
+      while (hi < stops.length && stops[hi] <= v) {
         hi++;
       }
       final lo = hi - 1;

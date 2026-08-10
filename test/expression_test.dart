@@ -305,6 +305,61 @@ void main() {
       expect(eval(fn, props: {'class': 'b'}), 2);
       expect(eval(fn, props: {'class': 'zzz'}), 0);
     });
+
+    test('interval selects the greatest stop <= input, at exact stops too', () {
+      // Regression: an input exactly on a middle stop used to return the
+      // PREVIOUS band's output — visible at every integer zoom boundary.
+      final fn = {
+        'type': 'interval',
+        'stops': [
+          [0, 'a'],
+          [10, 'b'],
+          [20, 'c'],
+        ],
+      };
+      expect(eval(fn, zoom: 5), 'a');
+      expect(eval(fn, zoom: 10), 'b');
+      expect(eval(fn, zoom: 15), 'b');
+      expect(eval(fn, zoom: 20), 'c');
+      expect(eval(fn, zoom: 25), 'c');
+    });
+
+    test('identity functions return the raw property value', () {
+      // Regression: stop-less legacy functions — {"type": "identity"}
+      // included — were silently compiled to a constant returning the
+      // raw JSON map, so every typed property fell back to its default.
+      final fn = {'type': 'identity', 'property': 'colour'};
+      expect(eval(fn, props: {'colour': '#ff0000'}), '#ff0000');
+      expect(eval(fn, props: {}), null);
+      expect(
+        eval({'type': 'identity', 'property': 'n', 'default': 7}, props: {}),
+        7,
+      );
+
+      final parser = ExpressionParser();
+      parser.parse({'type': 'identity', 'property': 'colour'});
+      expect(parser.referencedProperties, contains('colour'));
+    });
+
+    test('unsupported stop-less functions degrade with a warning', () {
+      final parser = ExpressionParser();
+      final expr = parser.parse({'type': 'exponential', 'property': 'x'});
+      expect(expr(const EvalContext(zoom: 10)), null);
+      expect(parser.warnings, isNotEmpty);
+    });
+  });
+
+  group('coercions', () {
+    test('toStringValue survives non-finite doubles', () {
+      // Regression: infinity == infinity.roundToDouble() is true, so
+      // .round() threw an uncaught UnsupportedError on the main isolate
+      // when a tile property carried an Infinity into a text-field.
+      expect(toStringValue(double.infinity), 'Infinity');
+      expect(toStringValue(double.negativeInfinity), '-Infinity');
+      expect(toStringValue(double.nan), 'NaN');
+      expect(toStringValue(2.0), '2');
+      expect(toStringValue(2.5), '2.5');
+    });
   });
 
   group('referenced property collection', () {
