@@ -159,14 +159,15 @@ vt.VectorTileLayer(
 ### 🎚️ Understanding `TileOffset`
 
 MapLibre renders 512px tiles, so at the same visual scale a MapLibre zoom
-is **one lower** than flutter_map's. Styles from MapTiler & friends are
-authored against that convention.
+is **one lower** than [flutter_map](https://pub.dev/packages/flutter_map)'s.
+Styles from MapTiler & friends are authored against that convention.
 
 - `TileOffset.maplibre` *(default)* — text sizes, road widths and layer
   zoom ranges match the style author's intent exactly.
 - `TileOffset.none` — evaluates the style at flutter_map's zoom directly;
   everything appears one zoom earlier/larger (the legacy
-  `vector_map_tiles` default, if you need visual parity with it).
+  [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles) default,
+  if you need visual parity with it).
 
 ## ✈️ Offline behaviour
 
@@ -295,18 +296,18 @@ On web the disk cache tier is absent and decoding runs on a yielding
 event-loop queue instead of isolates; everything else is identical.
 
 The full rendering model and the reasoning behind each departure from
-`vector_map_tiles` is documented in
-[doc/ARCHITECTURE.md](doc/ARCHITECTURE.md). 📖
+[`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles) is
+documented in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md). 📖
 
-## 🆚 `vector_map_tiles`
+## 🆚 [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles)
 
-| | `vector_map_tiles` (stable) | this package |
+| | [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles) (stable) | this package |
 |---|---|---|
-| Packages | 3 (`vector_map_tiles`, `vector_tile_renderer`, `executor_lib`) + `stash` caching | 1 |
+| Packages | 3 ([`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles), [`vector_tile_renderer`](https://pub.dev/packages/vector_tile_renderer), [`executor_lib`](https://pub.dev/packages/executor_lib)) + [`stash`](https://pub.dev/packages/stash) caching | 1 |
 | Labels | baked into tile rasters / per-tile collision | screen-space pass, global collision, upright text |
 | Zoom flicker | white flash on fast zoom ([#147](https://github.com/greensopinion/flutter-vector-map-tiles/issues/147)) | ancestor retention + provisional rendering |
 | Cancellation | `CancellationException` reaches crash reporting ([#205](https://github.com/greensopinion/flutter-vector-map-tiles/issues/205)) | a state, never an exception |
-| Style zoom | evaluated at flutter_map zoom (1 off vs. MapLibre) | `TileOffset.maplibre` default |
+| Style zoom | evaluated at [flutter_map](https://pub.dev/packages/flutter_map) zoom (1 off vs. MapLibre) | `TileOffset.maplibre` default |
 | Rasters | async image encode | `Picture.toImageSync` (stays on GPU) |
 
 ## 🐛 Troubleshooting
