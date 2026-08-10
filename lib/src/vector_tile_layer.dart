@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -13,6 +14,7 @@ import 'core/cancellation.dart';
 import 'core/tile_key.dart';
 import 'grid/grid_layout.dart';
 import 'grid/raster_tile_store.dart';
+import 'grid/render_job_queue.dart';
 import 'grid/tile_byte_loader.dart';
 import 'grid/tile_retention.dart';
 import 'grid/tile_store.dart';
@@ -100,6 +102,11 @@ class VectorTileLayer extends StatefulWidget {
   /// Duration of the fade-in of newly rasterized tiles.
   final Duration tileFadeDuration;
 
+  /// Duration of the fade-in of newly appearing labels/icons, masking
+  /// the pop when a zoom level first shows symbol layers. Zero disables
+  /// the fade (labels appear instantly, as before 2.3.0).
+  final Duration labelFadeDuration;
+
   /// Whether to draw text/icon symbol layers.
   final bool showLabels;
 
@@ -118,6 +125,7 @@ class VectorTileLayer extends StatefulWidget {
     this.cachePath,
     this.memoryCacheMaxBytes = 24 * 1024 * 1024,
     this.tileFadeDuration = const Duration(milliseconds: 150),
+    this.labelFadeDuration = const Duration(milliseconds: 150),
     this.showLabels = true,
     this.logger = const Logger.noop(),
   });
@@ -150,20 +158,28 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// Tiles of other zoom levels kept until the current level is ready.
   final _retained = <TileKey, _DisplayTile>{};
 
-  /// Tiles with decoded data waiting to be rasterized, a few per frame.
-  final _rasterQueue = <_DisplayTile, _RasterJob>{};
+  /// Per-tile render jobs (rasterize, then symbol extraction), drained
+  /// a few per frame by the render pump.
+  late final _renderQueue =
+      RenderJobQueue<_DisplayTile, _RenderJob>(onDrop: (job) => job.dispose());
 
   final _repaint = _RepaintNotifier();
   final _labelPainter = LabelPainter();
   PatternResolver? _patterns;
   late final Ticker _fadeTicker;
-  late final Ticker _rasterTicker;
+  late final Ticker _renderTicker;
   var _fading = false;
   int? _currentZoom;
   var _generation = 0;
 
   /// The grid of the previous build — see `_updateGrid`'s early-out.
   GridLayout? _lastLayout;
+
+  /// Retained tiles whose labels must keep painting, memoized because
+  /// its inputs (grid membership, tile load/symbol states) change on
+  /// discrete events, not per frame — the label pass would otherwise
+  /// re-derive it every frame of a zoom transition. Null = recompute.
+  Set<TileKey>? _retainedSymbolKeys;
 
   /// Bounded retries for tiles that finalized with a source missing
   /// after a transient failure. Fired just past the stores' failure
@@ -177,7 +193,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     super.initState();
     _executor = TilePrepareExecutor(concurrency: widget.concurrency);
     _fadeTicker = createTicker(_onFadeTick);
-    _rasterTicker = createTicker(_pumpRasterQueue);
+    _renderTicker = createTicker(_pumpRenderQueue);
     _diskCache = _obtainDiskCache();
     _buildStores();
   }
@@ -263,10 +279,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   }
 
   void _clearTiles() {
-    for (final job in _rasterQueue.values) {
-      job.dispose();
-    }
-    _rasterQueue.clear();
+    _renderQueue.clear();
     for (final tile in _tiles.values) {
       tile.dispose();
     }
@@ -275,6 +288,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       tile.dispose();
     }
     _retained.clear();
+    _retainedSymbolKeys = null;
     _currentZoom = null;
     // Without this the next _updateGrid would see an unchanged grid and
     // skip recreating the tiles it just cleared.
@@ -328,7 +342,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   /// A background revalidation replaced [refreshed]'s decoded content —
   /// re-rasterize the visible display tiles it serves. The new raster
-  /// cross-fades over the old imagery (see [_DisplayTile.setResult]).
+  /// cross-fades over the old imagery (see [_DisplayTile.setImage]).
   void _reloadRefreshed(
     TileKey? Function(TileKey displayKey) dataKeyOf,
     TileKey refreshed,
@@ -350,7 +364,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   @override
   void dispose() {
     _fadeTicker.dispose();
-    _rasterTicker.dispose();
+    _renderTicker.dispose();
     _clearTiles();
     for (final store in _stores.values) {
       store.dispose();
@@ -413,19 +427,38 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       _tiles[key] = tile;
       unawaited(_loadTile(tile, layout.priorityOf(key)));
     }
+    _retainedSymbolKeys = null;
 
     _pruneRetained(camera, layout);
   }
 
   /// The current-level tiles, described for the retention rules in
-  /// `grid/tile_retention.dart`.
+  /// `grid/tile_retention.dart`. A tile whose raster landed but whose
+  /// symbol extraction is still queued counts as loading: the retained
+  /// level's labels must keep covering it or every label would blink
+  /// out for the frames between the two phases.
   Iterable<CurrentTileStatus> _currentStatuses(DateTime now) =>
       _tiles.values.map((t) => (
             key: t.key,
-            isLoading: t.state == _TileState.loading,
+            isLoading: t.state == _TileState.loading || t.symbolsPending,
             hasSymbols: t.symbols.isNotEmpty,
             isFadedIn: t.fadeProgress(now, widget.tileFadeDuration) >= 1,
           ));
+
+  /// Recomputes [_retainedSymbolKeys] — called lazily from the label
+  /// pass after any event invalidated it.
+  Set<TileKey> _retainedKeysWithSymbols() {
+    final current = _currentStatuses(DateTime.now()).toList();
+    return {
+      for (final retained in _retained.values)
+        if (retainedSymbolsNeeded(
+          retainedKey: retained.key,
+          hasSymbols: retained.symbols.isNotEmpty,
+          current: current,
+        ))
+          retained.key,
+    };
+  }
 
   void _pruneRetained(MapCamera camera, GridLayout layout) {
     if (_retained.isEmpty) return;
@@ -443,6 +476,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     for (final key in toRemove) {
       _retained.remove(key)?.dispose();
     }
+    if (toRemove.isNotEmpty) _retainedSymbolKeys = null;
   }
 
   Future<void> _loadTile(
@@ -601,7 +635,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// completed tiles are queued and processed within a per-frame time
   /// budget instead of all at once — with warm caches a zoom-level
   /// change completes every tile in the same instant, and rasterizing
-  /// ~20 tiles in one frame drops frames.
+  /// ~20 tiles in one frame drops frames. Each tile passes through two
+  /// queue phases — geometry raster, then symbol extraction — so a
+  /// crossing shows imagery for the whole viewport before it pays for
+  /// any labels, and the worst single-job overrun is halved.
   /// Takes ownership of [rasters]: the handles are disposed with the job,
   /// whether it is painted, replaced or rejected.
   void _enqueueRaster(
@@ -612,7 +649,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     required int priority,
     bool fadeIn = true,
   }) {
-    final job = _RasterJob(
+    final job = _RenderJob(
         sources: sources,
         rasters: rasters,
         provisional: provisional,
@@ -622,56 +659,61 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       job.dispose();
       return;
     }
-    final existing = _rasterQueue[tile];
+    final existing = _renderQueue.pendingRaster(tile);
     // Never replace a queued final raster with a provisional one.
     if (existing != null && !existing.provisional && provisional) {
       job.dispose();
       return;
     }
-    existing?.dispose();
-    _rasterQueue[tile] = job;
-    if (!_rasterTicker.isActive) _rasterTicker.start();
+    _renderQueue.enqueueRaster(tile, priority, job);
+    // The accepted raster decides anew whether symbols will follow
+    // (any pending symbol job for this tile was just superseded).
+    tile.symbolsPending = _symbolsFollow(tile, sources);
+    if (!_renderTicker.isActive) _renderTicker.start();
   }
 
-  void _pumpRasterQueue(Duration _) {
+  /// Whether a raster job for [tile] will be followed by a symbol
+  /// phase. False below the first symbol layer's minzoom, so zooms
+  /// without labels never pay for the extra phase.
+  bool _symbolsFollow(_DisplayTile tile, Map<String, PreparedTile> sources) =>
+      widget.showLabels &&
+      sources.isNotEmpty &&
+      SymbolLayouter.anySymbolLayerCovers(
+          widget.theme, _styleZoomOf(tile.key.z.toDouble()));
+
+  void _pumpRenderQueue(Duration _) {
+    developer.Timeline.startSync('VT render pump');
     final stopwatch = Stopwatch()..start();
     var processed = 0;
-    // At least one tile per frame, more while within the time budget:
-    // the viewport centre comes first.
-    while (_rasterQueue.isNotEmpty &&
+    // At least one job per frame, more while within the time budget:
+    // the viewport centre comes first, rasters before symbol jobs. The
+    // budget is checked before every job — it cannot preempt inside
+    // one, which is why a tile's two phases are separate jobs.
+    while (!_renderQueue.isEmpty &&
         (processed == 0 || stopwatch.elapsedMicroseconds < 4000)) {
-      _DisplayTile? best;
-      _RasterJob? bestJob;
-      _rasterQueue.forEach((tile, job) {
-        if (bestJob == null || job.priority < bestJob!.priority) {
-          best = tile;
-          bestJob = job;
-        }
-      });
-      final tile = best!;
-      final job = _rasterQueue.remove(tile)!;
+      final next = _renderQueue.pop()!;
+      final tile = next.key;
+      final job = next.job;
       if (!tile.cancellation.isCancelled) {
-        _rasterizeNow(tile, job.sources,
-            rasters: job.rasters,
-            provisional: job.provisional,
-            fadeIn: job.fadeIn);
+        switch (next.phase) {
+          case RenderPhase.raster:
+            _rasterizeJob(tile, job);
+          case RenderPhase.symbols:
+            _layoutSymbolsJob(tile, job);
+        }
         processed++;
       }
       job.dispose();
     }
-    if (_rasterQueue.isEmpty) _rasterTicker.stop();
+    if (_renderQueue.isEmpty) _renderTicker.stop();
+    developer.Timeline.finishSync();
   }
 
-  void _rasterizeNow(
-    _DisplayTile tile,
-    Map<String, PreparedTile> sources, {
-    Map<String, RasterTile> rasters = const {},
-    required bool provisional,
-    bool fadeIn = true,
-  }) {
+  void _rasterizeJob(_DisplayTile tile, _RenderJob job) {
+    developer.Timeline.startSync('VT rasterize');
     final styleZoom = _styleZoomOf(tile.key.z.toDouble());
     final data = DisplayTileData(
-        displayKey: tile.key, sources: sources, rasters: rasters);
+        displayKey: tile.key, sources: job.sources, rasters: job.rasters);
     final image = TileRasterizer.rasterize(
       theme: widget.theme,
       data: data,
@@ -679,25 +721,61 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       devicePixelRatio: _devicePixelRatio,
       patterns: _patternResolver,
     );
-    final symbols = widget.showLabels && sources.isNotEmpty
-        ? SymbolLayouter.layout(
-            theme: widget.theme, data: data, styleZoom: styleZoom)
-        : const <SymbolInstance>[];
+    developer.Timeline.finishSync();
 
-    tile.setResult(
+    final symbolsFollow = _symbolsFollow(tile, job.sources);
+    tile.setImage(
       image: image,
-      symbols: symbols,
-      provisional: provisional,
+      provisional: job.provisional,
       // With fades disabled no ticker runs to release an underlay, so
       // never create one — the swap is instant either way.
-      fadeIn: fadeIn && widget.tileFadeDuration > Duration.zero,
+      fadeIn: job.fadeIn && widget.tileFadeDuration > Duration.zero,
+      symbolsPending: symbolsFollow,
     );
+    if (symbolsFollow) {
+      // The symbol phase reuses the prepared sources; the raster
+      // handles are not carried over — they die with this job.
+      _renderQueue.enqueueSymbols(
+          tile,
+          job.priority,
+          _RenderJob(
+            sources: job.sources,
+            rasters: const {},
+            provisional: job.provisional,
+            priority: job.priority,
+            fadeIn: job.fadeIn,
+          ));
+    } else {
+      tile.setSymbols(const [], fadeIn: false);
+    }
+    _retainedSymbolKeys = null;
+    _repaint.trigger();
+    _ensureFadeTicker();
+  }
+
+  void _layoutSymbolsJob(_DisplayTile tile, _RenderJob job) {
+    developer.Timeline.startSync('VT symbols');
+    final styleZoom = _styleZoomOf(tile.key.z.toDouble());
+    final data = DisplayTileData(
+        displayKey: tile.key, sources: job.sources, rasters: const {});
+    final symbols = SymbolLayouter.layout(
+        theme: widget.theme, data: data, styleZoom: styleZoom);
+    // Shape the labels' text now, inside the budgeted tick — the next
+    // paint finds everything in the text caches instead of shaping a
+    // whole tile's labels during the paint phase.
+    if (symbols.isNotEmpty) _labelPainter.prewarm(symbols, styleZoom);
+    developer.Timeline.finishSync();
+
+    tile.setSymbols(symbols, fadeIn: widget.labelFadeDuration > Duration.zero);
+    _retainedSymbolKeys = null;
     _repaint.trigger();
     _ensureFadeTicker();
   }
 
   void _ensureFadeTicker() {
-    if (!_fading && widget.tileFadeDuration > Duration.zero) {
+    final anyFades = widget.tileFadeDuration > Duration.zero ||
+        widget.labelFadeDuration > Duration.zero;
+    if (!_fading && anyFades) {
       _fading = true;
       if (!_fadeTicker.isActive) _fadeTicker.start();
     }
@@ -711,6 +789,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         anyFading = true;
       } else {
         tile.disposeUnderlay(); // fully opaque — the underlay is covered
+      }
+      if (tile.labelFadeProgress(now, widget.labelFadeDuration) < 1) {
+        anyFading = true;
       }
     }
     _repaint.trigger();
@@ -744,10 +825,11 @@ class _RepaintNotifier extends ChangeNotifier {
   void trigger() => notifyListeners();
 }
 
-class _RasterJob {
+class _RenderJob {
   final Map<String, PreparedTile> sources;
 
-  /// Owned raster tile handles; disposed with the job.
+  /// Owned raster tile handles; disposed with the job. Only the raster
+  /// phase carries any — the symbol phase never needs them.
   final Map<String, RasterTile> rasters;
   final bool provisional;
   final int priority;
@@ -756,7 +838,7 @@ class _RasterJob {
   /// changes), where restarting the fade would flash the background.
   final bool fadeIn;
 
-  const _RasterJob({
+  const _RenderJob({
     required this.sources,
     required this.rasters,
     required this.provisional,
@@ -785,8 +867,16 @@ class _DisplayTile {
   /// dipping to the background colour.
   ui.Image? underlay;
   List<SymbolInstance> symbols = const [];
+
+  /// A symbol-extraction job is queued for this tile: its labels are
+  /// not there yet, so for retention purposes it still counts as
+  /// loading even when its raster already landed.
+  var symbolsPending = false;
   var isProvisional = false;
   DateTime? readyAt;
+
+  /// When this tile's labels first appeared, for the label fade-in.
+  DateTime? symbolsReadyAt;
 
   /// The source ids baked into the last final raster, and how many
   /// retries were spent recovering the missing ones — see `_loadTile`.
@@ -801,11 +891,11 @@ class _DisplayTile {
     _retryTimer = Timer(delay, run);
   }
 
-  void setResult({
+  void setImage({
     required ui.Image? image,
-    required List<SymbolInstance> symbols,
     required bool provisional,
     required bool fadeIn,
+    required bool symbolsPending,
   }) {
     final previous = this.image;
     underlay?.dispose();
@@ -818,16 +908,41 @@ class _DisplayTile {
       previous?.dispose();
     }
     this.image = image;
-    this.symbols = symbols;
     isProvisional = provisional;
+    this.symbolsPending = symbolsPending;
+    // A final tile with no image cannot be classified until its symbol
+    // phase reports back — see [setSymbols].
     state = provisional
         ? _TileState.loading
-        : (image == null && symbols.isEmpty
-            ? _TileState.empty
-            : _TileState.ready);
+        : (image != null
+            ? _TileState.ready
+            : (symbolsPending
+                ? _TileState.loading
+                : (symbols.isEmpty ? _TileState.empty : _TileState.ready)));
     if (!provisional) {
       readyAt = fadeIn ? DateTime.now() : null;
     }
+  }
+
+  void setSymbols(List<SymbolInstance> symbols, {required bool fadeIn}) {
+    final hadSymbols = this.symbols.isNotEmpty;
+    this.symbols = symbols;
+    symbolsPending = false;
+    if (!isProvisional && state == _TileState.loading) {
+      // Deferred classification of a final, image-less tile.
+      state = (image == null && symbols.isEmpty)
+          ? _TileState.empty
+          : _TileState.ready;
+    }
+    if (symbols.isEmpty) {
+      symbolsReadyAt = null;
+    } else if (!fadeIn) {
+      symbolsReadyAt = null; // draw at full opacity immediately
+    } else if (!hadSymbols) {
+      symbolsReadyAt = DateTime.now();
+    }
+    // hadSymbols && fadeIn: a refresh replaced existing labels — keep
+    // the running (or finished) fade instead of blinking them out.
   }
 
   /// Called once the fade has finished — the underlay is fully covered.
@@ -843,6 +958,13 @@ class _DisplayTile {
     return t.clamp(0.0, 1.0);
   }
 
+  double labelFadeProgress(DateTime now, Duration duration) {
+    final start = symbolsReadyAt;
+    if (start == null || duration <= Duration.zero) return 1;
+    final t = now.difference(start).inMilliseconds / duration.inMilliseconds;
+    return t.clamp(0.0, 1.0);
+  }
+
   void dispose() {
     _retryTimer?.cancel();
     cancellation.cancel();
@@ -851,6 +973,7 @@ class _DisplayTile {
     underlay?.dispose();
     underlay = null;
     symbols = const [];
+    symbolsPending = false;
   }
 }
 
@@ -954,9 +1077,10 @@ class _VectorMapPainter extends CustomPainter {
     final rotation = camera.rotationRad;
     final cosR = math.cos(rotation);
     final sinR = math.sin(rotation);
+    final now = DateTime.now();
     final placed = <PlacedSymbol>[];
 
-    void addSymbols(_DisplayTile tile) {
+    void addSymbols(_DisplayTile tile, double fadeOpacity) {
       if (tile.symbols.isEmpty) return;
       final rect = displayTileRect(tile.key, camera.zoom);
       final tileScale = rect.width / TileRasterizer.logicalTileSize;
@@ -975,27 +1099,30 @@ class _VectorMapPainter extends CustomPainter {
           screenAnchor: transform.apply(symbol.anchor),
           screenAngle: symbol.alongLine ? symbol.angle + rotation : 0,
           transform: symbol.alongLine ? transform : null,
+          fadeOpacity: fadeOpacity,
         ));
       }
     }
 
     for (final tile in state._tiles.values) {
-      addSymbols(tile);
+      // Quantized to 1/8 steps so fading tiles group into few opacity
+      // buckets (one translucent layer each in the label pass); ceil
+      // keeps a fresh cohort from starting invisible.
+      final progress =
+          tile.labelFadeProgress(now, state.widget.labelFadeDuration);
+      addSymbols(tile, progress >= 1 ? 1 : (progress * 8).ceil() / 8);
     }
     // While a zoom level change is in flight, keep the previous level's
     // labels wherever the new level has no label data yet — otherwise
     // every label blinks out for a few frames on zoom. Current-level
     // symbols are added first, so they win collisions. In steady state
-    // nothing is retained and the status records need not be built.
+    // nothing is retained and the memoized key set need not be built.
     if (state._retained.isNotEmpty) {
-      final current = state._currentStatuses(DateTime.now()).toList();
-      for (final retained in state._retained.values) {
-        if (retainedSymbolsNeeded(
-          retainedKey: retained.key,
-          hasSymbols: retained.symbols.isNotEmpty,
-          current: current,
-        )) {
-          addSymbols(retained);
+      final needed =
+          state._retainedSymbolKeys ??= state._retainedKeysWithSymbols();
+      if (needed.isNotEmpty) {
+        for (final retained in state._retained.values) {
+          if (needed.contains(retained.key)) addSymbols(retained, 1);
         }
       }
     }

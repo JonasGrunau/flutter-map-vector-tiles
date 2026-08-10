@@ -126,6 +126,7 @@ vt.VectorTileLayer(
   diskCacheTtl: const Duration(days: 14),
   memoryCacheMaxBytes: 24 * 1024 * 1024,
   tileFadeDuration: const Duration(milliseconds: 150),
+  labelFadeDuration: const Duration(milliseconds: 150),
   showLabels: true,
   logger: const vt.Logger.console(),           // see style warnings in debug
 )
@@ -140,6 +141,7 @@ vt.VectorTileLayer(
 | `cachePath` | app support dir | supply your own directory path to control/clear it (ignored on web) |
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source (the caches are shared process-wide; the most recently mounted layer's value wins) |
 | `tileFadeDuration` | 150 ms | `Duration.zero` disables fade-in |
+| `labelFadeDuration` | 150 ms | fade-in of newly appearing labels/icons (masks the pop at the zoom where symbols start); `Duration.zero` restores the instant pop |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 
 `StyleReader` options worth knowing:
@@ -282,6 +284,9 @@ camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
    PreparedTile ─► rasterize once ─► GPU image ─► textured quad per frame
    symbols ─────► per-frame screen-space label pass (global collision)
 ```
+
+Profiling: the render pipeline emits DevTools timeline events
+(`VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`).
 
 On web the disk cache tier is absent and decoding runs on a yielding
 event-loop queue instead of isolates; everything else is identical.

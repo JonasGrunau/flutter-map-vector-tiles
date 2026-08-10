@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-Smooth zooming where labels live: text is shaped once and scaled — plus
-expired tiles that paint instantly and refresh in the background,
-deep-zoom performance in dense cities, and pub.dev gallery screenshots.
+Smooth zooming where labels live: text is shaped once and scaled, and
+zoom-level crossings stagger their work — plus expired tiles that paint
+instantly and refresh in the background, deep-zoom performance in dense
+cities, and pub.dev gallery screenshots.
 
 - ⚡ **Scale-invariant text shaping**: label text used to be re-shaped
   (two `TextPainter.layout` passes per label, inside the paint phase)
@@ -16,6 +17,24 @@ deep-zoom performance in dense cities, and pub.dev gallery screenshots.
   re-shape a bounded handful of times per label ever instead of per
   zoom step. The per-frame style memo compares evaluated primitives, so
   a pinch frame no longer builds cache-key strings per symbol.
+- ⚡ **Two-phase zoom crossings**: crossing an integer zoom used to
+  rasterize geometry *and* extract symbols for every tile in one
+  un-preemptible job each, and the first frame with new labels shaped
+  all their text inside the paint phase — the visible stutter at the
+  zoom where text and icons appear. Rasters and symbol extraction are
+  now separate budgeted jobs (geometry for the whole viewport lands
+  first, labels follow a frame or two later), text shaping is prewarmed
+  in the same budgeted tick that publishes a tile's symbols, and the
+  retained-level label bookkeeping is memoized instead of recomputed
+  per frame during transitions.
+- ✨ **Label fade-in** (`labelFadeDuration`, default 150 ms, 0 restores
+  the old instant pop): newly appearing labels and icons now fade in,
+  masking the pop when a zoom level first shows symbol layers. Fading
+  labels reserve their full collision space, so placements never shift
+  mid-fade.
+- 🧹 DevTools timeline events (`VT render pump`, `VT rasterize`,
+  `VT symbols`, `VT labels`) around the render pipeline's UI-thread
+  stages, for profiling zoom behaviour.
 - ✨ **Stale-while-revalidate tiles**: disk-cached tiles older than
   `diskCacheTtl` are no longer refetched *before* they can paint —
   the expired tile is shown immediately and revalidated in the

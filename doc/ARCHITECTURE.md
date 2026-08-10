@@ -28,6 +28,11 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      └─ symbols: SymbolLayouter collects label/icon anchors per tile
              └─ LabelPainter: per-frame screen-space pass, global collision
                 grid across all tiles, upright text under rotation
+
+Rasterization and symbol extraction are two separate jobs in a budgeted
+per-frame render pump (rasters for every pending tile first, symbols
+after). The pump's stages emit DevTools timeline events
+(`VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`).
 ```
 
 ## Rendering model
@@ -76,10 +81,18 @@ Symbol layout applies the same decode-time bounds culling before
 evaluating any expressions, and along-line anchors keep their full-line
 spacing parametrization — an anchor lands at the same world position no
 matter which display tile lays it out — while being *enumerated* only
-inside the tile's window. The per-frame label pass evaluates at a zoom
-quantized to 1/8-level steps, so the per-instance style memos — which
-compare evaluated primitives, not strings — keep hitting on every frame
-of a pinch gesture instead of missing on every fractional zoom change.
+inside the tile's window. It runs as its own budgeted job after the
+tile's raster (skipped entirely when no symbol layer covers the zoom),
+and the tile's label text is shaped into the caches in that same tick —
+before the first frame that can draw it, never during paint. A tile
+whose symbols are still pending counts as loading for the retention
+rules, so the previous level's labels cover the gap; newly appearing
+labels then fade in over `labelFadeDuration`, drawn in a few quantized
+opacity buckets (one translucent layer each) while reserving full-size
+collision space. The per-frame label pass evaluates at a zoom quantized
+to 1/8-level steps, so the per-instance style memos — which compare
+evaluated primitives, not strings — keep hitting on every frame of a
+pinch gesture instead of missing on every fractional zoom change.
 
 The whole layer is one `CustomPaint` — no per-tile widget churn, one
 repaint boundary. The painter applies the camera transform (translate ·
