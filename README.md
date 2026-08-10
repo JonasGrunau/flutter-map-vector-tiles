@@ -5,7 +5,8 @@
 [![flutter_map](https://img.shields.io/badge/flutter__map-%E2%89%A5%208.2-green.svg)](https://pub.dev/packages/flutter_map)
 
 **Vector tiles for [flutter_map](https://pub.dev/packages/flutter_map).**
-A clean, self-contained rewrite of the ideas behind `vector_map_tiles` —
+A clean, self-contained rewrite of the ideas behind
+[`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles) —
 built for flutter_map ≥ 8 and modern Flutter (Impeller).
 
 Render MapLibre / Mapbox GL styles (MapTiler, OpenFreeMap, OpenMapTiles,
