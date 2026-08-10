@@ -11,7 +11,7 @@ built for flutter_map ≥ 8 and modern Flutter (Impeller).
 Render MapLibre / Mapbox GL styles (MapTiler, OpenFreeMap, OpenMapTiles,
 Stadia, Protomaps, …) straight from MVT vector tile sources — as a plain
 flutter_map layer. flutter_map keeps owning the camera, gestures and all
-your other layers; this package only draws the map. 🎯
+your other layers; this package only draws the map.
 
 ---
 
@@ -245,8 +245,8 @@ and a small `VectorTileProvider` interface for anything else
 
 **Layer types:** `background`, `fill` (incl. `fill-pattern`), `line`
 (incl. `line-pattern`, dashes, casing), `symbol` (incl. curved line
-text ✍️, `text-variable-anchor` / `text-radial-offset`), `circle`, and
-`raster` — raster sources inside vector styles 🛰️ (satellite/hybrid
+text, `text-variable-anchor` / `text-radial-offset`), `circle`, and
+`raster` — raster sources inside vector styles (satellite/hybrid
 imagery) draw at their layer position with `raster-opacity`,
 brightness/contrast/saturation/hue-rotate matching MapLibre's shader
 math (`fill-extrusion` renders as flat fill; `hillshade`, `heatmap` and
