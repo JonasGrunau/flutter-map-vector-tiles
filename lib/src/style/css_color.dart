@@ -5,7 +5,19 @@ import 'package:flutter/painting.dart' show HSLColor;
 /// Parses a CSS color string as used by the MapLibre style spec:
 /// `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()`, `rgba()`, `hsl()`,
 /// `hsla()` and named CSS colors. Returns null when unparseable.
+///
+/// Results are memoized: colour strings nested in `match`/`step`/
+/// `interpolate` outputs reach this per feature during rasterization
+/// and per label per frame, always from a small recurring set. The
+/// cap only guards against pathological feature-driven strings.
 Color? parseCssColor(String input) {
+  if (_cache.length >= 1024) _cache.clear();
+  return _cache.putIfAbsent(input, () => _parse(input));
+}
+
+final _cache = <String, Color?>{};
+
+Color? _parse(String input) {
   final s = input.trim().toLowerCase();
   if (s.isEmpty) return null;
   if (s.startsWith('#')) return _parseHex(s.substring(1));
