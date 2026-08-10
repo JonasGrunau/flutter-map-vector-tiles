@@ -127,14 +127,8 @@ class LabelPainter {
   ) {
     final instance = placed.instance;
     final layer = instance.layer;
-    final ctx = EvalContext(
-      zoom: styleZoom,
-      properties: instance.properties,
-      geometryType: instance.geometryType,
-      featureId: instance.featureId,
-    );
 
-    // Cull far off-screen anchors cheaply.
+    // Cull far off-screen anchors before any evaluation work.
     final anchor = placed.screenAnchor;
     if (anchor.dx < -150 ||
         anchor.dy < -150 ||
@@ -142,6 +136,13 @@ class LabelPainter {
         anchor.dy > screenSize.height + 150) {
       return null;
     }
+
+    final ctx = EvalContext(
+      zoom: styleZoom,
+      properties: instance.properties,
+      geometryType: instance.geometryType,
+      featureId: instance.featureId,
+    );
 
     // A label the style has faded out is skipped rather than laid out:
     // reserving collision space for invisible text would suppress the
@@ -472,6 +473,17 @@ class LabelPainter {
     SymbolThemeLayer layer,
     EvalContext ctx,
   ) {
+    // The ~8 style evaluations below depend only on (zoom, feature) —
+    // both fixed for a given instance while the zoom is unchanged — so
+    // the computed cache key is memoized on the instance. Only the key:
+    // the laid-out text itself belongs to the LRU, which may evict and
+    // dispose it.
+    final memoKey = instance.textCacheKey;
+    if (memoKey != null && instance.textCacheZoom == ctx.zoom) {
+      final memoized = _textCache.get(memoKey);
+      if (memoized != null) return memoized;
+    }
+
     final fontSize = layer.textSize.eval(ctx).clamp(4.0, 96.0);
     // `text-opacity` is folded into the colours, so it lands in the
     // cache key below along with them.
@@ -489,6 +501,8 @@ class LabelPainter {
         '${color.toARGB32()}|${haloColor.toARGB32()}|$haloWidth|'
         '${fonts.join(',')}|$letterSpacingEm';
     final cacheKey = '${instance.text}|$styleKey|$maxWidthEm|$singleLine';
+    instance.textCacheKey = cacheKey;
+    instance.textCacheZoom = ctx.zoom;
     final cached = _textCache.get(cacheKey);
     if (cached != null) return cached;
 
@@ -611,13 +625,7 @@ class LabelPainter {
   /// Keeps along-line text upright: angles are folded into
   /// (-π/2, π/2].
   static double _uprightAngle(double angle) {
-    var a = angle;
-    while (a <= -math.pi) {
-      a += 2 * math.pi;
-    }
-    while (a > math.pi) {
-      a -= 2 * math.pi;
-    }
+    var a = _foldAngle(angle);
     if (a > math.pi / 2) a -= math.pi;
     if (a <= -math.pi / 2) a += math.pi;
     return a;
@@ -892,32 +900,36 @@ class _CollisionIndex {
     return true;
   }
 
-  Iterable<int> _cellsFor(Rect rect) sync* {
+  // The cell walks are inlined in both callers: a sync* generator here
+  // allocated an iterator per collision box per frame in the hottest
+  // label loop.
+
+  bool _collides(Rect rect) {
     final minX = ((rect.left + 512) / _cellSize).floor();
     final maxX = ((rect.right + 512) / _cellSize).floor();
     final minY = ((rect.top + 512) / _cellSize).floor();
     final maxY = ((rect.bottom + 512) / _cellSize).floor();
     for (var y = minY; y <= maxY; y++) {
       for (var x = minX; x <= maxX; x++) {
-        yield y * _columns + x;
-      }
-    }
-  }
-
-  bool _collides(Rect rect) {
-    for (final cell in _cellsFor(rect)) {
-      final rects = _cells[cell];
-      if (rects == null) continue;
-      for (final other in rects) {
-        if (rect.overlaps(other)) return true;
+        final rects = _cells[y * _columns + x];
+        if (rects == null) continue;
+        for (final other in rects) {
+          if (rect.overlaps(other)) return true;
+        }
       }
     }
     return false;
   }
 
   void _insert(Rect rect) {
-    for (final cell in _cellsFor(rect)) {
-      (_cells[cell] ??= []).add(rect);
+    final minX = ((rect.left + 512) / _cellSize).floor();
+    final maxX = ((rect.right + 512) / _cellSize).floor();
+    final minY = ((rect.top + 512) / _cellSize).floor();
+    final maxY = ((rect.bottom + 512) / _cellSize).floor();
+    for (var y = minY; y <= maxY; y++) {
+      for (var x = minX; x <= maxX; x++) {
+        (_cells[y * _columns + x] ??= []).add(rect);
+      }
     }
   }
 }

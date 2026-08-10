@@ -97,13 +97,17 @@ class TileRasterizer {
   }
 
   /// Iterates the features of [layer]'s source-layer, calling [visit]
-  /// with the feature and its tile-to-logical-pixels transform.
+  /// with the feature, its evaluation context (already used for the
+  /// layer filter — visitors must not rebuild it) and the
+  /// tile-to-logical-pixels transform.
   static void _eachFeature(
     ThemeLayer layer,
     DisplayTileData data,
     double styleZoom,
     PreparedGeomType? typeFilter,
-    void Function(PreparedFeature feature, _TileTransform transform) visit,
+    void Function(
+            PreparedFeature feature, EvalContext ctx, _TileTransform transform)
+        visit,
   ) {
     final source = layer.source;
     final sourceLayerName = layer.sourceLayer;
@@ -125,7 +129,7 @@ class TileRasterizer {
         featureId: feature.id,
       );
       if (!layer.matches(ctx)) continue;
-      visit(feature, transform);
+      visit(feature, ctx, transform);
     }
   }
 
@@ -139,9 +143,12 @@ class TileRasterizer {
     var painted = false;
     final zoomCtx = EvalContext(zoom: styleZoom);
     final patternProp = layer.pattern;
+    // The fill paint is per-layer when the colour is a literal — or when
+    // the layer never reads feature properties, which makes every paint
+    // expression zoom-only and therefore constant across this tile.
     final constant = patternProp == null &&
-        layer.color.isConstant &&
-        layer.opacity.isConstant;
+        ((layer.color.isConstant && layer.opacity.isConstant) ||
+            (layer.referencedProperties?.isEmpty ?? false));
     Paint? fillPaint;
     if (constant) {
       final color = _withOpacity(layer.color.eval(zoomCtx),
@@ -153,14 +160,8 @@ class TileRasterizer {
     }
 
     _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
-        (feature, transform) {
+        (feature, ctx, transform) {
       final path = _polygonPath(feature, transform);
-      final ctx = EvalContext(
-        zoom: styleZoom,
-        properties: feature.properties,
-        geometryType: feature.geometryType,
-        featureId: feature.id,
-      );
       if (patternProp != null && patterns != null) {
         final name = patternProp.eval(ctx);
         final image = name.isEmpty ? null : patterns.imageFor(name);
@@ -216,20 +217,24 @@ class TileRasterizer {
   ) {
     var painted = false;
     final patternProp = layer.pattern;
-    _eachFeature(layer, data, styleZoom, null, (feature, transform) {
+
+    // A layer that never reads feature properties is zoom-only: its
+    // stroke style is constant across the whole tile, so resolve it
+    // once instead of re-evaluating 5-7 expressions per feature.
+    _LineStyle? shared;
+    if (patternProp == null && (layer.referencedProperties?.isEmpty ?? false)) {
+      shared = _lineStyle(layer, EvalContext(zoom: styleZoom));
+      if (shared == null) return false; // invisible at this zoom
+    }
+
+    _eachFeature(layer, data, styleZoom, null, (feature, ctx, transform) {
       if (feature.type == PreparedGeomType.point) return;
-      final ctx = EvalContext(
-        zoom: styleZoom,
-        properties: feature.properties,
-        geometryType: feature.geometryType,
-        featureId: feature.id,
-      );
-      final width = layer.width.eval(ctx);
-      if (width <= 0) return;
-      final opacity = layer.opacity.eval(ctx).clamp(0.0, 1.0);
-      if (opacity <= 0) return;
 
       if (patternProp != null && patterns != null) {
+        final width = layer.width.eval(ctx);
+        if (width <= 0) return;
+        final opacity = layer.opacity.eval(ctx).clamp(0.0, 1.0);
+        if (opacity <= 0) return;
         final name = patternProp.eval(ctx);
         final image = name.isEmpty ? null : patterns.imageFor(name);
         if (image != null) {
@@ -241,44 +246,67 @@ class TileRasterizer {
         // Sprite missing: fall through to the color stroke.
       }
 
-      final color = _withOpacity(layer.color.eval(ctx), opacity);
-      if (color.a == 0) return;
+      final style = shared ?? _lineStyle(layer, ctx);
+      if (style == null) return;
 
       var path = _linePath(feature, transform);
-      final dashArray = layer.dashArray?.eval(ctx);
+      final dashArray = style.dash;
       if (dashArray != null && dashArray.length >= 2) {
-        path = _dashPath(path, dashArray, width);
+        path = _dashPath(path, dashArray, style.width);
       }
 
-      final paint = Paint()
-        ..color = color
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = width
-        ..strokeCap = _cap(layer.cap.eval(ctx))
-        ..strokeJoin = _join(layer.join.eval(ctx));
-
-      final gapWidth = layer.gapWidth.eval(ctx);
-      if (gapWidth > 0) {
+      if (style.gapWidth > 0) {
         // Two parallel casing strokes: outer stroke minus inner gap.
-        final outer = gapWidth + 2 * width;
+        // Fresh paints — the shared style's Paint must not be mutated.
+        final outer = style.gapWidth + 2 * style.width;
         canvas.saveLayer(null, Paint());
-        canvas.drawPath(path, paint..strokeWidth = outer);
+        canvas.drawPath(
+          path,
+          Paint()
+            ..color = style.paint.color
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = outer
+            ..strokeCap = style.paint.strokeCap
+            ..strokeJoin = style.paint.strokeJoin,
+        );
         canvas.drawPath(
           path,
           Paint()
             ..blendMode = BlendMode.clear
             ..style = PaintingStyle.stroke
-            ..strokeWidth = gapWidth
-            ..strokeCap = paint.strokeCap
-            ..strokeJoin = paint.strokeJoin,
+            ..strokeWidth = style.gapWidth
+            ..strokeCap = style.paint.strokeCap
+            ..strokeJoin = style.paint.strokeJoin,
         );
         canvas.restore();
       } else {
-        canvas.drawPath(path, paint);
+        canvas.drawPath(path, style.paint);
       }
       painted = true;
     });
     return painted;
+  }
+
+  /// The resolved stroke style for one evaluation context, or null when
+  /// nothing would be visible.
+  static _LineStyle? _lineStyle(LineThemeLayer layer, EvalContext ctx) {
+    final width = layer.width.eval(ctx);
+    if (width <= 0) return null;
+    final opacity = layer.opacity.eval(ctx).clamp(0.0, 1.0);
+    if (opacity <= 0) return null;
+    final color = _withOpacity(layer.color.eval(ctx), opacity);
+    if (color.a == 0) return null;
+    return _LineStyle(
+      width: width,
+      gapWidth: layer.gapWidth.eval(ctx),
+      dash: layer.dashArray?.eval(ctx),
+      paint: Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = width
+        ..strokeCap = _cap(layer.cap.eval(ctx))
+        ..strokeJoin = _join(layer.join.eval(ctx)),
+    );
   }
 
   /// Draws `line-pattern` by stamping the sprite along the path, scaled
@@ -464,13 +492,7 @@ class TileRasterizer {
   ) {
     var painted = false;
     _eachFeature(layer, data, styleZoom, PreparedGeomType.point,
-        (feature, transform) {
-      final ctx = EvalContext(
-        zoom: styleZoom,
-        properties: feature.properties,
-        geometryType: feature.geometryType,
-        featureId: feature.id,
-      );
+        (feature, ctx, transform) {
       final radius = layer.radius.eval(ctx);
       if (radius <= 0) return;
       final fill = _withOpacity(
@@ -480,22 +502,25 @@ class TileRasterizer {
           ? _withOpacity(layer.strokeColor.eval(ctx),
               layer.strokeOpacity.eval(ctx).clamp(0.0, 1.0))
           : null;
+      // One pair of paints per feature, not per point — multipoint
+      // features used to allocate two paints in the innermost loop.
+      final fillPaint = fill.a > 0 ? (Paint()..color = fill) : null;
+      final strokePaint = stroke != null && stroke.a > 0
+          ? (Paint()
+            ..color = stroke
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = strokeWidth)
+          : null;
+      if (fillPaint == null && strokePaint == null) return;
       for (final part in feature.parts) {
         for (var i = 0; i + 1 < part.length; i += 2) {
           final center = transform.map(part[i], part[i + 1]);
-          if (fill.a > 0) {
-            canvas.drawCircle(center, radius, Paint()..color = fill);
+          if (fillPaint != null) {
+            canvas.drawCircle(center, radius, fillPaint);
             painted = true;
           }
-          if (stroke != null && stroke.a > 0) {
-            canvas.drawCircle(
-              center,
-              radius,
-              Paint()
-                ..color = stroke
-                ..style = PaintingStyle.stroke
-                ..strokeWidth = strokeWidth,
-            );
+          if (strokePaint != null) {
+            canvas.drawCircle(center, radius, strokePaint);
             painted = true;
           }
         }
@@ -594,6 +619,21 @@ class TileRasterizer {
 
   static Color _withOpacity(Color color, double opacity) =>
       opacity >= 1 ? color : color.withValues(alpha: color.a * opacity);
+}
+
+/// A per-layer or per-feature resolved line stroke.
+class _LineStyle {
+  final double width;
+  final double gapWidth;
+  final List<double>? dash;
+  final Paint paint;
+
+  _LineStyle({
+    required this.width,
+    required this.gapWidth,
+    required this.dash,
+    required this.paint,
+  });
 }
 
 /// Maps tile-extent coordinates of a data tile to logical pixels of a

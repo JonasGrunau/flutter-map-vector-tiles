@@ -81,7 +81,14 @@ class SymbolInstance {
   final String geometryType;
   final Object? featureId;
 
-  const SymbolInstance({
+  /// Label-pass memo (see `LabelPainter._layoutText`): the text-layout
+  /// cache key computed at [textCacheZoom], valid while the style zoom
+  /// is unchanged — avoids re-evaluating the text style expressions per
+  /// symbol per frame.
+  String? textCacheKey;
+  double? textCacheZoom;
+
+  SymbolInstance({
     required this.layer,
     required this.layerIndex,
     required this.anchor,
