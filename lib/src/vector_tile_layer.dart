@@ -1198,6 +1198,7 @@ class _VectorMapPainter extends CustomPainter {
           screenAngle: symbol.alongLine ? symbol.angle + rotation : 0,
           transform: symbol.alongLine ? transform : null,
           fadeOpacity: fadeOpacity,
+          order: placed.length,
         ));
       }
     }

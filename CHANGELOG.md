@@ -88,6 +88,24 @@ pub.dev gallery screenshots.
   fractional zoom change invalidated every label's cached style on
   every frame, and a dense city screen overflowed the text cache and
   re-laid-out every label every frame.
+- 🐛 **Labels respect their layer's zoom range continuously**: zooming
+  out toward a symbol layer's `minzoom`, street names used to burst on
+  all at once just before the threshold and then all vanish together —
+  the range was only checked at integer tile zoom, so labels (including
+  the retained previous level's) kept painting until the tile grid
+  flipped. The label pass now enforces `minzoom`/`maxzoom` every frame
+  at the fractional style zoom, exactly where the style author set the
+  cut.
+- 🐛 Text whose `text-size` ramps toward zero is skipped instead of
+  inflated to a 4 px floor — the near-invisible labels used to flood
+  the collision grid at the bottom of the ramp (the other half of the
+  burst). Text sized between 1 px and 4 px now draws at its true size.
+- 🐛 Symbol layers with a fractional `minzoom` (e.g. 14.5) now appear
+  at exactly that zoom when zooming in, instead of one whole zoom level
+  late.
+- 🐛 When current- and previous-level copies of a label tie for the
+  same spot during a zoom crossing, the current level now wins
+  deterministically instead of the winner flickering between the two.
 
 ## 2.2.0
 

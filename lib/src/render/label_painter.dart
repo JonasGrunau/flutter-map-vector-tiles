@@ -53,12 +53,19 @@ class PlacedSymbol {
   /// size — placements never shift when a fade completes.
   final double fadeOpacity;
 
+  /// Insertion index within the frame's symbol list, the final
+  /// placement tiebreaker: the caller adds current-level tiles before
+  /// retained previous-level ones, so on an exact tie the current
+  /// level's copy wins deterministically (`List.sort` is not stable).
+  final int order;
+
   const PlacedSymbol({
     required this.instance,
     required this.screenAnchor,
     required this.screenAngle,
     this.transform,
     this.fadeOpacity = 1,
+    this.order = 0,
   });
 }
 
@@ -91,6 +98,12 @@ class LabelPainter {
   /// pixel-equivalent to re-shaping at the evaluated size — the "crisp
   /// at fractional zoom" contract holds.
   static const double _shapeSize = 16.0;
+
+  /// Evaluated text below this size is skipped like the icon path's
+  /// `iconSize > 0` guard, instead of being clamped up to a visible
+  /// floor: a style that shrinks labels toward zero must not flood the
+  /// collision grid with tiny-but-visible text.
+  static const double _minVisibleTextSize = 1.0;
 
   /// Paragraph shapings performed (cache misses); for tests asserting
   /// that zoom motion does not re-shape text.
@@ -162,14 +175,18 @@ class LabelPainter {
     final zoom = (styleZoom * _zoomStep).round() / _zoomStep;
     final collision = _CollisionIndex(screenSize);
     // Placement priority: topmost style layers first (they win space),
-    // then by symbol-sort-key, then stable by y for determinism.
+    // then by symbol-sort-key, then by y, then by insertion order — the
+    // last term keeps the non-stable sort deterministic and lets
+    // current-level tiles beat retained ones on exact ties.
     final candidates = symbols
       ..sort((a, b) {
         final byLayer = b.instance.layerIndex - a.instance.layerIndex;
         if (byLayer != 0) return byLayer;
         final bySortKey = a.instance.sortKey.compareTo(b.instance.sortKey);
         if (bySortKey != 0) return bySortKey;
-        return a.screenAnchor.dy.compareTo(b.screenAnchor.dy);
+        final byY = a.screenAnchor.dy.compareTo(b.screenAnchor.dy);
+        if (byY != 0) return byY;
+        return a.order - b.order;
       });
 
     final toDraw = <_DrawableSymbol>[];
@@ -182,9 +199,14 @@ class LabelPainter {
         anyFading |= candidate.fadeOpacity < 1;
       }
     }
-    // Draw bottom style layers first so upper layers paint on top.
-    toDraw.sort((a, b) =>
-        a.symbol.instance.layerIndex.compareTo(b.symbol.instance.layerIndex));
+    // Draw bottom style layers first so upper layers paint on top; the
+    // insertion-order tiebreaker keeps draw order stable across frames.
+    toDraw.sort((a, b) {
+      final byLayer =
+          a.symbol.instance.layerIndex.compareTo(b.symbol.instance.layerIndex);
+      if (byLayer != 0) return byLayer;
+      return a.symbol.order - b.symbol.order;
+    });
     final drawn = <PlacedSymbol>[];
     if (!anyFading) {
       for (final drawable in toDraw) {
@@ -246,7 +268,9 @@ class LabelPainter {
         featureId: instance.featureId,
       );
       if (layer.textOpacity.eval(ctx) <= 0) continue;
-      final fontSize = layer.textSize.eval(ctx).clamp(4.0, 96.0);
+      final size = layer.textSize.eval(ctx);
+      if (size < _minVisibleTextSize) continue;
+      final fontSize = size.clamp(_minVisibleTextSize, 96.0);
       final text = _layoutText(instance, layer, ctx, fontSize);
       // The per-grapheme work is the expensive half for road labels.
       if (instance.alongLine && instance.curveSafe && instance.path != null) {
@@ -276,6 +300,12 @@ class LabelPainter {
       return null;
     }
 
+    // The layer's zoom range is continuous (MapLibre semantics), while
+    // layout gates only per integer band: a symbol stops painting the
+    // moment the fractional style zoom leaves [minzoom, maxzoom) —
+    // including symbols from retained previous-level tiles.
+    if (!layer.coversZoom(styleZoom)) return null;
+
     final ctx = EvalContext(
       zoom: styleZoom,
       properties: instance.properties,
@@ -290,9 +320,12 @@ class LabelPainter {
     var fontSize = _shapeSize;
     var textScale = 1.0;
     if (instance.text.isNotEmpty && layer.textOpacity.eval(ctx) > 0) {
-      fontSize = layer.textSize.eval(ctx).clamp(4.0, 96.0);
-      textScale = fontSize / _shapeSize;
-      text = _layoutText(instance, layer, ctx, fontSize);
+      final size = layer.textSize.eval(ctx);
+      if (size >= _minVisibleTextSize) {
+        fontSize = size.clamp(_minVisibleTextSize, 96.0);
+        textScale = fontSize / _shapeSize;
+        text = _layoutText(instance, layer, ctx, fontSize);
+      }
     }
 
     _DrawableIcon? icon;

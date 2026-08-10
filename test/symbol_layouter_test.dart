@@ -12,7 +12,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 const _extent = 4096;
 
-Theme _theme({Map<String, Object?> layout = const {}}) =>
+Theme _theme({
+  Map<String, Object?> layout = const {},
+  Map<String, Object?> layer = const {},
+}) =>
     const ThemeReader().read({
       'layers': [
         {
@@ -21,6 +24,7 @@ Theme _theme({Map<String, Object?> layout = const {}}) =>
           'source': 's',
           'source-layer': 'poi',
           'layout': {'text-field': '{name}', 'text-size': 14, ...layout},
+          ...layer,
         },
       ],
     });
@@ -139,6 +143,36 @@ List<SymbolInstance> _layout(
     SymbolLayouter.layout(theme: theme, data: data, styleZoom: styleZoom);
 
 void main() {
+  group('zoom band gating', () {
+    // A tile laid out at integer style zoom z is painted at fractional
+    // zooms [z, z + 1), so layout keeps any layer whose range
+    // intersects that band; the label pass gates precisely per frame.
+    const key = TileKey(14, 100, 100);
+    DisplayTileData data() => _data(
+          displayKey: key,
+          dataKey: key,
+          features: [_point(_extent / 2, _extent / 2, 'Centre')],
+        );
+
+    test('a layer entering mid-band is laid out', () {
+      final theme = _theme(layer: {'minzoom': 14.5});
+      expect(_layout(theme, data(), styleZoom: 14), hasLength(1));
+      expect(SymbolLayouter.anySymbolLayerCovers(theme, 14), isTrue);
+    });
+
+    test('a layer whose range starts above the band is dropped', () {
+      final theme = _theme(layer: {'minzoom': 15.5});
+      expect(_layout(theme, data(), styleZoom: 14), isEmpty);
+      expect(SymbolLayouter.anySymbolLayerCovers(theme, 14), isFalse);
+    });
+
+    test('maxzoom stays exclusive at the band floor', () {
+      final theme = _theme(layer: {'maxzoom': 14});
+      expect(_layout(theme, data(), styleZoom: 14), isEmpty);
+      expect(SymbolLayouter.anySymbolLayerCovers(theme, 14), isFalse);
+    });
+  });
+
   group('tile-seam deduplication', () {
     // Each display tile lays out only the symbols anchored inside it.
     // Without this, a feature duplicated into the neighbouring tile's

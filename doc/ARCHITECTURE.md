@@ -65,7 +65,12 @@ each frame in screen space:
 * text stays crisp at fractional zoom and upright under map rotation;
 * collision detection runs globally across tile borders, so labels never
   duplicate or clip at tile seams;
-* fade transitions don't require re-rasterizing geometry.
+* fade transitions don't require re-rasterizing geometry;
+* a symbol layer's `minzoom`/`maxzoom` is enforced per frame at the
+  fractional style zoom (per-tile layout only prefilters by the integer
+  zoom band), so labels appear and disappear exactly at the style's
+  thresholds — including labels still painted from retained
+  previous-level tiles during a zoom crossing.
 
 Text is shaped **once per unique label at a 16 px reference size** and
 drawn through the canvas transform at the evaluated `text-size` — valid
@@ -84,7 +89,8 @@ evaluating any expressions, and along-line anchors keep their full-line
 spacing parametrization — an anchor lands at the same world position no
 matter which display tile lays it out — while being *enumerated* only
 inside the tile's window. It runs as its own budgeted job after the
-tile's raster (skipped entirely when no symbol layer covers the zoom),
+tile's raster (skipped entirely when no symbol layer intersects the
+tile's zoom band),
 and the tile's label text is shaped into the caches in that same tick —
 before the first frame that can draw it, never during paint. A tile
 whose symbols are still pending counts as loading for the retention

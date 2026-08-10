@@ -210,12 +210,13 @@ class SymbolLayouter {
   @visibleForTesting
   static int debugLayoutCount = 0;
 
-  /// Whether any symbol layer of [theme] is visible at [styleZoom] —
-  /// the render pump skips the symbol phase entirely below the first
-  /// symbol minzoom, so label-free zooms pay nothing for it.
+  /// Whether any symbol layer of [theme] is visible somewhere in the
+  /// zoom band [styleZoom, styleZoom + 1) — the render pump skips the
+  /// symbol phase entirely below the first symbol minzoom, so
+  /// label-free zooms pay nothing for it.
   static bool anySymbolLayerCovers(Theme theme, double styleZoom) {
     for (final layer in theme.layers) {
-      if (layer is SymbolThemeLayer && layer.coversZoom(styleZoom)) {
+      if (layer is SymbolThemeLayer && layer.coversZoomBand(styleZoom)) {
         return true;
       }
     }
@@ -231,7 +232,11 @@ class SymbolLayouter {
     final instances = <SymbolInstance>[];
     for (var i = 0; i < theme.layers.length; i++) {
       final layer = theme.layers[i];
-      if (layer is! SymbolThemeLayer || !layer.coversZoom(styleZoom)) {
+      // A tile of this level is painted at fractional style zooms in
+      // [styleZoom, styleZoom + 1); any layer whose range intersects
+      // that band is laid out, and the label pass gates each frame at
+      // the exact fractional zoom.
+      if (layer is! SymbolThemeLayer || !layer.coversZoomBand(styleZoom)) {
         continue;
       }
       final source = layer.source;

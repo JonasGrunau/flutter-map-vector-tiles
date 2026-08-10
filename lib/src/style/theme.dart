@@ -70,6 +70,11 @@ sealed class ThemeLayer {
   /// with maxzoom 14 disappears at zoom >= 14); minzoom inclusive.
   bool coversZoom(double zoom) => zoom >= minzoom && zoom < maxzoom;
 
+  /// Whether the range intersects the band [zoom, zoom + 1) — the
+  /// fractional style zooms a tile laid out at integer style zoom
+  /// [zoom] is painted at.
+  bool coversZoomBand(double zoom) => zoom + 1 > minzoom && zoom < maxzoom;
+
   bool matches(EvalContext ctx) => toBoolean(filter(ctx));
 }
 
