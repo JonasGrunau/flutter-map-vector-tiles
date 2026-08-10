@@ -10,8 +10,8 @@ topics:
   - flutter-map
   - vector-tiles
   - maplibre
-  - maps
-  - mvt
+  - map
+  - pmtiles
 
 platforms:
   android:

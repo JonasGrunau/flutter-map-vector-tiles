@@ -109,6 +109,9 @@
   cache for a source already exists (latest layer wins, including via
   `didUpdateWidget`); it used to be fixed by whichever layer mounted
   first in the process.
+- 📦 pub.dev topics retagged for discoverability: `map` replaces
+  `maps` (the topic page the flutter_map ecosystem actually uses) and
+  `pmtiles` replaces `mvt`.
 
 ## 2.1.1
 
