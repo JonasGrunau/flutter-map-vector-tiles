@@ -16,7 +16,6 @@
   time, each symbol's text style is re-evaluated only when the zoom
   changes instead of every frame, and the label collision index no
   longer allocates an iterator per collision box.
-
 - 🐛 Coalesced tile loads no longer inherit the first requester's
   cancellation: a display tile disposed mid-flight (panned away,
   zoomed past) used to cancel the shared load and leave every other
