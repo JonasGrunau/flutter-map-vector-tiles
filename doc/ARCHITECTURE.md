@@ -98,7 +98,12 @@ deliberately tolerant: unknown layer types, unknown paint properties and
 unparseable expressions degrade per-layer (with a log), never failing the
 whole style. Expressions are compiled once into Dart closures; both the
 modern expression array syntax and the legacy filter syntax are
-supported. Sources are resolved through TileJSON when `url` is present,
+supported. The parser proves per property whether an expression reads
+feature data — properties that depend only on the zoom (most paint
+properties are pure zoom ramps) memoize their coerced result against
+the zoom in the typed wrappers, so a tile pass or a label frame
+evaluates each once instead of per feature. Parsed CSS colours are
+memoized process-wide for the same reason. Sources are resolved through TileJSON when `url` is present,
 including `{key}` substitution. Whatever a source (or its TileJSON)
 declares as `attribution` is collected into `Style.attributions`,
 deduplicated across sources; since that value is HTML by convention it
