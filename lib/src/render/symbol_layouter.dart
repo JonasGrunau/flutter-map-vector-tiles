@@ -2,6 +2,8 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
+import 'package:meta/meta.dart';
+
 import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
@@ -81,12 +83,13 @@ class SymbolInstance {
   final String geometryType;
   final Object? featureId;
 
-  /// Label-pass memo (see `LabelPainter._layoutText`): the text-layout
-  /// cache key computed at [textCacheZoom], valid while the style zoom
-  /// is unchanged — avoids re-evaluating the text style expressions per
-  /// symbol per frame.
-  String? textCacheKey;
-  double? textCacheZoom;
+  /// Label-pass memo (see `LabelPainter._layoutText`): the evaluated,
+  /// quantized text style and the cache-key strings built from it.
+  /// Trusted as-is while the eval zoom is unchanged; on a zoom step it
+  /// is revalidated by comparing the re-evaluated primitives, so the
+  /// key strings are rebuilt only when a style ramp actually crosses a
+  /// quantization step — not once per zoom step, and never per frame.
+  TextStyleMemo? textStyleMemo;
 
   /// Whether per-glyph curved rendering is safe for [text]: re-shaping
   /// each cluster in isolation only preserves scripts without
@@ -124,6 +127,76 @@ class SymbolInstance {
   });
 }
 
+/// The evaluated, quantized text style of a [SymbolInstance], memoized
+/// on the instance by `LabelPainter._layoutText`.
+///
+/// Text is shaped once at a fixed reference size and drawn scaled, so
+/// none of these primitives depend on the font size — for the common
+/// all-constant style they change never, and for zoom ramps only when a
+/// colour/opacity/halo quantization step is crossed. While they are
+/// unchanged the pre-built [cacheKey]/[styleKey] strings are reused,
+/// keeping string building out of the per-frame label path.
+class TextStyleMemo {
+  /// Fill/halo colours with the quantized `text-opacity` folded in.
+  final int fillArgb;
+  final int haloArgb;
+
+  /// `text-halo-width` as a ratio of the font size, in 1/128-em steps;
+  /// 0 when the halo is absent or fully transparent.
+  final int haloRatioQ;
+  final List<String> fonts;
+  final double letterSpacingEm;
+  final double maxWidthEm;
+
+  /// Key prefix shared by every glyph of this style (glyph cache).
+  final String styleKey;
+
+  /// Full text-layout cache key (text cache).
+  final String cacheKey;
+
+  /// The eval zoom this memo was last validated at: while it is
+  /// unchanged the style expressions need not be re-evaluated at all.
+  double zoom;
+
+  TextStyleMemo({
+    required this.fillArgb,
+    required this.haloArgb,
+    required this.haloRatioQ,
+    required this.fonts,
+    required this.letterSpacingEm,
+    required this.maxWidthEm,
+    required this.styleKey,
+    required this.cacheKey,
+    required this.zoom,
+  });
+
+  bool matches(
+    int fillArgb,
+    int haloArgb,
+    int haloRatioQ,
+    List<String> fonts,
+    double letterSpacingEm,
+    double maxWidthEm,
+  ) =>
+      fillArgb == this.fillArgb &&
+      haloArgb == this.haloArgb &&
+      haloRatioQ == this.haloRatioQ &&
+      letterSpacingEm == this.letterSpacingEm &&
+      maxWidthEm == this.maxWidthEm &&
+      _sameFonts(fonts);
+
+  bool _sameFonts(List<String> other) {
+    // Constant `text-font` lists are pre-converted once by the style
+    // engine, so this is almost always an identity hit.
+    if (identical(other, fonts)) return true;
+    if (other.length != fonts.length) return false;
+    for (var i = 0; i < fonts.length; i++) {
+      if (other[i] != fonts[i]) return false;
+    }
+    return true;
+  }
+}
+
 /// Extracts symbol placement candidates from a display tile's prepared
 /// data at a given style zoom. Runs once per (display tile, integer
 /// zoom); results are cached by the tile model.
@@ -132,11 +205,29 @@ class SymbolLayouter {
   /// neighbouring tiles will place them, avoiding duplicates at seams.
   static const double _buffer = 0.5;
 
+  /// Layout passes run; for tests asserting that cached results are
+  /// reused instead of re-extracted.
+  @visibleForTesting
+  static int debugLayoutCount = 0;
+
+  /// Whether any symbol layer of [theme] is visible at [styleZoom] —
+  /// the render pump skips the symbol phase entirely below the first
+  /// symbol minzoom, so label-free zooms pay nothing for it.
+  static bool anySymbolLayerCovers(Theme theme, double styleZoom) {
+    for (final layer in theme.layers) {
+      if (layer is SymbolThemeLayer && layer.coversZoom(styleZoom)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   static List<SymbolInstance> layout({
     required Theme theme,
     required DisplayTileData data,
     required double styleZoom,
   }) {
+    debugLayoutCount++;
     final instances = <SymbolInstance>[];
     for (var i = 0; i < theme.layers.length; i++) {
       final layer = theme.layers[i];

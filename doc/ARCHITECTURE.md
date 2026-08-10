@@ -25,8 +25,8 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │       features are culled — and at deep overzoom clipped — to the
      │       tile's window of the data tile
      │
-     └─ symbols: SymbolPlacer collects label/icon anchors per tile
-             └─ LabelLayer: per-frame screen-space pass, global collision
+     └─ symbols: SymbolLayouter collects label/icon anchors per tile
+             └─ LabelPainter: per-frame screen-space pass, global collision
                 grid across all tiles, upright text under rotation
 ```
 
@@ -60,14 +60,26 @@ each frame in screen space:
   duplicate or clip at tile seams;
 * fade transitions don't require re-rasterizing geometry.
 
+Text is shaped **once per unique label at a 16 px reference size** and
+drawn through the canvas transform at the evaluated `text-size` — valid
+because every layout input is em-proportional, and crisp because glyphs
+rasterize at device scale under the transform. The shape-cache key
+therefore contains no font size; `text-opacity` (1/32 steps) and
+`text-halo-width` (1/128-em ratio steps) enter it quantized, so style
+ramps re-shape a label a bounded number of times ever rather than per
+zoom step. Never put a font size — or an unquantized opacity or halo
+width — back into that key: it re-creates the full-screen re-shape per
+pinch that this design removed. Collision boxes and curved-text cluster
+metrics are the reference-size measurements multiplied by the scale.
+
 Symbol layout applies the same decode-time bounds culling before
 evaluating any expressions, and along-line anchors keep their full-line
 spacing parametrization — an anchor lands at the same world position no
 matter which display tile lays it out — while being *enumerated* only
 inside the tile's window. The per-frame label pass evaluates at a zoom
-quantized to 1/8-level steps, so the text-layout caches and per-instance
-memos keep hitting on every frame of a pinch gesture instead of missing
-on every fractional zoom change.
+quantized to 1/8-level steps, so the per-instance style memos — which
+compare evaluated primitives, not strings — keep hitting on every frame
+of a pinch gesture instead of missing on every fractional zoom change.
 
 The whole layer is one `CustomPaint` — no per-tile widget churn, one
 repaint boundary. The painter applies the camera transform (translate ·

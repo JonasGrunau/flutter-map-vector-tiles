@@ -18,8 +18,8 @@ clips at tile seams.
 |------|-------------|
 | `tile_rasterizer.dart` | `TileRasterizer.paint()` — draws background/fill/line/raster/circle layers of one display tile into a `Canvas` (which the layer turns into an image via `Picture.toImageSync`). Culls features on their decode-time bounds against the display window (+64px buffer) before any expression work, clips geometry to the window from overzoom shift 2, and handles fill and line patterns, dash arrays (phase-anchored to the un-clipped run start), raster colour matrices, and the `_TileTransform` from tile-extent units to logical pixels |
 | `geometry_clipper.dart` | `clipPolyline` (segment-wise Liang–Barsky, emitting sub-runs plus their distance from the original run start for dash/stamp phase) and `clipRing` (Sutherland–Hodgman, winding-preserving) over tile-extent `Float32List`s — pure functions, no canvas |
-| `label_painter.dart` | `LabelPainter` — the per-frame screen-space pass (~900 lines): text layout with grapheme clustering, halos, variable text anchors, curved text along lines (with a max-angle bail-out to an icon-only fallback), SDF icon tinting, upright rotation, and `_CollisionIndex`, a grid-bucketed screen-space collision index. Evaluates at a 1/8-level-quantized zoom so its caches survive pinch gestures |
-| `symbol_layouter.dart` | `SymbolLayouter.layout()` — extracts label/icon placement candidates (`SymbolInstance`) from a prepared tile: polygon centroids, line midpoints, and spaced placements along lines via `SymbolPath` (precomputed cumulative lengths, `pointAt`/`angleAt`). Bounds-culls features before expression evaluation; along-line targets are enumerated only within the tile window while keeping their full-line parametrization |
+| `label_painter.dart` | `LabelPainter` — the per-frame screen-space pass (~1000 lines): text shaped once at a 16 px reference size and drawn scaled through the canvas transform, grapheme clustering, halos (baked as a quantized em-ratio stroke), variable text anchors, curved text along lines (with a max-angle bail-out to an icon-only fallback), SDF icon tinting, upright rotation, cohort fade-in via per-opacity-bucket `saveLayer`s, `prewarm()` for shaping a tile's labels inside the render pump, and `_CollisionIndex`, a grid-bucketed screen-space collision index. Evaluates at a 1/8-level-quantized zoom so its memos survive pinch gestures |
+| `symbol_layouter.dart` | `SymbolLayouter.layout()` — extracts label/icon placement candidates (`SymbolInstance`, with its `TextStyleMemo` label-pass memo) from a prepared tile: polygon centroids, line midpoints, and spaced placements along lines via `SymbolPath` (precomputed cumulative lengths, `pointAt`/`angleAt`). Bounds-culls features before expression evaluation; along-line targets are enumerated only within the tile window while keeping their full-line parametrization. `anySymbolLayerCovers()` lets the render pump skip the symbol phase below the first symbol minzoom |
 | `display_tile_data.dart` | `DisplayTileData` — the prepared data backing one display tile, per style source, plus its raster tiles |
 | `pattern_resolver.dart` | `PatternResolver` — crops `fill-pattern` / `line-pattern` sprites out of the atlas into standalone images suitable for a tiled `ImageShader` |
 
@@ -47,6 +47,16 @@ clips at tile seams.
   tiles.
 - **`LabelPainter` quantizes its eval zoom** (1/8-level steps). Don't key
   anything on the exact fractional zoom — it changes every pinch frame.
+- **Never put a font size (or unquantized opacity/halo width) into the
+  text-shape cache key.** Text is shaped once at the 16 px reference size
+  and drawn scaled; a size-bearing key re-creates the full-screen re-shape
+  per pinch that this design removed. The halo stroke is baked as a
+  1/128-em quantized ratio of the font size — px-exact halo width at draw
+  time is impossible because paragraph paints are encoded at build time.
+- **Collision boxes and cluster metrics are reference-size × scale.**
+  Every use of a laid-out text's `size`/`clusters` must be multiplied by
+  the symbol's `textScale`; a missed multiplication shows up as collision
+  drift between text sizes, not as a crash.
 - **`toImageSync` keeps rasters on the GPU** — no async readback. Do not
   replace it with `toImage()`.
 - **SDF icons need the SDF paint path** (`_sdfPaint` with an edge threshold

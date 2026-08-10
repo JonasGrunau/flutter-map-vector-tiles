@@ -2,10 +2,20 @@
 
 ## Unreleased
 
-Deep-zoom performance in dense cities, expired tiles that paint
-instantly and refresh in the background, and pub.dev gallery
-screenshots.
+Smooth zooming where labels live: text is shaped once and scaled — plus
+expired tiles that paint instantly and refresh in the background,
+deep-zoom performance in dense cities, and pub.dev gallery screenshots.
 
+- ⚡ **Scale-invariant text shaping**: label text used to be re-shaped
+  (two `TextPainter.layout` passes per label, inside the paint phase)
+  roughly every 0.1 px of a `text-size` zoom ramp — a full-screen
+  re-shape ~10× per pinched zoom level, felt as stutter wherever labels
+  were visible. Text is now shaped once at a 16 px reference size and
+  drawn through the canvas transform, which keeps it vector-crisp at
+  every fractional zoom; `text-opacity` and `text-halo-width` ramps
+  re-shape a bounded handful of times per label ever instead of per
+  zoom step. The per-frame style memo compares evaluated primitives, so
+  a pinch frame no longer builds cache-key strings per symbol.
 - ✨ **Stale-while-revalidate tiles**: disk-cached tiles older than
   `diskCacheTtl` are no longer refetched *before* they can paint —
   the expired tile is shown immediately and revalidated in the

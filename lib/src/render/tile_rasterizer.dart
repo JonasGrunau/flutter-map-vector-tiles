@@ -37,6 +37,11 @@ class TileRasterizer {
   @visibleForTesting
   static bool debugDisableCulling = false;
 
+  /// Tiles rasterized; for tests asserting that cached results are
+  /// reused instead of re-rendered.
+  @visibleForTesting
+  static int debugRasterizeCount = 0;
+
   /// Overzoom depth from which geometry is clipped to the display
   /// window. Below it a full-extent path is at most ~2 tiles long and
   /// clipping would be pure overhead; from shift 2 path length doubles
@@ -52,6 +57,7 @@ class TileRasterizer {
     required double devicePixelRatio,
     PatternResolver? patterns,
   }) {
+    debugRasterizeCount++;
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
     final pixelSize = (logicalTileSize * devicePixelRatio).ceil();
