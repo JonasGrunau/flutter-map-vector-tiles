@@ -21,7 +21,9 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │
      ├─ TileRasterizer: PreparedTile ─► ui.Picture ─► toImageSync (GPU)
      │       one raster per *display* tile at tileSize·dpr, evaluated at
-     │       the display zoom (crisp overzoom via subdivision, not scaling)
+     │       the display zoom (crisp overzoom via subdivision, not scaling);
+     │       features are culled — and at deep overzoom clipped — to the
+     │       tile's window of the data tile
      │
      └─ symbols: SymbolPlacer collects label/icon anchors per tile
              └─ LabelLayer: per-frame screen-space pass, global collision
@@ -38,6 +40,18 @@ do; on crossing a zoom level, new display tiles are rasterized from the
 already-decoded data tile, while the previous zoom's images are retained
 and drawn underneath until replacements are ready (no white flicker).
 
+At overzoom — display zoom past the source's maxzoom — each display tile
+shows only a small window of its data tile. Features are rejected
+against that window (expanded by a 64-logical-px buffer) using bounds
+computed once at decode time, *before* any filter or paint expression
+runs; from two levels of overzoom the surviving geometry is additionally
+clipped to the window, with dash and line-pattern phase measured from
+the original run start so patterns stay aligned across clip boundaries
+and display-tile seams. Rasterization cost per display tile is therefore
+bounded by what is visible, not by the density of the data tile — the
+difference between ~1 ms and ~85 ms per tile for a dense city tile
+viewed at z20 over z14 data.
+
 Labels and icons are **not** baked into the tile images. They are drawn
 each frame in screen space:
 
@@ -45,6 +59,15 @@ each frame in screen space:
 * collision detection runs globally across tile borders, so labels never
   duplicate or clip at tile seams;
 * fade transitions don't require re-rasterizing geometry.
+
+Symbol layout applies the same decode-time bounds culling before
+evaluating any expressions, and along-line anchors keep their full-line
+spacing parametrization — an anchor lands at the same world position no
+matter which display tile lays it out — while being *enumerated* only
+inside the tile's window. The per-frame label pass evaluates at a zoom
+quantized to 1/8-level steps, so the text-layout caches and per-instance
+memos keep hitting on every frame of a pinch gesture instead of missing
+on every fractional zoom change.
 
 The whole layer is one `CustomPaint` — no per-tile widget churn, one
 repaint boundary. The painter applies the camera transform (translate ·
@@ -76,14 +99,17 @@ chunked event-loop execution.
 | layer | keyed by | bounded by |
 | --- | --- | --- |
 | memory: `PreparedTile` | data tile + theme id | entry count + bytes |
-| memory: raster `ui.Image` | display tile + int zoom + theme | entry count (images disposed on evict) |
 | memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
 | disk: raw tile bytes | url hash | TTL + total size sweep |
 
 All caches are plain deterministic LRU implementations — no external
 cache framework. Every `ui.Image` has exactly one owner and is disposed
 on eviction or layer dispose; disposing the layer tears down isolates,
-pending requests and caches (verified by tests).
+pending requests and caches (verified by tests). Rasterized display
+tiles are deliberately *not* an evictable cache: each live display-tile
+model owns exactly one `ui.Image`, disposed when the tile leaves the
+buffered grid, and revisiting a zoom re-rasterizes from the
+`PreparedTile` LRU — cheap, since only the visible window is processed.
 
 The disk TTL is a *revalidation* deadline, not an expiry: expired
 entries — including the zero-byte "known absent" sentinels — are served

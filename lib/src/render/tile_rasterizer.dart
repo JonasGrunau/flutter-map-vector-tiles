@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
+import 'package:meta/meta.dart';
 
 import '../core/tile_key.dart';
 import '../core/tile_zoom.dart';
@@ -10,6 +11,7 @@ import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
 import 'display_tile_data.dart';
+import 'geometry_clipper.dart';
 import 'pattern_resolver.dart';
 
 /// Renders the geometry layers (background/fill/line/circle) of one
@@ -23,6 +25,23 @@ class TileRasterizer {
   /// Logical tile size in points — the one shared constant, see
   /// `core/tile_zoom.dart`.
   static const double logicalTileSize = displayTileSize;
+
+  /// Logical-px margin kept around the display tile when culling:
+  /// covers stroke half-widths incl. casing (`gap + 2·width`) up to
+  /// 128px and circle radius + stroke up to 64px, and keeps
+  /// clip-boundary artifacts outside the visible canvas clip.
+  static const double cullBufferPx = 64;
+
+  /// Disables feature culling and overzoom clipping. Pixel-equivalence
+  /// tests render with and without it to prove neither changes output.
+  @visibleForTesting
+  static bool debugDisableCulling = false;
+
+  /// Overzoom depth from which geometry is clipped to the display
+  /// window. Below it a full-extent path is at most ~2 tiles long and
+  /// clipping would be pure overhead; from shift 2 path length doubles
+  /// per level and dash/stamp/tessellation cost grows with it.
+  static const int _clipMinShift = 2;
 
   /// Records and rasterizes the tile. [devicePixelRatio] controls the
   /// backing resolution. Returns null when there is nothing to draw.
@@ -100,15 +119,17 @@ class TileRasterizer {
 
   /// Iterates the features of [layer]'s source-layer, calling [visit]
   /// with the feature, its evaluation context (already used for the
-  /// layer filter — visitors must not rebuild it) and the
-  /// tile-to-logical-pixels transform.
+  /// layer filter — visitors must not rebuild it), the
+  /// tile-to-logical-pixels transform, and — at overzoom, for features
+  /// not fully inside the buffered display window — the clip window in
+  /// tile-extent units.
   static void _eachFeature(
     ThemeLayer layer,
     DisplayTileData data,
     double styleZoom,
     PreparedGeomType? typeFilter,
-    void Function(
-            PreparedFeature feature, EvalContext ctx, _TileTransform transform)
+    void Function(PreparedFeature feature, EvalContext ctx,
+            _TileTransform transform, ClipRect? clip)
         visit,
   ) {
     final source = layer.source;
@@ -122,8 +143,32 @@ class TileRasterizer {
     final transform = _TileTransform.forDisplay(
         data.displayKey, tile.key, sourceLayer.extent);
 
+    // The display tile's sub-rect in tile-extent units, expanded by
+    // [cullBufferPx]. At overzoom each display tile shows a tiny window
+    // of the data tile; rejecting features on their decode-time bounds
+    // before any expression work is what keeps deep zooms affordable.
+    final cull = !debugDisableCulling;
+    final cullMinX = (-cullBufferPx - transform.offsetX) / transform.scale;
+    final cullMaxX =
+        (logicalTileSize + cullBufferPx - transform.offsetX) / transform.scale;
+    final cullMinY = (-cullBufferPx - transform.offsetY) / transform.scale;
+    final cullMaxY =
+        (logicalTileSize + cullBufferPx - transform.offsetY) / transform.scale;
+
+    final shift = data.displayKey.z - tile.key.z;
+    final clip = cull && shift >= _clipMinShift
+        ? ClipRect(cullMinX, cullMinY, cullMaxX, cullMaxY)
+        : null;
+
     for (final feature in sourceLayer.features) {
       if (typeFilter != null && feature.type != typeFilter) continue;
+      if (cull &&
+          (feature.maxX < cullMinX ||
+              feature.minX > cullMaxX ||
+              feature.maxY < cullMinY ||
+              feature.minY > cullMaxY)) {
+        continue;
+      }
       final ctx = EvalContext(
         zoom: styleZoom,
         properties: feature.properties,
@@ -131,7 +176,13 @@ class TileRasterizer {
         featureId: feature.id,
       );
       if (!layer.matches(ctx)) continue;
-      visit(feature, ctx, transform);
+      // Fully-contained geometry takes the exact unclipped path.
+      final featureClip = clip != null &&
+              !clip.containsBounds(
+                  feature.minX, feature.minY, feature.maxX, feature.maxY)
+          ? clip
+          : null;
+      visit(feature, ctx, transform, featureClip);
     }
   }
 
@@ -162,8 +213,9 @@ class TileRasterizer {
     }
 
     _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
-        (feature, ctx, transform) {
-      final path = _polygonPath(feature, transform);
+        (feature, ctx, transform, clip) {
+      final path = _polygonPath(feature, transform, clip);
+      if (path == null) return;
       if (patternProp != null && patterns != null) {
         final name = patternProp.eval(ctx);
         final image = name.isEmpty ? null : patterns.imageFor(name);
@@ -229,8 +281,10 @@ class TileRasterizer {
       if (shared == null) return false; // invisible at this zoom
     }
 
-    _eachFeature(layer, data, styleZoom, null, (feature, ctx, transform) {
+    _eachFeature(layer, data, styleZoom, null, (feature, ctx, transform, clip) {
       if (feature.type == PreparedGeomType.point) return;
+
+      final closeRuns = feature.type == PreparedGeomType.polygon;
 
       if (patternProp != null && patterns != null) {
         final width = layer.width.eval(ctx);
@@ -240,8 +294,21 @@ class TileRasterizer {
         final name = patternProp.eval(ctx);
         final image = name.isEmpty ? null : patterns.imageFor(name);
         if (image != null) {
-          painted |= _stampLinePattern(
-              canvas, _linePath(feature, transform), image, width, opacity);
+          if (clip == null) {
+            painted |= _stampLinePattern(
+                canvas, _linePath(feature, transform), image, width, opacity);
+          } else {
+            for (final part in feature.parts) {
+              final clipped = clipPolyline(part, clip, close: closeRuns);
+              for (var r = 0; r < clipped.runs.length; r++) {
+                final sub = Path();
+                _addRun(sub, clipped.runs[r], transform, close: false);
+                painted |= _stampLinePattern(canvas, sub, image, width, opacity,
+                    phaseLogicalPx:
+                        clipped.startDistances[r] * transform.scale);
+              }
+            }
+          }
           // Per spec, line-pattern disables line-color and dashes.
           return;
         }
@@ -251,17 +318,46 @@ class TileRasterizer {
       final style = shared ?? _lineStyle(layer, ctx);
       if (style == null) return;
 
-      var path = _linePath(feature, transform);
       final dashArray = style.dash;
-      if (dashArray != null && dashArray.length >= 2) {
-        path = _dashPath(path, dashArray, style.width);
+      final dash =
+          dashArray != null && dashArray.length >= 2 ? dashArray : null;
+      Path path;
+      if (clip == null) {
+        path = _linePath(feature, transform);
+        if (dash != null) path = _dashPath(path, dash, style.width);
+      } else {
+        path = Path();
+        for (final part in feature.parts) {
+          final clipped = clipPolyline(part, clip, close: closeRuns);
+          for (var r = 0; r < clipped.runs.length; r++) {
+            if (dash != null) {
+              final sub = Path();
+              _addRun(sub, clipped.runs[r], transform, close: false);
+              path.addPath(
+                _dashPath(sub, dash, style.width,
+                    phaseLogicalPx:
+                        clipped.startDistances[r] * transform.scale),
+                Offset.zero,
+              );
+            } else {
+              _addRun(path, clipped.runs[r], transform, close: false);
+            }
+          }
+        }
       }
 
       if (style.gapWidth > 0) {
         // Two parallel casing strokes: outer stroke minus inner gap.
         // Fresh paints — the shared style's Paint must not be mutated.
+        // The BlendMode.clear must only ever erase this feature's own
+        // outer stroke (another feature's casing crossing the gap must
+        // survive, as in MapLibre), so each feature needs its own
+        // layer — but bounded to the stroked path rather than the whole
+        // tile: an unbounded saveLayer allocates a full-tile offscreen
+        // per casing feature. Inflate by 2·outer: miter joins reach up
+        // to miterLimit/2 (= 2) stroke widths past a vertex.
         final outer = style.gapWidth + 2 * style.width;
-        canvas.saveLayer(null, Paint());
+        canvas.saveLayer(path.getBounds().inflate(outer * 2), Paint());
         canvas.drawPath(
           path,
           Paint()
@@ -314,16 +410,25 @@ class TileRasterizer {
   /// Draws `line-pattern` by stamping the sprite along the path, scaled
   /// so the sprite height matches the line width (aspect ratio kept) and
   /// rotated to the local line direction — MapLibre semantics.
+  ///
+  /// [phaseLogicalPx] is how far along the *original* (un-clipped)
+  /// geometry this path starts; stamp positions are offset so they land
+  /// exactly where the full path would put them, keeping stamps aligned
+  /// across clip boundaries and display-tile seams.
   static bool _stampLinePattern(
     Canvas canvas,
     Path path,
     ui.Image image,
     double width,
-    double opacity,
-  ) {
+    double opacity, {
+    double phaseLogicalPx = 0,
+  }) {
     final scale = width / image.height;
     final stampLength = image.width * scale;
     if (stampLength < 0.5) return false;
+    // Dart's % is non-negative for a positive divisor, so this is the
+    // first global stamp center at or past the path start.
+    final firstStamp = (stampLength / 2 - phaseLogicalPx) % stampLength;
     final src =
         Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
     final anchorX = image.width / 2;
@@ -331,7 +436,7 @@ class TileRasterizer {
     final transforms = <ui.RSTransform>[];
     final rects = <Rect>[];
     for (final metric in path.computeMetrics()) {
-      for (var d = stampLength / 2; d < metric.length; d += stampLength) {
+      for (var d = firstStamp; d < metric.length; d += stampLength) {
         final tangent = metric.getTangentForOffset(d);
         if (tangent == null) continue;
         transforms.add(ui.RSTransform.fromComponents(
@@ -494,7 +599,7 @@ class TileRasterizer {
   ) {
     var painted = false;
     _eachFeature(layer, data, styleZoom, PreparedGeomType.point,
-        (feature, ctx, transform) {
+        (feature, ctx, transform, clip) {
       final radius = layer.radius.eval(ctx);
       if (radius <= 0) return;
       final fill = _withOpacity(
@@ -514,9 +619,20 @@ class TileRasterizer {
             ..strokeWidth = strokeWidth)
           : null;
       if (fillPaint == null && strokePaint == null) return;
+      // Per-point rejection: a multipoint feature that straddles the
+      // cull rect can still carry thousands of far-away points at deep
+      // overzoom.
+      final reach = radius + strokeWidth;
       for (final part in feature.parts) {
         for (var i = 0; i + 1 < part.length; i += 2) {
           final center = transform.map(part[i], part[i + 1]);
+          if (!debugDisableCulling &&
+              (center.dx < -reach ||
+                  center.dy < -reach ||
+                  center.dx > logicalTileSize + reach ||
+                  center.dy > logicalTileSize + reach)) {
+            continue;
+          }
           if (fillPaint != null) {
             canvas.drawCircle(center, radius, fillPaint);
             painted = true;
@@ -531,12 +647,25 @@ class TileRasterizer {
     return painted;
   }
 
-  static Path _polygonPath(PreparedFeature feature, _TileTransform t) {
+  /// Builds the fill path, clipping each ring to [clip] when set.
+  /// Returns null when every ring clips away entirely.
+  static Path? _polygonPath(
+      PreparedFeature feature, _TileTransform t, ClipRect? clip) {
     final path = Path()..fillType = PathFillType.nonZero;
+    var any = false;
     for (final ring in feature.parts) {
-      _addRun(path, ring, t, close: true);
+      if (clip == null) {
+        _addRun(path, ring, t, close: true);
+        any = true;
+      } else {
+        final clipped = clipRing(ring, clip);
+        if (clipped != null) {
+          _addRun(path, clipped, t, close: true);
+          any = true;
+        }
+      }
     }
-    return path;
+    return any ? path : null;
   }
 
   static Path _linePath(PreparedFeature feature, _TileTransform t) {
@@ -557,25 +686,51 @@ class TileRasterizer {
     if (close) path.close();
   }
 
-  static Path _dashPath(Path source, List<double> pattern, double width) {
+  /// Extracts the drawn dash segments of [source].
+  ///
+  /// [phaseLogicalPx] is how far along the *original* (un-clipped)
+  /// geometry this path starts: the dash walk resumes mid-pattern there,
+  /// so clipped sub-runs render exactly the dashes the full path would —
+  /// keeping the pattern aligned across clip boundaries and
+  /// display-tile seams.
+  static Path _dashPath(Path source, List<double> pattern, double width,
+      {double phaseLogicalPx = 0}) {
     // Dash lengths are specified in multiples of line width.
     final dashes = pattern.map((d) => (d * width).clamp(0.01, 4096.0)).toList();
     final result = Path();
     for (final metric in source.computeMetrics()) {
-      var distance = 0.0;
       var draw = true;
       var i = 0;
+      var remaining = dashes[0];
+      if (phaseLogicalPx > 0) {
+        // With an odd dash count the draw/gap roles swap every cycle
+        // (the draw flag flips per dash, not per cycle), so the visual
+        // period is twice the pattern sum.
+        var sum = 0.0;
+        for (final d in dashes) {
+          sum += d;
+        }
+        var p = phaseLogicalPx % (dashes.length.isEven ? sum : sum * 2);
+        while (p >= remaining) {
+          p -= remaining;
+          i++;
+          draw = !draw;
+          remaining = dashes[i % dashes.length];
+        }
+        remaining -= p;
+      }
+      var distance = 0.0;
       while (distance < metric.length) {
-        final len = dashes[i % dashes.length];
         if (draw) {
           result.addPath(
-            metric.extractPath(distance, distance + len),
+            metric.extractPath(distance, distance + remaining),
             Offset.zero,
           );
         }
-        distance += len;
-        draw = !draw;
+        distance += remaining;
         i++;
+        draw = !draw;
+        remaining = dashes[i % dashes.length];
       }
     }
     return result;

@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter_map_vector_tiles/src/core/tile_key.dart';
@@ -33,6 +34,84 @@ PreparedFeature _point(double x, double y, String name) => PreparedFeature(
       ],
       properties: {'name': name},
     );
+
+/// A line feature; [withBounds] mimics decoder-computed bounds so the
+/// feature participates in culling (fixtures without bounds never cull).
+PreparedFeature _line(List<double> coords, String name,
+    {bool withBounds = true}) {
+  var minX = double.infinity, minY = double.infinity;
+  var maxX = double.negativeInfinity, maxY = double.negativeInfinity;
+  for (var i = 0; i + 1 < coords.length; i += 2) {
+    if (coords[i] < minX) minX = coords[i];
+    if (coords[i] > maxX) maxX = coords[i];
+    if (coords[i + 1] < minY) minY = coords[i + 1];
+    if (coords[i + 1] > maxY) maxY = coords[i + 1];
+  }
+  return PreparedFeature(
+    id: null,
+    type: PreparedGeomType.line,
+    parts: [Float32List.fromList(coords)],
+    properties: {'name': name},
+    minX: withBounds ? minX : double.negativeInfinity,
+    minY: withBounds ? minY : double.negativeInfinity,
+    maxX: withBounds ? maxX : double.infinity,
+    maxY: withBounds ? maxY : double.infinity,
+  );
+}
+
+/// Reference along-line placement: the pre-windowing algorithm — build
+/// the full path, enumerate every global target, keep the ones the
+/// anchor buffer accepts. The windowed implementation must match it.
+({List<double> distances, List<double> xs, List<double> ys})
+    _bruteForceAnchors({
+  required TileKey displayKey,
+  required TileKey dataKey,
+  required List<double> part,
+  required double spacing,
+}) {
+  final frac = displayKey.fractionOf(dataKey);
+  final scale = TileRasterizer.logicalTileSize / (_extent * frac.scale);
+  final offsetX = -frac.dx * TileRasterizer.logicalTileSize / frac.scale;
+  final offsetY = -frac.dy * TileRasterizer.logicalTileSize / frac.scale;
+  final n = part.length ~/ 2;
+  final points = Float32List(n * 2);
+  final cumulative = Float32List(n);
+  var total = 0.0;
+  for (var i = 0; i < n; i++) {
+    points[i * 2] = part[i * 2] * scale + offsetX;
+    points[i * 2 + 1] = part[i * 2 + 1] * scale + offsetY;
+    if (i > 0) {
+      final dx = points[i * 2] - points[i * 2 - 2];
+      final dy = points[i * 2 + 1] - points[i * 2 - 1];
+      total += math.sqrt(dx * dx + dy * dy);
+    }
+    cumulative[i] = total;
+  }
+  final path = SymbolPath(points, cumulative);
+  final targets = <double>[];
+  if (total < spacing) {
+    targets.add(total / 2);
+  } else {
+    final half = spacing / 2;
+    for (var k = 0; half + k * spacing < total; k++) {
+      targets.add(half + k * spacing);
+    }
+  }
+  final distances = <double>[], xs = <double>[], ys = <double>[];
+  for (final d in targets) {
+    final p = path.pointAt(d);
+    if (p.dx < -0.5 ||
+        p.dy < -0.5 ||
+        p.dx >= TileRasterizer.logicalTileSize + 0.5 ||
+        p.dy >= TileRasterizer.logicalTileSize + 0.5) {
+      continue;
+    }
+    distances.add(d);
+    xs.add(p.dx);
+    ys.add(p.dy);
+  }
+  return (distances: distances, xs: xs, ys: ys);
+}
 
 DisplayTileData _data({
   required TileKey displayKey,
@@ -275,6 +354,159 @@ void main() {
         ),
       );
       expect(instances.single.text, 'KIRCHHEIM');
+    });
+  });
+
+  group('along-line windowed enumeration', () {
+    Theme lineTheme({double spacing = 250}) => _theme(layout: {
+          'symbol-placement': 'line',
+          'symbol-spacing': spacing,
+        });
+
+    test(
+        'windowed anchors match the full enumeration on a complex '
+        'overzoomed polyline', () {
+      // A zigzag with a duplicate vertex, crossing the display window
+      // several times, laid out at overzoom shift 2.
+      const part = <double>[
+        0.0, 1500, 800, 1500, 800, 100, 1600, 100, 1600, 100, //
+        1600, 1500, 2600, 1500, 2600, 2600, 3500, 200,
+      ];
+      const displayKey = TileKey(5, 9, 9);
+      const dataKey = TileKey(3, 2, 2);
+      const spacing = 40.0;
+
+      final expected = _bruteForceAnchors(
+        displayKey: displayKey,
+        dataKey: dataKey,
+        part: part,
+        spacing: spacing,
+      );
+      final instances = _layout(
+        lineTheme(spacing: spacing),
+        _data(
+          displayKey: displayKey,
+          dataKey: dataKey,
+          features: [_line(part, 'Road')],
+        ),
+        styleZoom: 5,
+      );
+      expect(instances, hasLength(expected.distances.length));
+      expect(expected.distances, isNotEmpty,
+          reason: 'the fixture must actually place anchors in this tile');
+      for (var i = 0; i < instances.length; i++) {
+        expect(instances[i].pathDistance, expected.distances[i]);
+        expect(instances[i].anchor.dx, closeTo(expected.xs[i], 1e-9));
+        expect(instances[i].anchor.dy, closeTo(expected.ys[i], 1e-9));
+      }
+    });
+
+    test(
+        'a target landing exactly on a vertex takes the following '
+        'segment\'s angle', () {
+      // L-shape: 100 logical px right, then 100 px down. spacing 200
+      // puts the single target at distance 100 — exactly the corner.
+      final instances = _layout(
+        lineTheme(spacing: 200),
+        _data(
+          displayKey: const TileKey(5, 9, 9),
+          dataKey: const TileKey(5, 9, 9),
+          features: [
+            _line(const [0, 0, 1600, 0, 1600, 1600], 'Corner'),
+          ],
+        ),
+        styleZoom: 5,
+      );
+      expect(instances.single.pathDistance, 100);
+      expect(instances.single.anchor.dx, closeTo(100, 1e-6));
+      expect(instances.single.anchor.dy, closeTo(0, 1e-6));
+      // The downward segment owns the boundary distance.
+      expect(instances.single.angle, closeTo(math.pi / 2, 1e-9));
+    });
+
+    test(
+        'sibling display tiles claim disjoint anchors that together '
+        'cover the global target set', () {
+      // One horizontal line across the data tile; at shift 1 its total
+      // logical length is 512, so global targets sit at 125 and 375.
+      const part = <double>[0, 1024, 4096, 1024];
+      final left = _layout(
+        lineTheme(),
+        _data(
+          displayKey: const TileKey(6, 20, 20),
+          dataKey: const TileKey(5, 10, 10),
+          features: [_line(part, 'Road')],
+        ),
+        styleZoom: 6,
+      );
+      final right = _layout(
+        lineTheme(),
+        _data(
+          displayKey: const TileKey(6, 21, 20),
+          dataKey: const TileKey(5, 10, 10),
+          features: [_line(part, 'Road')],
+        ),
+        styleZoom: 6,
+      );
+      expect(left.single.pathDistance, 125);
+      expect(left.single.anchor.dx, closeTo(125, 1e-6));
+      expect(right.single.pathDistance, 375);
+      // 375 along a line starting at logical -256 in the right tile.
+      expect(right.single.anchor.dx, closeTo(119, 1e-6));
+    });
+
+    test('line-center places the single mid-line anchor', () {
+      final instances = _layout(
+        _theme(layout: {'symbol-placement': 'line-center'}),
+        _data(
+          displayKey: const TileKey(5, 9, 9),
+          dataKey: const TileKey(5, 9, 9),
+          features: [
+            _line(const [0, 2048, 4096, 2048], 'Mid'),
+          ],
+        ),
+        styleZoom: 5,
+      );
+      expect(instances.single.pathDistance, 128);
+      expect(instances.single.anchor.dx, closeTo(128, 1e-6));
+      expect(instances.single.anchor.dy, closeTo(128, 1e-6));
+    });
+  });
+
+  group('feature culling', () {
+    test('a line whose bounds miss the display window is skipped', () {
+      final instances = _layout(
+        _theme(layout: {'symbol-placement': 'line'}),
+        _data(
+          // Window is extent [1024, 2048]^2 of the data tile.
+          displayKey: const TileKey(5, 9, 9),
+          dataKey: const TileKey(3, 2, 2),
+          features: [
+            _line(const [100, 100, 500, 100], 'Far away')
+          ],
+        ),
+        styleZoom: 5,
+      );
+      expect(instances, isEmpty);
+    });
+
+    test(
+        'a straddling line yields the same anchors with and without '
+        'bounds', () {
+      const part = <double>[0, 0, 4096, 4096];
+      List<double> distancesOf({required bool withBounds}) => _layout(
+            _theme(layout: {'symbol-placement': 'line'}),
+            _data(
+              displayKey: const TileKey(5, 9, 9),
+              dataKey: const TileKey(3, 2, 2),
+              features: [_line(part, 'Diagonal', withBounds: withBounds)],
+            ),
+            styleZoom: 5,
+          ).map((i) => i.pathDistance).toList();
+      final withBounds = distancesOf(withBounds: true);
+      final withoutBounds = distancesOf(withBounds: false);
+      expect(withBounds, isNotEmpty);
+      expect(withBounds, withoutBounds);
     });
   });
 }

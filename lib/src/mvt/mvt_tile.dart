@@ -60,12 +60,20 @@ class MvtFeature {
   /// features, aligned with [parts]; empty for other geometry types.
   final Float64List ringAreas;
 
+  /// Geometry bounds in tile-extent units over all retained [parts] —
+  /// computed during decode, where the vertices are already in cache.
+  final double minX, minY, maxX, maxY;
+
   const MvtFeature({
     required this.id,
     required this.type,
     required this.tags,
     required this.parts,
     required this.ringAreas,
+    required this.minX,
+    required this.minY,
+    required this.maxX,
+    required this.maxY,
   });
 
   /// Materializes this feature's properties using the parent layer's

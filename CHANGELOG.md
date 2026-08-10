@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-Expired tiles now paint instantly and refresh in the background, and the
-pub.dev page gets gallery screenshots.
+Deep-zoom performance in dense cities, expired tiles that paint
+instantly and refresh in the background, and pub.dev gallery
+screenshots.
 
 - ✨ **Stale-while-revalidate tiles**: disk-cached tiles older than
   `diskCacheTtl` are no longer refetched *before* they can paint —
@@ -24,6 +25,32 @@ pub.dev page gets gallery screenshots.
 - 🧹 The example app draws its attribution as a rounded translucent
   pill centered at the bottom of the map instead of a flush white bar
   in the bottom-right corner.
+- ⚡ **Overzoom culling and clipping**: zoomed past the source's
+  maxzoom (z15+ for typical OpenMapTiles sources), every display tile
+  used to re-process *all* features of its data tile for every style
+  layer — in a dense city that meant millions of filter evaluations and
+  full-tile path building per zoom crossing, and dash/line-pattern cost
+  that grew 4× per zoom level. Features are now rejected on
+  decode-time bounds before any expression work, and geometry is
+  clipped to the tile's visible window from two levels of overzoom,
+  with dash and line-pattern phase preserved across tile seams. A dense
+  city tile at z20 over z14 data rasterizes ~80× faster in the bundled
+  benchmark (85 ms → 1 ms).
+- ⚡ Along-line label anchors are enumerated only within the display
+  tile's window (their global spacing is kept, so labels never shift
+  between tiles), and symbol layout skips features outside the tile
+  before evaluating any style expressions — previously every display
+  tile scanned every POI, house number and road of the whole data tile.
+- ⚡ `line-gap-width` casings no longer allocate a full-tile offscreen
+  buffer per feature — the compositing layer is bounded to the stroked
+  path, which in a city of casing-styled roads was a large hidden
+  raster-thread cost.
+- ⚡ Smooth labels during pinch zoom in dense areas: the label pass now
+  evaluates at a zoom quantized to 1/8-level steps and the text/glyph
+  caches grew (800→2500 and 1500→4000 entries). Previously any
+  fractional zoom change invalidated every label's cached style on
+  every frame, and a dense city screen overflowed the text cache and
+  re-laid-out every label every frame.
 
 ## 2.2.0
 

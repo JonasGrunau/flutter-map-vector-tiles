@@ -57,10 +57,27 @@ class PlacedSymbol {
 /// with global collision detection across tile borders. Text stays
 /// crisp at fractional zoom and upright under rotation.
 class LabelPainter {
+  /// Cache capacities, sized to survive one dense-city screen of
+  /// distinct labels: when the per-frame distinct-label count exceeds
+  /// the cache, every frame evicts entries the same frame still needs
+  /// and the whole screen re-lays-out every frame. The memory ceiling is
+  /// only reached on screens that actually carry that many labels; if a
+  /// byte budget is ever needed, `LruCache.maxCost` is the ready hook.
+  static const int textCacheEntries = 2500;
+  static const int glyphCacheEntries = 4000;
+
+  /// Steps per zoom level for the label eval zoom. Labels are laid out
+  /// in screen space, so between steps nothing visibly moves; typical
+  /// `text-size` ramps drift ~0.1-0.2px per step — below the 0.1px
+  /// rounding already applied in the text cache key.
+  static const double _zoomStep = 8;
+
   late final _textCache = LruCache<String, _LaidOutText>(
-      maxEntries: 800, onEvict: (_, text) => _retired.add(text.dispose));
+      maxEntries: textCacheEntries,
+      onEvict: (_, text) => _retired.add(text.dispose));
   late final _glyphCache = LruCache<String, _GlyphText>(
-      maxEntries: 1500, onEvict: (_, glyph) => _retired.add(glyph.dispose));
+      maxEntries: glyphCacheEntries,
+      onEvict: (_, glyph) => _retired.add(glyph.dispose));
 
   /// Evicted entries whose `TextPainter`s may still be referenced by
   /// symbols prepared earlier in the same frame — disposed at the start
@@ -92,6 +109,12 @@ class LabelPainter {
     double devicePixelRatio = 1,
   }) {
     _disposeRetired();
+    // Quantize the eval zoom to [_zoomStep] steps: the per-instance
+    // memo, the zoom-only expression memos and the text/glyph cache
+    // keys all compare against the exact zoom, so evaluating at the raw
+    // fractional zoom would miss every one of them on every frame of a
+    // pinch. Integer zooms are fixed points of the rounding.
+    final zoom = (styleZoom * _zoomStep).round() / _zoomStep;
     final collision = _CollisionIndex(screenSize);
     // Placement priority: topmost style layers first (they win space),
     // then by symbol-sort-key, then stable by y for determinism.
@@ -107,7 +130,7 @@ class LabelPainter {
     final toDraw = <_DrawableSymbol>[];
     for (final candidate in candidates) {
       final drawable =
-          _prepare(candidate, styleZoom, collision, sprites, screenSize);
+          _prepare(candidate, zoom, collision, sprites, screenSize);
       if (drawable != null) toDraw.add(drawable);
     }
     // Draw bottom style layers first so upper layers paint on top.

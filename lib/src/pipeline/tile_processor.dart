@@ -60,13 +60,17 @@ PreparedTile prepareTileSync(PrepareInput input) {
       for (final part in feature.parts) {
         byteSize += part.length * 4 + 16;
       }
-      byteSize += properties.length * 48;
+      byteSize += properties.length * 48 + 32; // +32: the four bound doubles
 
       features.add(PreparedFeature(
         id: feature.id == 0 ? null : feature.id,
         type: type,
         parts: feature.parts,
         properties: properties,
+        minX: feature.minX,
+        minY: feature.minY,
+        maxX: feature.maxX,
+        maxY: feature.maxY,
       ));
     }
     if (features.isNotEmpty) {

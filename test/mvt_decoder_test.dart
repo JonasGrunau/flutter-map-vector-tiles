@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_map_vector_tiles/src/mvt/mvt_decoder.dart';
 import 'package:flutter_map_vector_tiles/src/mvt/mvt_tile.dart';
+import 'package:flutter_map_vector_tiles/src/pipeline/tile_processor.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fixtures/mvt_builder.dart';
@@ -280,5 +281,72 @@ void main() {
     final layer = decodeMvt(_tileWithRawValue(value.toBytes())).layers.single;
     expect(
         layer.features.single.decodeProperties(layer), {'k': 1125899906842624});
+  });
+
+  test('feature bounds cover all retained parts', () {
+    final bytes = MvtTileBuilder()
+        .layer('roads')
+        .feature(type: 2, geometry: [
+          cmd(1, 1), zig(2), zig(7), //
+          cmd(2, 1), zig(10), zig(-5), // part 1: (2,7)-(12,2)
+          cmd(1, 1), zig(-11), zig(38), //
+          cmd(2, 1), zig(30), zig(0), // part 2: (1,40)-(31,40)
+        ])
+        .done()
+        .build();
+
+    final feature = decodeMvt(bytes).layers.single.features.single;
+    expect(feature.minX, 1);
+    expect(feature.minY, 2);
+    expect(feature.maxX, 31);
+    expect(feature.maxY, 40);
+  });
+
+  test('discarded degenerate parts do not widen the bounds', () {
+    // A single-vertex line run is dropped by the decoder; its far-away
+    // coordinate must not leak into the feature bounds.
+    final bytes = MvtTileBuilder()
+        .layer('roads')
+        .feature(type: 2, geometry: [
+          cmd(1, 1), zig(1000), zig(1000), // lone MoveTo: discarded part
+          cmd(1, 1), zig(-990), zig(-990), //
+          cmd(2, 1), zig(5), zig(5), // retained: (10,10)-(15,15)
+        ])
+        .done()
+        .build();
+
+    final feature = decodeMvt(bytes).layers.single.features.single;
+    expect(feature.parts, hasLength(1));
+    expect(feature.minX, 10);
+    expect(feature.minY, 10);
+    expect(feature.maxX, 15);
+    expect(feature.maxY, 15);
+  });
+
+  test('prepared features carry the decoder bounds', () {
+    final bytes = MvtTileBuilder()
+        .layer('roads')
+        .feature(type: 2, geometry: [
+          cmd(1, 1), zig(2), zig(7), //
+          cmd(2, 1), zig(10), zig(-5),
+        ])
+        .done()
+        .build();
+
+    final prepared = prepareTileSync(PrepareInput(
+      z: 0,
+      x: 0,
+      y: 0,
+      bytes: bytes,
+      layerProperties: const {'roads': <String>{}},
+    ));
+    final feature = prepared.layers['roads']!.features.single;
+    expect(feature.minX, 2);
+    expect(feature.minY, 2);
+    expect(feature.maxX, 12);
+    expect(feature.maxY, 7);
+    // 128 base + one 2-vertex part (4 floats * 4 + 16) + 32 for the
+    // four bound doubles.
+    expect(prepared.byteSize, 128 + 32 + 32);
   });
 }

@@ -148,6 +148,8 @@ MvtFeature? _decodeGeometry(
   var y = 0;
   var i = 0;
   var len = -1; // vertices*2 in _scratch; -1 when no part is open
+  var minX = double.infinity, minY = double.infinity;
+  var maxX = double.negativeInfinity, maxY = double.negativeInfinity;
 
   void flush() {
     if (len < 0) return;
@@ -161,6 +163,16 @@ MvtFeature? _decodeGeometry(
     };
     if (c < minVertices * 2) return;
     final part = Float32List(c)..setRange(0, c, _scratch);
+    // Fold the just-copied (cache-hot) part into the feature bounds;
+    // discarded degenerate parts never contribute.
+    for (var j = 0; j + 1 < c; j += 2) {
+      final px = part[j];
+      final py = part[j + 1];
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+    }
     if (type == MvtGeomType.polygon) {
       areas.add(_shoelace(part));
     }
@@ -224,6 +236,10 @@ MvtFeature? _decodeGeometry(
     tags: tags,
     parts: parts,
     ringAreas: areas.isNotEmpty ? Float64List.fromList(areas) : Float64List(0),
+    minX: minX,
+    minY: minY,
+    maxX: maxX,
+    maxY: maxY,
   );
 }
 

@@ -57,11 +57,21 @@ class PreparedFeature {
   /// the feature has none of the referenced keys.
   final Map<String, Object?> properties;
 
+  /// Geometry bounds in tile-extent units over all [parts], computed on
+  /// the worker during decode. The infinite defaults mean "unknown":
+  /// consumers must treat an unknown bbox as intersecting everything, so
+  /// hand-built features are simply never culled.
+  final double minX, minY, maxX, maxY;
+
   const PreparedFeature({
     required this.id,
     required this.type,
     required this.parts,
     required this.properties,
+    this.minX = double.negativeInfinity,
+    this.minY = double.negativeInfinity,
+    this.maxX = double.infinity,
+    this.maxY = double.infinity,
   });
 
   String get geometryType => switch (type) {

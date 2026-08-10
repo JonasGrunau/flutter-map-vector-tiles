@@ -70,11 +70,15 @@ void main() {
     final painter = LabelPainter();
     final layer = _symbolLayer();
 
-    // 900 distinct texts in one frame: ~100 evictions happen while the
-    // evicted painters are still queued to draw.
+    // Overflow the text cache by 100 distinct texts in one frame, so
+    // ~100 evictions happen while the evicted painters are still queued
+    // to draw. Anchors must stay inside the 400x400 screen (+150px
+    // margin) or the off-screen cull skips layout and nothing evicts.
+    const count = LabelPainter.textCacheEntries + 100;
     _paintFrame(painter, [
-      for (var i = 0; i < 900; i++)
-        _symbolAt(layer, Offset((i % 30) * 13.0, (i ~/ 30) * 13.0), 'label $i'),
+      for (var i = 0; i < count; i++)
+        _symbolAt(layer, Offset((i % 40) * 10.0, ((i ~/ 40) % 40) * 10.0),
+            'label $i'),
     ]);
 
     // The next frame disposes the retired painters and re-lays-out

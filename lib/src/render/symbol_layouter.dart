@@ -156,7 +156,27 @@ class SymbolLayouter {
       final offsetX = -frac.dx * TileRasterizer.logicalTileSize / frac.scale;
       final offsetY = -frac.dy * TileRasterizer.logicalTileSize / frac.scale;
 
+      // The display window in tile-extent units, expanded by the anchor
+      // buffer. Every anchor lies on its feature's geometry (point
+      // anchors are vertices, line anchors sit on the polyline, a
+      // polygon's centroid is inside its convex hull — a
+      // self-intersecting ring could theoretically escape its bbox, but
+      // that is invalid MVT), so a feature whose bounds miss the window
+      // cannot place an anchor `add` would accept: this cull is exact.
+      final cullMinX = (-_buffer - offsetX) / scale;
+      final cullMaxX =
+          (TileRasterizer.logicalTileSize + _buffer - offsetX) / scale;
+      final cullMinY = (-_buffer - offsetY) / scale;
+      final cullMaxY =
+          (TileRasterizer.logicalTileSize + _buffer - offsetY) / scale;
+
       for (final feature in sourceLayer.features) {
+        if (feature.maxX < cullMinX ||
+            feature.minX > cullMaxX ||
+            feature.maxY < cullMinY ||
+            feature.minY > cullMaxY) {
+          continue;
+        }
         final ctx = EvalContext(
           zoom: styleZoom,
           properties: feature.properties,
@@ -249,6 +269,14 @@ class SymbolLayouter {
 
   /// Places anchors along a polyline every [spacing] logical pixels
   /// (or a single anchor at the middle when spacing is infinite).
+  ///
+  /// Anchors keep their full-line parametrization — the k-th anchor sits
+  /// at `spacing/2 + k·spacing` measured over the *whole* line — so an
+  /// anchor lands at the same world position no matter which display
+  /// tile lays it out. Only the *enumeration* is windowed: segments that
+  /// cannot reach the tile (where `add` would reject every anchor) are
+  /// skipped, which at deep overzoom avoids walking targets across the
+  /// entire data tile.
   static void _placeAlongLine(
     Float32List part,
     double scale,
@@ -266,30 +294,74 @@ class SymbolLayouter {
     final points = Float32List(n * 2);
     final cumulative = Float32List(n);
     var total = 0.0;
+    var minX = double.infinity, minY = double.infinity;
+    var maxX = double.negativeInfinity, maxY = double.negativeInfinity;
     for (var i = 0; i < n; i++) {
       points[i * 2] = part[i * 2] * scale + offsetX;
       points[i * 2 + 1] = part[i * 2 + 1] * scale + offsetY;
+      // Bounds over the float32-stored values, so the window tests below
+      // see exactly what `add` will see.
+      final x = points[i * 2];
+      final y = points[i * 2 + 1];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
       if (i > 0) {
-        final dx = points[i * 2] - points[i * 2 - 2];
-        final dy = points[i * 2 + 1] - points[i * 2 - 1];
+        final dx = x - points[i * 2 - 2];
+        final dy = y - points[i * 2 - 1];
         total += math.sqrt(dx * dx + dy * dy);
       }
       cumulative[i] = total;
     }
     if (total < 1) return;
+    // `add` rejects anchors outside this window; when the whole part
+    // lies outside (far-away part of a multi-part feature), skip it.
+    const lo = -_buffer;
+    const hi = TileRasterizer.logicalTileSize + _buffer;
+    if (maxX < lo || minX >= hi || maxY < lo || minY >= hi) return;
     final path = SymbolPath(points, cumulative);
 
-    final targets = <double>[];
     if (!spacing.isFinite || spacing <= 0 || total < spacing) {
-      targets.add(total / 2);
-    } else {
-      for (var d = spacing / 2; d < total; d += spacing) {
-        targets.add(d);
-      }
+      final d = total / 2;
+      add(path.pointAt(d), path.angleAt(d), true, path: path, pathDistance: d);
+      return;
     }
 
-    for (final d in targets) {
-      add(path.pointAt(d), path.angleAt(d), true, path: path, pathDistance: d);
+    // Windowed enumeration: the half-open segment windows [c0, c1)
+    // partition [0, total), so each global target d = half + k·spacing
+    // is visited exactly once, by the segment `SymbolPath.segmentAt`
+    // would assign it to; the interpolation mirrors `pointAt`/`angleAt`
+    // for bit-identical anchors.
+    final half = spacing / 2;
+    for (var i = 0; i + 1 < n; i++) {
+      final c0 = cumulative[i];
+      final c1 = cumulative[i + 1];
+      if (c1 <= c0) continue; // zero-length segment: empty window
+      final x0 = points[i * 2];
+      final y0 = points[i * 2 + 1];
+      final x1 = points[i * 2 + 2];
+      final y1 = points[i * 2 + 3];
+      // Anchors lie on the segment: skip when its box misses the window.
+      if ((x0 < lo && x1 < lo) ||
+          (x0 >= hi && x1 >= hi) ||
+          (y0 < lo && y1 < lo) ||
+          (y0 >= hi && y1 >= hi)) {
+        continue;
+      }
+      var k = ((c0 - half) / spacing).ceil();
+      if (k < 0) k = 0;
+      var d = half + k * spacing;
+      if (d >= c1) continue;
+      final segment = c1 - c0;
+      final angle = math.atan2(y1 - y0, x1 - x0);
+      while (d < c1) {
+        final f = ((d - c0) / segment).clamp(0.0, 1.0);
+        add(Offset(x0 + (x1 - x0) * f, y0 + (y1 - y0) * f), angle, true,
+            path: path, pathDistance: d);
+        k++;
+        d = half + k * spacing;
+      }
     }
   }
 

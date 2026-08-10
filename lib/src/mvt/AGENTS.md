@@ -15,7 +15,7 @@ package ships as a single dependency.
 | File | Description |
 |------|-------------|
 | `mvt_decoder.dart` | `decodeMvt(Uint8List)` — the whole decoder: `_Reader` (varint/float/double/string/submessage/skip over a byte range), layer and feature decoding, the geometry command loop (`MoveTo`/`LineTo`/`ClosePath` with zigzag deltas), and `_shoelace` ring-winding classification in y-down screen coordinates |
-| `mvt_tile.dart` | The decoded model: `MvtTile` → `MvtLayer` → `MvtFeature`, plus `MvtGeomType` (unknown/point/lineString/polygon) |
+| `mvt_tile.dart` | The decoded model: `MvtTile` → `MvtLayer` → `MvtFeature` (including per-feature `minX/minY/maxX/maxY` bounds folded in during decode, which the renderer's overzoom culling depends on), plus `MvtGeomType` (unknown/point/lineString/polygon) |
 
 ## For AI Agents
 
