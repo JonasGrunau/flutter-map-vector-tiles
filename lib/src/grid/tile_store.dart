@@ -5,10 +5,12 @@ import '../cache/lru_cache.dart';
 import '../core/cancellation.dart';
 import '../core/single_flight.dart';
 import '../core/tile_key.dart';
+import '../core/tile_zoom.dart';
 import '../pipeline/executor/executor.dart';
 import '../pipeline/prepared_tile.dart';
 import '../pipeline/tile_processor.dart';
 import '../provider/vector_tile_provider.dart';
+import 'tile_byte_loader.dart';
 
 /// Loads, decodes and caches *data* tiles for one style source.
 ///
@@ -19,14 +21,7 @@ import '../provider/vector_tile_provider.dart';
 class TileStore {
   final VectorTileProvider provider;
   final TilePrepareExecutor executor;
-
-  /// Resolved lazily, and awaited on the load path rather than read as a
-  /// plain field: the cache initializes asynchronously (its directory comes
-  /// from a platform channel) while the first tiles are already being
-  /// requested. Reading it too early yields null, which would send the
-  /// opening screenful of every map to the network despite it sitting on
-  /// disk. Resolves to null when disk caching is off or unavailable.
-  final Future<ByteCache?> diskCache;
+  final TileByteLoader _bytes;
 
   /// Per source-layer property keep-lists derived from the theme.
   final Map<String, Set<String>?> layerProperties;
@@ -45,13 +40,7 @@ class TileStore {
 
   final LruCache<TileKey, PreparedTile> _memory;
   final _inFlight = SingleFlight<TileKey, PreparedTile?>();
-  final _failedAt = <TileKey, DateTime>{};
   var _disposed = false;
-
-  /// How long a failed key is throttled before another attempt may hit
-  /// the network. The layer schedules its load retries just past this.
-  /// Shared with [RasterTileStore]. Mutable for tests only.
-  static var errorRetryDelay = const Duration(seconds: 15);
 
   TileStore({
     required this.provider,
@@ -59,7 +48,7 @@ class TileStore {
     required this.layerProperties,
     Future<ByteCache?>? diskCache,
     int memoryCacheMaxBytes = 32 * 1024 * 1024,
-  })  : diskCache = diskCache ?? Future.value(),
+  })  : _bytes = TileByteLoader(provider, diskCache ?? Future.value()),
         _memory = _memoryCaches.putIfAbsent(
           _memorySignature(provider, layerProperties),
           () => LruCache(
@@ -107,16 +96,12 @@ class TileStore {
   /// Resolves the data tile key serving [displayKey] with [zoomOffset]
   /// applied, clamped to the provider's zoom range. Returns null when
   /// the source cannot serve this zoom at all.
-  TileKey? dataKeyFor(TileKey displayKey, int zoomOffset) {
-    final dataZoom = (displayKey.z + zoomOffset)
-        .clamp(provider.minimumZoom, provider.maximumZoom);
-    if (dataZoom > displayKey.z) return null;
-    return TileKey.wrapped(
-      dataZoom,
-      displayKey.x >> (displayKey.z - dataZoom),
-      displayKey.y >> (displayKey.z - dataZoom),
-    );
-  }
+  TileKey? dataKeyFor(TileKey displayKey, int zoomOffset) => dataKeyForDisplay(
+        displayKey,
+        zoomOffset,
+        minimumZoom: provider.minimumZoom,
+        maximumZoom: provider.maximumZoom,
+      );
 
   /// Returns the prepared tile if it is already in memory.
   PreparedTile? peek(TileKey dataKey) => _memory.get(dataKey);
@@ -124,16 +109,8 @@ class TileStore {
   /// Returns [dataKey]'s tile or its nearest in-memory ancestor —
   /// used to render provisional imagery instantly while the real tile
   /// loads (fast zoom-in never shows blank tiles).
-  PreparedTile? peekWithAncestors(TileKey dataKey) {
-    var key = dataKey;
-    for (var i = 0; i <= 5; i++) {
-      final tile = _memory.get(key);
-      if (tile != null) return tile;
-      if (key.z == 0 || key.z <= provider.minimumZoom) return null;
-      key = key.parent;
-    }
-    return null;
-  }
+  PreparedTile? peekWithAncestors(TileKey dataKey) =>
+      findWithAncestors(dataKey, provider.minimumZoom, _memory.get);
 
   /// Loads and prepares a data tile. Returns null on cancellation or
   /// (transient) failure — failures are throttled, never thrown.
@@ -144,11 +121,7 @@ class TileStore {
   }) {
     final cached = _memory.get(dataKey);
     if (cached != null) return Future.value(cached);
-
-    final failed = _failedAt[dataKey];
-    if (failed != null && DateTime.now().difference(failed) < errorRetryDelay) {
-      return Future.value(null);
-    }
+    if (_bytes.throttled(dataKey)) return Future.value(null);
 
     // Coalesced: the shared load polls a token joined over every waiter,
     // so one disposed display tile can never cancel a load that other
@@ -166,61 +139,38 @@ class TileStore {
     CancellationToken cancellation,
   ) async {
     if (_disposed) return null;
-    final cacheKey = '${provider.cacheKey}/${dataKey.z}'
-        '/${dataKey.x}/${dataKey.y}';
-
-    final cache = await diskCache;
-    if (_disposed || cancellation.isCancelled) return null;
-
-    var bytes = await cache?.get(cacheKey);
-    if (_disposed || cancellation.isCancelled) return null;
-
-    if (bytes == null) {
-      final response = await provider.load(dataKey, cancellation: cancellation);
-      if (_disposed) return null;
-      if (response is TileResponseData) {
-        bytes = response.bytes;
-        unawaited(cache?.put(cacheKey, response.bytes));
-      } else if (response is TileResponseNotFound) {
+    switch (await _bytes.load(dataKey, cancellation, () => _disposed)) {
+      case TileBytesUnavailable():
+        return null;
+      case TileBytesAbsent():
         final empty =
             PreparedTile(key: dataKey, layers: const {}, byteSize: 64);
         _memory.put(dataKey, empty);
         return empty;
-      } else if (response is TileResponseCancelled) {
-        return null;
-      } else {
-        // Network failure: serve an expired cache entry if one exists —
-        // stale map data beats a blank map when offline.
-        bytes = await cache?.getStale(cacheKey);
-        if (bytes == null) {
-          _failedAt[dataKey] = DateTime.now();
+      case TileBytesLoaded(:final bytes):
+        final prepared = await executor.prepare(
+          PrepareInput(
+            z: dataKey.z,
+            x: dataKey.x,
+            y: dataKey.y,
+            bytes: bytes,
+            layerProperties: layerProperties,
+          ),
+          priority: priority,
+          cancellation: cancellation,
+        );
+        if (_disposed) return null;
+        if (prepared == null) {
+          if (!cancellation.isCancelled) {
+            // Decode failure (corrupt tile): throttle retries.
+            _bytes.noteFailure(dataKey);
+          }
           return null;
         }
-      }
+        _memory.put(dataKey, prepared);
+        _bytes.noteSuccess(dataKey);
+        return prepared;
     }
-
-    final prepared = await executor.prepare(
-      PrepareInput(
-        z: dataKey.z,
-        x: dataKey.x,
-        y: dataKey.y,
-        bytes: bytes,
-        layerProperties: layerProperties,
-      ),
-      priority: priority,
-      cancellation: cancellation,
-    );
-    if (_disposed) return null;
-    if (prepared == null) {
-      if (!cancellation.isCancelled) {
-        // Decode failure (corrupt tile): throttle retries.
-        _failedAt[dataKey] = DateTime.now();
-      }
-      return null;
-    }
-    _memory.put(dataKey, prepared);
-    _failedAt.remove(dataKey);
-    return prepared;
   }
 
   /// Stops this store. The decoded tiles stay in the shared memory cache on
@@ -229,6 +179,6 @@ class TileStore {
   void dispose() {
     _disposed = true;
     _inFlight.clear();
-    _failedAt.clear();
+    _bytes.dispose();
   }
 }

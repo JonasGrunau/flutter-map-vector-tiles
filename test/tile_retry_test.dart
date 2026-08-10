@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart' hide Theme;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart';
-import 'package:flutter_map_vector_tiles/src/grid/tile_store.dart';
+import 'package:flutter_map_vector_tiles/src/grid/tile_byte_loader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fixtures/lifecycle_harness.dart';
@@ -38,10 +38,10 @@ void main() {
     // The failure throttle gates retries on the real wall clock, which a
     // widget test cannot advance — collapse it so the layer's retry
     // timer (fake clock) is the only gate.
-    TileStore.errorRetryDelay = Duration.zero;
+    TileByteLoader.errorRetryDelay = Duration.zero;
   });
   tearDown(() {
-    TileStore.errorRetryDelay = const Duration(seconds: 15);
+    TileByteLoader.errorRetryDelay = const Duration(seconds: 15);
   });
 
   testWidgets('tiles recover after a transient outage', (tester) async {

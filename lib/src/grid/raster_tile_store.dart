@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import '../cache/byte_cache.dart';
@@ -6,9 +7,9 @@ import '../cache/lru_cache.dart';
 import '../core/cancellation.dart';
 import '../core/single_flight.dart';
 import '../core/tile_key.dart';
-import '../provider/vector_tile_provider.dart';
+import '../core/tile_zoom.dart';
 import '../tile_providers.dart';
-import 'tile_store.dart';
+import 'tile_byte_loader.dart';
 
 /// A decoded raster tile. The image handle is owned by whoever holds the
 /// [RasterTile] — call [dispose] when done; the underlying pixels stay
@@ -35,7 +36,7 @@ class RasterTile {
 /// eviction can never dispose pixels a queued rasterization still needs.
 class RasterTileStore {
   final RasterTileSource source;
-  final Future<ByteCache?> diskCache;
+  final TileByteLoader _bytes;
 
   /// Decoded images, shared process-wide between stores on the same
   /// source. Entries survive [dispose] and live for the process lifetime;
@@ -44,7 +45,6 @@ class RasterTileStore {
 
   final LruCache<TileKey, ui.Image> _memory;
   final _inFlight = SingleFlight<TileKey, ui.Image?>();
-  final _failedAt = <TileKey, DateTime>{};
   final _notFound = <TileKey>{};
   var _disposed = false;
 
@@ -52,7 +52,7 @@ class RasterTileStore {
     required this.source,
     Future<ByteCache?>? diskCache,
     int memoryCacheMaxBytes = 32 * 1024 * 1024,
-  })  : diskCache = diskCache ?? Future.value(),
+  })  : _bytes = TileByteLoader(source.provider, diskCache ?? Future.value()),
         _memory = _memoryCaches.putIfAbsent(
           source.provider.cacheKey,
           () => LruCache(
@@ -83,18 +83,13 @@ class RasterTileStore {
   /// for the same visual scale; when that would require *under*zooming
   /// (several data tiles per display tile) the tile is upscaled instead.
   /// Returns null when the source cannot serve this zoom at all.
-  TileKey? dataKeyFor(TileKey displayKey, int zoomOffset) {
-    final provider = source.provider;
-    var dataZoom = displayKey.z + zoomOffset + (source.tileSize <= 256 ? 1 : 0);
-    if (dataZoom > displayKey.z) dataZoom = displayKey.z;
-    dataZoom = dataZoom.clamp(provider.minimumZoom, provider.maximumZoom);
-    if (dataZoom > displayKey.z) return null;
-    return TileKey.wrapped(
-      dataZoom,
-      displayKey.x >> (displayKey.z - dataZoom),
-      displayKey.y >> (displayKey.z - dataZoom),
-    );
-  }
+  TileKey? dataKeyFor(TileKey displayKey, int zoomOffset) => dataKeyForDisplay(
+        displayKey,
+        zoomOffset + (source.tileSize <= 256 ? 1 : 0),
+        minimumZoom: source.provider.minimumZoom,
+        maximumZoom: source.provider.maximumZoom,
+        capAtDisplayZoom: true,
+      );
 
   /// Returns an owned handle if the tile is already decoded in memory.
   RasterTile? peek(TileKey dataKey) {
@@ -104,16 +99,8 @@ class RasterTileStore {
 
   /// Returns [dataKey]'s tile or its nearest in-memory ancestor — used
   /// for provisional imagery while the real tile loads.
-  RasterTile? peekWithAncestors(TileKey dataKey) {
-    var key = dataKey;
-    for (var i = 0; i <= 5; i++) {
-      final tile = peek(key);
-      if (tile != null) return tile;
-      if (key.z == 0 || key.z <= source.provider.minimumZoom) return null;
-      key = key.parent;
-    }
-    return null;
-  }
+  RasterTile? peekWithAncestors(TileKey dataKey) =>
+      findWithAncestors(dataKey, source.provider.minimumZoom, peek);
 
   /// Loads and decodes a data tile. Returns null on cancellation,
   /// absence, or (throttled) transient failure — never throws.
@@ -124,12 +111,7 @@ class RasterTileStore {
     final cached = peek(dataKey);
     if (cached != null) return cached;
     if (_notFound.contains(dataKey)) return null;
-
-    final failed = _failedAt[dataKey];
-    if (failed != null &&
-        DateTime.now().difference(failed) < TileStore.errorRetryDelay) {
-      return null;
-    }
+    if (_bytes.throttled(dataKey)) return null;
 
     // Coalesced: the shared load polls a token joined over every waiter,
     // so one disposed display tile can never cancel a load that other
@@ -162,36 +144,15 @@ class RasterTileStore {
     CancellationToken cancellation,
   ) async {
     if (_disposed) return null;
-    final provider = source.provider;
-    final cacheKey = '${provider.cacheKey}/${dataKey.z}'
-        '/${dataKey.x}/${dataKey.y}';
-
-    final cache = await diskCache;
-    if (_disposed || cancellation.isCancelled) return null;
-
-    var bytes = await cache?.get(cacheKey);
-    if (_disposed || cancellation.isCancelled) return null;
-
-    if (bytes == null) {
-      final response = await provider.load(dataKey, cancellation: cancellation);
-      if (_disposed) return null;
-      if (response is TileResponseData) {
-        bytes = response.bytes;
-        unawaited(cache?.put(cacheKey, response.bytes));
-      } else if (response is TileResponseNotFound) {
+    final Uint8List bytes;
+    switch (await _bytes.load(dataKey, cancellation, () => _disposed)) {
+      case TileBytesUnavailable():
+        return null;
+      case TileBytesAbsent():
         _notFound.add(dataKey);
         return null;
-      } else if (response is TileResponseCancelled) {
-        return null;
-      } else {
-        // Network failure: serve an expired cache entry if one exists —
-        // stale imagery beats a hole in the map when offline.
-        bytes = await cache?.getStale(cacheKey);
-        if (bytes == null) {
-          _failedAt[dataKey] = DateTime.now();
-          return null;
-        }
-      }
+      case TileBytesLoaded(bytes: final loaded):
+        bytes = loaded;
     }
 
     ui.Image image;
@@ -202,13 +163,13 @@ class RasterTileStore {
       image = frame.image;
     } catch (_) {
       // Corrupt image: throttle retries.
-      _failedAt[dataKey] = DateTime.now();
+      _bytes.noteFailure(dataKey);
       return null;
     }
     // Cached even if disposed meanwhile — the shared cache outlives the
     // store, like the vector tile cache.
     _memory.put(dataKey, image);
-    _failedAt.remove(dataKey);
+    _bytes.noteSuccess(dataKey);
     return image;
   }
 
@@ -217,6 +178,6 @@ class RasterTileStore {
   void dispose() {
     _disposed = true;
     _inFlight.clear();
-    _failedAt.clear();
+    _bytes.dispose();
   }
 }

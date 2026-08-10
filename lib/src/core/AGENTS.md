@@ -16,6 +16,7 @@ import nothing from the package outside this directory.
 | `tile_key.dart` | `TileKey(z, x, y)` — a slippy-map tile identity, with `ancestorAt()` / ancestor-descendant helpers used by overzoom and parent-tile retention. Value equality and `hashCode` make it a safe cache key |
 | `cancellation.dart` | `CancellationToken` — cooperative cancellation as a polled *state* (`isCancelled`), plus `CancellationToken.none` and `JoinedCancellationToken`, which reads cancelled only when *every* joined caller token is cancelled (the token coalesced work polls) |
 | `single_flight.dart` | `SingleFlight<K, V>` — per-key coalescing of async work. Every store and network provider dedupes requests through it; it joins each caller's token so one abandoned caller never cancels work others still await, and it owns the `whenComplete`-block-body footgun in one place |
+| `tile_zoom.dart` | The shared display-zoom→data-zoom mapping (`dataKeyForDisplay`, with the raster never-underzoom cap), the 5-level `findWithAncestors` walk both stores use for provisional imagery, and `displayTileSize` — the one 256-logical-px constant grid, render and the label pass all reference. Internal, not exported |
 
 ## For AI Agents
 

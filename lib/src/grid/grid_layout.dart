@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter_map/flutter_map.dart';
 
 import '../core/tile_key.dart';
+import '../core/tile_zoom.dart';
 
 /// Visible display-tile computation for a camera.
 ///
@@ -31,7 +32,7 @@ class GridLayout {
         camera.projectAtZoom(camera.center, displayZoom.toDouble());
     final halfWidth = camera.size.width / (scale * 2);
     final halfHeight = camera.size.height / (scale * 2);
-    const tileSize = 256.0;
+    const tileSize = displayTileSize;
 
     final n = 1 << displayZoom;
     return GridLayout(
@@ -82,7 +83,7 @@ class GridLayout {
 
 /// The world-pixel rectangle of a display tile at the camera zoom.
 Rect displayTileRect(TileKey key, double cameraZoom) {
-  final scaledSize = 256.0 * math.pow(2.0, cameraZoom - key.z);
+  final scaledSize = displayTileSize * math.pow(2.0, cameraZoom - key.z);
   return Rect.fromLTWH(
       key.x * scaledSize, key.y * scaledSize, scaledSize, scaledSize);
 }

@@ -187,9 +187,13 @@ class _VarintReader {
   var _pos = 0;
   _VarintReader(this._bytes);
 
+  // Multiply/add, not `|`/`<<`: dart2js bitwise ops truncate to 32
+  // bits (the same rationale as the MVT decoder's readVarint). Exact to
+  // 2^53, which covers every offset an addressable archive can hold.
   int read() {
     var value = 0;
     var multiplier = 1;
+    var length = 0;
     while (true) {
       if (_pos >= _bytes.length) {
         throw const PmTilesException('truncated directory (varint overrun)');
@@ -198,6 +202,10 @@ class _VarintReader {
       value += (b & 0x7f) * multiplier;
       if (b < 0x80) return value;
       multiplier *= 128;
+      if (++length > 8) {
+        // 8 continuation bytes already exceed 2^53 — malformed.
+        throw const PmTilesException('malformed directory (varint too long)');
+      }
     }
   }
 }

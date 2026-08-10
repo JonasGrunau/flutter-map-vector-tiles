@@ -13,6 +13,7 @@ import 'core/cancellation.dart';
 import 'core/tile_key.dart';
 import 'grid/grid_layout.dart';
 import 'grid/raster_tile_store.dart';
+import 'grid/tile_byte_loader.dart';
 import 'grid/tile_retention.dart';
 import 'grid/tile_store.dart';
 import 'logger.dart';
@@ -164,7 +165,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// throttle, so each attempt can actually reach the network again.
   static const _maxLoadRetries = 4;
   Duration get _loadRetryDelay =>
-      TileStore.errorRetryDelay + const Duration(seconds: 1);
+      TileByteLoader.errorRetryDelay + const Duration(seconds: 1);
 
   @override
   void initState() {
@@ -407,63 +408,85 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     bool fadeIn = true,
   }) async {
     final generation = _generation;
+    final offset = widget.tileOffset.zoomOffset;
     final sources = <String, PreparedTile>{};
     final pending = <String, Future<PreparedTile?>>{};
     final rasters = <String, RasterTile>{};
     final pendingRasters = <String, Future<RasterTile?>>{};
 
-    for (final entry in _stores.entries) {
-      final dataKey =
-          entry.value.dataKeyFor(tile.key, widget.tileOffset.zoomOffset);
-      if (dataKey == null) continue;
-      final cached = entry.value.peek(dataKey);
-      if (cached != null) {
-        sources[entry.key] = cached;
-      } else {
-        pending[entry.key] = entry.value.obtain(
-          dataKey,
-          priority: priority,
-          cancellation: tile.cancellation,
-        );
-      }
+    // The vector and raster pipelines differ in type but not in shape;
+    // one collector serves both. (Raster obtains carry no priority —
+    // image decode has no executor queue to order, unlike tile
+    // preparation.)
+    void collect<S, T extends Object>(
+      Map<String, S> stores,
+      TileKey? Function(S store) dataKeyOf,
+      T? Function(S store, TileKey key) peekIn,
+      Future<T?> Function(S store, TileKey key) obtainFrom,
+      Map<String, T> ready,
+      Map<String, Future<T?>> pendingOut,
+    ) {
+      stores.forEach((id, store) {
+        final dataKey = dataKeyOf(store);
+        if (dataKey == null) return;
+        final cached = peekIn(store, dataKey);
+        if (cached != null) {
+          ready[id] = cached;
+        } else {
+          pendingOut[id] = obtainFrom(store, dataKey);
+        }
+      });
     }
 
-    for (final entry in _rasterStores.entries) {
-      final dataKey =
-          entry.value.dataKeyFor(tile.key, widget.tileOffset.zoomOffset);
-      if (dataKey == null) continue;
-      final cached = entry.value.peek(dataKey);
-      if (cached != null) {
-        rasters[entry.key] = cached;
-      } else {
-        pendingRasters[entry.key] =
-            entry.value.obtain(dataKey, cancellation: tile.cancellation);
-      }
-    }
+    collect(
+      _stores,
+      (s) => s.dataKeyFor(tile.key, offset),
+      (s, k) => s.peek(k),
+      (s, k) =>
+          s.obtain(k, priority: priority, cancellation: tile.cancellation),
+      sources,
+      pending,
+    );
+    collect(
+      _rasterStores,
+      (s) => s.dataKeyFor(tile.key, offset),
+      (s, k) => s.peek(k),
+      (s, k) => s.obtain(k, cancellation: tile.cancellation),
+      rasters,
+      pendingRasters,
+    );
 
     if (pending.isNotEmpty || pendingRasters.isNotEmpty) {
       // Render a provisional image from already-decoded ancestors so
       // fast zoom-ins never show blank tiles.
-      final provisionalSources = Map.of(sources);
-      for (final sourceId in pending.keys) {
-        final store = _stores[sourceId]!;
-        final dataKey =
-            store.dataKeyFor(tile.key, widget.tileOffset.zoomOffset);
-        final ancestor =
-            dataKey == null ? null : store.peekWithAncestors(dataKey);
-        if (ancestor != null) provisionalSources[sourceId] = ancestor;
+      void addAncestors<S extends Object, T extends Object>(
+        Map<String, S> stores,
+        Iterable<String> pendingIds,
+        TileKey? Function(S store) dataKeyOf,
+        T? Function(S store, TileKey key) peekAncestors,
+        Map<String, T> into,
+      ) {
+        for (final id in pendingIds) {
+          final store = stores[id]!;
+          final dataKey = dataKeyOf(store);
+          final ancestor =
+              dataKey == null ? null : peekAncestors(store, dataKey);
+          if (ancestor != null) into[id] = ancestor;
+        }
       }
+
+      final provisionalSources = Map.of(sources);
+      addAncestors(_stores, pending.keys, (s) => s.dataKeyFor(tile.key, offset),
+          (s, k) => s.peekWithAncestors(k), provisionalSources);
       final provisionalRasters = <String, RasterTile>{
         for (final entry in rasters.entries) entry.key: entry.value.retain(),
       };
-      for (final sourceId in pendingRasters.keys) {
-        final store = _rasterStores[sourceId]!;
-        final dataKey =
-            store.dataKeyFor(tile.key, widget.tileOffset.zoomOffset);
-        final ancestor =
-            dataKey == null ? null : store.peekWithAncestors(dataKey);
-        if (ancestor != null) provisionalRasters[sourceId] = ancestor;
-      }
+      addAncestors(
+          _rasterStores,
+          pendingRasters.keys,
+          (s) => s.dataKeyFor(tile.key, offset),
+          (s, k) => s.peekWithAncestors(k),
+          provisionalRasters);
       if (provisionalSources.isNotEmpty || provisionalRasters.isNotEmpty) {
         _enqueueRaster(tile, provisionalSources,
             rasters: provisionalRasters, provisional: true, priority: priority);

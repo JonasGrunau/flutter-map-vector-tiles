@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/painting.dart';
 
 import '../core/tile_key.dart';
+import '../core/tile_zoom.dart';
 import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
@@ -19,8 +20,9 @@ import 'pattern_resolver.dart';
 /// are *not* rasterized here — they are drawn per-frame in screen space
 /// by the label pass.
 class TileRasterizer {
-  /// Logical tile size in points (the slippy-map convention).
-  static const double logicalTileSize = 256;
+  /// Logical tile size in points — the one shared constant, see
+  /// `core/tile_zoom.dart`.
+  static const double logicalTileSize = displayTileSize;
 
   /// Records and rasterizes the tile. [devicePixelRatio] controls the
   /// backing resolution. Returns null when there is nothing to draw.
