@@ -33,9 +33,10 @@ imagery.
   until handled.
 - Cancellation must short-circuit *before* and *after* the network await, and
   return `TileResponseCancelled` rather than throwing.
-- `NetworkVectorTileProvider` shares one in-flight future per URL; the
-  `whenComplete` cleanup that removes the entry must stay a block body (see
-  `cache/AGENTS.md` for the same footgun).
+- Request coalescing goes through `core/single_flight.dart` — never hand-roll
+  an in-flight map. `SingleFlight` joins every caller's cancellation token, so
+  a shared request is cancelled only when *all* callers have cancelled; it also
+  owns the `whenComplete`-must-stay-a-block-body footgun in one place.
 - API keys reach providers already substituted by `StyleReader`; when logging
   URLs, keep them redacted (`StyleReader._redactKey` sets the precedent).
 

@@ -5,16 +5,17 @@
 
 ## Purpose
 
-The two smallest shared value types in the package. Both are exported publicly
-and both are depended on by nearly every other directory, so they sit at the
-bottom of the dependency graph and import nothing from the package.
+The smallest shared primitives in the package. They are depended on by nearly
+every other directory, so they sit at the bottom of the dependency graph and
+import nothing from the package outside this directory.
 
 ## Key Files
 
 | File | Description |
 |------|-------------|
 | `tile_key.dart` | `TileKey(z, x, y)` — a slippy-map tile identity, with `ancestorAt()` / ancestor-descendant helpers used by overzoom and parent-tile retention. Value equality and `hashCode` make it a safe cache key |
-| `cancellation.dart` | `CancellationToken` — cooperative cancellation as a polled *state* (`isCancelled`), plus `CancellationToken.none`. Eleven lines, deliberately |
+| `cancellation.dart` | `CancellationToken` — cooperative cancellation as a polled *state* (`isCancelled`), plus `CancellationToken.none` and `JoinedCancellationToken`, which reads cancelled only when *every* joined caller token is cancelled (the token coalesced work polls) |
+| `single_flight.dart` | `SingleFlight<K, V>` — per-key coalescing of async work. Every store and network provider dedupes requests through it; it joins each caller's token so one abandoned caller never cancels work others still await, and it owns the `whenComplete`-block-body footgun in one place |
 
 ## For AI Agents
 
@@ -28,14 +29,21 @@ bottom of the dependency graph and import nothing from the package.
   fields, equality or `hashCode` invalidates cache keying — check
   `grid/tile_store.dart`, `grid/raster_tile_store.dart` and the raster image
   cache in `vector_tile_layer.dart`.
-- Both types are re-exported from the public barrel, so signature changes are
-  breaking changes.
+- `TileKey` and `CancellationToken` are re-exported from the public barrel, so
+  signature changes are breaking changes. `SingleFlight` and
+  `JoinedCancellationToken` are internal.
+- `SingleFlight.run` cancellation semantics are load-bearing: a flight's token
+  reads cancelled only when *all* joined tokens are cancelled, and a live
+  joiner arriving before the next poll revives the work. Changing this
+  reintroduces the coalesced-load poisoning bug it exists to prevent.
 
 ### Testing Requirements
 
 `test/tile_key_test.dart` covers wrapping, ancestor arithmetic and equality.
 Keep coordinate-arithmetic changes covered there — the shifts are easy to get
 off by one and the failure mode is a subtly misplaced tile.
+`test/single_flight_test.dart` covers coalescing, all-waiters cancellation
+aggregation, and `clear()` not evicting successor flights.
 
 ### Common Patterns
 
@@ -46,7 +54,8 @@ off by one and the failure mode is a subtly misplaced tile.
 
 ### Internal
 
-- None (leaf)
+- None outside this directory (`single_flight.dart` imports
+  `cancellation.dart`)
 
 ### External
 

@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import '../cache/byte_cache.dart';
 import '../cache/lru_cache.dart';
 import '../core/cancellation.dart';
+import '../core/single_flight.dart';
 import '../core/tile_key.dart';
 import '../provider/vector_tile_provider.dart';
 import '../tile_providers.dart';
@@ -41,7 +42,7 @@ class RasterTileStore {
   static final _memoryCaches = <String, LruCache<TileKey, ui.Image>>{};
 
   final LruCache<TileKey, ui.Image> _memory;
-  final _inFlight = <TileKey, Future<ui.Image?>>{};
+  final _inFlight = SingleFlight<TileKey, ui.Image?>();
   final _failedAt = <TileKey, DateTime>{};
   final _notFound = <TileKey>{};
   var _disposed = false;
@@ -125,17 +126,15 @@ class RasterTileStore {
       return null;
     }
 
-    var pending = _inFlight[dataKey];
-    if (pending == null) {
-      // NOTE: block body — an arrow body would return the removed value,
-      // which is this very future, and whenComplete awaits a returned
-      // future: the future would deadlock waiting on itself.
-      pending = _load(dataKey, cancellation).whenComplete(() {
-        _inFlight.remove(dataKey);
-      });
-      _inFlight[dataKey] = pending;
-    }
-    if (await pending == null) return null;
+    // Coalesced: the shared load polls a token joined over every waiter,
+    // so one disposed display tile can never cancel a load that other
+    // live tiles still await.
+    final loaded = await _inFlight.run(
+      dataKey,
+      (token) => _load(dataKey, token),
+      cancellation: cancellation,
+    );
+    if (loaded == null) return null;
     // The master lives in the shared cache; every caller gets a clone.
     // Re-read it (synchronously — no suspension before the clone) so a
     // concurrent eviction can never hand out a disposed image.
@@ -145,7 +144,7 @@ class RasterTileStore {
 
   Future<ui.Image?> _load(
     TileKey dataKey,
-    CancellationToken? cancellation,
+    CancellationToken cancellation,
   ) async {
     if (_disposed) return null;
     final provider = source.provider;
@@ -153,10 +152,10 @@ class RasterTileStore {
         '/${dataKey.x}/${dataKey.y}';
 
     final cache = await diskCache;
-    if (_disposed || (cancellation?.isCancelled ?? false)) return null;
+    if (_disposed || cancellation.isCancelled) return null;
 
     var bytes = await cache?.get(cacheKey);
-    if (_disposed || (cancellation?.isCancelled ?? false)) return null;
+    if (_disposed || cancellation.isCancelled) return null;
 
     if (bytes == null) {
       final response = await provider.load(dataKey, cancellation: cancellation);

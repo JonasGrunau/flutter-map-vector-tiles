@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- 🐛 Coalesced tile loads no longer inherit the first requester's
+  cancellation: a display tile disposed mid-flight (panned away,
+  zoomed past) used to cancel the shared load and leave every other
+  tile waiting on it permanently blank until recreated. Loads now poll
+  a token joined over *all* waiters — cancelled only when nobody is
+  left — in both tile stores and both network providers.
+
 ## 2.1.1
 
 Style attribution and MVT decode performance.

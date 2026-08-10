@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import '../core/cancellation.dart';
+import '../core/single_flight.dart';
 import '../core/tile_key.dart';
 import '../logger.dart';
 import 'vector_tile_provider.dart';
@@ -26,7 +27,7 @@ class NetworkVectorTileProvider extends VectorTileProvider {
 
   final http.Client _client;
   final bool _ownsClient;
-  final _inFlight = <String, Future<TileResponse>>{};
+  final _inFlight = SingleFlight<String, TileResponse>();
   var _disposed = false;
 
   NetworkVectorTileProvider({
@@ -51,17 +52,11 @@ class NetworkVectorTileProvider extends VectorTileProvider {
   @override
   Future<TileResponse> load(TileKey tile, {CancellationToken? cancellation}) {
     final url = _url(tile);
-    final pending = _inFlight[url];
-    if (pending != null) return pending;
-    // NOTE: block body — an arrow body would return the removed value,
-    // which is this very future, and whenComplete awaits a returned
-    // future: the future would deadlock waiting on itself.
-    final future =
-        _load(url, cancellation ?? CancellationToken.none).whenComplete(() {
-      _inFlight.remove(url);
-    });
-    _inFlight[url] = future;
-    return future;
+    // Coalesced per URL; the shared request polls a token joined over
+    // every caller, so one cancelled caller never aborts a response
+    // other callers still await.
+    return _inFlight.run(url, (token) => _load(url, token),
+        cancellation: cancellation);
   }
 
   Future<TileResponse> _load(String url, CancellationToken token) async {

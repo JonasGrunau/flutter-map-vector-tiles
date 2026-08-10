@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../../cache/lru_cache.dart';
 import '../../core/cancellation.dart';
+import '../../core/single_flight.dart';
 import '../../core/tile_key.dart';
 import '../../logger.dart';
 import '../vector_tile_provider.dart';
@@ -42,8 +43,8 @@ class PmTilesVectorTileProvider extends VectorTileProvider {
   final bool _ownsClient;
   final PmTilesDirectory _root;
   final _leafDirectories = LruCache<int, PmTilesDirectory>(maxEntries: 32);
-  final _leafInFlight = <int, Future<PmTilesDirectory>>{};
-  final _inFlight = <int, Future<TileResponse>>{};
+  final _leafInFlight = SingleFlight<int, PmTilesDirectory>();
+  final _inFlight = SingleFlight<int, TileResponse>();
   var _disposed = false;
 
   PmTilesVectorTileProvider._({
@@ -134,17 +135,11 @@ class PmTilesVectorTileProvider extends VectorTileProvider {
       return Future.value(const TileResponseNotFound());
     }
     final tileId = zxyToTileId(tile.z, tile.x, tile.y);
-    final pending = _inFlight[tileId];
-    if (pending != null) return pending;
-    // NOTE: block body — an arrow body would return the removed value,
-    // which is this very future, and whenComplete awaits a returned
-    // future: the future would deadlock waiting on itself.
-    final future =
-        _load(tileId, cancellation ?? CancellationToken.none).whenComplete(() {
-      _inFlight.remove(tileId);
-    });
-    _inFlight[tileId] = future;
-    return future;
+    // Coalesced per tile id; the shared request polls a token joined over
+    // every caller, so one cancelled caller never aborts a response
+    // other callers still await.
+    return _inFlight.run(tileId, (token) => _load(tileId, token),
+        cancellation: cancellation);
   }
 
   Future<TileResponse> _load(int tileId, CancellationToken token) async {
@@ -185,13 +180,12 @@ class PmTilesVectorTileProvider extends VectorTileProvider {
       PmTilesEntry entry, CancellationToken token) async {
     final cached = _leafDirectories.get(entry.offset);
     if (cached != null) return cached;
-    final pending = _leafInFlight[entry.offset];
-    if (pending != null) return pending;
-    final future = () async {
+    // No caller token is joined: a leaf serves many tiles — always finish.
+    return _leafInFlight.run(entry.offset, (_) async {
       final bytes = await _fetchRetrying(
           header.leafDirectoriesOffset + entry.offset,
           entry.length,
-          CancellationToken.none); // a leaf serves many tiles: always finish
+          CancellationToken.none);
       if (bytes == null) {
         throw const PmTilesException('leaf directory fetch cancelled');
       }
@@ -201,12 +195,7 @@ class PmTilesVectorTileProvider extends VectorTileProvider {
               : bytes);
       _leafDirectories.put(entry.offset, directory);
       return directory;
-    }()
-        .whenComplete(() {
-      _leafInFlight.remove(entry.offset);
     });
-    _leafInFlight[entry.offset] = future;
-    return future;
   }
 
   /// Range fetch with the same retry/backoff behaviour as

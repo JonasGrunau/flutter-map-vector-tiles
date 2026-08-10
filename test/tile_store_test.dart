@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_map_vector_tiles/src/core/cancellation.dart';
@@ -5,6 +6,7 @@ import 'package:flutter_map_vector_tiles/src/core/tile_key.dart';
 import 'package:flutter_map_vector_tiles/src/grid/tile_store.dart';
 import 'package:flutter_map_vector_tiles/src/pipeline/executor/executor.dart';
 import 'package:flutter_map_vector_tiles/src/provider/memory_vector_tile_provider.dart';
+import 'package:flutter_map_vector_tiles/src/provider/vector_tile_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fixtures/mvt_builder.dart';
@@ -118,6 +120,34 @@ void main() {
     second.dispose();
   });
 
+  test('a cancelled waiter does not poison the load for live waiters',
+      () async {
+    // Regression: coalesced loads used to poll only the FIRST caller's
+    // token, so one disposed display tile cancelled the shared load and
+    // every live waiter finalized permanently without the tile.
+    final gate = Completer<void>();
+    final s = TileStore(
+      provider: _GatedProvider(gate.future, {
+        const TileKey(2, 1, 1): _tileBytes(),
+      }),
+      executor: executor,
+      layerProperties: {
+        'water': {'class'},
+      },
+    );
+    final tokenA = CancellationToken();
+    final a = s.obtain(const TileKey(2, 1, 1), cancellation: tokenA);
+    final b = s.obtain(const TileKey(2, 1, 1)); // coalesces onto a's load
+    tokenA.cancel(); // first waiter abandons mid-flight
+    gate.complete();
+    final tile = await b;
+    expect(tile, isNotNull);
+    expect(tile!.layers.keys, ['water']);
+    // The shared future completed with data for everyone still listening.
+    expect(identical(await a, tile), true);
+    s.dispose();
+  });
+
   test('stores trimming different properties do not share tiles', () async {
     final trimmed = store();
     await trimmed.obtain(const TileKey(2, 1, 1));
@@ -140,4 +170,35 @@ void main() {
     );
     wider.dispose();
   });
+}
+
+/// Serves tiles only after [gate] completes, so tests can cancel waiters
+/// while the load is still in flight.
+class _GatedProvider extends VectorTileProvider {
+  final Future<void> gate;
+  final Map<TileKey, Uint8List> tiles;
+
+  _GatedProvider(this.gate, this.tiles);
+
+  @override
+  int get maximumZoom => 14;
+
+  @override
+  int get minimumZoom => 0;
+
+  @override
+  String get cacheKey => 'gated';
+
+  @override
+  Future<TileResponse> load(TileKey tile,
+      {CancellationToken? cancellation}) async {
+    await gate;
+    if (cancellation?.isCancelled ?? false) {
+      return const TileResponseCancelled();
+    }
+    final bytes = tiles[tile];
+    return bytes == null
+        ? const TileResponseNotFound()
+        : TileResponseData(bytes);
+  }
 }

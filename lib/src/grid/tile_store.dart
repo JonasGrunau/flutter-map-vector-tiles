@@ -3,6 +3,7 @@ import 'dart:async';
 import '../cache/byte_cache.dart';
 import '../cache/lru_cache.dart';
 import '../core/cancellation.dart';
+import '../core/single_flight.dart';
 import '../core/tile_key.dart';
 import '../pipeline/executor/executor.dart';
 import '../pipeline/prepared_tile.dart';
@@ -43,7 +44,7 @@ class TileStore {
   static final _memoryCaches = <String, LruCache<TileKey, PreparedTile>>{};
 
   final LruCache<TileKey, PreparedTile> _memory;
-  final _inFlight = <TileKey, Future<PreparedTile?>>{};
+  final _inFlight = SingleFlight<TileKey, PreparedTile?>();
   final _failedAt = <TileKey, DateTime>{};
   var _disposed = false;
 
@@ -141,33 +142,30 @@ class TileStore {
       return Future.value(null);
     }
 
-    final pending = _inFlight[dataKey];
-    if (pending != null) return pending;
-
-    // NOTE: block body — an arrow body would return the removed value,
-    // which is this very future, and whenComplete awaits a returned
-    // future: the future would deadlock waiting on itself.
-    final future = _load(dataKey, priority, cancellation).whenComplete(() {
-      _inFlight.remove(dataKey);
-    });
-    _inFlight[dataKey] = future;
-    return future;
+    // Coalesced: the shared load polls a token joined over every waiter,
+    // so one disposed display tile can never cancel a load that other
+    // live tiles still await.
+    return _inFlight.run(
+      dataKey,
+      (token) => _load(dataKey, priority, token),
+      cancellation: cancellation,
+    );
   }
 
   Future<PreparedTile?> _load(
     TileKey dataKey,
     int priority,
-    CancellationToken? cancellation,
+    CancellationToken cancellation,
   ) async {
     if (_disposed) return null;
     final cacheKey = '${provider.cacheKey}/${dataKey.z}'
         '/${dataKey.x}/${dataKey.y}';
 
     final cache = await diskCache;
-    if (_disposed || (cancellation?.isCancelled ?? false)) return null;
+    if (_disposed || cancellation.isCancelled) return null;
 
     var bytes = await cache?.get(cacheKey);
-    if (_disposed || (cancellation?.isCancelled ?? false)) return null;
+    if (_disposed || cancellation.isCancelled) return null;
 
     if (bytes == null) {
       final response = await provider.load(dataKey, cancellation: cancellation);
@@ -206,7 +204,7 @@ class TileStore {
     );
     if (_disposed) return null;
     if (prepared == null) {
-      if (!(cancellation?.isCancelled ?? false)) {
+      if (!cancellation.isCancelled) {
         // Decode failure (corrupt tile): throttle retries.
         _failedAt[dataKey] = DateTime.now();
       }
