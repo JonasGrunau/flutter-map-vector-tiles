@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-Smooth zooming where labels live: text is shaped once and scaled, and
-zoom-level crossings stagger their work — plus expired tiles that paint
-instantly and refresh in the background, deep-zoom performance in dense
-cities, and pub.dev gallery screenshots.
+Smooth zooming where labels live: text is shaped once and scaled,
+zoom-level crossings stagger their work, finished tiles are cached for
+instant re-crossings — plus expired tiles that paint instantly and
+refresh in the background, deep-zoom performance in dense cities, and
+pub.dev gallery screenshots.
 
 - ⚡ **Scale-invariant text shaping**: label text used to be re-shaped
   (two `TextPainter.layout` passes per label, inside the paint phase)
@@ -27,6 +28,13 @@ cities, and pub.dev gallery screenshots.
   in the same budgeted tick that publishes a tile's symbols, and the
   retained-level label bookkeeping is memoized instead of recomputed
   per frame during transitions.
+- ✨ **Finished-tile cache** (`rasterCacheMaxBytes`, default 64 MiB,
+  0 disables): rasterized display tiles and their symbols are kept in a
+  process-wide LRU, so zooming out and back in — or reopening a map on
+  the same style — swaps the level back in instead of re-rendering it.
+  These are GPU texture bytes (~1 MiB per tile at devicePixelRatio 2,
+  ~2.25 MiB at 3); the default holds roughly two phone-screen zoom
+  levels at dpr 2. `VectorTileLayer.clearMemoryCache()` releases it.
 - ✨ **Label fade-in** (`labelFadeDuration`, default 150 ms, 0 restores
   the old instant pop): newly appearing labels and icons now fade in,
   masking the pop when a zoom level first shows symbol layers. Fading

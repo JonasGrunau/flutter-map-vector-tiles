@@ -31,8 +31,10 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
 
 Rasterization and symbol extraction are two separate jobs in a budgeted
 per-frame render pump (rasters for every pending tile first, symbols
-after). The pump's stages emit DevTools timeline events
-(`VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`).
+after), and a finished tile — image plus symbols — enters the shared
+result cache, so re-crossing a zoom level skips the pipeline entirely.
+The pump's stages emit DevTools timeline events (`VT render pump`,
+`VT rasterize`, `VT symbols`, `VT labels`).
 ```
 
 ## Rendering model
@@ -125,16 +127,23 @@ chunked event-loop execution.
 | --- | --- | --- |
 | memory: `PreparedTile` | data tile + theme id | entry count + bytes |
 | memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
+| memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprites, labels) | GPU texture bytes (`rasterCacheMaxBytes`, cache owns the master image, tiles hold clones) |
 | disk: raw tile bytes | url hash | TTL + total size sweep |
 
 All caches are plain deterministic LRU implementations — no external
 cache framework. Every `ui.Image` has exactly one owner and is disposed
 on eviction or layer dispose; disposing the layer tears down isolates,
-pending requests and caches (verified by tests). Rasterized display
-tiles are deliberately *not* an evictable cache: each live display-tile
-model owns exactly one `ui.Image`, disposed when the tile leaves the
-buffered grid, and revisiting a zoom re-rasterizes from the
-`PreparedTile` LRU — cheap, since only the visible window is processed.
+pending requests and its owned images (verified by tests). Each live
+display-tile model owns exactly one `ui.Image` (a clone, when it came
+from the result cache); the result cache separately owns its master
+images and is shared process-wide, so revisiting a zoom level — or
+reopening a map over the same style — swaps finished tiles back in
+without touching the pipeline. Only final, fully-sourced results are
+cached, so a hit can never mask a pending retry; a background
+revalidation invalidates every cached display tile the refreshed data
+tile serves. Beyond the cache's budget, revisiting a zoom
+re-rasterizes from the `PreparedTile` LRU — cheap, since only the
+visible window is processed.
 
 The disk TTL is a *revalidation* deadline, not an expiry: expired
 entries — including the zero-byte "known absent" sentinels — are served

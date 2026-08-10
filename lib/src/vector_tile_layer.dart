@@ -16,6 +16,7 @@ import 'grid/grid_layout.dart';
 import 'grid/raster_tile_store.dart';
 import 'grid/render_job_queue.dart';
 import 'grid/tile_byte_loader.dart';
+import 'grid/tile_result_cache.dart';
 import 'grid/tile_retention.dart';
 import 'grid/tile_store.dart';
 import 'logger.dart';
@@ -107,6 +108,18 @@ class VectorTileLayer extends StatefulWidget {
   /// the fade (labels appear instantly, as before 2.3.0).
   final Duration labelFadeDuration;
 
+  /// Byte budget for finished display tiles (rasterized geometry plus
+  /// extracted symbols), kept so that zooming back to a recently shown
+  /// level swaps its imagery in instead of re-rendering it. Shared
+  /// process-wide per style, like [memoryCacheMaxBytes]. Zero disables.
+  ///
+  /// These are GPU texture bytes: one tile costs `(256·dpr)²·4` bytes —
+  /// ~1 MiB at devicePixelRatio 2, ~2.25 MiB at 3 — and one phone
+  /// viewport is ~25-35 tiles per zoom level. The default 64 MiB holds
+  /// roughly two levels at dpr 2 and one at dpr 3; raise it on dpr-3
+  /// devices if zoom round-trips should stay entirely warm.
+  final int rasterCacheMaxBytes;
+
   /// Whether to draw text/icon symbol layers.
   final bool showLabels;
 
@@ -126,6 +139,7 @@ class VectorTileLayer extends StatefulWidget {
     this.memoryCacheMaxBytes = 24 * 1024 * 1024,
     this.tileFadeDuration = const Duration(milliseconds: 150),
     this.labelFadeDuration = const Duration(milliseconds: 150),
+    this.rasterCacheMaxBytes = 64 * 1024 * 1024,
     this.showLabels = true,
     this.logger = const Logger.noop(),
   });
@@ -141,6 +155,7 @@ class VectorTileLayer extends StatefulWidget {
   static void clearMemoryCache() {
     TileStore.clearMemoryCaches();
     RasterTileStore.clearMemoryCaches();
+    TileResultCache.clearAll();
   }
 
   @override
@@ -318,6 +333,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         store.memoryCacheMaxBytes = widget.memoryCacheMaxBytes;
       }
     }
+    if (oldWidget.rasterCacheMaxBytes != widget.rasterCacheMaxBytes &&
+        widget.rasterCacheMaxBytes <= 0) {
+      // Disabled at runtime: release the held textures. (Shrinking to a
+      // smaller budget is handled by `forSignature` on next access.)
+      TileResultCache.forSignature(_resultSignature, 0).clear();
+    }
     if (oldWidget.theme != widget.theme ||
         oldWidget.tileProviders != widget.tileProviders ||
         oldWidget.rasterSources != widget.rasterSources ||
@@ -348,6 +369,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     TileKey refreshed,
   ) {
     if (!mounted) return;
+    // Finished results built from the replaced content are stale too —
+    // including cached display tiles not currently on screen.
+    _resultCache
+        ?.removeWhere((displayKey) => dataKeyOf(displayKey) == refreshed);
     for (final tile in _tiles.values.toList()) {
       if (dataKeyOf(tile.key) != refreshed) continue;
       tile.renderedWith = null; // identical source set must still re-enqueue
@@ -360,6 +385,32 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     if (sprites == null) return null;
     return _patterns ??= PatternResolver(sprites);
   }
+
+  /// Everything that determines what a finished display tile looks
+  /// like. Anything that would render differently must land in a
+  /// different cache — providers by their cache keys (same theme over
+  /// different endpoints must not collide), sprites by identity, the
+  /// theme by its documented cache id. Widget changes that re-rasterize
+  /// (sprites, showLabels) therefore simply miss the old cache.
+  String get _resultSignature {
+    final providers = [
+      for (final entry in widget.tileProviders.providers.entries)
+        '${entry.key}=${entry.value.cacheKey}',
+      for (final entry in widget.rasterSources.entries)
+        'raster:${entry.key}=${entry.value.provider.cacheKey}',
+    ]..sort();
+    return '${widget.theme.id}|${widget.tileOffset.zoomOffset}|'
+        '$_devicePixelRatio|${widget.showLabels}|'
+        '${identityHashCode(widget.sprites)}|${providers.join(',')}';
+  }
+
+  /// The finished-tile cache for the current render signature, shared
+  /// process-wide so a reopened map paints instantly. Null when
+  /// disabled via [VectorTileLayer.rasterCacheMaxBytes].
+  TileResultCache? get _resultCache => widget.rasterCacheMaxBytes <= 0
+      ? null
+      : TileResultCache.forSignature(
+          _resultSignature, widget.rasterCacheMaxBytes);
 
   @override
   void dispose() {
@@ -486,6 +537,30 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   }) async {
     final generation = _generation;
     final offset = widget.tileOffset.zoomOffset;
+
+    // A finished result for this display tile skips the stores and the
+    // render pump entirely — this is what makes returning to a recently
+    // shown zoom level free. Only fresh tiles consult it: the refresh
+    // and revalidation paths reset `renderedWith` after invalidating
+    // their cache entries, so they can never be served stale content.
+    if (tile.renderedWith == null) {
+      final cached = _resultCache?.get(tile.key);
+      if (cached != null) {
+        tile.renderedWith = cached.renderedWith;
+        tile.setImage(
+          image: cached.image?.clone(),
+          provisional: false,
+          fadeIn: fadeIn && widget.tileFadeDuration > Duration.zero,
+          symbolsPending: true,
+        );
+        tile.setSymbols(cached.symbols,
+            fadeIn: widget.labelFadeDuration > Duration.zero);
+        _retainedSymbolKeys = null;
+        _repaint.trigger();
+        _ensureFadeTicker();
+        return;
+      }
+    }
     final sources = <String, PreparedTile>{};
     final pending = <String, Future<PreparedTile?>>{};
     final rasters = <String, RasterTile>{};
@@ -619,7 +694,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           rasters: rasters,
           provisional: false,
           priority: priority,
-          fadeIn: fadeIn);
+          fadeIn: fadeIn,
+          complete: !missing);
     }
 
     if (missing && tile.retryAttempt < _maxLoadRetries) {
@@ -648,13 +724,15 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     required bool provisional,
     required int priority,
     bool fadeIn = true,
+    bool complete = false,
   }) {
     final job = _RenderJob(
         sources: sources,
         rasters: rasters,
         provisional: provisional,
         priority: priority,
-        fadeIn: fadeIn);
+        fadeIn: fadeIn,
+        complete: complete);
     if (tile.cancellation.isCancelled) {
       job.dispose();
       return;
@@ -744,9 +822,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             provisional: job.provisional,
             priority: job.priority,
             fadeIn: job.fadeIn,
+            complete: job.complete,
           ));
     } else {
       tile.setSymbols(const [], fadeIn: false);
+      _cacheResult(tile, job);
     }
     _retainedSymbolKeys = null;
     _repaint.trigger();
@@ -767,9 +847,22 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     developer.Timeline.finishSync();
 
     tile.setSymbols(symbols, fadeIn: widget.labelFadeDuration > Duration.zero);
+    _cacheResult(tile, job);
     _retainedSymbolKeys = null;
     _repaint.trigger();
     _ensureFadeTicker();
+  }
+
+  /// Stores a finished tile in the result cache — final, fully sourced
+  /// results only, so a cache hit can never mask a pending retry.
+  void _cacheResult(_DisplayTile tile, _RenderJob job) {
+    if (job.provisional || !job.complete) return;
+    _resultCache?.put(
+      tile.key,
+      image: tile.image?.clone(),
+      symbols: tile.symbols,
+      renderedWith: tile.renderedWith ?? const {},
+    );
   }
 
   void _ensureFadeTicker() {
@@ -838,12 +931,17 @@ class _RenderJob {
   /// changes), where restarting the fade would flash the background.
   final bool fadeIn;
 
+  /// Whether every source resolved — only complete final results may
+  /// enter the shared result cache.
+  final bool complete;
+
   const _RenderJob({
     required this.sources,
     required this.rasters,
     required this.provisional,
     required this.priority,
     required this.fadeIn,
+    required this.complete,
   });
 
   void dispose() {

@@ -125,6 +125,7 @@ vt.VectorTileLayer(
   diskCacheMaximumSizeInBytes: 50 * 1024 * 1024,
   diskCacheTtl: const Duration(days: 14),
   memoryCacheMaxBytes: 24 * 1024 * 1024,
+  rasterCacheMaxBytes: 64 * 1024 * 1024,
   tileFadeDuration: const Duration(milliseconds: 150),
   labelFadeDuration: const Duration(milliseconds: 150),
   showLabels: true,
@@ -140,6 +141,7 @@ vt.VectorTileLayer(
 | `diskCacheTtl` | 14 days | freshness window: younger tiles skip the network; older ones still paint instantly and are refreshed in the background — ⚠️ respect your tile provider's terms |
 | `cachePath` | app support dir | supply your own directory path to control/clear it (ignored on web) |
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source (the caches are shared process-wide; the most recently mounted layer's value wins) |
+| `rasterCacheMaxBytes` | 64 MB | finished-tile budget: zooming back to a recent level (or reopening the same style) paints instantly instead of re-rendering. GPU texture bytes — ~1 MB per tile at devicePixelRatio 2, ~2.25 MB at 3, so the default holds ≈2 phone-screen zoom levels at dpr 2 (≈1 at dpr 3). `0` disables |
 | `tileFadeDuration` | 150 ms | `Duration.zero` disables fade-in |
 | `labelFadeDuration` | 150 ms | fade-in of newly appearing labels/icons (masks the pop at the zoom where symbols start); `Duration.zero` restores the instant pop |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
@@ -283,6 +285,7 @@ camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
    bytes ◄─ disk cache ◄─ network        ─► isolate: decode + trim
    PreparedTile ─► rasterize once ─► GPU image ─► textured quad per frame
    symbols ─────► per-frame screen-space label pass (global collision)
+   finished tiles (image + symbols) ─► shared LRU ─► instant re-crossings
 ```
 
 Profiling: the render pipeline emits DevTools timeline events
