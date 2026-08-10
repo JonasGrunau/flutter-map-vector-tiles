@@ -18,7 +18,7 @@ turn tile keys into prepared vector tiles or decoded raster images.
 | `tile_retention.dart` | Pure retention predicates extracted for testability: `tilesOverlap()` (equal or differing zooms), `currentLevelReady()` (may the previous zoom level be dropped), `retainedSymbolsNeeded()` (must a retained tile keep contributing labels), and the `CurrentTileStatus` record |
 | `tile_store.dart` | `TileStore` — per style source: memory LRU of `PreparedTile` keyed by data tile + theme signature, and dispatch into the executor. Maps display tiles to data tiles via `core/tile_zoom.dart` (overzoom clamp) |
 | `raster_tile_store.dart` | `RasterTileStore` + `RasterTile` — the same shape for raster sources declared inside a vector style. Decoded `ui.Image`s are handed out as ref-counted `retain()`/`clone()` handles so several display tiles can share one decode |
-| `tile_byte_loader.dart` | `TileByteLoader` — the shared "key → bytes" step both stores consume: fresh disk cache, provider fetch, stale-entry offline fallback, and the failure throttle (`errorRetryDelay`, which the layer's retry timing keys off). Returns the sealed `TileBytesResult` (loaded/absent/unavailable) |
+| `tile_byte_loader.dart` | `TileByteLoader` — the shared "key → bytes" step both stores consume: fresh disk cache, provider fetch, stale-entry offline fallback, and the failure throttle (`errorRetryDelay`, which the layer's retry timing keys off). Returns the sealed `TileBytesResult` (loaded/absent/unavailable). Known-absent tiles are persisted as zero-byte disk entries (providers never produce empty `TileResponseData`, so the sentinel is unambiguous) and answered from disk without re-requesting |
 
 ## For AI Agents
 

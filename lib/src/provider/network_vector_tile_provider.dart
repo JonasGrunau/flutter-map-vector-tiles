@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -72,10 +71,12 @@ class NetworkVectorTileProvider extends VectorTileProvider {
         }
         final status = response.statusCode;
         if (status == 200) {
+          // bodyBytes is already an owned, exactly-sized buffer — no
+          // defensive copy needed.
           final bytes = response.bodyBytes;
           return bytes.isEmpty
               ? const TileResponseNotFound()
-              : TileResponseData(Uint8List.fromList(bytes));
+              : TileResponseData(bytes);
         }
         if (status == 204 || status == 404 || status == 410) {
           return const TileResponseNotFound();

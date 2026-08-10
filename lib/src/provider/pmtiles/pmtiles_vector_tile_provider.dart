@@ -42,7 +42,13 @@ class PmTilesVectorTileProvider extends VectorTileProvider {
   final http.Client _client;
   final bool _ownsClient;
   final PmTilesDirectory _root;
-  final _leafDirectories = LruCache<int, PmTilesDirectory>(maxEntries: 32);
+  // Bounded by retained bytes, not just entry count: planet-scale
+  // archives have leaf directories of thousands of entries apiece.
+  final _leafDirectories = LruCache<int, PmTilesDirectory>(
+    maxEntries: 32,
+    maxCost: 2 * 1024 * 1024,
+    costOf: (d) => d.entries.length * 48,
+  );
   final _leafInFlight = SingleFlight<int, PmTilesDirectory>();
   final _inFlight = SingleFlight<int, TileResponse>();
   var _disposed = false;

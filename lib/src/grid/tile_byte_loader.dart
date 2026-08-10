@@ -85,11 +85,20 @@ class TileByteLoader {
       return const TileBytesUnavailable();
     }
 
+    // A zero-byte entry is the "known absent" sentinel written below:
+    // empty tiles (oceans, sparse zooms) would otherwise be re-requested
+    // every session, since providers answer them with NotFound and only
+    // data responses used to reach the disk. Providers never produce
+    // empty TileResponseData (they map empty bodies to NotFound), so the
+    // sentinel is unambiguous. The TTL still applies — absence is
+    // re-checked at the same cadence as data.
     var bytes = await cache?.get(cacheKey);
     if (disposed() || cancellation.isCancelled) {
       return const TileBytesUnavailable();
     }
-    if (bytes != null) return TileBytesLoaded(bytes);
+    if (bytes != null) {
+      return bytes.isEmpty ? const TileBytesAbsent() : TileBytesLoaded(bytes);
+    }
 
     final response = await provider.load(key, cancellation: cancellation);
     if (disposed()) return const TileBytesUnavailable();
@@ -98,6 +107,7 @@ class TileByteLoader {
         unawaited(cache?.put(cacheKey, response.bytes));
         return TileBytesLoaded(response.bytes);
       case TileResponseNotFound():
+        unawaited(cache?.put(cacheKey, Uint8List(0)));
         return const TileBytesAbsent();
       case TileResponseCancelled():
         return const TileBytesUnavailable();
@@ -105,7 +115,11 @@ class TileByteLoader {
         // Network failure: serve an expired cache entry if one exists —
         // stale map data beats a blank map when offline.
         bytes = await cache?.getStale(cacheKey);
-        if (bytes != null) return TileBytesLoaded(bytes);
+        if (bytes != null) {
+          return bytes.isEmpty
+              ? const TileBytesAbsent()
+              : TileBytesLoaded(bytes);
+        }
         _failedAt[key] = DateTime.now();
         return const TileBytesUnavailable();
     }

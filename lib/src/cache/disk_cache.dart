@@ -64,8 +64,9 @@ class DiskCache implements ByteCache {
   @override
   Future<Uint8List?> getStale(String key) async {
     try {
-      final file = _fileFor(key);
-      return await file.exists() ? await file.readAsBytes() : null;
+      // No exists() probe: reading a missing file throws, which the
+      // catch already answers — one IO round-trip instead of two.
+      return await _fileFor(key).readAsBytes();
     } catch (e) {
       return null;
     }

@@ -13,6 +13,12 @@
   real tiles): geometry vertices accumulate into a reusable typed-data
   scratch buffer instead of a growable `List<double>`, which boxed
   every coordinate on the VM.
+- ⚡ Tile bytes travel lighter: downloaded tiles are no longer copied a
+  second time before decoding, tiles a source has said don't exist
+  (oceans, sparse zooms) are remembered on disk instead of being
+  re-requested every app session, the offline fallback reads the disk
+  once instead of probing existence first, and PMTiles leaf-directory
+  caching is bounded by bytes rather than entry count alone.
 - ⚡ The style engine does far less work per evaluation: zoom-only
   paint properties (pure zoom ramps — the most common shape) are
   detected at compile time and memoized against the zoom, so a tile
