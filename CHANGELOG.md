@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- ✨ `StyleReader` now actually resolves `mapbox://` URIs — style ids,
+  sprite bases and bare tileset ids expand to their `api.mapbox.com`
+  equivalents with `apiKey` as the access token. The capability was
+  documented but never implemented.
+- ✨ `StyleReader` accepts `headers`, sent with the style, TileJSON and
+  sprite requests and forwarded to the created tile providers — style
+  loading now works end-to-end against header-authenticated services.
+
 - 🐛 Coalesced tile loads no longer inherit the first requester's
   cancellation: a display tile disposed mid-flight (panned away,
   zoomed past) used to cancel the shared load and leave every other

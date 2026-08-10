@@ -82,8 +82,14 @@ class StyleReader {
   final String uri;
 
   /// Substituted for `{key}` in the style URI and all URLs derived from
-  /// the style document.
+  /// the style document. For `mapbox://` URIs it becomes the
+  /// `access_token`.
   final String? apiKey;
+
+  /// Extra HTTP headers sent with the style, TileJSON and sprite
+  /// requests, and forwarded to the created tile providers — for
+  /// header-authenticated services (e.g. `Authorization`).
+  final Map<String, String> headers;
 
   final Logger logger;
   final http.Client? httpClient;
@@ -110,6 +116,7 @@ class StyleReader {
   const StyleReader({
     required this.uri,
     this.apiKey,
+    this.headers = const {},
     this.logger = const Logger.noop(),
     this.httpClient,
     this.cache = true,
@@ -124,9 +131,9 @@ class StyleReader {
         ? await openStyleCache(
             cachePath: cachePath, refreshAfter: refreshAfter, logger: logger)
         : null;
-    final loader = _Loader(client, styleCache, logger);
+    final loader = _Loader(client, styleCache, logger, headers);
     try {
-      final styleUrl = _substitute(uri);
+      final styleUrl = _substitute(expandMapboxUri(uri));
       final styleJson = await loader.loadJson(styleUrl);
 
       final theme = ThemeReader(logger: logger).read(styleJson);
@@ -246,6 +253,7 @@ class StyleReader {
       // `attribution` is the only value read here.
       return _Source(await PmTilesVectorTileProvider.open(
         archive,
+        headers: headers,
         minimumZoom: minZoom,
         maximumZoom: maxZoom,
         logger: logger,
@@ -262,7 +270,8 @@ class StyleReader {
     String? attribution;
     final tileJsonUrl = sourceUrl;
     if (tiles == null && tileJsonUrl != null) {
-      final resolved = _substitute(_resolve(tileJsonUrl, styleUrl));
+      final resolved =
+          _substitute(expandMapboxUri(_resolve(tileJsonUrl, styleUrl)));
       final tileJson = await loader.loadJson(resolved);
       tiles = tileJson['tiles'] as List<Object?>?;
       templateBase = resolved;
@@ -276,6 +285,7 @@ class StyleReader {
     return _Source(
       NetworkVectorTileProvider(
         urlTemplate: _substitute(_resolveTemplate(template, templateBase)),
+        headers: headers,
         minimumZoom: minZoom ?? 0,
         maximumZoom: maxZoom ?? defaultMaxZoom,
         logger: logger,
@@ -289,7 +299,7 @@ class StyleReader {
     String spriteBase,
     String styleUrl,
   ) async {
-    final base = _substitute(_resolve(spriteBase, styleUrl));
+    final base = _substitute(expandMapboxUri(_resolve(spriteBase, styleUrl)));
     // Prefer @2x sheets on modern screens; fall back to 1x.
     for (final (suffix, ratio) in [('@2x', 2.0), ('', 1.0)]) {
       final indexUri = _appendSpriteSuffix(base, '$suffix.json');
@@ -323,6 +333,26 @@ class StyleReader {
 
   String _substitute(String url) => url.replaceAll('{key}', apiKey ?? '');
 
+  /// Expands Mapbox's proprietary `mapbox://` scheme to api.mapbox.com
+  /// URLs: style ids, sprite bases and bare tileset ids (as sources
+  /// reference them). The inserted `{key}` placeholder is filled by
+  /// [apiKey] — Mapbox calls it the access token.
+  static String expandMapboxUri(String url) {
+    if (!url.startsWith('mapbox://')) return url;
+    final path = url.substring('mapbox://'.length);
+    if (path.startsWith('styles/')) {
+      final id = path.substring('styles/'.length);
+      return 'https://api.mapbox.com/styles/v1/$id?access_token={key}';
+    }
+    if (path.startsWith('sprites/')) {
+      final id = path.substring('sprites/'.length);
+      return 'https://api.mapbox.com/styles/v1/$id/sprite?access_token={key}';
+    }
+    // A bare tileset id (`mapbox://mapbox.mapbox-streets-v8`) — its
+    // TileJSON lives under /v4/.
+    return 'https://api.mapbox.com/v4/$path.json?secure&access_token={key}';
+  }
+
   /// Like [_resolve] for tile URL templates: `Uri.resolve` percent-encodes
   /// the `{z}`/`{x}`/`{y}` braces, which would defeat placeholder
   /// substitution, so they are restored after resolution.
@@ -355,12 +385,13 @@ class _Loader {
   final http.Client client;
   final ByteCache? cache;
   final Logger logger;
+  final Map<String, String> headers;
 
   /// In-flight background revalidations; awaited before an owned client
   /// is closed.
   final refreshes = <Future<void>>[];
 
-  _Loader(this.client, this.cache, this.logger);
+  _Loader(this.client, this.cache, this.logger, this.headers);
 
   Future<Map<String, Object?>> loadJson(String url) async {
     final text = utf8.decode(await loadBytes(url));
@@ -402,7 +433,7 @@ class _Loader {
   }
 
   Future<Uint8List> _fetch(String url) async {
-    final response = await client.get(Uri.parse(url));
+    final response = await client.get(Uri.parse(url), headers: headers);
     if (response.statusCode != 200) {
       throw StyleReaderException('HTTP ${response.statusCode} for '
           '${StyleReader._redactKey(url)}');

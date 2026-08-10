@@ -119,4 +119,96 @@ void main() {
       'https://api.example.com/tiles/v3/{z}/{x}/{y}.pbf?key=k123',
     );
   });
+
+  test('mapbox:// style and source URIs expand to api.mapbox.com', () async {
+    // Regression: the doc always claimed mapbox://styles/... support,
+    // but nothing translated the scheme — the URI went straight to
+    // http.Client.get and failed.
+    final provider = await _readProvider(
+      'mapbox://styles/acme/streets-v1',
+      {
+        'https://api.mapbox.com/styles/v1/acme/streets-v1?access_token=tok': {
+          'version': 8,
+          'sources': {
+            'v': {'type': 'vector', 'url': 'mapbox://acme.tileset-v8'},
+          },
+          'layers': _minimalLayers,
+        },
+        'https://api.mapbox.com/v4/acme.tileset-v8.json'
+            '?secure&access_token=tok': {
+          'tiles': [
+            'https://api.mapbox.com/v4/acme.tileset-v8'
+                '/{z}/{x}/{y}.vector.pbf?access_token=tok'
+          ],
+          'maxzoom': 14,
+        },
+      },
+      apiKey: 'tok',
+    );
+    expect(
+      provider.urlTemplate,
+      'https://api.mapbox.com/v4/acme.tileset-v8'
+      '/{z}/{x}/{y}.vector.pbf?access_token=tok',
+    );
+    expect(provider.maximumZoom, 14);
+  });
+
+  test('expandMapboxUri covers styles, sprites and tileset ids', () {
+    expect(
+      StyleReader.expandMapboxUri('mapbox://styles/u/s'),
+      'https://api.mapbox.com/styles/v1/u/s?access_token={key}',
+    );
+    expect(
+      StyleReader.expandMapboxUri('mapbox://sprites/u/s'),
+      'https://api.mapbox.com/styles/v1/u/s/sprite?access_token={key}',
+    );
+    expect(
+      StyleReader.expandMapboxUri('mapbox://mapbox.streets-v8'),
+      'https://api.mapbox.com/v4/mapbox.streets-v8.json'
+      '?secure&access_token={key}',
+    );
+    expect(StyleReader.expandMapboxUri('https://a.example/style.json'),
+        'https://a.example/style.json');
+  });
+
+  test('custom headers reach style fetches and the tile providers', () async {
+    const styleUrl = 'https://maps.example.com/style.json';
+    final routes = <String, Object?>{
+      styleUrl: {
+        'version': 8,
+        'sources': {
+          'v': {
+            'type': 'vector',
+            'url': 'https://maps.example.com/tiles.json',
+          },
+        },
+        'layers': _minimalLayers,
+      },
+      'https://maps.example.com/tiles.json': {
+        'tiles': ['https://maps.example.com/{z}/{x}/{y}.pbf'],
+      },
+    };
+    final authSeen = <String, String?>{};
+    final client = MockClient((request) async {
+      authSeen[request.url.toString()] = request.headers['authorization'];
+      final body = routes[request.url.toString()];
+      if (body == null) return http.Response('not found', 404);
+      return http.Response(jsonEncode(body), 200,
+          headers: {'content-type': 'application/json'});
+    });
+
+    final style = await StyleReader(
+      uri: styleUrl,
+      headers: const {'authorization': 'Bearer t'},
+      httpClient: client,
+      cache: false,
+    ).read();
+    addTearDown(style.dispose);
+
+    expect(authSeen, hasLength(2)); // style + TileJSON
+    expect(authSeen.values, everyElement('Bearer t'));
+    final provider =
+        style.providers.providers['v']! as NetworkVectorTileProvider;
+    expect(provider.headers, const {'authorization': 'Bearer t'});
+  });
 }
