@@ -17,6 +17,11 @@
   the decoded image was evicted by a concurrent load in the same
   instant; callers now receive a handle that cannot be evicted out
   from under them.
+- 🐛 On devices where isolate spawning fails, the decode pipeline now
+  falls back to the event loop permanently instead of hanging every
+  tile enqueued after the first batch; a decode isolate killed by the
+  OS no longer strands its tile and shrinks the pool — it is replaced
+  and the tile retried.
 
 ## 2.1.1
 

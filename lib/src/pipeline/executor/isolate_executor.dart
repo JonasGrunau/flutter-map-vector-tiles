@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:isolate';
 
+import 'package:meta/meta.dart';
+
 import '../../core/cancellation.dart';
 import '../prepared_tile.dart';
 import '../tile_processor.dart';
@@ -15,6 +17,18 @@ class PlatformExecutor implements TilePrepareExecutor {
   final _workers = <_Worker>[];
   var _spawnedWorkers = 0;
   var _disposed = false;
+
+  /// Sticky fallback: once isolate spawning has failed with no worker
+  /// alive, every job — including those enqueued later — runs on the
+  /// event loop. Without this, `concurrency` failed spawns would leave
+  /// the pool permanently empty and later jobs hanging forever.
+  var _inlineMode = false;
+  var _inlineDraining = false;
+
+  /// Makes every spawn attempt fail, as on embedders without isolate
+  /// support. For tests only.
+  @visibleForTesting
+  static var debugFailSpawns = false;
 
   PlatformExecutor({this.concurrency = 3});
 
@@ -36,9 +50,14 @@ class PlatformExecutor implements TilePrepareExecutor {
 
   void _dispatch() {
     if (_disposed) return;
+    if (_inlineMode) {
+      unawaited(_drainInline());
+      return;
+    }
     if (_spawnedWorkers < concurrency && _queue.isNotEmpty) {
       _spawnedWorkers++;
-      _Worker.spawn(onReady: _onWorkerReady, onIdle: _dispatch);
+      _Worker.spawn(
+          onReady: _onWorkerReady, onIdle: _dispatch, onDied: _onWorkerDied);
     }
     for (final worker in _workers) {
       if (worker.busy) continue;
@@ -51,11 +70,18 @@ class PlatformExecutor implements TilePrepareExecutor {
   void _onWorkerReady(_Worker? worker) {
     if (worker == null) {
       // Isolate spawning is unavailable (e.g. heavily constrained
-      // embedders). Drain the queue on the event loop instead.
-      _drainInline();
+      // embedders). Release the never-filled pool slot; with no worker
+      // alive, fall back to the event loop — stickily, so jobs enqueued
+      // after this drain cannot hang waiting for a pool that will never
+      // exist.
+      _spawnedWorkers--;
+      if (_workers.isEmpty && !_disposed) {
+        _inlineMode = true;
+        unawaited(_drainInline());
+      }
       return;
     }
-    if (_disposed) {
+    if (_disposed || _inlineMode) {
       worker.dispose();
       return;
     }
@@ -63,20 +89,37 @@ class PlatformExecutor implements TilePrepareExecutor {
     _dispatch();
   }
 
+  /// The worker's isolate died without being disposed (OS kill, OOM).
+  /// Its in-flight job has already been failed; free the pool slot and
+  /// re-dispatch so a replacement spawns while there is work.
+  void _onWorkerDied(_Worker worker) {
+    if (_disposed) return;
+    _workers.remove(worker);
+    _spawnedWorkers--;
+    worker.dispose();
+    _dispatch();
+  }
+
   Future<void> _drainInline() async {
-    while (_queue.isNotEmpty && !_disposed) {
-      final job = _nextJob();
-      if (job == null) break;
-      await Future<void>.delayed(Duration.zero);
-      PreparedTile? result;
-      try {
-        result = job.cancellation.isCancelled || _disposed
-            ? null
-            : prepareTileSync(job.input);
-      } catch (_) {
-        result = null;
+    if (_inlineDraining) return;
+    _inlineDraining = true;
+    try {
+      while (_queue.isNotEmpty && !_disposed) {
+        final job = _nextJob();
+        if (job == null) break;
+        await Future<void>.delayed(Duration.zero);
+        PreparedTile? result;
+        try {
+          result = job.cancellation.isCancelled || _disposed
+              ? null
+              : prepareTileSync(job.input);
+        } catch (_) {
+          result = null;
+        }
+        job.completer.complete(result);
       }
-      job.completer.complete(result);
+    } finally {
+      _inlineDraining = false;
     }
   }
 
@@ -90,6 +133,15 @@ class PlatformExecutor implements TilePrepareExecutor {
       return job;
     }
     return null;
+  }
+
+  /// Kills every worker isolate without disposing the executor,
+  /// simulating workers dying underneath it (OS kill). For tests only.
+  @visibleForTesting
+  void debugKillWorkers() {
+    for (final worker in _workers) {
+      worker._isolate.kill(priority: Isolate.immediate);
+    }
   }
 
   @override
@@ -122,13 +174,16 @@ class _Worker {
   final Isolate _isolate;
   final SendPort _sendPort;
   final ReceivePort _receivePort;
+  final ReceivePort _exitPort;
   final void Function() onIdle;
+  final void Function(_Worker) onDied;
   _Job? _current;
   var _disposed = false;
 
-  _Worker._(this._isolate, this._sendPort, this._receivePort,
-      {required this.onIdle}) {
+  _Worker._(this._isolate, this._sendPort, this._receivePort, this._exitPort,
+      {required this.onIdle, required this.onDied}) {
     _receivePort.listen(_onResult);
+    _exitPort.listen(_onExit);
   }
 
   bool get busy => _current != null;
@@ -138,21 +193,30 @@ class _Worker {
   static void spawn({
     required void Function(_Worker?) onReady,
     required void Function() onIdle,
+    required void Function(_Worker) onDied,
   }) {
+    if (PlatformExecutor.debugFailSpawns) {
+      scheduleMicrotask(() => onReady(null));
+      return;
+    }
     final startupPort = ReceivePort();
+    final exitPort = ReceivePort();
     Isolate.spawn(
       _workerMain,
       startupPort.sendPort,
       debugName: 'vector-tile-prepare',
+      onExit: exitPort.sendPort,
     ).then((isolate) {
       startupPort.first.then((message) {
         final resultPort = ReceivePort();
         final sendPort = message as SendPort;
         sendPort.send(resultPort.sendPort);
-        onReady(_Worker._(isolate, sendPort, resultPort, onIdle: onIdle));
+        onReady(_Worker._(isolate, sendPort, resultPort, exitPort,
+            onIdle: onIdle, onDied: onDied));
       });
     }).catchError((Object _) {
       startupPort.close();
+      exitPort.close();
       onReady(null);
     });
   }
@@ -176,6 +240,19 @@ class _Worker {
     if (!_disposed) onIdle();
   }
 
+  /// The isolate exited without [dispose] — killed by the OS, not us.
+  /// Fail the in-flight job (a null result is a throttled retry, never a
+  /// hang) and let the executor free the pool slot.
+  void _onExit(Object? _) {
+    if (_disposed) return;
+    final job = _current;
+    _current = null;
+    if (job != null && !job.completer.isCompleted) {
+      job.completer.complete(null);
+    }
+    onDied(this);
+  }
+
   void dispose() {
     _disposed = true;
     final job = _current;
@@ -184,6 +261,7 @@ class _Worker {
       job.completer.complete(null);
     }
     _receivePort.close();
+    _exitPort.close();
     _isolate.kill(priority: Isolate.immediate);
   }
 }

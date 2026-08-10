@@ -14,7 +14,7 @@ This is the package's only platform-conditional code.
 | File | Description |
 |------|-------------|
 | `executor.dart` | `abstract class TilePrepareExecutor` — the contract, plus the factory redirect `factory TilePrepareExecutor({int concurrency}) = impl.PlatformExecutor` wired through a conditional import |
-| `isolate_executor.dart` | Native `PlatformExecutor`: a pool of long-lived worker isolates (default concurrency 3) with a priority queue, `_Worker` spawn/ready/idle lifecycle, and an inline drain fallback when no worker can be spawned |
+| `isolate_executor.dart` | Native `PlatformExecutor`: a pool of long-lived worker isolates (default concurrency 3) with a priority queue, `_Worker` spawn/ready/idle/exit lifecycle, worker replacement on death, and a sticky inline fallback when no worker can be spawned |
 | `direct_executor.dart` | Web `PlatformExecutor`: no isolate support for this workload, so jobs run chunked on the event loop (default concurrency 2) |
 
 ## For AI Agents
@@ -32,8 +32,13 @@ This is the package's only platform-conditional code.
   and never surfaces an exception — the pool must not `completeError` on
   cancellation.
 - `_Worker.spawn` may fail (constrained devices, spawn errors). The
-  `onReady(null)` path falls back to `_drainInline()`; keep that fallback alive
-  when touching the pool, or the map silently stops loading tiles.
+  `onReady(null)` path releases the pool slot and — once no worker is alive —
+  flips the executor into *sticky* inline mode, so jobs enqueued after the
+  first drain still run. Keep both halves alive when touching the pool, or the
+  map silently stops loading tiles.
+- Workers carry an `onExit` port: an isolate killed underneath the executor
+  (OS kill, OOM) fails its in-flight job with a null result, leaves the pool
+  and is replaced on the next dispatch — never a permanently busy ghost.
 - `dispose()` must kill isolates *and* drain pending jobs, otherwise closing a
   map leaks an isolate per open.
 
