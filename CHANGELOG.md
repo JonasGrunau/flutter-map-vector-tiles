@@ -21,9 +21,9 @@ pub.dev page gets gallery screenshots.
   in an iPhone bezel: Munich in OpenFreeMap Liberty, Zermatt with an Esri
   hillshade raster blended into the vector style, and Munich in the dark
   Fiord style.
-- 🧹 The example app keeps its attribution clear of rounded screen
-  corners and the iOS home indicator instead of pinning it flush to the
-  bottom-right edge.
+- 🧹 The example app draws its attribution as a rounded translucent
+  pill centered at the bottom of the map instead of a flush white bar
+  in the bottom-right corner.
 
 ## 2.2.0
 

@@ -54,12 +54,12 @@ pipeline is key-free.
      `center: [11.5815, 48.135]`, `zoom: 15`. (OpenFreeMap's `dark`
      style renders too flat for a gallery image; Fiord reads better.)
 
-   For the framed portrait shots, additionally set compact `attribution`
-   strings on the sources (`OpenMapTiles © OpenStreetMap`, hillshade
-   `Esri`) — the style source's own attribution wins over the TileJSON's,
-   `SimpleAttributionWidget` prepends `flutter_map | © `, and the shorter
-   line clears the bezel's rounded corner. OpenFreeMap doesn't require
-   attribution; OpenMapTiles and OSM do.
+   Additionally set compact `attribution` strings on the sources
+   (`OpenMapTiles © OpenStreetMap`, hillshade `Esri`) — the style
+   source's own attribution wins over the TileJSON's, the example
+   prepends `flutter_map | © `, and the short line keeps the example's
+   centered attribution pill on a single line. OpenFreeMap doesn't
+   require attribution; OpenMapTiles and OSM do.
 
 3. **Capture with Playwright** (chromium): copy the shot's JSON to
    `build/web/shot-style.json`, open `http://localhost:8123/` in a fresh

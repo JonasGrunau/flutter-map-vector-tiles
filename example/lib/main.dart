@@ -94,14 +94,31 @@ class _VectorMapPageState extends State<VectorMapPage> {
               ),
               // Whatever the style's sources declare — never a hardcoded
               // provider name. Most providers' terms require showing it.
-              // The minimum inset keeps it clear of rounded screen corners
-              // and the iOS home indicator.
               if (style.attributions.isNotEmpty)
-                SafeArea(
-                  minimum: const EdgeInsets.only(right: 16, bottom: 40),
-                  child: SimpleAttributionWidget(
-                    source: Text(
-                      style.attributions.map((a) => a.text).join(' · '),
+                Align(
+                  alignment: Alignment.bottomCenter,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.7),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        child: Text(
+                          'flutter_map | © '
+                          '${style.attributions.map((a) => a.text).join(' · ')}',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.black87,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
