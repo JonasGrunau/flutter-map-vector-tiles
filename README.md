@@ -136,7 +136,7 @@ vt.VectorTileLayer(
 | `tileOffset` | `TileOffset.maplibre` | zoom relation between map and style — see below 👇 |
 | `concurrency` | `3` | worker isolates decoding tiles off the UI thread (ignored on web) |
 | `diskCacheMaximumSizeInBytes` | 50 MB | `0` disables disk caching (no effect on web) |
-| `diskCacheTtl` | 14 days | freshness window: younger tiles skip the network; older ones are refetched but kept as offline fallback — ⚠️ respect your tile provider's terms |
+| `diskCacheTtl` | 14 days | freshness window: younger tiles skip the network; older ones still paint instantly and are refreshed in the background — ⚠️ respect your tile provider's terms |
 | `cachePath` | app support dir | supply your own directory path to control/clear it (ignored on web) |
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source (the caches are shared process-wide; the most recently mounted layer's value wins) |
 | `tileFadeDuration` | 150 ms | `Duration.zero` disables fade-in |
@@ -173,10 +173,12 @@ Everything you looked at recently keeps working without network:
   instantly — including fully offline — and refreshed in the background
   once older than `refreshAfter` (12 h default). Opt out with
   `StyleReader(cache: false)`.
-- **Tiles** — served from the disk cache while fresh; when a network
-  fetch fails, an expired cached tile is served instead of a blank one.
-  Stale tiles are only ever deleted by the size cap (oldest first),
-  never by age alone.
+- **Tiles** — served from the disk cache while fresh; once older than
+  `diskCacheTtl` they still paint instantly and are revalidated in the
+  background (stale-while-revalidate): changed tiles cross-fade to the
+  new imagery, and when the network is unavailable the old tile simply
+  stays. Stale tiles are only ever deleted by the size cap (oldest
+  first), never by age alone.
 - **Durable location** — both caches default to the application support
   directory, which the OS doesn't purge (unlike the temp directory).
 

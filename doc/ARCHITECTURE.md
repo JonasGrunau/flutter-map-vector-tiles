@@ -85,6 +85,17 @@ cache framework. Every `ui.Image` has exactly one owner and is disposed
 on eviction or layer dispose; disposing the layer tears down isolates,
 pending requests and caches (verified by tests).
 
+The disk TTL is a *revalidation* deadline, not an expiry: expired
+entries — including the zero-byte "known absent" sentinels — are served
+immediately and refetched in the background (stale-while-revalidate,
+`TileByteLoader.refresh`). When the refetch delivers different bytes the
+store re-decodes them, replaces the memory entry and notifies the layer,
+which re-rasterizes the affected display tiles; the previous raster is
+kept as an underlay for the duration of the fade, so the swap
+cross-fades instead of dipping to the background. A failed refetch
+changes nothing — the stale entry stays servable (deliberately not
+throttled) and is only ever deleted by the size sweep.
+
 On web the disk row is absent: the cache resolver
 (`cache_resolver_stub.dart` vs `cache_resolver_io.dart`, mirroring the
 executor's conditional import) resolves to no persistent cache, and

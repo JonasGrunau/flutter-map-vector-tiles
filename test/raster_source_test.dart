@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
+import 'package:flutter_map_vector_tiles/src/cache/byte_cache.dart';
 import 'package:flutter_map_vector_tiles/src/core/tile_key.dart';
 import 'package:flutter_map_vector_tiles/src/grid/raster_tile_store.dart';
 import 'package:flutter_map_vector_tiles/src/provider/memory_vector_tile_provider.dart';
@@ -285,5 +288,64 @@ void main() {
       store.dispose();
       RasterTileStore.clearMemoryCaches();
     });
+
+    test('an expired raster serves stale and swaps to refreshed pixels',
+        () async {
+      final red = await _solidPng(const Color(0xffff0000));
+      final green = await _solidPng(const Color(0xff00ff00));
+      const key = TileKey(2, 1, 1);
+      final store = RasterTileStore(
+        source: RasterTileSource(
+          provider: MemoryVectorTileProvider(
+              tiles: {key: green}, cacheKey: 'raster-swr-test'),
+        ),
+        diskCache: Future.value(
+            _ExpiredByteCache()..entries['raster-swr-test/2/1/1'] = red),
+      );
+      final refreshed = Completer<TileKey>();
+      store.onRefreshed = refreshed.complete;
+
+      // The expired disk entry paints without waiting on the provider…
+      final stale = await store.obtain(key);
+      expect(await _pixel(stale!.image, 4, 4), const Color(0xffff0000));
+      stale.dispose();
+
+      // …and the background revalidation swaps in the fresh pixels.
+      expect(await refreshed.future, key);
+      final fresh = store.peek(key);
+      expect(await _pixel(fresh!.image, 4, 4), const Color(0xff00ff00));
+      fresh.dispose();
+      store.dispose();
+      RasterTileStore.clearMemoryCaches();
+    });
   });
+}
+
+Future<Uint8List> _solidPng(Color color) async {
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.drawRect(const Rect.fromLTWH(0, 0, 8, 8), Paint()..color = color);
+  final picture = recorder.endRecording();
+  final image = picture.toImageSync(8, 8);
+  picture.dispose();
+  final data = await image.toByteData(format: ui.ImageByteFormat.png);
+  image.dispose();
+  return data!.buffer.asUint8List();
+}
+
+/// A byte cache whose every entry is past the TTL: fresh [get] always
+/// misses, [getStale] serves — the stale-while-revalidate entry state.
+class _ExpiredByteCache implements ByteCache {
+  final entries = <String, Uint8List>{};
+
+  @override
+  Future<Uint8List?> get(String key) async => null;
+
+  @override
+  Future<Uint8List?> getStale(String key) async => entries[key];
+
+  @override
+  Future<void> put(String key, Uint8List bytes) async {
+    entries[key] = bytes;
+  }
 }

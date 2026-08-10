@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+Expired tiles now paint instantly and refresh in the background.
+
+- ✨ **Stale-while-revalidate tiles**: disk-cached tiles older than
+  `diskCacheTtl` are no longer refetched *before* they can paint —
+  the expired tile is shown immediately and revalidated in the
+  background. When the server returns changed data the tile
+  cross-fades to the new imagery; when the fetch fails (e.g. offline)
+  the old tile simply stays. Previously the map held back such tiles
+  for the full network round-trip (plus retries) and fell back to the
+  expired copy only after it failed.
+- 🎨 A re-rasterized tile that replaces visible imagery (background
+  refresh, a source recovered by a retry, provisional→final) now keeps
+  the previous raster underneath while the new one fades in, instead of
+  fading in over the map background.
+
 ## 2.2.0
 
 Mapbox-hosted and header-authenticated styles now load, over a broad

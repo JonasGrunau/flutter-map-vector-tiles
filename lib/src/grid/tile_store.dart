@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import '../cache/byte_cache.dart';
 import '../cache/lru_cache.dart';
@@ -38,8 +39,17 @@ class TileStore {
   /// [clearMemoryCaches] drops them.
   static final _memoryCaches = <String, LruCache<TileKey, PreparedTile>>{};
 
+  /// Notified after a background revalidation replaced a data tile's
+  /// decoded content in the memory cache — the layer re-rasterizes the
+  /// display tiles it serves. Never fires for unchanged bytes.
+  void Function(TileKey dataKey)? onRefreshed;
+
   final LruCache<TileKey, PreparedTile> _memory;
   final _inFlight = SingleFlight<TileKey, PreparedTile?>();
+
+  /// Cancelled on [dispose]; polled by background revalidations, which
+  /// no display tile's token covers.
+  final _lifetime = CancellationToken();
   var _disposed = false;
 
   TileStore({
@@ -142,12 +152,13 @@ class TileStore {
     switch (await _bytes.load(dataKey, cancellation, () => _disposed)) {
       case TileBytesUnavailable():
         return null;
-      case TileBytesAbsent():
+      case TileBytesAbsent(:final stale):
         final empty =
             PreparedTile(key: dataKey, layers: const {}, byteSize: 64);
         _memory.put(dataKey, empty);
+        if (stale) unawaited(_revalidate(dataKey, Uint8List(0), priority));
         return empty;
-      case TileBytesLoaded(:final bytes):
+      case TileBytesLoaded(:final bytes, :final stale):
         final prepared = await executor.prepare(
           PrepareInput(
             z: dataKey.z,
@@ -169,8 +180,52 @@ class TileStore {
         }
         _memory.put(dataKey, prepared);
         _bytes.noteSuccess(dataKey);
+        if (stale) unawaited(_revalidate(dataKey, bytes, priority));
         return prepared;
     }
+  }
+
+  /// Background revalidation of a stale entry [_load] just served
+  /// (stale-while-revalidate): on changed content the fresh tile
+  /// replaces the memory entry and [onRefreshed] fires; when the fetch
+  /// fails or the bytes are unchanged, the stale tile simply stays.
+  Future<void> _revalidate(
+    TileKey dataKey,
+    Uint8List previous,
+    int priority,
+  ) async {
+    final result =
+        await _bytes.refresh(dataKey, previous, _lifetime, () => _disposed);
+    if (result == null || _disposed) return;
+    switch (result) {
+      case TileBytesUnavailable():
+        return;
+      case TileBytesAbsent():
+        // The source stopped serving this tile: replace the stale
+        // content with emptiness.
+        _memory.put(dataKey,
+            PreparedTile(key: dataKey, layers: const {}, byteSize: 64));
+      case TileBytesLoaded(:final bytes):
+        final prepared = await executor.prepare(
+          PrepareInput(
+            z: dataKey.z,
+            x: dataKey.x,
+            y: dataKey.y,
+            bytes: bytes,
+            layerProperties: layerProperties,
+          ),
+          priority: priority,
+          cancellation: _lifetime,
+        );
+        if (_disposed) return;
+        if (prepared == null) {
+          // Corrupt refresh: keep showing the stale tile, throttle.
+          if (!_lifetime.isCancelled) _bytes.noteFailure(dataKey);
+          return;
+        }
+        _memory.put(dataKey, prepared);
+    }
+    onRefreshed?.call(dataKey);
   }
 
   /// Stops this store. The decoded tiles stay in the shared memory cache on
@@ -178,6 +233,7 @@ class TileStore {
   /// immediately. Use [clearMemoryCaches] to release them.
   void dispose() {
     _disposed = true;
+    _lifetime.cancel();
     _inFlight.clear();
     _bytes.dispose();
   }

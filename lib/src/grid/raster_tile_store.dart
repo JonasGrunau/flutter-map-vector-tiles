@@ -45,9 +45,18 @@ class RasterTileStore {
   /// [clearMemoryCaches] drops them.
   static final _memoryCaches = <String, LruCache<TileKey, ui.Image>>{};
 
+  /// Notified after a background revalidation replaced a data tile's
+  /// decoded image in the memory cache — the layer re-rasterizes the
+  /// display tiles it serves. Never fires for unchanged bytes.
+  void Function(TileKey dataKey)? onRefreshed;
+
   final LruCache<TileKey, ui.Image> _memory;
   final _inFlight = SingleFlight<TileKey, ui.Image?>();
   final _notFound = <TileKey>{};
+
+  /// Cancelled on [dispose]; polled by background revalidations, which
+  /// no display tile's token covers.
+  final _lifetime = CancellationToken();
   var _disposed = false;
 
   RasterTileStore({
@@ -137,8 +146,9 @@ class RasterTileStore {
     return loaded == null ? null : RasterTile(dataKey, loaded.clone());
   }
 
-  /// Whether the source has said this tile does not exist — a permanent
-  /// answer that retrying cannot change.
+  /// Whether the source has said this tile does not exist. Retrying
+  /// cannot change the answer — only a background revalidation of an
+  /// expired absence sentinel can revise it (via [onRefreshed]).
   bool knownAbsent(TileKey dataKey) => _notFound.contains(dataKey);
 
   Future<ui.Image?> _load(
@@ -147,17 +157,30 @@ class RasterTileStore {
   ) async {
     if (_disposed) return null;
     final Uint8List bytes;
+    final bool stale;
     switch (await _bytes.load(dataKey, cancellation, () => _disposed)) {
       case TileBytesUnavailable():
         return null;
-      case TileBytesAbsent():
+      case TileBytesAbsent(stale: final wasStale):
         _notFound.add(dataKey);
+        if (wasStale) unawaited(_revalidate(dataKey, Uint8List(0)));
         return null;
-      case TileBytesLoaded(bytes: final loaded):
+      case TileBytesLoaded(bytes: final loaded, stale: final wasStale):
         bytes = loaded;
+        stale = wasStale;
     }
 
-    ui.Image image;
+    final image = await _decode(dataKey, bytes);
+    if (image == null) return null;
+    // Cached even if disposed meanwhile — the shared cache outlives the
+    // store, like the vector tile cache.
+    _memory.put(dataKey, image);
+    _bytes.noteSuccess(dataKey);
+    if (stale) unawaited(_revalidate(dataKey, bytes));
+    return image;
+  }
+
+  Future<ui.Image?> _decode(TileKey dataKey, Uint8List bytes) async {
     try {
       // A PMTiles raster source with gzip tile compression hands blobs
       // through compressed on native platforms (rare — raster formats
@@ -169,23 +192,48 @@ class RasterTileStore {
       final codec = await ui.instantiateImageCodec(inflated);
       final frame = await codec.getNextFrame();
       codec.dispose();
-      image = frame.image;
+      return frame.image;
     } catch (_) {
       // Corrupt image: throttle retries.
       _bytes.noteFailure(dataKey);
       return null;
     }
-    // Cached even if disposed meanwhile — the shared cache outlives the
-    // store, like the vector tile cache.
-    _memory.put(dataKey, image);
-    _bytes.noteSuccess(dataKey);
-    return image;
+  }
+
+  /// Background revalidation of a stale entry [_load] just served
+  /// (stale-while-revalidate): on changed content the fresh image
+  /// replaces the memory entry (the cache disposes the old master) and
+  /// [onRefreshed] fires; when the fetch fails or the bytes are
+  /// unchanged, the stale image simply stays.
+  Future<void> _revalidate(TileKey dataKey, Uint8List previous) async {
+    final result =
+        await _bytes.refresh(dataKey, previous, _lifetime, () => _disposed);
+    if (result == null || _disposed) return;
+    switch (result) {
+      case TileBytesUnavailable():
+        return;
+      case TileBytesAbsent():
+        // The source stopped serving this tile.
+        _notFound.add(dataKey);
+        _memory.remove(dataKey)?.dispose();
+      case TileBytesLoaded(:final bytes):
+        final image = await _decode(dataKey, bytes);
+        if (image == null) return;
+        if (_disposed) {
+          image.dispose();
+          return;
+        }
+        _notFound.remove(dataKey);
+        _memory.put(dataKey, image);
+    }
+    onRefreshed?.call(dataKey);
   }
 
   /// Stops this store. Decoded images stay in the shared memory cache so
   /// the next map over this source paints immediately.
   void dispose() {
     _disposed = true;
+    _lifetime.cancel();
     _inFlight.clear();
     _bytes.dispose();
   }

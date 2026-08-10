@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter_map_vector_tiles/src/cache/byte_cache.dart';
 import 'package:flutter_map_vector_tiles/src/core/cancellation.dart';
 import 'package:flutter_map_vector_tiles/src/core/tile_key.dart';
 import 'package:flutter_map_vector_tiles/src/grid/tile_store.dart';
 import 'package:flutter_map_vector_tiles/src/pipeline/executor/executor.dart';
+import 'package:flutter_map_vector_tiles/src/pipeline/prepared_tile.dart';
 import 'package:flutter_map_vector_tiles/src/provider/memory_vector_tile_provider.dart';
 import 'package:flutter_map_vector_tiles/src/provider/vector_tile_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -213,6 +215,112 @@ void main() {
     s.dispose();
   });
 
+  group('stale-while-revalidate', () {
+    const dataKey = TileKey(2, 1, 1);
+
+    TileStore swrStore(VectorTileProvider provider, ByteCache cache) =>
+        TileStore(
+          provider: provider,
+          executor: executor,
+          layerProperties: {
+            'water': {'class'},
+          },
+          diskCache: Future.value(cache),
+        );
+
+    String classOf(PreparedTile? tile) =>
+        tile!.layers['water']!.features.single.properties['class']! as String;
+
+    test('an expired entry paints instantly and refreshes to changed data',
+        () async {
+      final provider = _FixedProvider(TileResponseData(_tileBytes())); // lake
+      final cache = _ExpiredByteCache();
+      cache.entries['fixed/2/1/1'] = _riverTileBytes();
+      final s = swrStore(provider, cache);
+      final refreshed = Completer<TileKey>();
+      s.onRefreshed = refreshed.complete;
+
+      // The expired entry is served without waiting on the provider…
+      final stale = await s.obtain(dataKey);
+      expect(classOf(stale), 'river');
+
+      // …and the background revalidation swaps in the fresh content.
+      expect(await refreshed.future, dataKey);
+      expect(classOf(s.peek(dataKey)), 'lake');
+      expect(provider.loads, 1);
+      s.dispose();
+    });
+
+    test('identical bytes refresh silently', () async {
+      final provider = _FixedProvider(TileResponseData(_tileBytes()));
+      final cache = _ExpiredByteCache();
+      cache.entries['fixed/2/1/1'] = _tileBytes();
+      final s = swrStore(provider, cache);
+      var notified = false;
+      s.onRefreshed = (_) => notified = true;
+
+      expect(await s.obtain(dataKey), isNotNull);
+      await pumpEventQueue();
+      expect(provider.loads, 1, reason: 'the revalidation did run');
+      expect(notified, isFalse, reason: 'but nothing changed');
+      expect(cache.puts, 1, reason: 'and the disk entry\'s TTL restarted');
+      s.dispose();
+    });
+
+    test('a failed revalidation keeps the stale tile servable', () async {
+      final provider = _FixedProvider(TileResponseError(Exception('offline')));
+      final cache = _ExpiredByteCache();
+      cache.entries['fixed/2/1/1'] = _riverTileBytes();
+      final s = swrStore(provider, cache);
+      var notified = false;
+      s.onRefreshed = (_) => notified = true;
+
+      expect(await s.obtain(dataKey), isNotNull);
+      await pumpEventQueue();
+      expect(notified, isFalse);
+
+      // Not throttled: even once the memory cache drops the tile, the
+      // stale disk entry keeps serving.
+      TileStore.clearMemoryCaches();
+      final again = await s.obtain(dataKey);
+      expect(classOf(again), 'river');
+      s.dispose();
+    });
+
+    test('a tile deleted at the source refreshes to empty', () async {
+      final provider = _FixedProvider(const TileResponseNotFound());
+      final cache = _ExpiredByteCache();
+      cache.entries['fixed/2/1/1'] = _riverTileBytes();
+      final s = swrStore(provider, cache);
+      final refreshed = Completer<TileKey>();
+      s.onRefreshed = refreshed.complete;
+
+      final stale = await s.obtain(dataKey);
+      expect(stale!.layers, isNotEmpty);
+      expect(await refreshed.future, dataKey);
+      expect(s.peek(dataKey)!.layers, isEmpty);
+      await pumpEventQueue();
+      expect(cache.entries['fixed/2/1/1'], isEmpty,
+          reason: 'the absence sentinel replaces the stale data');
+      s.dispose();
+    });
+
+    test('an expired absence sentinel revalidates into data', () async {
+      final provider = _FixedProvider(TileResponseData(_tileBytes()));
+      final cache = _ExpiredByteCache();
+      cache.entries['fixed/2/1/1'] = Uint8List(0);
+      final s = swrStore(provider, cache);
+      final refreshed = Completer<TileKey>();
+      s.onRefreshed = refreshed.complete;
+
+      final stale = await s.obtain(dataKey);
+      expect(stale!.layers, isEmpty); // the sentinel is served first
+      expect(await refreshed.future, dataKey);
+      expect(s.peek(dataKey)!.layers.keys, ['water']);
+      s.dispose();
+    });
+  });
+
   test('stores trimming different properties do not share tiles', () async {
     final trimmed = store();
     await trimmed.obtain(const TileKey(2, 1, 1));
@@ -235,6 +343,49 @@ void main() {
     );
     wider.dispose();
   });
+}
+
+/// Serves one fixed response with a stable cache key, counting loads.
+class _FixedProvider extends VectorTileProvider {
+  final TileResponse response;
+  var loads = 0;
+
+  _FixedProvider(this.response);
+
+  @override
+  int get maximumZoom => 14;
+
+  @override
+  int get minimumZoom => 0;
+
+  @override
+  String get cacheKey => 'fixed';
+
+  @override
+  Future<TileResponse> load(TileKey tile,
+      {CancellationToken? cancellation}) async {
+    loads++;
+    return response;
+  }
+}
+
+/// A byte cache whose every entry is past the TTL: fresh [get] always
+/// misses, [getStale] serves — the stale-while-revalidate entry state.
+class _ExpiredByteCache implements ByteCache {
+  final entries = <String, Uint8List>{};
+  var puts = 0;
+
+  @override
+  Future<Uint8List?> get(String key) async => null;
+
+  @override
+  Future<Uint8List?> getStale(String key) async => entries[key];
+
+  @override
+  Future<void> put(String key, Uint8List bytes) async {
+    puts++;
+    entries[key] = bytes;
+  }
 }
 
 /// Serves tiles only after [gate] completes, so tests can cancel waiters

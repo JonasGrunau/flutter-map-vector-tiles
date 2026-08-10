@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_map_vector_tiles/src/cache/byte_cache.dart';
@@ -9,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 class _MemoryByteCache implements ByteCache {
   final entries = <String, Uint8List>{};
+  var puts = 0;
 
   @override
   Future<Uint8List?> get(String key) async => entries[key];
@@ -18,13 +20,17 @@ class _MemoryByteCache implements ByteCache {
 
   @override
   Future<void> put(String key, Uint8List bytes) async {
+    puts++;
     entries[key] = bytes;
   }
 }
 
 class _CountingProvider extends VectorTileProvider {
-  final TileResponse response;
+  TileResponse response;
   var loads = 0;
+
+  /// When set, responses are held back until it completes.
+  Future<void>? gate;
 
   _CountingProvider(this.response);
 
@@ -41,6 +47,7 @@ class _CountingProvider extends VectorTileProvider {
   Future<TileResponse> load(TileKey tile,
       {CancellationToken? cancellation}) async {
     loads++;
+    if (gate != null) await gate;
     return response;
   }
 }
@@ -69,19 +76,40 @@ void main() {
     expect(provider.loads, 1);
   });
 
-  test('a stale sentinel answers absent when the network fails', () async {
+  test('an expired sentinel answers absent, stale, without the provider',
+      () async {
     final cache = _MemoryByteCache();
     cache.entries['counting/3/1/2'] = Uint8List(0);
     final failing = _CountingProvider(TileResponseError(Exception('offline')));
-    final loader = TileByteLoader(failing, Future.value(cache));
 
-    // Simulate an expired entry: fresh get misses, stale get hits.
+    // Simulate an expired entry: fresh get misses, stale get hits. The
+    // sentinel is served ahead of the network (stale-while-revalidate).
     final expired = _ExpiredCache(cache);
     final expiredLoader = TileByteLoader(failing, Future.value(expired));
-    expect(await loadOnce(expiredLoader), isA<TileBytesAbsent>());
+    final result = await loadOnce(expiredLoader);
+    expect(result, isA<TileBytesAbsent>());
+    expect((result as TileBytesAbsent).stale, isTrue);
+    expect(failing.loads, 0);
 
-    // And a fresh sentinel short-circuits before the provider entirely.
-    expect(await loadOnce(loader), isA<TileBytesAbsent>());
+    // And a fresh sentinel short-circuits identically, not stale.
+    final loader = TileByteLoader(failing, Future.value(cache));
+    final fresh = await loadOnce(loader);
+    expect((fresh as TileBytesAbsent).stale, isFalse);
+  });
+
+  test('an expired data entry is served stale without the provider', () async {
+    final cache = _MemoryByteCache();
+    final staleBytes = Uint8List.fromList([9, 9]);
+    cache.entries['counting/3/1/2'] = staleBytes;
+    final provider =
+        _CountingProvider(TileResponseData(Uint8List.fromList([1])));
+    final loader = TileByteLoader(provider, Future.value(_ExpiredCache(cache)));
+
+    final result = await loadOnce(loader);
+    expect(result, isA<TileBytesLoaded>());
+    expect((result as TileBytesLoaded).stale, isTrue);
+    expect(result.bytes, staleBytes);
+    expect(provider.loads, 0);
   });
 
   test('data responses still round-trip unchanged', () async {
@@ -93,6 +121,84 @@ void main() {
     final result = await loadOnce(loader);
     expect(result, isA<TileBytesLoaded>());
     expect((result as TileBytesLoaded).bytes, bytes);
+    expect(result.stale, isFalse);
+  });
+
+  group('refresh', () {
+    final previous = Uint8List.fromList([9, 9]);
+
+    Future<TileBytesResult?> refreshOnce(TileByteLoader loader) =>
+        loader.refresh(key, previous, CancellationToken.none, () => false);
+
+    test('delivers changed bytes and rewrites the disk entry', () async {
+      final cache = _MemoryByteCache();
+      final fresh = Uint8List.fromList([1, 2]);
+      final provider = _CountingProvider(TileResponseData(fresh));
+      final loader = TileByteLoader(provider, Future.value(cache));
+
+      final result = await refreshOnce(loader);
+      expect(result, isA<TileBytesLoaded>());
+      expect((result as TileBytesLoaded).bytes, fresh);
+      await pumpEventQueue();
+      expect(cache.entries['counting/3/1/2'], fresh);
+    });
+
+    test('resolves null for identical bytes but still renews the entry',
+        () async {
+      final cache = _MemoryByteCache();
+      final provider =
+          _CountingProvider(TileResponseData(Uint8List.fromList([9, 9])));
+      final loader = TileByteLoader(provider, Future.value(cache));
+
+      expect(await refreshOnce(loader), isNull);
+      await pumpEventQueue();
+      expect(cache.puts, 1, reason: 'the rewrite restarts the TTL');
+    });
+
+    test('turns a tile deleted at the source into absent plus a sentinel',
+        () async {
+      final cache = _MemoryByteCache();
+      final provider = _CountingProvider(const TileResponseNotFound());
+      final loader = TileByteLoader(provider, Future.value(cache));
+
+      expect(await refreshOnce(loader), isA<TileBytesAbsent>());
+      await pumpEventQueue();
+      expect(cache.entries['counting/3/1/2'], isEmpty);
+
+      // An absence confirming a stale sentinel is not a change.
+      expect(
+        await loader.refresh(
+            key, Uint8List(0), CancellationToken.none, () => false),
+        isNull,
+      );
+    });
+
+    test('failure resolves null without throttling later loads', () async {
+      final cache = _MemoryByteCache();
+      final provider =
+          _CountingProvider(TileResponseError(Exception('offline')));
+      final loader = TileByteLoader(provider, Future.value(cache));
+
+      expect(await refreshOnce(loader), isNull);
+      expect(loader.throttled(key), isFalse,
+          reason: 'the stale entry must stay servable by the next load');
+    });
+
+    test('concurrent refreshes coalesce to a single request', () async {
+      final cache = _MemoryByteCache();
+      final gate = Completer<void>();
+      final provider =
+          _CountingProvider(TileResponseData(Uint8List.fromList([1])))
+            ..gate = gate.future;
+      final loader = TileByteLoader(provider, Future.value(cache));
+
+      final first = refreshOnce(loader);
+      final second = refreshOnce(loader);
+      gate.complete();
+      expect(await second, isNull);
+      expect(await first, isA<TileBytesLoaded>());
+      expect(provider.loads, 1);
+    });
   });
 }
 

@@ -75,10 +75,12 @@ class VectorTileLayer extends StatefulWidget {
   final int diskCacheMaximumSizeInBytes;
 
   /// Freshness window for disk-cached tiles: tiles younger than this are
-  /// served without touching the network. Older tiles are refetched, but
-  /// kept on disk (up to the size cap) and served when the network is
-  /// unavailable. Mind your tile provider's terms. Has no effect on web
-  /// (no disk cache).
+  /// served without touching the network. Older tiles are still served
+  /// instantly but revalidated in the background
+  /// (stale-while-revalidate): when the refetch delivers changed data
+  /// the tile cross-fades to it, and when the network is unavailable the
+  /// old imagery simply stays. Mind your tile provider's terms. Has no
+  /// effect on web (no disk cache).
   final Duration diskCacheTtl;
 
   /// Resolves the disk cache directory path; defaults to a subdirectory
@@ -224,13 +226,18 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     widget.tileProviders.providers.forEach((sourceId, provider) {
       final layerProperties = propsBySource[sourceId];
       if (layerProperties == null) return; // source unused by theme
-      _stores[sourceId] = TileStore(
+      final store = TileStore(
         provider: provider,
         executor: _executor,
         layerProperties: layerProperties,
         diskCache: _diskCache,
         memoryCacheMaxBytes: widget.memoryCacheMaxBytes,
       );
+      store.onRefreshed = (dataKey) => _reloadRefreshed(
+          (displayKey) =>
+              store.dataKeyFor(displayKey, widget.tileOffset.zoomOffset),
+          dataKey);
+      _stores[sourceId] = store;
     });
 
     final rasterSourceIds = <String>{
@@ -239,11 +246,16 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     };
     widget.rasterSources.forEach((sourceId, source) {
       if (!rasterSourceIds.contains(sourceId)) return; // unused by theme
-      _rasterStores[sourceId] = RasterTileStore(
+      final store = RasterTileStore(
         source: source,
         diskCache: _diskCache,
         memoryCacheMaxBytes: widget.memoryCacheMaxBytes,
       );
+      store.onRefreshed = (dataKey) => _reloadRefreshed(
+          (displayKey) =>
+              store.dataKeyFor(displayKey, widget.tileOffset.zoomOffset),
+          dataKey);
+      _rasterStores[sourceId] = store;
     });
 
     _generation++;
@@ -311,6 +323,21 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     for (final tile in _tiles.values) {
       tile.renderedWith = null; // identical sources must still re-enqueue
       unawaited(_loadTile(tile, 0, fadeIn: false));
+    }
+  }
+
+  /// A background revalidation replaced [refreshed]'s decoded content —
+  /// re-rasterize the visible display tiles it serves. The new raster
+  /// cross-fades over the old imagery (see [_DisplayTile.setResult]).
+  void _reloadRefreshed(
+    TileKey? Function(TileKey displayKey) dataKeyOf,
+    TileKey refreshed,
+  ) {
+    if (!mounted) return;
+    for (final tile in _tiles.values.toList()) {
+      if (dataKeyOf(tile.key) != refreshed) continue;
+      tile.renderedWith = null; // identical source set must still re-enqueue
+      unawaited(_loadTile(tile, 0));
     }
   }
 
@@ -661,7 +688,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       image: image,
       symbols: symbols,
       provisional: provisional,
-      fadeIn: fadeIn,
+      // With fades disabled no ticker runs to release an underlay, so
+      // never create one — the swap is instant either way.
+      fadeIn: fadeIn && widget.tileFadeDuration > Duration.zero,
     );
     _repaint.trigger();
     _ensureFadeTicker();
@@ -680,7 +709,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     for (final tile in _tiles.values) {
       if (tile.fadeProgress(now, widget.tileFadeDuration) < 1) {
         anyFading = true;
-        break;
+      } else {
+        tile.disposeUnderlay(); // fully opaque — the underlay is covered
       }
     }
     _repaint.trigger();
@@ -748,6 +778,12 @@ class _DisplayTile {
   final cancellation = CancellationToken();
   var state = _TileState.loading;
   ui.Image? image;
+
+  /// The raster that was visible when [image] last changed with a fade,
+  /// painted at full opacity beneath it until the fade completes — so a
+  /// swap (background refresh, recovered source) cross-fades instead of
+  /// dipping to the background colour.
+  ui.Image? underlay;
   List<SymbolInstance> symbols = const [];
   var isProvisional = false;
   DateTime? readyAt;
@@ -771,7 +807,16 @@ class _DisplayTile {
     required bool provisional,
     required bool fadeIn,
   }) {
-    this.image?.dispose();
+    final previous = this.image;
+    underlay?.dispose();
+    if (!provisional && fadeIn && previous != null && image != null) {
+      // A fading raster is replacing visible imagery: keep the old
+      // pixels underneath for the duration of the fade.
+      underlay = previous;
+    } else {
+      underlay = null;
+      previous?.dispose();
+    }
     this.image = image;
     this.symbols = symbols;
     isProvisional = provisional;
@@ -783,6 +828,12 @@ class _DisplayTile {
     if (!provisional) {
       readyAt = fadeIn ? DateTime.now() : null;
     }
+  }
+
+  /// Called once the fade has finished — the underlay is fully covered.
+  void disposeUnderlay() {
+    underlay?.dispose();
+    underlay = null;
   }
 
   double fadeProgress(DateTime now, Duration duration) {
@@ -797,6 +848,8 @@ class _DisplayTile {
     cancellation.cancel();
     image?.dispose();
     image = null;
+    underlay?.dispose();
+    underlay = null;
     symbols = const [];
   }
 }
@@ -867,8 +920,19 @@ class _VectorMapPainter extends CustomPainter {
   void _drawTileImage(
       Canvas canvas, _DisplayTile tile, double opacity, Offset worldCenter) {
     final image = tile.image;
-    if (image == null || opacity <= 0) return;
+    if (image == null) return;
     final rect = displayTileRect(tile.key, camera.zoom).shift(-worldCenter);
+    final underlay = tile.underlay;
+    if (underlay != null && opacity < 1) {
+      // The previous raster keeps covering the tile while its
+      // replacement fades in — a swap never dips to the background.
+      _paintTileImage(canvas, underlay, rect, 1);
+    }
+    if (opacity > 0) _paintTileImage(canvas, image, rect, opacity);
+  }
+
+  void _paintTileImage(
+      Canvas canvas, ui.Image image, Rect rect, double opacity) {
     _tilePaint.color = opacity < 1
         ? Color.fromRGBO(255, 255, 255, opacity)
         : const Color(0xffffffff);
