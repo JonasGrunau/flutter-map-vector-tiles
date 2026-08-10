@@ -88,6 +88,25 @@ class SymbolInstance {
   String? textCacheKey;
   double? textCacheZoom;
 
+  /// Whether per-glyph curved rendering is safe for [text]: re-shaping
+  /// each cluster in isolation only preserves scripts without
+  /// contextual joining (Latin, Greek, Cyrillic, CJK). Computed once —
+  /// the label pass consults this per frame for along-line labels.
+  late final bool curveSafe = _curveSafe(text);
+
+  static bool _curveSafe(String text) {
+    for (final r in text.runes) {
+      final ok = r < 0x0590 || // Latin, Greek, Cyrillic, combining marks
+          (r >= 0x1e00 && r <= 0x2bff) || // Latin/Greek ext., punctuation
+          (r >= 0x2e80 && r <= 0xa4cf) || // CJK
+          (r >= 0xac00 && r <= 0xd7ff) || // Hangul
+          (r >= 0xf900 && r <= 0xfaff) || // CJK compatibility
+          (r >= 0xff00 && r <= 0xffef); // half/fullwidth forms
+      if (!ok) return false;
+    }
+    return true;
+  }
+
   SymbolInstance({
     required this.layer,
     required this.layerIndex,

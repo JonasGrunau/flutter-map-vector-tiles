@@ -78,6 +78,9 @@ class LabelPainter {
   ///
   /// Returns the symbols that survived collision and were drawn, in
   /// draw order — useful for tests and future hit-testing.
+  /// [symbols] is sorted in place into placement-priority order; the
+  /// caller rebuilds the list per frame, so a defensive copy here would
+  /// only add allocation to the hottest per-frame path.
   /// [devicePixelRatio] only sharpens SDF icon edges; it does not scale
   /// anything, so 1 is a safe default.
   List<PlacedSymbol> paint({
@@ -92,7 +95,7 @@ class LabelPainter {
     final collision = _CollisionIndex(screenSize);
     // Placement priority: topmost style layers first (they win space),
     // then by symbol-sort-key, then stable by y for determinism.
-    final candidates = List.of(symbols)
+    final candidates = symbols
       ..sort((a, b) {
         final byLayer = b.instance.layerIndex - a.instance.layerIndex;
         if (byLayer != 0) return byLayer;
@@ -202,7 +205,7 @@ class LabelPainter {
       if (layer.textRotationAlignment.eval(ctx) != 'viewport') {
         if (instance.path != null &&
             placed.transform != null &&
-            _curveSafe(instance.text)) {
+            instance.curveSafe) {
           return _prepareCurved(placed, layer, ctx, text, icon, collision);
         }
         lineTextAngle = _uprightAngle(placed.screenAngle);
@@ -438,22 +441,6 @@ class LabelPainter {
         ),
     ];
     return _DrawableSymbol(placed, icon: icon, curvedGlyphs: glyphs);
-  }
-
-  /// Per-glyph rendering re-shapes each cluster in isolation, which is
-  /// only safe for scripts without contextual joining (Latin, Greek,
-  /// Cyrillic, CJK). Everything else falls back to straight placement.
-  static bool _curveSafe(String text) {
-    for (final r in text.runes) {
-      final ok = r < 0x0590 || // Latin, Greek, Cyrillic, combining marks
-          (r >= 0x1e00 && r <= 0x2bff) || // Latin/Greek ext., punctuation
-          (r >= 0x2e80 && r <= 0xa4cf) || // CJK
-          (r >= 0xac00 && r <= 0xd7ff) || // Hangul
-          (r >= 0xf900 && r <= 0xfaff) || // CJK compatibility
-          (r >= 0xff00 && r <= 0xffef); // half/fullwidth forms
-      if (!ok) return false;
-    }
-    return true;
   }
 
   /// Folds an angle into (-π, π].

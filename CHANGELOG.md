@@ -28,8 +28,11 @@
   paints are built per feature instead of per point, literal list
   properties (fonts, offsets, dash arrays) are converted once at parse
   time, each symbol's text style is re-evaluated only when the zoom
-  changes instead of every frame, and the label collision index no
-  longer allocates an iterator per collision box.
+  changes instead of every frame, the label collision index no
+  longer allocates an iterator per collision box, curve-safety of
+  label text is computed once per symbol instead of re-scanned per
+  frame, and the label pass sorts the per-frame symbol list in place
+  instead of copying it first.
 - 🐛 Coalesced tile loads no longer inherit the first requester's
   cancellation: a display tile disposed mid-flight (panned away,
   zoomed past) used to cancel the shared load and leave every other
