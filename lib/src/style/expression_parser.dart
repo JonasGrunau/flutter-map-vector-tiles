@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui' show Color;
 
+import 'package:flutter/animation.dart' show Cubic;
+
 import 'expression.dart';
 
 /// Compiles MapLibre style expressions (and legacy filter / function
@@ -400,18 +402,10 @@ class ExpressionParser {
       // --- color ---
       case 'rgb':
       case 'rgba':
+        // toColor owns the channel semantics (clamp, round, alpha
+        // default) — this case only gathers the evaluated channels.
         final es = a.skip(1).map(parse).toList();
-        return (ctx) {
-          final v = es.map((e) => toNumber(e(ctx))).toList();
-          if (v.length < 3 || v.take(3).any((n) => n == null)) return null;
-          final alpha = v.length > 3 ? (v[3] ?? 1.0) : 1.0;
-          return Color.fromARGB(
-            (alpha.clamp(0.0, 1.0) * 255).round(),
-            v[0]!.round().clamp(0, 255),
-            v[1]!.round().clamp(0, 255),
-            v[2]!.round().clamp(0, 255),
-          );
-        };
+        return (ctx) => toColor(es.map((e) => e(ctx)).toList());
       case 'to-rgba':
         final e = parse(a.length > 1 ? a[1] : null);
         return (ctx) {
@@ -560,27 +554,34 @@ class ExpressionParser {
     return (ctx) {
       final vx = x(ctx);
       final vy = y(ctx);
-      switch (op) {
-        case '==':
-          return _looseEquals(vx, vy);
-        case '!=':
-          return !_looseEquals(vx, vy);
-      }
-      final int? cmp;
-      if (vx is String && vy is String) {
-        cmp = vx.compareTo(vy);
-      } else {
-        final nx = toNumber(vx);
-        final ny = toNumber(vy);
-        cmp = (nx == null || ny == null) ? null : nx.compareTo(ny);
-      }
-      if (cmp == null) return false;
       return switch (op) {
-        '<' => cmp < 0,
-        '<=' => cmp <= 0,
-        '>' => cmp > 0,
-        _ => cmp >= 0,
+        '==' => _looseEquals(vx, vy),
+        '!=' => !_looseEquals(vx, vy),
+        _ => _compare(op, vx, vy),
       };
+    };
+  }
+
+  /// Ordering comparison shared by expression and legacy filters:
+  /// string pairs compare lexicographically (the spec'd behaviour for
+  /// same-type operands); anything else goes through [toNumber] —
+  /// tolerant of numeric strings against numbers, which real styles
+  /// rely on. Incomparable operands are false.
+  static bool _compare(String op, Object? a, Object? b) {
+    final int? cmp;
+    if (a is String && b is String) {
+      cmp = a.compareTo(b);
+    } else {
+      final na = toNumber(a);
+      final nb = toNumber(b);
+      cmp = (na == null || nb == null) ? null : na.compareTo(nb);
+    }
+    if (cmp == null) return false;
+    return switch (op) {
+      '<' => cmp < 0,
+      '<=' => cmp <= 0,
+      '>' => cmp > 0,
+      _ => cmp >= 0,
     };
   }
 
@@ -671,11 +672,12 @@ class ExpressionParser {
           base = type.length > 1 ? (toNumber(type[1]) ?? 1.0) : 1.0;
         case 'cubic-bezier':
           if (type.length >= 5) {
-            final x1 = toNumber(type[1]) ?? 0;
-            final y1 = toNumber(type[2]) ?? 0;
-            final x2 = toNumber(type[3]) ?? 1;
-            final y2 = toNumber(type[4]) ?? 1;
-            easing = _cubicBezier(x1, y1, x2, y2);
+            easing = Cubic(
+              toNumber(type[1]) ?? 0,
+              toNumber(type[2]) ?? 0,
+              toNumber(type[3]) ?? 1,
+              toNumber(type[4]) ?? 1,
+            ).transform;
           }
       }
     }
@@ -696,17 +698,24 @@ class ExpressionParser {
         hi++;
       }
       final lo = hi - 1;
-      final span = stops[hi] - stops[lo];
-      var t = span <= 0 ? 0.0 : (v - stops[lo]) / span;
-      if (base != 1.0) {
-        final p = math.pow(base, span).toDouble();
-        t = p == 1
-            ? t
-            : (math.pow(base, v - stops[lo]).toDouble() - 1) / (p - 1);
-      }
-      t = easing(t.clamp(0.0, 1.0));
+      final t = easing(_interpolationFactor(v, stops[lo], stops[hi], base));
       return _interpolateValues(outputs[lo](ctx), outputs[hi](ctx), t);
     };
+  }
+
+  /// The interpolation parameter for [v] between [lower] and [upper]
+  /// (linear for `base == 1`, exponential otherwise), clamped to [0, 1].
+  /// Shared by `interpolate` expressions and legacy stop functions.
+  static double _interpolationFactor(
+      double v, double lower, double upper, double base) {
+    final span = upper - lower;
+    if (span <= 0) return 0;
+    final t = (v - lower) / span;
+    if (base == 1.0) return t.clamp(0.0, 1.0);
+    final p = math.pow(base, span).toDouble();
+    if (p == 1) return t.clamp(0.0, 1.0);
+    return ((math.pow(base, v - lower).toDouble() - 1) / (p - 1))
+        .clamp(0.0, 1.0);
   }
 
   static Object? _interpolateValues(Object? a, Object? b, double t) {
@@ -724,27 +733,6 @@ class ExpressionParser {
       return out;
     }
     return t < 0.5 ? a : b;
-  }
-
-  static double Function(double) _cubicBezier(
-      double x1, double y1, double x2, double y2) {
-    double sampleX(double t) =>
-        3 * x1 * t * (1 - t) * (1 - t) + 3 * x2 * t * t * (1 - t) + t * t * t;
-    double sampleY(double t) =>
-        3 * y1 * t * (1 - t) * (1 - t) + 3 * y2 * t * t * (1 - t) + t * t * t;
-    return (x) {
-      // Binary search for parameter t with sampleX(t) == x.
-      var lo = 0.0, hi = 1.0;
-      for (var i = 0; i < 20; i++) {
-        final mid = (lo + hi) / 2;
-        if (sampleX(mid) < x) {
-          lo = mid;
-        } else {
-          hi = mid;
-        }
-      }
-      return sampleY((lo + hi) / 2);
-    };
   }
 
   // -------------------------------------------------------------------------
@@ -816,15 +804,8 @@ class ExpressionParser {
       }
       final lo = hi - 1;
       if (type == 'interval') return outputs[lo];
-      final span = stops[hi] - stops[lo];
-      var t = span <= 0 ? 0.0 : (v - stops[lo]) / span;
-      if (base != 1.0) {
-        final p = math.pow(base, span).toDouble();
-        t = p == 1
-            ? t
-            : (math.pow(base, v - stops[lo]).toDouble() - 1) / (p - 1);
-      }
-      return _interpolateValues(outputs[lo], outputs[hi], t.clamp(0.0, 1.0));
+      return _interpolateValues(outputs[lo], outputs[hi],
+          _interpolationFactor(v, stops[lo], stops[hi], base));
     };
   }
 
@@ -899,34 +880,12 @@ class ExpressionParser {
         final key = _legacyKey(filter);
         final value = filter.length > 2 ? filter[2] : null;
         _refLegacyKey(key);
-        final negate = op == '!=';
         return (ctx) {
           final actual = _legacyValue(ctx, key);
-          switch (op) {
-            case '==':
-            case '!=':
-              final eq = _looseEquals(actual, value);
-              return negate ? !eq : eq;
-          }
-          final na = toNumber(actual);
-          final nb = toNumber(value);
-          if (na == null || nb == null) {
-            if (actual is String && value is String) {
-              final cmp = actual.compareTo(value);
-              return switch (op) {
-                '<' => cmp < 0,
-                '<=' => cmp <= 0,
-                '>' => cmp > 0,
-                _ => cmp >= 0,
-              };
-            }
-            return false;
-          }
           return switch (op) {
-            '<' => na < nb,
-            '<=' => na <= nb,
-            '>' => na > nb,
-            _ => na >= nb,
+            '==' => _looseEquals(actual, value),
+            '!=' => !_looseEquals(actual, value),
+            _ => _compare(op as String, actual, value),
           };
         };
       case 'in':

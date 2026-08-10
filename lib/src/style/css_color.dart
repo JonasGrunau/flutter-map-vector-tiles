@@ -1,5 +1,7 @@
 import 'dart:ui';
 
+import 'package:flutter/painting.dart' show HSLColor;
+
 /// Parses a CSS color string as used by the MapLibre style spec:
 /// `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()`, `rgba()`, `hsl()`,
 /// `hsla()` and named CSS colors. Returns null when unparseable.
@@ -35,13 +37,15 @@ Color? _parseHex(String hex) {
   return null;
 }
 
+final _argSeparators = RegExp(r'[,/\s]+');
+
 List<String>? _args(String s) {
   final open = s.indexOf('(');
   final close = s.lastIndexOf(')');
   if (open < 0 || close <= open) return null;
   return s
       .substring(open + 1, close)
-      .split(RegExp(r'[,/\s]+'))
+      .split(_argSeparators)
       .where((p) => p.isNotEmpty)
       .toList();
 }
@@ -80,37 +84,19 @@ Color? _parseHsl(String s) {
   final l = _number(parts[2]);
   final a = parts.length > 3 ? _number(parts[3]) : 1.0;
   if (h == null || sat == null || l == null || a == null) return null;
-  return _hslToColor(
-      h, sat.clamp(0.0, 1.0), l.clamp(0.0, 1.0), a.clamp(0.0, 1.0));
-}
-
-Color _hslToColor(double h, double s, double l, double a) {
-  final hue = ((h % 360) + 360) % 360 / 360;
-  double hueToRgb(double p, double q, double t) {
-    var tt = t;
-    if (tt < 0) tt += 1;
-    if (tt > 1) tt -= 1;
-    if (tt < 1 / 6) return p + (q - p) * 6 * tt;
-    if (tt < 1 / 2) return q;
-    if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
-    return p;
-  }
-
-  double r, g, b;
-  if (s == 0) {
-    r = g = b = l;
-  } else {
-    final q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-    final p = 2 * l - q;
-    r = hueToRgb(p, q, hue + 1 / 3);
-    g = hueToRgb(p, q, hue);
-    b = hueToRgb(p, q, hue - 1 / 3);
-  }
+  // Quantized to 8-bit channels like every other syntax here, so equal
+  // colours written differently stay equal.
+  final c = HSLColor.fromAHSL(
+    a.clamp(0.0, 1.0),
+    ((h % 360) + 360) % 360,
+    sat.clamp(0.0, 1.0),
+    l.clamp(0.0, 1.0),
+  ).toColor();
   return Color.fromARGB(
-    (a * 255).round(),
-    (r * 255).round(),
-    (g * 255).round(),
-    (b * 255).round(),
+    (c.a * 255).round(),
+    (c.r * 255).round(),
+    (c.g * 255).round(),
+    (c.b * 255).round(),
   );
 }
 

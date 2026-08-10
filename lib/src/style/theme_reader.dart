@@ -98,7 +98,7 @@ class ThemeReader {
           gapWidth: _double(parser, paint['line-gap-width'], 0),
           dashArray: paint['line-dasharray'] == null
               ? null
-              : NumListProp(parser.parse(paint['line-dasharray']), const []),
+              : _numList(parser, paint['line-dasharray'], const []),
           cap: _string(parser, layout['line-cap'], 'butt'),
           join: _string(parser, layout['line-join'], 'miter'),
           pattern: paint['line-pattern'] == null
@@ -144,12 +144,7 @@ class ThemeReader {
               ? null
               : _stringList(parser, layout['text-variable-anchor'], const []),
           textRadialOffset: _double(parser, layout['text-radial-offset'], 0),
-          textOffset: NumListProp(
-            layout['text-offset'] == null
-                ? constExpr(null)
-                : parser.parse(layout['text-offset']),
-            const [0, 0],
-          ),
+          textOffset: _numList(parser, layout['text-offset'], const [0, 0]),
           textPadding: _double(parser, layout['text-padding'], 2),
           textAllowOverlap: _bool(parser, layout['text-allow-overlap'], false),
           textOptional: _bool(parser, layout['text-optional'], false),
@@ -162,12 +157,7 @@ class ThemeReader {
               : _string(parser, layout['icon-image'], ''),
           iconSize: _double(parser, layout['icon-size'], 1),
           iconAnchor: _string(parser, layout['icon-anchor'], 'center'),
-          iconOffset: NumListProp(
-            layout['icon-offset'] == null
-                ? constExpr(null)
-                : parser.parse(layout['icon-offset']),
-            const [0, 0],
-          ),
+          iconOffset: _numList(parser, layout['icon-offset'], const [0, 0]),
           iconAllowOverlap: _bool(parser, layout['icon-allow-overlap'], false),
           textColor:
               _color(parser, paint['text-color'], const Color(0xff000000)),
@@ -259,10 +249,21 @@ class ThemeReader {
         json.isNotEmpty &&
         json.every((e) => e is String) &&
         !ExpressionParser.operators.contains(json.first)) {
-      final list = json.cast<String>();
-      return StringListProp((_) => list, list);
+      return StringListProp.constant(json.cast<String>());
     }
     return StringListProp(parser.parse(json), fallback);
+  }
+
+  /// Numeric-array properties (text-offset, icon-offset, dash arrays):
+  /// a bare array of numbers is a literal value, pre-converted once.
+  static NumListProp _numList(
+      ExpressionParser parser, Object? json, List<double> fallback) {
+    if (json == null) return NumListProp(constExpr(null), fallback);
+    if (json is List && json.isNotEmpty && json.every((e) => e is num)) {
+      return NumListProp.constant(
+          [for (final e in json) (e as num).toDouble()]);
+    }
+    return NumListProp(parser.parse(json), fallback);
   }
 
   static BoolProp _bool(ExpressionParser parser, Object? json, bool fallback) {

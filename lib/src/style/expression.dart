@@ -163,13 +163,26 @@ class BoolProp {
 }
 
 /// Numeric list property (e.g. line-dasharray, text-offset).
+///
+/// List properties are almost always literal in real styles yet are
+/// evaluated per feature and per label per frame, so literal values get
+/// a pre-converted list via [NumListProp.constant] instead of being
+/// rebuilt and re-coerced on every call.
 class NumListProp {
   final Expr _expr;
   final List<double> fallback;
+  final List<double>? _constant;
 
-  const NumListProp(this._expr, this.fallback);
+  const NumListProp(this._expr, this.fallback) : _constant = null;
+
+  NumListProp.constant(List<double> value)
+      : _expr = constExpr(value),
+        fallback = value,
+        _constant = List.unmodifiable(value);
 
   List<double> eval(EvalContext ctx) {
+    final constant = _constant;
+    if (constant != null) return constant;
     final v = _expr(ctx);
     if (v is List) {
       final out = <double>[];
@@ -184,13 +197,23 @@ class NumListProp {
   }
 }
 
+/// String list property (e.g. text-font). Literal values get a
+/// pre-converted list via [StringListProp.constant] — see [NumListProp].
 class StringListProp {
   final Expr _expr;
   final List<String> fallback;
+  final List<String>? _constant;
 
-  const StringListProp(this._expr, this.fallback);
+  const StringListProp(this._expr, this.fallback) : _constant = null;
+
+  StringListProp.constant(List<String> value)
+      : _expr = constExpr(value),
+        fallback = value,
+        _constant = List.unmodifiable(value);
 
   List<String> eval(EvalContext ctx) {
+    final constant = _constant;
+    if (constant != null) return constant;
     final v = _expr(ctx);
     if (v is List) return v.map(toStringValue).toList();
     if (v is String) return [v];
