@@ -3,7 +3,7 @@
 /// label collision.
 library;
 
-export 'src/core/cancellation.dart';
+export 'src/core/cancellation.dart' show CancellationToken;
 export 'src/core/tile_key.dart';
 export 'src/logger.dart';
 export 'src/provider/memory_vector_tile_provider.dart';

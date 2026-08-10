@@ -57,9 +57,14 @@ collision pass; cancellation is a **state**, never an exception; every
 - **The public API is what `lib/flutter_map_vector_tiles.dart` exports.**
   Anything else under `lib/src/` is private and may be changed freely; adding
   an export is a semver-relevant decision.
-- **This package does not target web in practice** — the web executor exists as
-  graceful degradation, but disk caching (`path_provider`) has no web support.
-  Do not propose web-only features.
+- **Web is supported since 2.0.0** — tile preparation runs on a yielding
+  event-loop executor there instead of isolates, PMTiles gunzip uses
+  `DecompressionStream`, and web-only tests exist (`flutter test --platform
+  chrome`). The one real limitation: there is no persistent disk cache on web
+  (`path_provider` has no web support) — tiles and styles fall back to the
+  in-memory caches and the browser's HTTP cache. Keep changes web-safe: no
+  bare `dart:io` outside conditional imports, no bitwise ops on values past
+  32 bits (see the MVT decoder's arithmetic).
 
 ### Testing Requirements
 

@@ -60,6 +60,14 @@ with a priority queue (tiles closest to the camera centre first) and
 isolate transfer is cheap, and only the feature properties referenced by
 the theme are retained.
 
+Requests are coalesced per key at every level (`SingleFlight`); a
+coalesced load polls a token joined over *all* its waiters, so one
+cancelled waiter never aborts work others still await. Transient
+failures are throttled (15 s per key) and visible tiles retry a bounded
+number of times just past that throttle; a worker isolate that dies is
+replaced, and if isolates cannot be spawned at all the pool falls back
+to the event loop permanently.
+
 On web (no isolate support for this workload) the pool degrades to
 chunked event-loop execution.
 

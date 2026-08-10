@@ -2,7 +2,7 @@
 
 [![pub package](https://img.shields.io/pub/v/flutter_map_vector_tiles.svg)](https://pub.dev/packages/flutter_map_vector_tiles)
 [![license: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
-[![flutter_map](https://img.shields.io/badge/flutter__map-%E2%89%A5%208.0-green.svg)](https://pub.dev/packages/flutter_map)
+[![flutter_map](https://img.shields.io/badge/flutter__map-%E2%89%A5%208.2-green.svg)](https://pub.dev/packages/flutter_map)
 
 **Vector tiles for [flutter_map](https://pub.dev/packages/flutter_map).**
 A clean, self-contained rewrite of the ideas behind `vector_map_tiles` —
@@ -137,9 +137,19 @@ vt.VectorTileLayer(
 | `diskCacheMaximumSizeInBytes` | 50 MB | `0` disables disk caching (no effect on web) |
 | `diskCacheTtl` | 14 days | freshness window: younger tiles skip the network; older ones are refetched but kept as offline fallback — ⚠️ respect your tile provider's terms |
 | `cachePath` | app support dir | supply your own directory path to control/clear it (ignored on web) |
-| `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source |
+| `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source (the caches are shared process-wide; the most recently mounted layer's value wins) |
 | `tileFadeDuration` | 150 ms | `Duration.zero` disables fade-in |
-| `showLabels` | `true` | disables the whole symbol pass when `false` |
+| `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
+
+`StyleReader` options worth knowing:
+
+- `apiKey` — substituted for `{key}` in the style URI and every URL the
+  style references. For `mapbox://` URIs (style ids, sprite bases,
+  tileset sources — expanded to `api.mapbox.com` automatically) it
+  becomes the access token.
+- `headers` — extra HTTP headers sent with the style, TileJSON and
+  sprite requests and forwarded to the created tile providers, for
+  header-authenticated services (e.g. `Authorization`).
 
 ### 🎚️ Understanding `TileOffset`
 

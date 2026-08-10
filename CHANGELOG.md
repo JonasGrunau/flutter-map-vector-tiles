@@ -9,6 +9,13 @@
 - ✨ `StyleReader` accepts `headers`, sent with the style, TileJSON and
   sprite requests and forwarded to the created tile providers — style
   loading now works end-to-end against header-authenticated services.
+- ⚡ Less per-frame and per-feature work: zoom-only line layers resolve
+  their stroke style once per tile instead of per feature, circle
+  paints are built per feature instead of per point, literal list
+  properties (fonts, offsets, dash arrays) are converted once at parse
+  time, each symbol's text style is re-evaluated only when the zoom
+  changes instead of every frame, and the label collision index no
+  longer allocates an iterator per collision box.
 
 - 🐛 Coalesced tile loads no longer inherit the first requester's
   cancellation: a display tile disposed mid-flight (panned away,
