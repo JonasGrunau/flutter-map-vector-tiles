@@ -27,6 +27,18 @@ Uint8List _tileBytes() => MvtTileBuilder()
     .done()
     .build();
 
+Uint8List _riverTileBytes() => MvtTileBuilder()
+    .layer('water')
+    .feature(type: 3, geometry: [
+      cmd(1, 1), zig(0), zig(0), //
+      cmd(2, 3), zig(100), zig(0), zig(0), zig(100), zig(-100), zig(0),
+      cmd(7, 1),
+    ], properties: {
+      'class': 'river'
+    })
+    .done()
+    .build();
+
 void main() {
   late TilePrepareExecutor executor;
 
@@ -118,6 +130,39 @@ void main() {
     final second = store();
     expect(identical(second.peek(const TileKey(2, 1, 1)), tile), true);
     second.dispose();
+  });
+
+  test('memory providers with different data do not share caches', () async {
+    // Regression: the default cacheKey was the constant 'memory', so two
+    // providers bundling different regions shared the process-wide
+    // decoded-tile cache — whichever decoded a key first won, rendering
+    // one region's geometry inside the other.
+    TileStore storeFor(Uint8List bytes) => TileStore(
+          provider: MemoryVectorTileProvider(
+            tiles: {const TileKey(2, 1, 1): bytes},
+          ),
+          executor: executor,
+          layerProperties: {
+            'water': {'class'},
+          },
+        );
+    final lake = storeFor(_tileBytes());
+    final river = storeFor(_riverTileBytes());
+    final a = await lake.obtain(const TileKey(2, 1, 1));
+    final b = await river.obtain(const TileKey(2, 1, 1));
+    expect(a!.layers['water']!.features.single.properties['class'], 'lake');
+    expect(b!.layers['water']!.features.single.properties['class'], 'river');
+    lake.dispose();
+    river.dispose();
+  });
+
+  test('memory providers with identical data share the decoded cache', () {
+    // The derived key is deterministic, so equal data still shares.
+    final tiles = {const TileKey(2, 1, 1): _tileBytes()};
+    expect(
+      MemoryVectorTileProvider(tiles: tiles).cacheKey,
+      MemoryVectorTileProvider(tiles: Map.of(tiles)).cacheKey,
+    );
   });
 
   test('a cancelled waiter does not poison the load for live waiters',

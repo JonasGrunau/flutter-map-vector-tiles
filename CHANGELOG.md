@@ -47,6 +47,13 @@
   Uncompilable function shapes now degrade with a parser warning.
 - 🐛 A tile property carrying `Infinity` no longer crashes the layer
   when stringified into a `text-field` token.
+- 🐛 `MemoryVectorTileProvider` no longer defaults every instance to
+  the same `cacheKey`: two providers bundling different regions shared
+  decoded-tile and disk cache entries, rendering one region's tiles
+  inside the other. The default key is now derived from the tile set
+  (deterministic, so identical data still shares); pass an explicit
+  `cacheKey` to control sharing. Disk entries cached under the old
+  constant key are re-fetched once.
 
 ## 2.1.1
 
