@@ -383,4 +383,104 @@ void main() {
       expect(parser.referencesAllProperties, true);
     });
   });
+
+  group('zoom-only detection and memoization', () {
+    test('zoom ramps are detected as zoom-only', () {
+      final p = ExpressionParser().parseForProperty([
+        'interpolate',
+        ['linear'],
+        ['zoom'],
+        5,
+        1,
+        10,
+        2,
+      ]);
+      expect(p.zoomOnly, isTrue);
+    });
+
+    test('feature reads disable zoom-only', () {
+      final parser = ExpressionParser();
+      expect(parser.parseForProperty(['get', 'name']).zoomOnly, isFalse);
+      expect(parser.parseForProperty(['geometry-type']).zoomOnly, isFalse);
+      expect(parser.parseForProperty(['id']).zoomOnly, isFalse);
+      expect(
+          parser.parseForProperty([
+            'match',
+            ['get', 'class'],
+            'a',
+            1,
+            2,
+          ]).zoomOnly,
+          isFalse);
+    });
+
+    test('detection is per property, not per parser', () {
+      final parser = ExpressionParser();
+      expect(parser.parseForProperty(['get', 'name']).zoomOnly, isFalse);
+      expect(parser.parseForProperty(['zoom']).zoomOnly, isTrue);
+      expect(parser.referencedProperties, contains('name'));
+    });
+
+    test('zoom-only props memoize per zoom and re-evaluate on change', () {
+      final p = ExpressionParser().parseForProperty([
+        'interpolate',
+        ['linear'],
+        ['zoom'],
+        0,
+        0,
+        10,
+        10,
+      ]);
+      final prop = DoubleProp(p.expr, 0, zoomOnly: p.zoomOnly);
+      expect(prop.eval(const EvalContext(zoom: 5)), 5);
+      expect(prop.eval(const EvalContext(zoom: 5)), 5); // memo hit
+      expect(prop.eval(const EvalContext(zoom: 8)), 8); // invalidated
+    });
+
+    test('feature-dependent props stay per-feature', () {
+      final p = ExpressionParser().parseForProperty(['get', 'width']);
+      final prop = DoubleProp(p.expr, 0, zoomOnly: p.zoomOnly);
+      expect(
+          prop.eval(const EvalContext(zoom: 5, properties: {'width': 1})), 1);
+      expect(
+          prop.eval(const EvalContext(zoom: 5, properties: {'width': 2})), 2);
+    });
+  });
+
+  group('set-based membership', () {
+    test('legacy in matches ints against doubles', () {
+      expect(
+          evalFilter(['in', 'admin_level', 2, 4], props: {'admin_level': 2.0}),
+          isTrue);
+      expect(evalFilter(['!in', 'admin_level', 2], props: {'admin_level': 2.0}),
+          isFalse);
+      expect(
+          evalFilter(['in', 'class', 'primary', 'secondary'],
+              props: {'class': 'tertiary'}),
+          isFalse);
+    });
+
+    test('expression in over a literal list keeps loose number equality', () {
+      expect(
+          eval([
+            'in',
+            2.0,
+            [
+              'literal',
+              [1, 2, 3]
+            ]
+          ]),
+          true);
+      expect(
+          eval([
+            'in',
+            5,
+            [
+              'literal',
+              [1, 2, 3]
+            ]
+          ]),
+          false);
+    });
+  });
 }

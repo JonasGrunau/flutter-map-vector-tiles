@@ -22,6 +22,30 @@ class ExpressionParser {
   bool referencesAllProperties = false;
   final List<String> warnings = [];
 
+  /// Set while parsing when the subtree read feature data (properties,
+  /// feature id, geometry type) — the basis for zoom-only detection.
+  bool _readsFeature = false;
+
+  /// Parses one style property, additionally reporting whether the
+  /// compiled expression is zoom-only (reads no feature data). The
+  /// typed property wrappers memoize zoom-only results against the
+  /// zoom — see `DoubleProp.zoomOnly`.
+  ({Expr expr, bool zoomOnly}) parseForProperty(Object? json) {
+    final saved = _readsFeature;
+    _readsFeature = false;
+    final expr = parse(json);
+    final zoomOnly = !_readsFeature;
+    _readsFeature = saved || _readsFeature;
+    return (expr: expr, zoomOnly: zoomOnly);
+  }
+
+  /// Records a feature-property reference discovered outside the
+  /// parser (legacy `{token}` templates in the theme reader).
+  void noteFeatureProperty(String name) {
+    referencedProperties.add(name);
+    _readsFeature = true;
+  }
+
   /// Every operator [_parseOp] understands. Used to disambiguate literal
   /// string arrays (`['top', 'bottom']`, font stacks) from expressions.
   static const operators = {
@@ -145,6 +169,7 @@ class ExpressionParser {
   }
 
   void _refProp(Object? name) {
+    _readsFeature = true;
     if (name is String) {
       referencedProperties.add(name);
     } else {
@@ -170,8 +195,13 @@ class ExpressionParser {
           };
         }
         _refProp(a.length > 1 ? a[1] : null);
-        final key = parse(a.length > 1 ? a[1] : null);
-        return (ctx) => ctx.properties[toStringValue(key(ctx))];
+        final key = a.length > 1 ? a[1] : null;
+        // A literal key — the overwhelmingly common shape, and the
+        // hottest leaf in the engine — reads the map directly instead
+        // of paying an inner closure plus string coercion per call.
+        if (key is String) return (ctx) => ctx.properties[key];
+        final keyExpr = parse(key);
+        return (ctx) => ctx.properties[toStringValue(keyExpr(ctx))];
       case 'has':
         if (a.length > 2) {
           final name = parse(a[1]);
@@ -182,14 +212,19 @@ class ExpressionParser {
           };
         }
         _refProp(a.length > 1 ? a[1] : null);
-        final key = parse(a.length > 1 ? a[1] : null);
-        return (ctx) => ctx.properties.containsKey(toStringValue(key(ctx)));
+        final key = a.length > 1 ? a[1] : null;
+        if (key is String) return (ctx) => ctx.properties.containsKey(key);
+        final keyExpr = parse(key);
+        return (ctx) => ctx.properties.containsKey(toStringValue(keyExpr(ctx)));
       case 'properties':
         referencesAllProperties = true;
+        _readsFeature = true;
         return (ctx) => ctx.properties;
       case 'id':
+        _readsFeature = true;
         return (ctx) => ctx.featureId;
       case 'geometry-type':
+        _readsFeature = true;
         return (ctx) => ctx.geometryType;
       case 'zoom':
         return (ctx) => ctx.zoom;
@@ -253,11 +288,24 @@ class ExpressionParser {
       // --- lookup ---
       case 'in':
         final needle = parse(a.length > 1 ? a[1] : null);
-        final haystack = parse(a.length > 2 ? a[2] : null);
+        final haystackJson = a.length > 2 ? a[2] : null;
+        // A literal haystack (the common shape) becomes an O(1) lookup
+        // over parse-time-normalized values.
+        final literal = _literalList(haystackJson);
+        if (literal != null) {
+          final values = {for (final e in literal) _matchKey(e)};
+          return (ctx) => values.contains(_matchKey(needle(ctx)));
+        }
+        final haystack = parse(haystackJson);
         return (ctx) {
           final n = needle(ctx);
           final h = haystack(ctx);
-          if (h is List) return h.any((e) => _looseEquals(e, n));
+          if (h is List) {
+            for (var i = 0; i < h.length; i++) {
+              if (_looseEquals(h[i], n)) return true;
+            }
+            return false;
+          }
           if (h is String) return h.contains(toStringValue(n));
           return false;
         };
@@ -267,7 +315,12 @@ class ExpressionParser {
         return (ctx) {
           final n = needle(ctx);
           final h = haystack(ctx);
-          if (h is List) return h.indexWhere((e) => _looseEquals(e, n));
+          if (h is List) {
+            for (var i = 0; i < h.length; i++) {
+              if (_looseEquals(h[i], n)) return i;
+            }
+            return -1;
+          }
           if (h is String) return h.indexOf(toStringValue(n));
           return -1;
         };
@@ -354,19 +407,20 @@ class ExpressionParser {
       case 'object':
       case 'array':
         // Assertion operators: return the first argument that matches the
-        // asserted type; fall through to the next otherwise.
+        // asserted type; fall through to the next otherwise. The type
+        // predicate is bound at parse time.
         final es = a.skip(1).map(parse).toList();
+        final matches = switch (op) {
+          'string' => (Object? v) => v is String,
+          'number' => (Object? v) => v is num,
+          'boolean' => (Object? v) => v is bool,
+          'array' => (Object? v) => v is List,
+          _ => (Object? v) => v is Map,
+        };
         return (ctx) {
           for (final e in es) {
             final v = e(ctx);
-            final matches = switch (op) {
-              'string' => v is String,
-              'number' => v is num,
-              'boolean' => v is bool,
-              'array' => v is List,
-              _ => v is Map,
-            };
-            if (matches) return v;
+            if (matches(v)) return v;
           }
           return null;
         };
@@ -375,17 +429,15 @@ class ExpressionParser {
         return (ctx) => toStringValue(e(ctx));
       case 'format':
         // Rich text formatting: flatten to plain concatenated text.
-        final parts = <Expr>[];
-        for (var i = 1; i < a.length; i++) {
-          if (a[i] is Map) continue; // style overrides — ignored
-          parts.add(parse(a[i]));
-        }
-        return (ctx) => parts.map((e) => toStringValue(e(ctx))).join();
+        final parts = <Object?>[
+          for (var i = 1; i < a.length; i++)
+            if (a[i] is! Map) a[i], // style overrides — ignored
+        ];
+        return _concatExpr(parts);
 
       // --- strings ---
       case 'concat':
-        final es = a.skip(1).map(parse).toList();
-        return (ctx) => es.map((e) => toStringValue(e(ctx))).join();
+        return _concatExpr(a.skip(1).toList());
       case 'upcase':
         final e = parse(a.length > 1 ? a[1] : null);
         return (ctx) => toStringValue(e(ctx)).toUpperCase();
@@ -404,8 +456,14 @@ class ExpressionParser {
       case 'rgba':
         // toColor owns the channel semantics (clamp, round, alpha
         // default) — this case only gathers the evaluated channels.
+        // All-literal channels (the typical shape, e.g. as interpolate
+        // outputs) fold to a Color at parse time.
+        if (a.length >= 4 && a.skip(1).every((e) => e is num)) {
+          final c = toColor(a.sublist(1));
+          return (_) => c;
+        }
         final es = a.skip(1).map(parse).toList();
-        return (ctx) => toColor(es.map((e) => e(ctx)).toList());
+        return (ctx) => toColor([for (final e in es) e(ctx)]);
       case 'to-rgba':
         final e = parse(a.length > 1 ? a[1] : null);
         return (ctx) {
@@ -417,13 +475,26 @@ class ExpressionParser {
       // --- math ---
       case '+':
       case '*':
+        // The operator is bound at parse time — the old form re-tested
+        // the op string per operand per evaluation.
         final es = a.skip(1).map(parse).toList();
+        if (op == '+') {
+          return (ctx) {
+            var acc = 0.0;
+            for (final e in es) {
+              final n = toNumber(e(ctx));
+              if (n == null) return null;
+              acc += n;
+            }
+            return acc;
+          };
+        }
         return (ctx) {
-          var acc = op == '+' ? 0.0 : 1.0;
+          var acc = 1.0;
           for (final e in es) {
             final n = toNumber(e(ctx));
             if (n == null) return null;
-            acc = op == '+' ? acc + n : acc * n;
+            acc *= n;
           }
           return acc;
         };
@@ -473,16 +544,13 @@ class ExpressionParser {
       case 'min':
       case 'max':
         final es = a.skip(1).map(parse).toList();
+        final pick = op == 'min' ? math.min<double> : math.max<double>;
         return (ctx) {
           double? acc;
           for (final e in es) {
             final n = toNumber(e(ctx));
             if (n == null) return null;
-            acc = acc == null
-                ? n
-                : op == 'min'
-                    ? math.min(acc, n)
-                    : math.max(acc, n);
+            acc = acc == null ? n : pick(acc, n);
           }
           return acc;
         };
@@ -504,6 +572,37 @@ class ExpressionParser {
       default:
         return _unsupported('unsupported operator "$op"');
     }
+  }
+
+  /// Concatenation shared by `concat` and `format`, over raw argument
+  /// JSON. All-literal parts fold to one string at parse time; the
+  /// dynamic path writes through a single [StringBuffer] instead of
+  /// allocating a mapped iterable per evaluation.
+  Expr _concatExpr(List<Object?> parts) {
+    if (parts.every((e) => e == null || e is String || e is num || e is bool)) {
+      final s = parts.map(toStringValue).join();
+      return (_) => s;
+    }
+    final es = parts.map(parse).toList();
+    return (ctx) {
+      final sb = StringBuffer();
+      for (final e in es) {
+        sb.write(toStringValue(e(ctx)));
+      }
+      return sb.toString();
+    };
+  }
+
+  /// The contents of a `["literal", [...]]` argument, or null when the
+  /// argument is anything else.
+  static List<Object?>? _literalList(Object? json) {
+    if (json is List &&
+        json.length > 1 &&
+        json[0] == 'literal' &&
+        json[1] is List) {
+      return (json[1] as List).cast<Object?>();
+    }
+    return null;
   }
 
   Expr _unaryMath(List<Object?> a, double Function(double) f) {
@@ -539,6 +638,7 @@ class ExpressionParser {
       values.add(parse(a[i + 1]));
     }
     final body = parse(i < a.length ? a[i] : null);
+    if (names.isEmpty) return body;
     return (ctx) {
       final bindings = <String, Object?>{};
       for (var j = 0; j < names.length; j++) {
@@ -551,14 +651,11 @@ class ExpressionParser {
   Expr _parseComparison(String op, List<Object?> a) {
     final x = parse(a.length > 1 ? a[1] : null);
     final y = parse(a.length > 2 ? a[2] : null);
-    return (ctx) {
-      final vx = x(ctx);
-      final vy = y(ctx);
-      return switch (op) {
-        '==' => _looseEquals(vx, vy),
-        '!=' => !_looseEquals(vx, vy),
-        _ => _compare(op, vx, vy),
-      };
+    // Operator dispatch resolved at parse time, not per evaluation.
+    return switch (op) {
+      '==' => (ctx) => _looseEquals(x(ctx), y(ctx)),
+      '!=' => (ctx) => !_looseEquals(x(ctx), y(ctx)),
+      _ => (ctx) => _compare(op, x(ctx), y(ctx)),
     };
   }
 
@@ -688,6 +785,10 @@ class ExpressionParser {
       stops.add(toNumber(a[i]) ?? 0);
       outputs.add(parse(a[i + 1]));
     }
+    // Exponential easing: pow(base, span) is constant per interval, so
+    // the inverse denominators are precomputed and evaluation pays a
+    // single pow on the input instead of two.
+    final invDenom = base == 1.0 ? null : _inverseDenominators(stops, base);
     return (ctx) {
       final v = toNumber(input(ctx));
       if (v == null || stops.isEmpty) return null;
@@ -698,24 +799,36 @@ class ExpressionParser {
         hi++;
       }
       final lo = hi - 1;
-      final t = easing(_interpolationFactor(v, stops[lo], stops[hi], base));
+      final t =
+          easing(_intervalFactor(v, stops, lo, base, invDenom).clamp(0.0, 1.0));
       return _interpolateValues(outputs[lo](ctx), outputs[hi](ctx), t);
     };
   }
 
-  /// The interpolation parameter for [v] between [lower] and [upper]
-  /// (linear for `base == 1`, exponential otherwise), clamped to [0, 1].
-  /// Shared by `interpolate` expressions and legacy stop functions.
-  static double _interpolationFactor(
-      double v, double lower, double upper, double base) {
-    final span = upper - lower;
-    if (span <= 0) return 0;
-    final t = (v - lower) / span;
-    if (base == 1.0) return t.clamp(0.0, 1.0);
-    final p = math.pow(base, span).toDouble();
-    if (p == 1) return t.clamp(0.0, 1.0);
-    return ((math.pow(base, v - lower).toDouble() - 1) / (p - 1))
-        .clamp(0.0, 1.0);
+  /// `1 / (pow(base, span) - 1)` per stop interval; 0 encodes the
+  /// degenerate zero-span interval (where the factor is defined as 0).
+  static List<double> _inverseDenominators(List<double> stops, double base) {
+    final out = List<double>.filled(math.max(stops.length - 1, 0), 0);
+    for (var i = 0; i + 1 < stops.length; i++) {
+      final p = math.pow(base, stops[i + 1] - stops[i]).toDouble();
+      out[i] = p == 1 ? 0 : 1 / (p - 1);
+    }
+    return out;
+  }
+
+  /// The unclamped interpolation parameter for [v] within the stop
+  /// interval starting at [lo] — linear when [invDenom] is null,
+  /// exponential otherwise. Shared by `interpolate` expressions and
+  /// legacy stop functions; callers clamp to [0, 1].
+  static double _intervalFactor(double v, List<double> stops, int lo,
+      double base, List<double>? invDenom) {
+    if (invDenom == null) {
+      final span = stops[lo + 1] - stops[lo];
+      return span <= 0 ? 0 : (v - stops[lo]) / span;
+    }
+    final inv = invDenom[lo];
+    if (inv == 0) return 0;
+    return (math.pow(base, v - stops[lo]).toDouble() - 1) * inv;
   }
 
   static Object? _interpolateValues(Object? a, Object? b, double t) {
@@ -780,16 +893,29 @@ class ExpressionParser {
     }
     if (stops.isEmpty) return (_) => defaultValue;
 
-    return (ctx) {
-      final Object? rawInput =
-          property == null ? ctx.zoom : ctx.properties[property];
-      if (type == 'categorical') {
-        for (var i = 0; i < stopInputs.length; i++) {
-          if (_looseEquals(stopInputs[i], rawInput)) return outputs[i];
-        }
-        return defaultValue;
+    Object? inputOf(EvalContext ctx) =>
+        property == null ? ctx.zoom : ctx.properties[property];
+
+    // The function type is fixed at parse time — specialize instead of
+    // re-branching on the type string per evaluation.
+    if (type == 'categorical') {
+      // First matching stop wins, like the linear scan it replaces;
+      // keys are normalized so `1` and `1.0` stay interchangeable.
+      final byKey = <Object?, Object?>{};
+      for (var i = 0; i < stopInputs.length; i++) {
+        byKey.putIfAbsent(_matchKey(stopInputs[i]), () => outputs[i]);
       }
-      final v = toNumber(rawInput);
+      return (ctx) {
+        final key = _matchKey(inputOf(ctx));
+        return byKey.containsKey(key) ? byKey[key] : defaultValue;
+      };
+    }
+
+    final isInterval = type == 'interval';
+    final invDenom =
+        isInterval || base == 1.0 ? null : _inverseDenominators(stops, base);
+    return (ctx) {
+      final v = toNumber(inputOf(ctx));
       if (v == null) return defaultValue;
       if (v <= stops.first) return outputs.first;
       if (v >= stops.last) return outputs.last;
@@ -803,9 +929,9 @@ class ExpressionParser {
         hi++;
       }
       final lo = hi - 1;
-      if (type == 'interval') return outputs[lo];
+      if (isInterval) return outputs[lo];
       return _interpolateValues(outputs[lo], outputs[hi],
-          _interpolationFactor(v, stops[lo], stops[hi], base));
+          _intervalFactor(v, stops, lo, base, invDenom).clamp(0.0, 1.0));
     };
   }
 
@@ -847,27 +973,51 @@ class ExpressionParser {
   Expr _parseLegacyFilter(List<Object?> filter) {
     final op = filter[0];
     switch (op) {
+      // Plain loops, not every/any: the iterator callbacks captured ctx
+      // and allocated a closure per evaluation of the hottest closures
+      // in the engine (every layer × every feature of its source-layer).
       case 'all':
         final es =
             filter.skip(1).map((f) => parseFilter(f)).toList(growable: false);
-        return (ctx) => es.every((e) => toBoolean(e(ctx)));
+        return (ctx) {
+          for (final e in es) {
+            if (!toBoolean(e(ctx))) return false;
+          }
+          return true;
+        };
       case 'any':
         final es =
             filter.skip(1).map((f) => parseFilter(f)).toList(growable: false);
-        return (ctx) => es.any((e) => toBoolean(e(ctx)));
+        return (ctx) {
+          for (final e in es) {
+            if (toBoolean(e(ctx))) return true;
+          }
+          return false;
+        };
       case 'none':
         final es =
             filter.skip(1).map((f) => parseFilter(f)).toList(growable: false);
-        return (ctx) => !es.any((e) => toBoolean(e(ctx)));
+        return (ctx) {
+          for (final e in es) {
+            if (toBoolean(e(ctx))) return false;
+          }
+          return true;
+        };
       case 'has':
         final key = _legacyKey(filter);
-        if (key == r'$id') return (ctx) => ctx.featureId != null;
+        if (key == r'$id') {
+          _readsFeature = true;
+          return (ctx) => ctx.featureId != null;
+        }
         if (key == r'$type') return (_) => true;
         _refProp(key);
         return (ctx) => ctx.properties.containsKey(key);
       case '!has':
         final key = _legacyKey(filter);
-        if (key == r'$id') return (ctx) => ctx.featureId == null;
+        if (key == r'$id') {
+          _readsFeature = true;
+          return (ctx) => ctx.featureId == null;
+        }
         if (key == r'$type') return (_) => false;
         _refProp(key);
         return (ctx) => !ctx.properties.containsKey(key);
@@ -880,23 +1030,24 @@ class ExpressionParser {
         final key = _legacyKey(filter);
         final value = filter.length > 2 ? filter[2] : null;
         _refLegacyKey(key);
-        return (ctx) {
-          final actual = _legacyValue(ctx, key);
-          return switch (op) {
-            '==' => _looseEquals(actual, value),
-            '!=' => !_looseEquals(actual, value),
-            _ => _compare(op as String, actual, value),
-          };
+        // Operator dispatch resolved at parse time, not per evaluation.
+        return switch (op) {
+          '==' => (ctx) => _looseEquals(_legacyValue(ctx, key), value),
+          '!=' => (ctx) => !_looseEquals(_legacyValue(ctx, key), value),
+          _ => (ctx) => _compare(op as String, _legacyValue(ctx, key), value),
         };
       case 'in':
       case '!in':
         final key = _legacyKey(filter);
         _refLegacyKey(key);
-        final values = filter.skip(2).toList(growable: false);
+        // O(1) membership over parse-time-normalized values instead of
+        // a linear _looseEquals scan per feature — legacy `in` lists
+        // ("class" in primary/secondary/...) are pervasive and mostly
+        // *don't* match, so the scan used to run to the end.
+        final values = {for (final v in filter.skip(2)) _matchKey(v)};
         final negate = op == '!in';
         return (ctx) {
-          final actual = _legacyValue(ctx, key);
-          final contained = values.any((v) => _looseEquals(v, actual));
+          final contained = values.contains(_matchKey(_legacyValue(ctx, key)));
           return negate ? !contained : contained;
         };
       default:
@@ -909,6 +1060,7 @@ class ExpressionParser {
       filter.length > 1 && filter[1] is String ? filter[1] as String : '';
 
   void _refLegacyKey(String key) {
+    _readsFeature = true; // $type/$id read the feature too
     if (key != r'$type' && key != r'$id') _refProp(key);
   }
 

@@ -64,8 +64,15 @@ explicit unsupported-input case proving the degradation path.
 
 - `isConstant` on typed props lets the renderer hoist evaluation out of
   per-feature loops — set it whenever an expression compiles to a literal.
+- `zoomOnly` on typed props memoizes the coerced result against
+  `ctx.zoom`: the parser proves per property (via `parseForProperty`)
+  that the expression reads no feature data, so a whole tile pass (one
+  fixed zoom) evaluates it once. Anything that reads feature data —
+  including `geometry-type`, `id` and legacy `$type`/`$id` — must set
+  `_readsFeature`, or the memo returns stale values across features.
 - Expressions are closures over parse-time state; they must not capture
-  anything mutable or non-transferable.
+  anything mutable or non-transferable (the zoom memo lives in the Prop
+  wrappers, not in the closures).
 
 ## Dependencies
 

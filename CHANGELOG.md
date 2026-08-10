@@ -13,6 +13,16 @@
   real tiles): geometry vertices accumulate into a reusable typed-data
   scratch buffer instead of a growable `List<double>`, which boxed
   every coordinate on the VM.
+- ⚡ The style engine does far less work per evaluation: zoom-only
+  paint properties (pure zoom ramps — the most common shape) are
+  detected at compile time and memoized against the zoom, so a tile
+  pass evaluates each once instead of per feature; parsed CSS colours
+  are cached; legacy `in` filters use set lookups instead of linear
+  scans; literal `get`/`has` keys read the property map directly;
+  operator dispatch moved from evaluation to parse time; exponential
+  ramps precompute their per-interval `pow` factors; and legacy
+  `{token}` templates are split once instead of regex-replaced per
+  feature.
 - ⚡ Less per-frame and per-feature work: zoom-only line layers resolve
   their stroke style once per tile instead of per feature, circle
   paints are built per feature instead of per point, literal list

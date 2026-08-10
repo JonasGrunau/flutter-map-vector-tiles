@@ -213,7 +213,8 @@ class ThemeReader {
       ExpressionParser parser, Object? json, double fallback) {
     if (json == null) return DoubleProp.constant(fallback);
     if (json is num) return DoubleProp.constant(json.toDouble());
-    return DoubleProp(parser.parse(json), fallback);
+    final p = parser.parseForProperty(json);
+    return DoubleProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
   static ColorProp _color(
@@ -223,7 +224,8 @@ class ThemeReader {
       final parsed = toColor(json);
       if (parsed != null) return ColorProp.constant(parsed);
     }
-    return ColorProp(parser.parse(json), fallback);
+    final p = parser.parseForProperty(json);
+    return ColorProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
   static StringProp _string(
@@ -236,7 +238,8 @@ class ThemeReader {
       // Legacy token syntax: "{name} ({ref})".
       return StringProp(_tokenExpr(parser, json), fallback);
     }
-    return StringProp(parser.parse(json), fallback);
+    final p = parser.parseForProperty(json);
+    return StringProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
   /// String-array layout properties (font stacks, anchor lists): a bare
@@ -251,7 +254,8 @@ class ThemeReader {
         !ExpressionParser.operators.contains(json.first)) {
       return StringListProp.constant(json.cast<String>());
     }
-    return StringListProp(parser.parse(json), fallback);
+    final p = parser.parseForProperty(json);
+    return StringListProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
   /// Numeric-array properties (text-offset, icon-offset, dash arrays):
@@ -263,26 +267,54 @@ class ThemeReader {
       return NumListProp.constant(
           [for (final e in json) (e as num).toDouble()]);
     }
-    return NumListProp(parser.parse(json), fallback);
+    final p = parser.parseForProperty(json);
+    return NumListProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
   static BoolProp _bool(ExpressionParser parser, Object? json, bool fallback) {
     if (json == null) return BoolProp.constant(fallback);
     if (json is bool) return BoolProp.constant(json);
-    return BoolProp(parser.parse(json), fallback);
+    final p = parser.parseForProperty(json);
+    return BoolProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
   /// Compiles legacy `{token}` templates used by text-field/icon-image.
+  /// The template is split once at parse time; evaluation concatenates
+  /// literal and property segments without regex machinery — this runs
+  /// per symbol feature at tile prep in essentially every style.
   static Expr _tokenExpr(ExpressionParser parser, String template) {
     final pattern = RegExp(r'\{([^{}]+)\}');
     final matches = pattern.allMatches(template).toList();
     if (matches.isEmpty) return (_) => template;
     for (final m in matches) {
-      parser.referencedProperties.add(m.group(1)!);
+      parser.noteFeatureProperty(m.group(1)!);
     }
-    return (ctx) => template.replaceAllMapped(
-          pattern,
-          (m) => toStringValue(ctx.properties[m.group(1)]),
-        );
+    // "{name}" — the single most common text-field — is one property.
+    if (matches.length == 1 &&
+        matches.first.start == 0 &&
+        matches.first.end == template.length) {
+      final name = matches.first.group(1)!;
+      return (ctx) => toStringValue(ctx.properties[name]);
+    }
+    // literals[i] precedes names[i]; literals.last trails the tokens.
+    final literals = <String>[];
+    final names = <String>[];
+    var pos = 0;
+    for (final m in matches) {
+      literals.add(template.substring(pos, m.start));
+      names.add(m.group(1)!);
+      pos = m.end;
+    }
+    literals.add(template.substring(pos));
+    return (ctx) {
+      final sb = StringBuffer();
+      for (var i = 0; i < names.length; i++) {
+        sb
+          ..write(literals[i])
+          ..write(toStringValue(ctx.properties[names[i]]));
+      }
+      sb.write(literals.last);
+      return sb.toString();
+    };
   }
 }

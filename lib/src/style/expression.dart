@@ -109,55 +109,112 @@ Color? toColor(Object? v) {
 Expr constExpr(Object? value) => (_) => value;
 
 /// A typed wrapper around a compiled [Expr] with a fallback value.
+///
+/// When [zoomOnly] is set — the theme reader proved at compile time
+/// that the expression reads no feature data — the *coerced* result is
+/// memoized against `ctx.zoom`. A tile pass and a label frame each run
+/// at one fixed zoom, so thousands of identical ramp evaluations (and
+/// their `toNumber`/`toColor` coercions) collapse into one.
+///
+/// [isConstant] promises that the expression always yields [fallback]
+/// (only [DoubleProp.constant] constructs that shape).
 class DoubleProp {
   final Expr _expr;
   final double fallback;
   final bool isConstant;
+  final bool zoomOnly;
+  double _memoZoom = double.nan;
+  double _memoValue = 0;
 
-  const DoubleProp(this._expr, this.fallback, {this.isConstant = false});
+  DoubleProp(this._expr, this.fallback,
+      {this.isConstant = false, this.zoomOnly = false});
 
   factory DoubleProp.constant(double value) =>
       DoubleProp((_) => value, value, isConstant: true);
 
-  double eval(EvalContext ctx) => toNumber(_expr(ctx)) ?? fallback;
+  double eval(EvalContext ctx) {
+    if (isConstant) return fallback;
+    if (zoomOnly) {
+      if (ctx.zoom == _memoZoom) return _memoValue;
+      _memoZoom = ctx.zoom;
+      return _memoValue = toNumber(_expr(ctx)) ?? fallback;
+    }
+    return toNumber(_expr(ctx)) ?? fallback;
+  }
 }
 
+/// See [DoubleProp] for [isConstant]/[zoomOnly] semantics.
 class ColorProp {
   final Expr _expr;
   final Color fallback;
   final bool isConstant;
+  final bool zoomOnly;
+  double _memoZoom = double.nan;
+  Color _memoValue = const Color(0x00000000);
 
-  const ColorProp(this._expr, this.fallback, {this.isConstant = false});
+  ColorProp(this._expr, this.fallback,
+      {this.isConstant = false, this.zoomOnly = false});
 
   factory ColorProp.constant(Color value) =>
       ColorProp((_) => value, value, isConstant: true);
 
-  Color eval(EvalContext ctx) => toColor(_expr(ctx)) ?? fallback;
+  Color eval(EvalContext ctx) {
+    if (isConstant) return fallback;
+    if (zoomOnly) {
+      if (ctx.zoom == _memoZoom) return _memoValue;
+      _memoZoom = ctx.zoom;
+      return _memoValue = toColor(_expr(ctx)) ?? fallback;
+    }
+    return toColor(_expr(ctx)) ?? fallback;
+  }
 }
 
+/// See [DoubleProp] for [zoomOnly] semantics.
 class StringProp {
   final Expr _expr;
   final String fallback;
+  final bool zoomOnly;
+  double _memoZoom = double.nan;
+  String _memoValue = '';
 
-  const StringProp(this._expr, this.fallback);
+  StringProp(this._expr, this.fallback, {this.zoomOnly = false});
 
   factory StringProp.constant(String value) => StringProp((_) => value, value);
 
   String eval(EvalContext ctx) {
+    if (zoomOnly) {
+      if (ctx.zoom == _memoZoom) return _memoValue;
+      _memoZoom = ctx.zoom;
+      return _memoValue = _eval(ctx);
+    }
+    return _eval(ctx);
+  }
+
+  String _eval(EvalContext ctx) {
     final v = _expr(ctx);
     return v == null ? fallback : toStringValue(v);
   }
 }
 
+/// See [DoubleProp] for [zoomOnly] semantics.
 class BoolProp {
   final Expr _expr;
   final bool fallback;
+  final bool zoomOnly;
+  double _memoZoom = double.nan;
+  bool _memoValue = false;
 
-  const BoolProp(this._expr, this.fallback);
+  BoolProp(this._expr, this.fallback, {this.zoomOnly = false});
 
   factory BoolProp.constant(bool value) => BoolProp((_) => value, value);
 
   bool eval(EvalContext ctx) {
+    if (zoomOnly) {
+      if (ctx.zoom == _memoZoom) return _memoValue;
+      _memoZoom = ctx.zoom;
+      final v = _expr(ctx);
+      return _memoValue = v == null ? fallback : toBoolean(v);
+    }
     final v = _expr(ctx);
     return v == null ? fallback : toBoolean(v);
   }
@@ -173,17 +230,31 @@ class NumListProp {
   final Expr _expr;
   final List<double> fallback;
   final List<double>? _constant;
+  final bool zoomOnly;
+  double _memoZoom = double.nan;
+  List<double>? _memoValue;
 
-  const NumListProp(this._expr, this.fallback) : _constant = null;
+  NumListProp(this._expr, this.fallback, {this.zoomOnly = false})
+      : _constant = null;
 
   NumListProp.constant(List<double> value)
       : _expr = constExpr(value),
         fallback = value,
-        _constant = List.unmodifiable(value);
+        _constant = List.unmodifiable(value),
+        zoomOnly = false;
 
   List<double> eval(EvalContext ctx) {
     final constant = _constant;
     if (constant != null) return constant;
+    if (zoomOnly) {
+      if (ctx.zoom == _memoZoom) return _memoValue!;
+      _memoZoom = ctx.zoom;
+      return _memoValue = _eval(ctx);
+    }
+    return _eval(ctx);
+  }
+
+  List<double> _eval(EvalContext ctx) {
     final v = _expr(ctx);
     if (v is List) {
       final out = <double>[];
@@ -204,17 +275,31 @@ class StringListProp {
   final Expr _expr;
   final List<String> fallback;
   final List<String>? _constant;
+  final bool zoomOnly;
+  double _memoZoom = double.nan;
+  List<String>? _memoValue;
 
-  const StringListProp(this._expr, this.fallback) : _constant = null;
+  StringListProp(this._expr, this.fallback, {this.zoomOnly = false})
+      : _constant = null;
 
   StringListProp.constant(List<String> value)
       : _expr = constExpr(value),
         fallback = value,
-        _constant = List.unmodifiable(value);
+        _constant = List.unmodifiable(value),
+        zoomOnly = false;
 
   List<String> eval(EvalContext ctx) {
     final constant = _constant;
     if (constant != null) return constant;
+    if (zoomOnly) {
+      if (ctx.zoom == _memoZoom) return _memoValue!;
+      _memoZoom = ctx.zoom;
+      return _memoValue = _eval(ctx);
+    }
+    return _eval(ctx);
+  }
+
+  List<String> _eval(EvalContext ctx) {
     final v = _expr(ctx);
     if (v is List) return v.map(toStringValue).toList();
     if (v is String) return [v];
