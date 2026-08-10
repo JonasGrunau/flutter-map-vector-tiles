@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import '../core/tile_key.dart';
 import '../mvt/mvt_decoder.dart';
 import '../mvt/mvt_tile.dart';
+import 'prepare_gunzip_web.dart' if (dart.library.io) 'prepare_gunzip_io.dart';
 import 'prepared_tile.dart';
 
 /// Input for [prepareTileSync]; must remain isolate-transferable.
@@ -26,9 +27,12 @@ class PrepareInput {
 }
 
 /// Decodes MVT bytes and trims them to what the theme needs. Pure
-/// function — runs on a worker isolate (or directly on web).
+/// function — runs on a worker isolate (or directly on web). Bytes may
+/// arrive gzip-compressed (PMTiles blobs on native platforms, servers
+/// that compress without declaring it): inflation happens here, off the
+/// UI isolate.
 PreparedTile prepareTileSync(PrepareInput input) {
-  final mvt = decodeMvt(input.bytes);
+  final mvt = decodeMvt(maybeGunzip(input.bytes));
   final layers = <String, PreparedSourceLayer>{};
   var byteSize = 128;
 
@@ -50,10 +54,7 @@ PreparedTile prepareTileSync(PrepareInput input) {
       if (keepKeys != null && keepKeys.isEmpty) {
         properties = const {};
       } else {
-        properties = feature.decodeProperties(layer);
-        if (keepKeys != null) {
-          properties.removeWhere((k, _) => !keepKeys.contains(k));
-        }
+        properties = feature.decodeProperties(layer, keep: keepKeys);
       }
 
       for (final part in feature.parts) {

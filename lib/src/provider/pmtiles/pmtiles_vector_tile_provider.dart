@@ -164,10 +164,14 @@ class PmTilesVectorTileProvider extends VectorTileProvider {
               header.tileDataOffset + entry.offset, entry.length, token);
           if (bytes == null) return const TileResponseCancelled();
           if (bytes.isEmpty) return const TileResponseNotFound();
-          return TileResponseData(
-              header.tileCompression == PmTilesCompression.gzip
-                  ? await gunzip(bytes)
-                  : bytes);
+          // On native platforms compressed blobs pass through: load()
+          // runs on the UI isolate and inflating a tile here blocks a
+          // frame — the consumers inflate off-thread instead (see
+          // deferTileGunzipToConsumer). The disk cache then also stores
+          // the smaller compressed form.
+          final inflate = header.tileCompression == PmTilesCompression.gzip &&
+              !deferTileGunzipToConsumer;
+          return TileResponseData(inflate ? await gunzip(bytes) : bytes);
         }
         directory = await _leafDirectory(entry, token) ?? directory;
         if (_disposed || token.isCancelled) {

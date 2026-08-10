@@ -8,6 +8,8 @@ import '../core/cancellation.dart';
 import '../core/single_flight.dart';
 import '../core/tile_key.dart';
 import '../core/tile_zoom.dart';
+import '../provider/pmtiles/pmtiles_gunzip_web.dart'
+    if (dart.library.io) '../provider/pmtiles/pmtiles_gunzip_io.dart';
 import '../tile_providers.dart';
 import 'tile_byte_loader.dart';
 
@@ -157,7 +159,14 @@ class RasterTileStore {
 
     ui.Image image;
     try {
-      final codec = await ui.instantiateImageCodec(bytes);
+      // A PMTiles raster source with gzip tile compression hands blobs
+      // through compressed on native platforms (rare — raster formats
+      // are pre-compressed — but legal); image codecs need them
+      // inflated.
+      final inflated = bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b
+          ? await gunzip(bytes)
+          : bytes;
+      final codec = await ui.instantiateImageCodec(inflated);
       final frame = await codec.getNextFrame();
       codec.dispose();
       image = frame.image;

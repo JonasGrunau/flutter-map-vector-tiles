@@ -1,6 +1,10 @@
 import 'dart:js_interop';
 import 'dart:typed_data';
 
+/// Web keeps inflating tile blobs at fetch time: there is no worker
+/// isolate to defer to, and `DecompressionStream` is async anyway.
+const bool deferTileGunzipToConsumer = false;
+
 /// Web gunzip via the browser's native `DecompressionStream` (available
 /// in all browsers that run Flutter web). The stream is drained through
 /// a `Response`, which buffers it into a single `ArrayBuffer`.

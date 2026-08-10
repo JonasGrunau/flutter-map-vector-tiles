@@ -13,6 +13,14 @@
   real tiles): geometry vertices accumulate into a reusable typed-data
   scratch buffer instead of a growable `List<double>`, which boxed
   every coordinate on the VM.
+- ⚡ PMTiles tile blobs are no longer gzip-inflated on the UI isolate
+  on native platforms: the worker isolate inflates them just before
+  decoding (0.5–3 ms per tile that used to compete with the frame
+  budget while panning on a cold cache), and the disk cache now stores
+  the smaller compressed form. As a side effect, servers that send
+  gzip-compressed MVT without declaring it now decode instead of
+  failing. Feature properties are also filtered during decoding
+  instead of being fully materialized and then trimmed.
 - ⚡ Tile bytes travel lighter: downloaded tiles are no longer copied a
   second time before decoding, tiles a source has said don't exist
   (oceans, sparse zooms) are remembered on disk instead of being

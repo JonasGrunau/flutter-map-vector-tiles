@@ -115,8 +115,16 @@ range requests. Its `open()` fetches the 127-byte header plus root
 directory in one 16 KiB request (the spec guarantees both fit there);
 each tile then maps z/x/y onto the PMTiles Hilbert tile ID and costs at
 most two more range requests — an LRU-cached leaf directory and the
-tile blob. Directory and tile gunzip goes through a conditional import:
-`dart:io` zlib natively, the browser's `DecompressionStream` on web.
+tile blob. Directory gunzip runs at fetch through a conditional import
+(`dart:io` zlib natively, the browser's `DecompressionStream` on web).
+Tile-blob gunzip is deferred on native platforms: the provider hands
+the compressed blob through (the disk cache stores that smaller form)
+and `prepareTileSync` inflates it on the worker isolate — provider
+loads run on the UI isolate, where a 0.5–3 ms inflate per tile would
+eat into the frame budget. On web, with no worker isolate, blobs are
+inflated at fetch as before. The raster store performs the same
+gzip-magic sniff before image decode for the rare compressed-raster
+archive.
 All 64-bit offsets and tile IDs are computed with multiply/add
 arithmetic (exact to 2^53) rather than bitwise ops, which dart2js
 truncates to 32 bits — the same constraint the MVT decoder observes.

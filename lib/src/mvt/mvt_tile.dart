@@ -69,14 +69,19 @@ class MvtFeature {
   });
 
   /// Materializes this feature's properties using the parent layer's
-  /// key/value tables.
-  Map<String, Object?> decodeProperties(MvtLayer layer) {
+  /// key/value tables. With [keep], only those keys are inserted —
+  /// filtering during construction instead of building the full map and
+  /// deleting most of it (OSM layers carry 10-30 properties per feature
+  /// while a theme typically reads 2-5).
+  Map<String, Object?> decodeProperties(MvtLayer layer, {Set<String>? keep}) {
     final map = <String, Object?>{};
     for (var i = 0; i + 1 < tags.length; i += 2) {
       final k = tags[i];
       final v = tags[i + 1];
       if (k < layer.keys.length && v < layer.values.length) {
-        map[layer.keys[k]] = layer.values[v];
+        final key = layer.keys[k];
+        if (keep != null && !keep.contains(key)) continue;
+        map[key] = layer.values[v];
       }
     }
     return map;
