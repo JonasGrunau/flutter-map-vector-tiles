@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-Expired tiles now paint instantly and refresh in the background.
+Expired tiles now paint instantly and refresh in the background, and the
+pub.dev page gets gallery screenshots.
 
 - ✨ **Stale-while-revalidate tiles**: disk-cached tiles older than
   `diskCacheTtl` are no longer refetched *before* they can paint —
@@ -16,6 +17,13 @@ Expired tiles now paint instantly and refresh in the background.
   refresh, a source recovered by a retry, provisional→final) now keeps
   the previous raster underneath while the new one fades in, instead of
   fading in over the map background.
+- 📦 The pub.dev page now shows three screenshots (`screenshots/`), framed
+  in an iPhone bezel: Munich in OpenFreeMap Liberty, Zermatt with an Esri
+  hillshade raster blended into the vector style, and Munich in the dark
+  Fiord style.
+- 🧹 The example app keeps its attribution clear of rounded screen
+  corners and the iOS home indicator instead of pinning it flush to the
+  bottom-right edge.
 
 ## 2.2.0
 

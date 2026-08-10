@@ -20,3 +20,8 @@ coverage/
 # --- agent-facing documentation (useful in the repo, noise in the tarball) ---
 AGENTS.md
 CLAUDE.md
+
+# --- flat screenshot originals (kept in the repo; pub.dev shows the framed ones) ---
+screenshots/munich-liberty.webp
+screenshots/zermatt-hillshade.webp
+screenshots/munich-dark.webp

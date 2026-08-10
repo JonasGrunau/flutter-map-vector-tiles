@@ -94,10 +94,15 @@ class _VectorMapPageState extends State<VectorMapPage> {
               ),
               // Whatever the style's sources declare — never a hardcoded
               // provider name. Most providers' terms require showing it.
+              // The minimum inset keeps it clear of rounded screen corners
+              // and the iOS home indicator.
               if (style.attributions.isNotEmpty)
-                SimpleAttributionWidget(
-                  source: Text(
-                    style.attributions.map((a) => a.text).join(' · '),
+                SafeArea(
+                  minimum: const EdgeInsets.only(right: 16, bottom: 40),
+                  child: SimpleAttributionWidget(
+                    source: Text(
+                      style.attributions.map((a) => a.text).join(' · '),
+                    ),
                   ),
                 ),
             ],

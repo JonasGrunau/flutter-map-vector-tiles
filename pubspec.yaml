@@ -13,6 +13,20 @@ topics:
   - map
   - pmtiles
 
+screenshots:
+  - description: >-
+      Munich old town at street level, rendered live from the OpenFreeMap
+      Liberty vector style.
+    path: screenshots/munich-liberty-framed.webp
+  - description: >-
+      Zermatt in the Alps — an Esri hillshade raster source blended into the
+      vector style shows the terrain.
+    path: screenshots/zermatt-hillshade-framed.webp
+  - description: >-
+      Munich in OpenFreeMap's Fiord style — dark mode comes free with any
+      dark vector style.
+    path: screenshots/munich-dark-framed.webp
+
 platforms:
   android:
   ios:
