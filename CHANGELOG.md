@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.3.0
 
 Smooth zooming where labels live: text is shaped once and scaled,
 zoom-level crossings stagger their work, finished tiles are cached for
