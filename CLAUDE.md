@@ -21,6 +21,33 @@ Before declaring work done, re-read the sections these files have about the
 area you touched and correct anything that no longer holds. If a doc claims a
 limitation you just removed (or vice versa), fix that sentence too.
 
+## CHANGELOG entries follow a fixed shape
+
+Work in progress accumulates under `## Unreleased`; releasing renames that
+heading to the version. Every version section looks like this, and a release
+is not ready until its section does:
+
+```markdown
+## 2.1.1
+
+Style attribution and MVT decode performance.
+
+- ✨ **Style attribution**: `Style.attributions` exposes …
+- ⚡ Zigzag decoding is branchless again, recovering …
+```
+
+- **Heading** — `## X.Y.Z`, newest first, no date, no link.
+- **Summary line** — a sentence or two directly under the heading, then a
+  blank line. It names the *theme* of the release, so someone scanning the
+  version list can tell whether to care; it does not enumerate the bullets
+  below it. Every version has one — never release without it.
+- **Bullets** — one per user-visible change, each opening with the emoji for
+  its kind: ✨ feature, ⚡ performance, 🐛 fix, 💥 breaking, 🎨 rendering /
+  style support, 🌐 platform, ✈️ offline, 📚 docs, 📦 packaging or pub.dev
+  metadata, ⬆️ dependency bump, 🧹 cleanup. Headline features may bold a
+  short lead-in (`- ✨ **Style attribution**: …`). Describe the change from
+  the user's side, and for fixes say what went wrong before.
+
 ## README must track the package's identity
 
 Whenever anything identifying the package changes, update `README.md` in the

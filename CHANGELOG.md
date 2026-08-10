@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 2.2.0
+
+Mapbox-hosted and header-authenticated styles now load, over a broad
+correctness and performance pass.
 
 - ✨ `StyleReader` now actually resolves `mapbox://` URIs — style ids,
   sprite bases and bare tileset ids expand to their `api.mapbox.com`
@@ -272,6 +275,9 @@ follow semantic versioning from here.
 
 ## 0.4.1
 
+Nothing on screen disappears before its replacement is ready — the
+blanking, flashing and dropped frames around zoom changes are gone.
+
 - 🐛 The map no longer blanks and reloads moments after first paint:
   the async disk-cache initialization now attaches to the running tile
   stores instead of rebuilding them (which disposed every rendered
@@ -289,6 +295,8 @@ follow semantic versioning from here.
 
 ## 0.4.0
 
+Places you have already visited keep working without a network.
+
 - ✈️ Offline support for recently visited places:
   - `StyleReader` now caches the style bundle (style.json, TileJSON,
     sprites) on disk with stale-while-revalidate: the cached copy is
@@ -304,6 +312,8 @@ follow semantic versioning from here.
     Existing temp-dir caches are simply abandoned and refetched once.
 
 ## 0.3.0
+
+Road labels now follow the curve of their line.
 
 - ✨ Curved line text: road labels now follow their line glyph by glyph,
   with MapLibre semantics — `text-max-angle` (labels on too-sharp bends
@@ -321,6 +331,9 @@ follow semantic versioning from here.
 - 🧹 Source reformatted with the Dart formatter (no behaviour change).
 
 ## 0.2.0
+
+Denser labels and pattern fills, plus a parser fix that quietly broke
+font stacks and label offsets in most real styles.
 
 - ✨ `text-variable-anchor` + `text-radial-offset`: labels try alternate
   anchors before being dropped on collision — dense areas keep far more
