@@ -22,6 +22,11 @@
   tile enqueued after the first batch; a decode isolate killed by the
   OS no longer strands its tile and shrinks the pool — it is replaced
   and the tile retried.
+- 🐛 Turning `showLabels` on now lays out labels on the tiles already
+  on screen (they used to appear only on tiles loaded afterwards), and
+  changing `sprites` re-rasterizes live tiles so fill/line patterns
+  from the old atlas don't linger. Neither refresh refetches or
+  re-fades anything.
 
 ## 2.1.1
 

@@ -263,15 +263,37 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   @override
   void didUpdateWidget(covariant VectorTileLayer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    var refresh = false;
     if (oldWidget.sprites != widget.sprites) {
+      // Fill/line patterns are baked into the rasters, so live tiles
+      // must be re-rasterized with the new atlas.
       _patterns?.dispose();
       _patterns = null;
+      refresh = true;
     }
+    // Symbols are laid out at rasterize time; the paint pass checks the
+    // flag per frame, so disabling hides labels immediately but enabling
+    // needs the live tiles re-laid-out.
+    if (widget.showLabels && !oldWidget.showLabels) refresh = true;
     if (oldWidget.theme != widget.theme ||
         oldWidget.tileProviders != widget.tileProviders ||
         oldWidget.rasterSources != widget.rasterSources ||
         oldWidget.tileOffset.zoomOffset != widget.tileOffset.zoomOffset) {
       _buildStores();
+    } else if (refresh) {
+      _refreshTiles();
+    }
+  }
+
+  /// Re-rasterizes every live tile from already-decoded data — for
+  /// widget changes that alter what is baked into the raster or the
+  /// symbol set (sprites, showLabels) without changing the data. The
+  /// old imagery stays on screen until its replacement is ready, and
+  /// nothing re-fades.
+  void _refreshTiles() {
+    for (final tile in _tiles.values) {
+      tile.renderedWith = null; // identical sources must still re-enqueue
+      unawaited(_loadTile(tile, 0, fadeIn: false));
     }
   }
 
@@ -335,7 +357,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       if (_tiles.containsKey(key)) continue;
       final tile = _DisplayTile(key);
       _tiles[key] = tile;
-      unawaited(_loadTile(tile, layout));
+      unawaited(_loadTile(tile, layout.priorityOf(key)));
     }
 
     _pruneRetained(camera, layout);
@@ -369,9 +391,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
   }
 
-  Future<void> _loadTile(_DisplayTile tile, GridLayout layout) async {
+  Future<void> _loadTile(
+    _DisplayTile tile,
+    int priority, {
+    bool fadeIn = true,
+  }) async {
     final generation = _generation;
-    final priority = layout.priorityOf(tile.key);
     final sources = <String, PreparedTile>{};
     final pending = <String, Future<PreparedTile?>>{};
     final rasters = <String, RasterTile>{};
@@ -481,14 +506,17 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       tile.renderedWith = resolved;
       tile.retryAttempt = 0; // progress restores the retry budget
       _enqueueRaster(tile, sources,
-          rasters: rasters, provisional: false, priority: priority);
+          rasters: rasters,
+          provisional: false,
+          priority: priority,
+          fadeIn: fadeIn);
     }
 
     if (missing && tile.retryAttempt < _maxLoadRetries) {
       tile.retryAttempt++;
       tile.scheduleRetry(_loadRetryDelay, () {
         if (!mounted || generation != _generation) return;
-        unawaited(_loadTile(tile, layout));
+        unawaited(_loadTile(tile, priority));
       });
     }
   }
@@ -506,12 +534,14 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     Map<String, RasterTile> rasters = const {},
     required bool provisional,
     required int priority,
+    bool fadeIn = true,
   }) {
     final job = _RasterJob(
         sources: sources,
         rasters: rasters,
         provisional: provisional,
-        priority: priority);
+        priority: priority,
+        fadeIn: fadeIn);
     if (tile.cancellation.isCancelled) {
       job.dispose();
       return;
@@ -546,7 +576,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       final job = _rasterQueue.remove(tile)!;
       if (!tile.cancellation.isCancelled) {
         _rasterizeNow(tile, job.sources,
-            rasters: job.rasters, provisional: job.provisional);
+            rasters: job.rasters,
+            provisional: job.provisional,
+            fadeIn: job.fadeIn);
         processed++;
       }
       job.dispose();
@@ -559,6 +591,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     Map<String, PreparedTile> sources, {
     Map<String, RasterTile> rasters = const {},
     required bool provisional,
+    bool fadeIn = true,
   }) {
     final styleZoom = _styleZoomOf(tile.key.z.toDouble());
     final data = DisplayTileData(
@@ -579,7 +612,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       image: image,
       symbols: symbols,
       provisional: provisional,
-      fadeIn: !provisional,
+      fadeIn: fadeIn,
     );
     _repaint.trigger();
     _ensureFadeTicker();
@@ -640,11 +673,16 @@ class _RasterJob {
   final bool provisional;
   final int priority;
 
+  /// False for refreshes of already-visible content (sprite or label
+  /// changes), where restarting the fade would flash the background.
+  final bool fadeIn;
+
   const _RasterJob({
     required this.sources,
     required this.rasters,
     required this.provisional,
     required this.priority,
+    required this.fadeIn,
   });
 
   void dispose() {
