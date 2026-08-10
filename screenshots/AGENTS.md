@@ -11,21 +11,15 @@ files **ship in the published package** (pub.dev requires the files inside
 the tarball; limit is 5 images, ≤ 4 MB each). The first entry doubles as
 the package thumbnail in pub.dev search results.
 
-Two sets live here: `*-framed.webp` (portrait renders inside an Apple
-iPhone 17 bezel — these are what pub.dev shows) and the flat landscape
-originals, which stay in the repo for READMEs/docs but are excluded from
-the tarball via `.pubignore`.
+The images are portrait renders inside an Apple iPhone 17 bezel.
 
 ## Key Files
 
 | File | Description |
 |------|-------------|
-| `munich-liberty-framed.webp` | Munich old town, OpenFreeMap Liberty, zoom 16, in the iPhone bezel |
-| `zermatt-hillshade-framed.webp` | Zermatt, Liberty + Esri World Hillshade raster overlay, zoom 14.5, in the iPhone bezel |
-| `munich-dark-framed.webp` | Munich old town + Isar, OpenFreeMap Fiord (dark), zoom 15, in the iPhone bezel |
-| `munich-liberty.webp` | Flat landscape original (2880×1688), zoom 16 |
-| `zermatt-hillshade.webp` | Flat landscape original, zoom 14.3 |
-| `munich-dark.webp` | Flat landscape original, zoom 15.2 |
+| `munich-liberty-framed.webp` | Munich old town, OpenFreeMap Liberty, zoom 16 |
+| `zermatt-hillshade-framed.webp` | Zermatt, Liberty + Esri World Hillshade raster overlay, zoom 14.5 |
+| `munich-dark-framed.webp` | Munich old town + Isar, OpenFreeMap Fiord (dark), zoom 15 |
 
 ## For AI Agents
 
@@ -51,15 +45,14 @@ pipeline is key-free.
    - *munich-liberty*: `https://tiles.openfreemap.org/styles/liberty`
      with `center: [11.5755, 48.1373]`, `zoom: 16`.
    - *zermatt-hillshade*: Liberty with `center: [7.7445, 46.0125]`,
-     `zoom: 14.5` (14.3 for the landscape original), plus a raster source
+     `zoom: 14.5`, plus a raster source
      `https://services.arcgisonline.com/arcgis/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}`
      (`tileSize: 256`, `maxzoom: 15`) and a `raster` layer
      (`raster-opacity: 0.45`) inserted directly before the first `water*`
      layer.
    - *munich-dark*: `https://tiles.openfreemap.org/styles/fiord` with
-     `center: [11.5815, 48.135]`, `zoom: 15` (15.2 for the landscape
-     original). (OpenFreeMap's `dark` style renders too flat for a
-     gallery image; Fiord reads better.)
+     `center: [11.5815, 48.135]`, `zoom: 15`. (OpenFreeMap's `dark`
+     style renders too flat for a gallery image; Fiord reads better.)
 
    For the framed portrait shots, additionally set compact `attribution`
    strings on the sources (`OpenMapTiles © OpenStreetMap`, hillshade
@@ -71,14 +64,10 @@ pipeline is key-free.
 3. **Capture with Playwright** (chromium): copy the shot's JSON to
    `build/web/shot-style.json`, open `http://localhost:8123/` in a fresh
    browser context, wait for network idle plus ~15 s settle, then
-   screenshot with a clip that crops the 56 px AppBar:
-
-   - Landscape originals: viewport 1440×900, `deviceScaleFactor: 2`,
-     clip `{0, 56, 1440, 844}` → 2880×1688.
-   - Framed portrait: viewport 603×1367, `deviceScaleFactor: 2`, clip
-     `{0, 56, 603, 1311}` → 1206×2622, the iPhone 17's native screen
-     resolution (2× rather than the device's 3× keeps labels small and
-     the attribution line short enough).
+   screenshot with viewport 603×1367, `deviceScaleFactor: 2` and clip
+   `{0, 56, 603, 1311}` (crops the 56 px AppBar) → 1206×2622, the
+   iPhone 17's native screen resolution (2× rather than the device's 3×
+   keeps labels small and the attribution line short enough).
 
 4. **Bezel**: Apple's official product bezels (Apple Design Resources,
    direct download
@@ -104,11 +93,10 @@ pipeline is key-free.
 ### Working In This Directory
 
 - Adding or renaming an image means updating `screenshots:` in
-  `pubspec.yaml`, the table above, and — for flat originals — the
-  exclusion list in `.pubignore`; pubspec descriptions are capped at
+  `pubspec.yaml` and the table above; pubspec descriptions are capped at
   160 characters by pub.dev.
 - Keep the first pubspec entry the strongest image — it is the search
   thumbnail.
 - Verify with `dart pub publish --dry-run` that exactly the framed
-  `.webp` files are in the file list (this `AGENTS.md` and the flat
-  originals must stay excluded via `.pubignore`).
+  `.webp` files are in the file list (this `AGENTS.md` must stay
+  excluded via `.pubignore`).

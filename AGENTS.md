@@ -37,7 +37,7 @@ collision pass; cancellation is a **state**, never an exception; every
 | `test/` | Unit and widget tests, no mocking framework (see `test/AGENTS.md`) |
 | `example/` | Runnable example app driven by `--dart-define` (see `example/AGENTS.md`) |
 | `doc/` | `ARCHITECTURE.md` — the prose companion to this file; update it when the data flow, rendering model, concurrency model or cache layers change |
-| `screenshots/` | pub.dev gallery images (WebP, framed in an iPhone bezel), wired up via `screenshots:` in `pubspec.yaml` — the framed set ships in the package, the flat originals stay repo-only; regeneration recipe in `screenshots/AGENTS.md` |
+| `screenshots/` | pub.dev gallery images (WebP, framed in an iPhone bezel), wired up via `screenshots:` in `pubspec.yaml` — these ship in the package; regeneration recipe in `screenshots/AGENTS.md` |
 
 ## For AI Agents
 
