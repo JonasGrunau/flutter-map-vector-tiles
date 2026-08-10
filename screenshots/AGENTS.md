@@ -90,7 +90,12 @@ pipeline is key-free.
    by scanning the alpha channel from the image centre outward). Composite
    in a Playwright page: map capture positioned at the cutout, bezel PNG
    on top, screenshot with `omitBackground: true` for transparent
-   corners. Apple's license permits using the bezels to showcase your
+   corners. The map must be clipped by a pixel-exact mask of the screen
+   region — flood-fill the bezel's transparent area from the centre and
+   invert its edge alpha (CSS `mask-image`). The image corners *outside*
+   the shell are transparent too, and the screen cutout is a squircle, so
+   an unmasked rectangle pokes out past the shell's rounded corners and a
+   CSS `border-radius` approximation clips wrongly. Apple's license permits using the bezels to showcase your
    app; keep the framed shots on the latest-generation device.
 
 5. **Convert**: `cwebp -q 82 -m 6 shot.png -o shot.webp` (alpha is
