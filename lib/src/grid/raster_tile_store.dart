@@ -8,6 +8,7 @@ import '../core/single_flight.dart';
 import '../core/tile_key.dart';
 import '../provider/vector_tile_provider.dart';
 import '../tile_providers.dart';
+import 'tile_store.dart';
 
 /// A decoded raster tile. The image handle is owned by whoever holds the
 /// [RasterTile] — call [dispose] when done; the underlying pixels stay
@@ -46,8 +47,6 @@ class RasterTileStore {
   final _failedAt = <TileKey, DateTime>{};
   final _notFound = <TileKey>{};
   var _disposed = false;
-
-  static const _errorRetryDelay = Duration(seconds: 15);
 
   RasterTileStore({
     required this.source,
@@ -122,7 +121,7 @@ class RasterTileStore {
 
     final failed = _failedAt[dataKey];
     if (failed != null &&
-        DateTime.now().difference(failed) < _errorRetryDelay) {
+        DateTime.now().difference(failed) < TileStore.errorRetryDelay) {
       return null;
     }
 
@@ -131,16 +130,26 @@ class RasterTileStore {
     // live tiles still await.
     final loaded = await _inFlight.run(
       dataKey,
-      (token) => _load(dataKey, token),
+      (token) async {
+        final master = await _load(dataKey, token);
+        if (master == null) return null;
+        // The shared cache owns [master], and a concurrent completion
+        // can evict — and dispose — it before the waiters below resume.
+        // Hand the flight its own clone instead: waiters clone from it
+        // during the completion microtask cascade, strictly before the
+        // event-loop task scheduled here releases it.
+        final handout = master.clone();
+        unawaited(Future<void>(handout.dispose));
+        return handout;
+      },
       cancellation: cancellation,
     );
-    if (loaded == null) return null;
-    // The master lives in the shared cache; every caller gets a clone.
-    // Re-read it (synchronously — no suspension before the clone) so a
-    // concurrent eviction can never hand out a disposed image.
-    final master = _memory.get(dataKey);
-    return master == null ? null : RasterTile(dataKey, master.clone());
+    return loaded == null ? null : RasterTile(dataKey, loaded.clone());
   }
+
+  /// Whether the source has said this tile does not exist — a permanent
+  /// answer that retrying cannot change.
+  bool knownAbsent(TileKey dataKey) => _notFound.contains(dataKey);
 
   Future<ui.Image?> _load(
     TileKey dataKey,

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' hide Theme;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -155,6 +156,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   var _fading = false;
   int? _currentZoom;
   var _generation = 0;
+
+  /// Bounded retries for tiles that finalized with a source missing
+  /// after a transient failure. Fired just past the stores' failure
+  /// throttle, so each attempt can actually reach the network again.
+  static const _maxLoadRetries = 4;
+  Duration get _loadRetryDelay =>
+      TileStore.errorRetryDelay + const Duration(seconds: 1);
 
   @override
   void initState() {
@@ -443,8 +451,46 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
       return;
     }
-    _enqueueRaster(tile, sources,
-        rasters: rasters, provisional: false, priority: priority);
+
+    // A source that was awaited but never arrived failed transiently
+    // (network loss, 5xx) — NotFound answers arrive as empty tiles, and
+    // known-absent rasters are permanent. The stores throttle failed
+    // keys but never re-ask on their own, so without a retry here the
+    // tile would stay blank or partial until recreated.
+    final missing = pending.keys.any((id) => !sources.containsKey(id)) ||
+        pendingRasters.keys.any((id) {
+          if (rasters.containsKey(id)) return false;
+          final store = _rasterStores[id]!;
+          final dataKey =
+              store.dataKeyFor(tile.key, widget.tileOffset.zoomOffset);
+          return dataKey != null && !store.knownAbsent(dataKey);
+        });
+
+    final resolved = {
+      ...sources.keys,
+      for (final id in rasters.keys) 'raster:$id',
+    };
+    if (setEquals(tile.renderedWith, resolved)) {
+      // A retry that recovered nothing: re-rasterizing identical content
+      // would only restart the fade. _enqueueRaster would take ownership
+      // of the handles, so release them here instead.
+      for (final raster in rasters.values) {
+        raster.dispose();
+      }
+    } else {
+      tile.renderedWith = resolved;
+      tile.retryAttempt = 0; // progress restores the retry budget
+      _enqueueRaster(tile, sources,
+          rasters: rasters, provisional: false, priority: priority);
+    }
+
+    if (missing && tile.retryAttempt < _maxLoadRetries) {
+      tile.retryAttempt++;
+      tile.scheduleRetry(_loadRetryDelay, () {
+        if (!mounted || generation != _generation) return;
+        unawaited(_loadTile(tile, layout));
+      });
+    }
   }
 
   /// Rasterization happens on the UI thread (`Picture.toImageSync`), so
@@ -619,7 +665,18 @@ class _DisplayTile {
   var isProvisional = false;
   DateTime? readyAt;
 
+  /// The source ids baked into the last final raster, and how many
+  /// retries were spent recovering the missing ones — see `_loadTile`.
+  Set<String>? renderedWith;
+  var retryAttempt = 0;
+  Timer? _retryTimer;
+
   _DisplayTile(this.key);
+
+  void scheduleRetry(Duration delay, void Function() run) {
+    _retryTimer?.cancel();
+    _retryTimer = Timer(delay, run);
+  }
 
   void setResult({
     required ui.Image? image,
@@ -649,6 +706,7 @@ class _DisplayTile {
   }
 
   void dispose() {
+    _retryTimer?.cancel();
     cancellation.cancel();
     image?.dispose();
     image = null;

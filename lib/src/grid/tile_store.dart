@@ -48,7 +48,10 @@ class TileStore {
   final _failedAt = <TileKey, DateTime>{};
   var _disposed = false;
 
-  static const _errorRetryDelay = Duration(seconds: 15);
+  /// How long a failed key is throttled before another attempt may hit
+  /// the network. The layer schedules its load retries just past this.
+  /// Shared with [RasterTileStore]. Mutable for tests only.
+  static var errorRetryDelay = const Duration(seconds: 15);
 
   TileStore({
     required this.provider,
@@ -137,8 +140,7 @@ class TileStore {
     if (cached != null) return Future.value(cached);
 
     final failed = _failedAt[dataKey];
-    if (failed != null &&
-        DateTime.now().difference(failed) < _errorRetryDelay) {
+    if (failed != null && DateTime.now().difference(failed) < errorRetryDelay) {
       return Future.value(null);
     }
 

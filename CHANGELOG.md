@@ -8,6 +8,15 @@
   tile waiting on it permanently blank until recreated. Loads now poll
   a token joined over *all* waiters — cancelled only when nobody is
   left — in both tile stores and both network providers.
+- 🐛 Tiles whose source failed transiently (network loss, 5xx) now
+  retry: visible tiles re-request missing sources a bounded number of
+  times, just past the stores' failure throttle, instead of staying
+  blank or partial until the zoom level changes. Already-rendered
+  content is not re-rasterized when a retry recovers nothing.
+- 🐛 A raster tile load could return no image despite succeeding when
+  the decoded image was evicted by a concurrent load in the same
+  instant; callers now receive a handle that cannot be evicted out
+  from under them.
 
 ## 2.1.1
 
