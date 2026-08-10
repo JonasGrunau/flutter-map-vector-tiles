@@ -61,16 +61,22 @@ class RasterTileStore {
             costOf: (image) => image.width * image.height * 4,
             onEvict: (_, image) => image.dispose(),
           ),
-        );
+        )..setMaxCost(memoryCacheMaxBytes);
 
   /// Empties every shared decoded-image cache. For memory-pressure
   /// handling and tests.
+  ///
+  /// The caches stay registered — see [TileStore.clearMemoryCaches]:
+  /// dropping the registry entry would orphan a cache that in-flight
+  /// loads keep filling with images no later clear could release.
   static void clearMemoryCaches() {
     for (final cache in _memoryCaches.values) {
       cache.clear();
     }
-    _memoryCaches.clear();
   }
+
+  /// Applies a new byte budget to the shared cache (latest layer wins).
+  set memoryCacheMaxBytes(int bytes) => _memory.setMaxCost(bytes);
 
   /// Resolves the data tile key serving [displayKey] with [zoomOffset]
   /// applied. 256px sources are fetched one level deeper than 512px ones

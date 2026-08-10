@@ -3,7 +3,7 @@
 /// resources (images).
 class LruCache<K, V> {
   final int maxEntries;
-  final int? maxCost;
+  int? _maxCost;
   final int Function(V value)? costOf;
   final void Function(K key, V value)? onEvict;
 
@@ -12,10 +12,20 @@ class LruCache<K, V> {
 
   LruCache({
     required this.maxEntries,
-    this.maxCost,
+    int? maxCost,
     this.costOf,
     this.onEvict,
-  }) : assert(maxEntries > 0);
+  })  : _maxCost = maxCost,
+        assert(maxEntries > 0);
+
+  int? get maxCost => _maxCost;
+
+  /// Adjusts the cost budget, evicting immediately when the new budget
+  /// is tighter than the current contents.
+  void setMaxCost(int? value) {
+    _maxCost = value;
+    _shrink();
+  }
 
   int get length => _entries.length;
   int get totalCost => _totalCost;
@@ -77,8 +87,9 @@ class LruCache<K, V> {
   Iterable<K> get keys => _entries.keys;
 
   void _shrink() {
+    final maxCost = _maxCost;
     while (_entries.length > maxEntries ||
-        (maxCost != null && _totalCost > maxCost! && _entries.length > 1)) {
+        (maxCost != null && _totalCost > maxCost && _entries.length > 1)) {
       final key = _entries.keys.first;
       final value = _entries.remove(key) as V;
       _totalCost -= costOf?.call(value) ?? 0;

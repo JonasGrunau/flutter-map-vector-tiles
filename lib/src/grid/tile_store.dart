@@ -39,8 +39,8 @@ class TileStore {
   /// screen is mounted, and re-decoding tiles that were already in memory a
   /// moment ago is the bulk of that delay. Entries therefore survive
   /// [dispose] and live for the process lifetime, bounded by the byte budget
-  /// of whichever store created the cache first. [clearMemoryCaches] drops
-  /// them.
+  /// of the most recently constructed store over the source.
+  /// [clearMemoryCaches] drops them.
   static final _memoryCaches = <String, LruCache<TileKey, PreparedTile>>{};
 
   final LruCache<TileKey, PreparedTile> _memory;
@@ -67,7 +67,7 @@ class TileStore {
             maxCost: memoryCacheMaxBytes,
             costOf: (tile) => tile.byteSize,
           ),
-        );
+        )..setMaxCost(memoryCacheMaxBytes);
 
   /// Identifies a shared memory cache.
   ///
@@ -91,12 +91,18 @@ class TileStore {
 
   /// Empties every shared decoded-tile cache, so the next map open re-reads
   /// from disk. For memory-pressure handling and tests.
+  ///
+  /// The caches stay registered: live stores hold references to them,
+  /// and dropping the registry entry would orphan a cache that
+  /// in-flight loads keep filling — unreachable by any later clear.
   static void clearMemoryCaches() {
     for (final cache in _memoryCaches.values) {
       cache.clear();
     }
-    _memoryCaches.clear();
   }
+
+  /// Applies a new byte budget to the shared cache (latest layer wins).
+  set memoryCacheMaxBytes(int bytes) => _memory.setMaxCost(bytes);
 
   /// Resolves the data tile key serving [displayKey] with [zoomOffset]
   /// applied, clamped to the provider's zoom range. Returns null when

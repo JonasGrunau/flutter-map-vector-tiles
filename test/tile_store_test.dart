@@ -156,6 +156,26 @@ void main() {
     river.dispose();
   });
 
+  test('clearMemoryCaches reaches tiles decoded after a previous clear',
+      () async {
+    // Regression: clearing used to also drop the LruCache objects from
+    // the static registry while live stores kept filling them — those
+    // orphaned entries were unreachable by any later clear.
+    final s = store();
+    await s.obtain(const TileKey(2, 1, 1));
+    TileStore.clearMemoryCaches();
+    expect(s.peek(const TileKey(2, 1, 1)), isNull);
+
+    final again = await s.obtain(const TileKey(2, 1, 1));
+    expect(again, isNotNull);
+    expect(s.peek(const TileKey(2, 1, 1)), isNotNull);
+
+    TileStore.clearMemoryCaches();
+    expect(s.peek(const TileKey(2, 1, 1)), isNull,
+        reason: 'the refilled cache must still be reachable by clear');
+    s.dispose();
+  });
+
   test('memory providers with identical data share the decoded cache', () {
     // The derived key is deterministic, so equal data still shares.
     final tiles = {const TileKey(2, 1, 1): _tileBytes()};

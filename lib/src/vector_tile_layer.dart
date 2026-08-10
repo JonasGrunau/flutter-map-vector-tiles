@@ -89,7 +89,9 @@ class VectorTileLayer extends StatefulWidget {
   /// to the in-memory cache and the browser's own HTTP cache.
   final Future<String> Function()? cachePath;
 
-  /// Memory budget for decoded tile data, per source.
+  /// Memory budget for decoded tile data, per source. The caches are
+  /// shared process-wide, so when several layers (or successive mounts)
+  /// use the same source, the most recently applied value wins.
   final int memoryCacheMaxBytes;
 
   /// Duration of the fade-in of newly rasterized tiles.
@@ -275,6 +277,14 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // flag per frame, so disabling hides labels immediately but enabling
     // needs the live tiles re-laid-out.
     if (widget.showLabels && !oldWidget.showLabels) refresh = true;
+    if (oldWidget.memoryCacheMaxBytes != widget.memoryCacheMaxBytes) {
+      for (final store in _stores.values) {
+        store.memoryCacheMaxBytes = widget.memoryCacheMaxBytes;
+      }
+      for (final store in _rasterStores.values) {
+        store.memoryCacheMaxBytes = widget.memoryCacheMaxBytes;
+      }
+    }
     if (oldWidget.theme != widget.theme ||
         oldWidget.tileProviders != widget.tileProviders ||
         oldWidget.rasterSources != widget.rasterSources ||

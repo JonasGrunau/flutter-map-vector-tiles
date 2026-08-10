@@ -54,6 +54,14 @@
   (deterministic, so identical data still shares); pass an explicit
   `cacheKey` to control sharing. Disk entries cached under the old
   constant key are re-fetched once.
+- 🐛 `VectorTileLayer.clearMemoryCache` during an open map no longer
+  orphans the caches that in-flight loads keep refilling — refilled
+  entries used to be unreachable by every later clear (a bounded
+  `ui.Image` leak, worst on exactly the memory-pressure path the call
+  serves). `memoryCacheMaxBytes` now actually applies when the shared
+  cache for a source already exists (latest layer wins, including via
+  `didUpdateWidget`); it used to be fixed by whichever layer mounted
+  first in the process.
 
 ## 2.1.1
 

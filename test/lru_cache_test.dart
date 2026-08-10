@@ -56,4 +56,26 @@ void main() {
     expect(cache.length, 0);
     expect(evicted, unorderedEquals(['a', 'b']));
   });
+
+  test('setMaxCost evicts immediately when the budget tightens', () {
+    final evicted = <String>[];
+    final cache = LruCache<String, int>(
+      maxEntries: 10,
+      maxCost: 100,
+      costOf: (v) => v,
+      onEvict: (k, _) => evicted.add(k),
+    );
+    cache.put('a', 40);
+    cache.put('b', 40);
+    expect(cache.length, 2);
+
+    cache.setMaxCost(50); // 80 > 50: 'a' (LRU) must go
+    expect(evicted, ['a']);
+    expect(cache.peek('b'), 40);
+
+    cache.setMaxCost(200); // widening evicts nothing further
+    cache.put('c', 100);
+    expect(cache.length, 2);
+    expect(evicted, ['a']);
+  });
 }
