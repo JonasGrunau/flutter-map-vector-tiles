@@ -7,6 +7,7 @@ import '../core/cancellation.dart';
 import '../core/single_flight.dart';
 import '../core/tile_key.dart';
 import '../core/tile_zoom.dart';
+import '../logger.dart';
 import '../pipeline/executor/executor.dart';
 import '../pipeline/prepared_tile.dart';
 import '../pipeline/tile_processor.dart';
@@ -22,6 +23,7 @@ import 'tile_byte_loader.dart';
 class TileStore {
   final VectorTileProvider provider;
   final TilePrepareExecutor executor;
+  final Logger logger;
   final TileByteLoader _bytes;
 
   /// Per source-layer property keep-lists derived from the theme.
@@ -58,6 +60,7 @@ class TileStore {
     required this.layerProperties,
     Future<ByteCache?>? diskCache,
     int memoryCacheMaxBytes = 32 * 1024 * 1024,
+    this.logger = const Logger.noop(),
   })  : _bytes = TileByteLoader(provider, diskCache ?? Future.value()),
         _memory = _memoryCaches.putIfAbsent(
           _memorySignature(provider, layerProperties),
@@ -156,7 +159,7 @@ class TileStore {
         final empty =
             PreparedTile(key: dataKey, layers: const {}, byteSize: 64);
         _memory.put(dataKey, empty);
-        if (stale) unawaited(_revalidate(dataKey, Uint8List(0), priority));
+        if (stale) _startRevalidation(dataKey, Uint8List(0), priority);
         return empty;
       case TileBytesLoaded(:final bytes, :final stale):
         final prepared = await executor.prepare(
@@ -175,20 +178,63 @@ class TileStore {
           if (!cancellation.isCancelled) {
             // Decode failure (corrupt tile): throttle retries.
             _bytes.noteFailure(dataKey);
+            // Corrupt *expired* bytes poison the tile: every retry
+            // re-reads the same disk entry and fails identically, and
+            // the entry is only rewritten by a revalidation. So it runs
+            // here too, even though there is nothing to display yet —
+            // it is the one path that can recover this tile.
+            if (stale) _startRevalidation(dataKey, bytes, priority);
           }
           return null;
         }
         _memory.put(dataKey, prepared);
         _bytes.noteSuccess(dataKey);
-        if (stale) unawaited(_revalidate(dataKey, bytes, priority));
+        if (stale) _startRevalidation(dataKey, bytes, priority);
         return prepared;
     }
   }
 
+  /// Revalidates [dataKey] if its disk entry has expired — for callers
+  /// displaying content rendered from it without going through
+  /// [obtain], which is where the freshness check normally lives.
+  ///
+  /// Data tiles still in the memory cache are skipped: they were loaded
+  /// during this process, so [obtain]'s path already checked them.
+  /// Anything else costs one disk lookup, and only decodes when the
+  /// refetch actually brings different bytes.
+  void revalidateIfStale(TileKey dataKey) {
+    if (_disposed || _memory.get(dataKey) != null) return;
+    _detach(_revalidateIfStale(dataKey), dataKey);
+  }
+
+  Future<void> _revalidateIfStale(TileKey dataKey) async {
+    final expired = await _bytes.expiredBytes(dataKey);
+    if (expired == null || _disposed) return;
+    return _revalidate(dataKey, expired, 0);
+  }
+
+  /// Starts a background revalidation, detached from the load that
+  /// triggered it.
+  void _startRevalidation(TileKey dataKey, Uint8List previous, int priority) =>
+      _detach(_revalidate(dataKey, previous, priority), dataKey);
+
+  /// Runs detached background work.
+  ///
+  /// Nothing awaits it, so an exception would surface as an unhandled
+  /// asynchronous error rather than as a failed tile. Providers are
+  /// contracted to answer with [TileResponseError] instead of throwing;
+  /// one that breaks that contract degrades to a warning, in keeping
+  /// with failure being a state and never an exception.
+  void _detach(Future<void> work, TileKey dataKey) {
+    unawaited(work.catchError((Object e) {
+      logger.warn('revalidation of $dataKey failed: $e');
+    }));
+  }
+
   /// Background revalidation of a stale entry [_load] just served
   /// (stale-while-revalidate): on changed content the fresh tile
-  /// replaces the memory entry and [onRefreshed] fires; when the fetch
-  /// fails or the bytes are unchanged, the stale tile simply stays.
+  /// replaces the memory entry and [onRefreshed] fires; when the bytes
+  /// are unchanged the stale tile simply stays.
   Future<void> _revalidate(
     TileKey dataKey,
     Uint8List previous,
@@ -199,6 +245,11 @@ class TileStore {
     if (result == null || _disposed) return;
     switch (result) {
       case TileBytesUnavailable():
+        // The check never reached the source. An absence served from an
+        // expired sentinel is therefore still unconfirmed: drop the
+        // placeholder so a later load re-checks it (throttled) instead
+        // of treating stale emptiness as this session's answer.
+        if (previous.isEmpty) _memory.remove(dataKey);
         return;
       case TileBytesAbsent():
         // The source stopped serving this tile: replace the stale
@@ -224,6 +275,9 @@ class TileStore {
           return;
         }
         _memory.put(dataKey, prepared);
+        // The replacement decoded: clear the throttle a corrupt or
+        // failed predecessor may have set.
+        _bytes.noteSuccess(dataKey);
     }
     onRefreshed?.call(dataKey);
   }

@@ -308,7 +308,8 @@ class TileRasterizer {
               final clipped = clipPolyline(part, clip, close: closeRuns);
               for (var r = 0; r < clipped.runs.length; r++) {
                 final sub = Path();
-                _addRun(sub, clipped.runs[r], transform, close: false);
+                _addRun(sub, clipped.runs[r], transform,
+                    close: clipped.closed[r]);
                 painted |= _stampLinePattern(canvas, sub, image, width, opacity,
                     phaseLogicalPx:
                         clipped.startDistances[r] * transform.scale);
@@ -338,7 +339,8 @@ class TileRasterizer {
           for (var r = 0; r < clipped.runs.length; r++) {
             if (dash != null) {
               final sub = Path();
-              _addRun(sub, clipped.runs[r], transform, close: false);
+              _addRun(sub, clipped.runs[r], transform,
+                  close: clipped.closed[r]);
               path.addPath(
                 _dashPath(sub, dash, style.width,
                     phaseLogicalPx:
@@ -346,7 +348,8 @@ class TileRasterizer {
                 Offset.zero,
               );
             } else {
-              _addRun(path, clipped.runs[r], transform, close: false);
+              _addRun(path, clipped.runs[r], transform,
+                  close: clipped.closed[r]);
             }
           }
         }

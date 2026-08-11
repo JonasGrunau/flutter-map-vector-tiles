@@ -10,7 +10,10 @@ enum RenderPhase { raster, symbols }
 /// - at most one job per (tile, phase); a replaced job is handed to
 ///   [onDrop] (jobs own resources such as raster image handles);
 /// - accepting a raster job drops the tile's pending symbols job — the
-///   raster re-enqueues symbol extraction from its own, newer sources;
+///   raster re-enqueues symbol extraction from its own, newer sources.
+///   A caller that must not lose those symbols therefore has to reject
+///   the raster before enqueueing it ([pendingRaster], [pendingSymbols]
+///   report what is queued);
 /// - [pop] is phase-major (all rasters before any symbols), then by
 ///   ascending priority (viewport centre first). The linear scan is
 ///   fine at queue sizes of a zoom-level change (≤ ~50 entries).
@@ -27,6 +30,10 @@ class RenderJobQueue<T, J> {
   /// The tile's queued raster job, for replacement policies (a queued
   /// final raster must not be displaced by a provisional one).
   J? pendingRaster(T key) => _raster[key]?.job;
+
+  /// The tile's queued symbols job — same purpose as [pendingRaster],
+  /// for the phase whose job an incoming raster would supersede.
+  J? pendingSymbols(T key) => _symbols[key]?.job;
 
   void enqueueRaster(T key, int priority, J job) {
     final existingRaster = _raster.remove(key);

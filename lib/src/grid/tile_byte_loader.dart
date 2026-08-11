@@ -56,6 +56,14 @@ class TileByteLoader {
   final _failedAt = <TileKey, DateTime>{};
   final _refreshing = <TileKey>{};
 
+  /// Failed revalidations, throttled separately from [_failedAt].
+  ///
+  /// A failed *load* must not block serving a stale entry, but a failed
+  /// *refresh* must still be rate-limited: an expired area browsed
+  /// offline re-serves its stale entries on every memory-cache miss, and
+  /// each one would otherwise start another provider request.
+  final _refreshFailedAt = <TileKey, DateTime>{};
+
   /// How long a failed key is throttled before another attempt may hit
   /// the network. The layer schedules its load retries just past this.
   /// Mutable for tests only.
@@ -83,6 +91,7 @@ class TileByteLoader {
   void dispose() {
     _failedAt.clear();
     _refreshing.clear();
+    _refreshFailedAt.clear();
   }
 
   /// Loads [key]'s bytes: fresh disk cache entry, then an expired one
@@ -130,13 +139,18 @@ class TileByteLoader {
     }
 
     final response = await provider.load(key, cancellation: cancellation);
-    if (disposed()) return const TileBytesUnavailable();
+    // What arrived is written to disk before disposal is honoured: a map
+    // closed while its last screenful was in flight has already paid for
+    // those bytes, and discarding them makes the next open refetch every
+    // one of them.
     switch (response) {
       case TileResponseData():
         unawaited(cache?.put(cacheKey, response.bytes));
+        if (disposed()) return const TileBytesUnavailable();
         return TileBytesLoaded(response.bytes);
       case TileResponseNotFound():
         unawaited(cache?.put(cacheKey, Uint8List(0)));
+        if (disposed()) return const TileBytesUnavailable();
         return const TileBytesAbsent();
       case TileResponseCancelled():
         return const TileBytesUnavailable();
@@ -145,15 +159,25 @@ class TileByteLoader {
         // but another loader sharing this disk cache (two styles over
         // one source) may have written the key while this request was
         // in flight — better that entry than a blank tile.
-        bytes = await cache?.getStale(cacheKey);
-        if (bytes != null) {
-          return bytes.isEmpty
-              ? const TileBytesAbsent()
-              : TileBytesLoaded(bytes);
-        }
         _failedAt[key] = DateTime.now();
-        return const TileBytesUnavailable();
+        bytes = await cache?.getStale(cacheKey);
+        if (disposed() || bytes == null) return const TileBytesUnavailable();
+        return bytes.isEmpty ? const TileBytesAbsent() : TileBytesLoaded(bytes);
     }
+  }
+
+  /// The expired disk bytes for [key], or null when its entry is still
+  /// fresh, is missing, or disk caching is off.
+  ///
+  /// For callers that display content built from this tile without
+  /// going through [load] — they would otherwise never notice the entry
+  /// expiring. One disk lookup: no decode, no network.
+  Future<Uint8List?> expiredBytes(TileKey key) async {
+    final cache = await diskCache;
+    if (cache == null) return null;
+    final cacheKey = cacheKeyOf(key);
+    if (await cache.get(cacheKey) != null) return null; // still fresh
+    return cache.getStale(cacheKey);
   }
 
   /// Revalidates an expired entry that [load] served stale: fetches
@@ -163,10 +187,20 @@ class TileByteLoader {
   /// Returns the replacement content when it differs from [previous] —
   /// [TileBytesLoaded] for new data, [TileBytesAbsent] when the source
   /// now answers not-found — and null when nothing changed: the bytes
-  /// were identical (the disk entry is fresh again either way), the
-  /// fetch failed, or it was cancelled. A failure is *not* throttled:
-  /// the stale entry stays the best answer, and a later [load] must not
-  /// be blocked from serving it.
+  /// were identical, or the source confirmed the absence (the disk entry
+  /// is fresh again either way).
+  ///
+  /// [TileBytesUnavailable] means the check itself did not happen — the
+  /// fetch failed or was cancelled — so the stale content is still
+  /// *unconfirmed*. Callers that recorded something provisionally on the
+  /// strength of stale bytes must undo it; a failed load is never
+  /// promoted to a confirmed answer.
+  ///
+  /// A failed refresh does not throttle [load]: the stale entry stays the
+  /// best answer and must remain servable. It does throttle further
+  /// refreshes of the same key, so re-serving an expired area (every
+  /// memory-cache miss re-enters this path) cannot spin up one request
+  /// per miss.
   ///
   /// At most one refresh per key runs at a time; concurrent calls
   /// resolve to null.
@@ -176,26 +210,37 @@ class TileByteLoader {
     CancellationToken cancellation,
     bool Function() disposed,
   ) async {
+    final failed = _refreshFailedAt[key];
+    if (failed != null && DateTime.now().difference(failed) < errorRetryDelay) {
+      return null;
+    }
     if (!_refreshing.add(key)) return null;
     try {
       final response = await provider.load(key, cancellation: cancellation);
-      if (disposed()) return null;
       final cache = await diskCache;
-      if (disposed()) return null;
+      // As in [load], the disk entry is rewritten before disposal is
+      // honoured — the fetch already happened, and leaving the entry
+      // expired would make the next open repeat it.
       switch (response) {
         case TileResponseData():
           unawaited(cache?.put(cacheKeyOf(key), response.bytes));
           _failedAt.remove(key);
+          _refreshFailedAt.remove(key);
+          if (disposed()) return null;
           return _sameBytes(response.bytes, previous)
               ? null
               : TileBytesLoaded(response.bytes);
         case TileResponseNotFound():
           unawaited(cache?.put(cacheKeyOf(key), Uint8List(0)));
           _failedAt.remove(key);
+          _refreshFailedAt.remove(key);
+          if (disposed()) return null;
           return previous.isEmpty ? null : const TileBytesAbsent();
-        case TileResponseCancelled():
         case TileResponseError():
-          return null;
+          _refreshFailedAt[key] = DateTime.now();
+          return const TileBytesUnavailable();
+        case TileResponseCancelled():
+          return const TileBytesUnavailable();
       }
     } finally {
       _refreshing.remove(key);

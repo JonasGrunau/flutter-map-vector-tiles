@@ -23,6 +23,7 @@ import 'logger.dart';
 import 'pipeline/executor/executor.dart';
 import 'pipeline/prepared_tile.dart';
 import 'render/display_tile_data.dart';
+import 'render/fade.dart';
 import 'render/label_painter.dart';
 import 'render/pattern_resolver.dart';
 import 'render/symbol_layouter.dart';
@@ -263,6 +264,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         layerProperties: layerProperties,
         diskCache: _diskCache,
         memoryCacheMaxBytes: widget.memoryCacheMaxBytes,
+        logger: widget.logger,
       );
       store.onRefreshed = (dataKey) => _reloadRefreshed(
           (displayKey) =>
@@ -281,6 +283,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         source: source,
         diskCache: _diskCache,
         memoryCacheMaxBytes: widget.memoryCacheMaxBytes,
+        logger: widget.logger,
       );
       store.onRefreshed = (dataKey) => _reloadRefreshed(
           (displayKey) =>
@@ -335,9 +338,14 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
     if (oldWidget.rasterCacheMaxBytes != widget.rasterCacheMaxBytes &&
         widget.rasterCacheMaxBytes <= 0) {
-      // Disabled at runtime: release the held textures. (Shrinking to a
-      // smaller budget is handled by `forSignature` on next access.)
-      TileResultCache.forSignature(_resultSignature, 0).clear();
+      // Disabled at runtime: release the textures held for what this
+      // layer was rendering. The *old* widget names that cache — this
+      // update may also have changed the theme or sprites, and clearing
+      // the new signature would leave the actual textures behind.
+      // (Shrinking to a smaller budget is handled by `forSignature` on
+      // next access.)
+      TileResultCache.releaseSignature(
+          _signatureOf(oldWidget, _devicePixelRatio));
     }
     if (oldWidget.theme != widget.theme ||
         oldWidget.tileProviders != widget.tileProviders ||
@@ -357,6 +365,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   void _refreshTiles() {
     for (final tile in _tiles.values) {
       tile.renderedWith = null; // identical sources must still re-enqueue
+      tile.loadGeneration++;
       unawaited(_loadTile(tile, 0, fadeIn: false));
     }
   }
@@ -376,7 +385,35 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     for (final tile in _tiles.values.toList()) {
       if (dataKeyOf(tile.key) != refreshed) continue;
       tile.renderedWith = null; // identical source set must still re-enqueue
+      tile.loadGeneration++;
       unawaited(_loadTile(tile, 0));
+    }
+    // Retained tiles are on their way out and are not worth re-rendering,
+    // but their queued jobs still hold the replaced sources. Retiring
+    // the generation drops those jobs, so none of them can publish the
+    // old content or write it back into the cache just invalidated.
+    for (final tile in _retained.values) {
+      if (dataKeyOf(tile.key) == refreshed) tile.loadGeneration++;
+    }
+  }
+
+  /// Revalidates the data tiles behind [tile] when their disk entries
+  /// have expired.
+  ///
+  /// Only for tiles served from the finished-result cache: every other
+  /// path reaches the stores, which run this check as part of loading.
+  /// The stores skip data tiles still held in memory (those were loaded
+  /// — and so checked — during this process), so this costs a disk stat
+  /// only for tiles whose rendered result outlived their source data.
+  void _revalidateSourcesOf(_DisplayTile tile) {
+    final offset = widget.tileOffset.zoomOffset;
+    for (final store in _stores.values) {
+      final dataKey = store.dataKeyFor(tile.key, offset);
+      if (dataKey != null) store.revalidateIfStale(dataKey);
+    }
+    for (final store in _rasterStores.values) {
+      final dataKey = store.dataKeyFor(tile.key, offset);
+      if (dataKey != null) store.revalidateIfStale(dataKey);
     }
   }
 
@@ -389,10 +426,16 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// Everything that determines what a finished display tile looks
   /// like. Anything that would render differently must land in a
   /// different cache — providers by their cache keys (same theme over
-  /// different endpoints must not collide), sprites by identity, the
-  /// theme by its documented cache id. Widget changes that re-rasterize
-  /// (sprites, showLabels) therefore simply miss the old cache.
-  String get _resultSignature {
+  /// different endpoints must not collide), sprites by their content
+  /// signature, the theme by its documented cache id. Widget changes
+  /// that re-rasterize (sprites, showLabels) therefore simply miss the
+  /// old cache.
+  ///
+  /// The sprite atlas contributes [SpriteAtlas.signature], not its
+  /// object identity: re-reading a style yields a new atlas every time,
+  /// so identity would mint a fresh cache on every map open and strand
+  /// the previous one.
+  static String _signatureOf(VectorTileLayer widget, double devicePixelRatio) {
     final providers = [
       for (final entry in widget.tileProviders.providers.entries)
         '${entry.key}=${entry.value.cacheKey}',
@@ -400,13 +443,36 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         'raster:${entry.key}=${entry.value.provider.cacheKey}',
     ]..sort();
     return '${widget.theme.id}|${widget.tileOffset.zoomOffset}|'
-        '$_devicePixelRatio|${widget.showLabels}|'
-        '${identityHashCode(widget.sprites)}|${providers.join(',')}';
+        '$devicePixelRatio|${widget.showLabels}|'
+        '${widget.sprites?.signature}|${providers.join(',')}';
+  }
+
+  /// Memoized [_signatureOf] for the current widget: it is consulted on
+  /// every tile load, store and invalidation, while its inputs only
+  /// change when the widget is replaced or the screen's pixel ratio
+  /// does. Sorting and joining the provider list per access was pure
+  /// waste at a zoom crossing.
+  String? _signature;
+  VectorTileLayer? _signatureWidget;
+  double? _signatureDpr;
+
+  String get _resultSignature {
+    final dpr = _devicePixelRatio;
+    final cached = _signature;
+    if (cached != null &&
+        identical(_signatureWidget, widget) &&
+        _signatureDpr == dpr) {
+      return cached;
+    }
+    _signatureWidget = widget;
+    _signatureDpr = dpr;
+    return _signature = _signatureOf(widget, dpr);
   }
 
   /// The finished-tile cache for the current render signature, shared
   /// process-wide so a reopened map paints instantly. Null when
-  /// disabled via [VectorTileLayer.rasterCacheMaxBytes].
+  /// disabled via [VectorTileLayer.rasterCacheMaxBytes] — the one place
+  /// that decides whether this layer caches at all.
   TileResultCache? get _resultCache => widget.rasterCacheMaxBytes <= 0
       ? null
       : TileResultCache.forSignature(
@@ -454,8 +520,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       for (final entry in _tiles.entries) {
         final existing = _retained[entry.key];
         if (existing != null && !identical(existing, entry.value)) {
-          existing.dispose();
+          _disposeTile(existing);
         }
+        // Retained tiles paint at full opacity, so their cross-fade
+        // underlay is never drawn again — and the fade tick that would
+        // release it only walks the current level. Left alone it pins a
+        // second full-tile texture for the whole retention window.
+        entry.value.disposeUnderlay();
         _retained[entry.key] = entry.value;
       }
       _tiles.clear();
@@ -468,7 +539,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       if (!layout.contains(key)) toRemove.add(key);
     });
     for (final key in toRemove) {
-      _tiles.remove(key)?.dispose();
+      final tile = _tiles.remove(key);
+      if (tile != null) _disposeTile(tile);
     }
 
     // Create/load missing tiles, centre first.
@@ -525,9 +597,19 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
     });
     for (final key in toRemove) {
-      _retained.remove(key)?.dispose();
+      final tile = _retained.remove(key);
+      if (tile != null) _disposeTile(tile);
     }
     if (toRemove.isNotEmpty) _retainedSymbolKeys = null;
+  }
+
+  /// Disposes a tile that has left the grid, dropping any jobs still
+  /// queued for it first — those jobs own cloned raster image handles,
+  /// and waiting for the pump to reach them holds that GPU memory (and
+  /// the tile object) for as many frames as the queue is deep.
+  void _disposeTile(_DisplayTile tile) {
+    _renderQueue.remove(tile);
+    tile.dispose();
   }
 
   Future<void> _loadTile(
@@ -536,6 +618,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     bool fadeIn = true,
   }) async {
     final generation = _generation;
+    final tileGeneration = tile.loadGeneration;
     final offset = widget.tileOffset.zoomOffset;
 
     // A finished result for this display tile skips the stores and the
@@ -555,9 +638,21 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         );
         tile.setSymbols(cached.symbols,
             fadeIn: widget.labelFadeDuration > Duration.zero);
+        // These labels never passed through the render pump, so nothing
+        // has shaped their text — without this the first frame after a
+        // reopen shapes a whole screenful of paragraphs inside paint.
+        if (cached.symbols.isNotEmpty) {
+          _labelPainter.prewarm(
+              cached.symbols, _styleZoomOf(tile.key.z.toDouble()));
+        }
         _retainedSymbolKeys = null;
         _repaint.trigger();
         _ensureFadeTicker();
+        // Serving a rendered result bypasses the stores, and with them
+        // the freshness check that would have revalidated an expired
+        // data tile. Run it separately, or a cached level stays at
+        // whatever it was rendered from for as long as it survives.
+        _revalidateSourcesOf(tile);
         return;
       }
     }
@@ -655,7 +750,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
     if (!mounted ||
         generation != _generation ||
+        tileGeneration != tile.loadGeneration ||
         tile.cancellation.isCancelled) {
+      // Includes the case where the content changed while this load was
+      // awaiting: publishing now would show — and cache — sources that
+      // were replaced, and would make the reload look like a no-op.
       for (final raster in rasters.values) {
         raster.dispose();
       }
@@ -732,21 +831,36 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         provisional: provisional,
         priority: priority,
         fadeIn: fadeIn,
-        complete: complete);
+        complete: complete,
+        generation: tile.loadGeneration);
     if (tile.cancellation.isCancelled) {
       job.dispose();
       return;
     }
-    final existing = _renderQueue.pendingRaster(tile);
-    // Never replace a queued final raster with a provisional one.
-    if (existing != null && !existing.provisional && provisional) {
-      job.dispose();
-      return;
+    if (provisional) {
+      // Provisional imagery stands in for content that has not arrived
+      // yet; it must never displace content that has. Each of these
+      // says final content is already here or on its way, and accepting
+      // the provisional job would undo it: the tile's own raster would
+      // be disposed and its state flipped back to loading — which a
+      // retry recovering nothing then never leaves, because an
+      // unchanged source set skips the final re-enqueue.
+      final queuedRaster = _renderQueue.pendingRaster(tile);
+      final queuedSymbols = _renderQueue.pendingSymbols(tile);
+      if ((queuedRaster != null && !queuedRaster.provisional) ||
+          (queuedSymbols != null && !queuedSymbols.provisional) ||
+          (!tile.isProvisional && tile.image != null)) {
+        job.dispose();
+        return;
+      }
     }
     _renderQueue.enqueueRaster(tile, priority, job);
     // The accepted raster decides anew whether symbols will follow
     // (any pending symbol job for this tile was just superseded).
     tile.symbolsPending = _symbolsFollow(tile, sources);
+    // That flag feeds the retained-label decision: a tile awaiting
+    // symbols keeps the previous level's labels covering it.
+    _retainedSymbolKeys = null;
     if (!_renderTicker.isActive) _renderTicker.start();
   }
 
@@ -772,7 +886,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       final next = _renderQueue.pop()!;
       final tile = next.key;
       final job = next.job;
-      if (!tile.cancellation.isCancelled) {
+      // A job outlived by its tile's generation was built from content
+      // that has since been replaced; running it would paint — and
+      // cache — what the revalidation just invalidated.
+      if (!tile.cancellation.isCancelled &&
+          job.generation == tile.loadGeneration) {
         switch (next.phase) {
           case RenderPhase.raster:
             _rasterizeJob(tile, job);
@@ -823,6 +941,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             priority: job.priority,
             fadeIn: job.fadeIn,
             complete: job.complete,
+            generation: job.generation,
           ));
     } else {
       tile.setSymbols(const [], fadeIn: false);
@@ -935,6 +1054,11 @@ class _RenderJob {
   /// enter the shared result cache.
   final bool complete;
 
+  /// The tile's [_DisplayTile.loadGeneration] when this job was built.
+  /// The pump drops the job if the tile has moved on since — its
+  /// sources predate whatever replaced them.
+  final int generation;
+
   const _RenderJob({
     required this.sources,
     required this.rasters,
@@ -942,6 +1066,7 @@ class _RenderJob {
     required this.priority,
     required this.fadeIn,
     required this.complete,
+    required this.generation,
   });
 
   void dispose() {
@@ -981,6 +1106,17 @@ class _DisplayTile {
   Set<String>? renderedWith;
   var retryAttempt = 0;
   Timer? _retryTimer;
+
+  /// Bumped whenever the content behind this tile changed underneath an
+  /// in-flight load (a background revalidation, a sprite refresh).
+  ///
+  /// A load captures already-decoded sources synchronously and then
+  /// awaits the rest, so one that started before the change would
+  /// publish — and cache — pre-change content, and its source-id set
+  /// would equal the new load's, suppressing that one as "a retry that
+  /// recovered nothing". Loads and the jobs they queue carry the
+  /// generation they were built for and are dropped once it moves on.
+  var loadGeneration = 0;
 
   _DisplayTile(this.key);
 
@@ -1049,19 +1185,11 @@ class _DisplayTile {
     underlay = null;
   }
 
-  double fadeProgress(DateTime now, Duration duration) {
-    final start = readyAt;
-    if (start == null || duration <= Duration.zero) return 1;
-    final t = now.difference(start).inMilliseconds / duration.inMilliseconds;
-    return t.clamp(0.0, 1.0);
-  }
+  double fadeProgress(DateTime now, Duration duration) =>
+      fadeProgressOf(readyAt, now, duration);
 
-  double labelFadeProgress(DateTime now, Duration duration) {
-    final start = symbolsReadyAt;
-    if (start == null || duration <= Duration.zero) return 1;
-    final t = now.difference(start).inMilliseconds / duration.inMilliseconds;
-    return t.clamp(0.0, 1.0);
-  }
+  double labelFadeProgress(DateTime now, Duration duration) =>
+      fadeProgressOf(symbolsReadyAt, now, duration);
 
   void dispose() {
     _retryTimer?.cancel();

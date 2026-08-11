@@ -86,18 +86,38 @@ void main() {
           clipPolyline(_run([10, 10, 90, 10, 90, 90]), _rect, close: true);
       // Fully inside: one run, closed by materializing last->first.
       expect(clipped.runs.single, _run([10, 10, 90, 10, 90, 90, 10, 10]));
+      expect(clipped.closed.single, isTrue,
+          reason: 'an intact ring must be stroked as a closed contour, or '
+              'its start vertex gets two caps instead of a join');
     });
 
-    test('close clips the closing segment like any other', () {
+    test('close rejoins a contour that runs through the ring start', () {
       // Triangle with two vertices outside; only the first edge and the
-      // closing edge cross the window.
+      // closing edge cross the window. They meet at vertex 0, so they
+      // are halves of one contour — emitted separately, the stroke
+      // would butt two caps where the ring has a corner.
       final clipped =
           clipPolyline(_run([50, 50, 150, 50, 50, 150]), _rect, close: true);
-      expect(clipped.runs, hasLength(2));
-      expect(clipped.runs[0], _run([50, 50, 100, 50]));
-      expect(clipped.startDistances[0], 0);
-      // Closing segment (50,150)->(50,50) re-enters at y=100.
-      expect(clipped.runs[1], _run([50, 100, 50, 50]));
+      // Closing segment (50,150)->(50,50) re-enters at y=100, carries on
+      // through vertex 0 and out along the first edge.
+      expect(clipped.runs.single, _run([50, 100, 50, 50, 100, 50]));
+      // Measured from the ring start, this contour begins 50 before it,
+      // so dashes and patterns stay in phase across the join.
+      expect(clipped.startDistances.single, closeTo(-50, 1e-6));
+      expect(clipped.closed.single, isFalse, reason: 'an open contour');
+    });
+
+    test('close does not join across a ring start that is outside', () {
+      // Diamond with all four vertices outside: each edge cuts a corner
+      // off the window. Vertex 0 is outside too, so no sub-run reaches
+      // it and nothing may be joined across it.
+      final clipped = clipPolyline(
+          _run([-20, 50, 50, -20, 120, 50, 50, 120]), _rect,
+          close: true);
+      expect(clipped.runs, hasLength(4));
+      expect(clipped.closed, everyElement(isFalse));
+      expect(clipped.startDistances.first, greaterThan(0),
+          reason: 'the first contour starts partway along the first edge');
     });
   });
 

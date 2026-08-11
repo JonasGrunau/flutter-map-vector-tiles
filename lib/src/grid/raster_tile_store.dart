@@ -8,6 +8,7 @@ import '../core/cancellation.dart';
 import '../core/single_flight.dart';
 import '../core/tile_key.dart';
 import '../core/tile_zoom.dart';
+import '../logger.dart';
 import '../provider/pmtiles/pmtiles_gunzip_web.dart'
     if (dart.library.io) '../provider/pmtiles/pmtiles_gunzip_io.dart';
 import '../tile_providers.dart';
@@ -38,6 +39,7 @@ class RasterTile {
 /// eviction can never dispose pixels a queued rasterization still needs.
 class RasterTileStore {
   final RasterTileSource source;
+  final Logger logger;
   final TileByteLoader _bytes;
 
   /// Decoded images, shared process-wide between stores on the same
@@ -63,6 +65,7 @@ class RasterTileStore {
     required this.source,
     Future<ByteCache?>? diskCache,
     int memoryCacheMaxBytes = 32 * 1024 * 1024,
+    this.logger = const Logger.noop(),
   })  : _bytes = TileByteLoader(source.provider, diskCache ?? Future.value()),
         _memory = _memoryCaches.putIfAbsent(
           source.provider.cacheKey,
@@ -148,7 +151,8 @@ class RasterTileStore {
 
   /// Whether the source has said this tile does not exist. Retrying
   /// cannot change the answer — only a background revalidation of an
-  /// expired absence sentinel can revise it (via [onRefreshed]).
+  /// expired absence sentinel can revise it (via [onRefreshed]), or
+  /// withdraw it when that revalidation could not reach the source.
   bool knownAbsent(TileKey dataKey) => _notFound.contains(dataKey);
 
   Future<ui.Image?> _load(
@@ -162,8 +166,11 @@ class RasterTileStore {
       case TileBytesUnavailable():
         return null;
       case TileBytesAbsent(stale: final wasStale):
+        // An absence read from an *expired* sentinel is provisional: it
+        // suppresses re-requests until the revalidation below either
+        // confirms it or, failing to reach the source, withdraws it.
         _notFound.add(dataKey);
-        if (wasStale) unawaited(_revalidate(dataKey, Uint8List(0)));
+        if (wasStale) _startRevalidation(dataKey, Uint8List(0));
         return null;
       case TileBytesLoaded(bytes: final loaded, stale: final wasStale):
         bytes = loaded;
@@ -171,12 +178,17 @@ class RasterTileStore {
     }
 
     final image = await _decode(dataKey, bytes);
-    if (image == null) return null;
+    if (image == null) {
+      // Corrupt *expired* bytes poison the tile: retries re-read the
+      // same disk entry, and only a revalidation rewrites it.
+      if (stale) _startRevalidation(dataKey, bytes);
+      return null;
+    }
     // Cached even if disposed meanwhile — the shared cache outlives the
     // store, like the vector tile cache.
     _memory.put(dataKey, image);
     _bytes.noteSuccess(dataKey);
-    if (stale) unawaited(_revalidate(dataKey, bytes));
+    if (stale) _startRevalidation(dataKey, bytes);
     return image;
   }
 
@@ -200,17 +212,50 @@ class RasterTileStore {
     }
   }
 
+  /// Revalidates [dataKey] if its disk entry has expired — see
+  /// `TileStore.revalidateIfStale`.
+  void revalidateIfStale(TileKey dataKey) {
+    if (_disposed || _memory.get(dataKey) != null) return;
+    _detach(_revalidateIfStale(dataKey), dataKey);
+  }
+
+  Future<void> _revalidateIfStale(TileKey dataKey) async {
+    final expired = await _bytes.expiredBytes(dataKey);
+    if (expired == null || _disposed) return;
+    return _revalidate(dataKey, expired);
+  }
+
+  /// Starts a background revalidation, detached from the load that
+  /// triggered it.
+  void _startRevalidation(TileKey dataKey, Uint8List previous) =>
+      _detach(_revalidate(dataKey, previous), dataKey);
+
+  /// Runs detached background work — see `TileStore._detach` for why
+  /// the failure path is guarded.
+  void _detach(Future<void> work, TileKey dataKey) {
+    unawaited(work.catchError((Object e) {
+      logger.warn('revalidation of $dataKey failed: $e');
+    }));
+  }
+
   /// Background revalidation of a stale entry [_load] just served
   /// (stale-while-revalidate): on changed content the fresh image
   /// replaces the memory entry (the cache disposes the old master) and
-  /// [onRefreshed] fires; when the fetch fails or the bytes are
-  /// unchanged, the stale image simply stays.
+  /// [onRefreshed] fires; when the bytes are unchanged, the stale image
+  /// simply stays.
   Future<void> _revalidate(TileKey dataKey, Uint8List previous) async {
     final result =
         await _bytes.refresh(dataKey, previous, _lifetime, () => _disposed);
     if (result == null || _disposed) return;
     switch (result) {
       case TileBytesUnavailable():
+        // The check never reached the source, so a provisional absence
+        // taken from an expired sentinel stays unproven. Withdraw it:
+        // leaving it in place would strand the tile for the session,
+        // since `obtain` short-circuits on [knownAbsent] and never
+        // reaches the loader again. Re-requests stay bounded by the
+        // loader's refresh throttle.
+        if (previous.isEmpty) _notFound.remove(dataKey);
         return;
       case TileBytesAbsent():
         // The source stopped serving this tile.
@@ -225,6 +270,9 @@ class RasterTileStore {
         }
         _notFound.remove(dataKey);
         _memory.put(dataKey, image);
+        // The replacement decoded: clear the throttle a corrupt or
+        // failed predecessor may have set.
+        _bytes.noteSuccess(dataKey);
     }
     onRefreshed?.call(dataKey);
   }

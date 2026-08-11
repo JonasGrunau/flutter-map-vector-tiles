@@ -61,6 +61,7 @@ Widget labelApp(
   MapController controller,
   VectorTileProvider provider, {
   required bool showLabels,
+  Duration labelFadeDuration = const Duration(milliseconds: 150),
 }) =>
     MaterialApp(
       home: RepaintBoundary(
@@ -77,6 +78,7 @@ Widget labelApp(
               tileProviders: TileProviders({'s': provider}),
               tileOffset: TileOffset.none,
               tileFadeDuration: Duration.zero,
+              labelFadeDuration: labelFadeDuration,
               concurrency: 1,
               diskCacheMaximumSizeInBytes: 0,
               showLabels: showLabels,
@@ -170,6 +172,36 @@ void main() {
     await tester.pump();
     expect(await hasColor(tester, labelColor), isFalse,
         reason: 'the label pass is skipped as soon as the flag is off');
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('a sub-millisecond label fade still paints', (tester) async {
+    // End-to-end cover for durations shorter than the millisecond the
+    // fade arithmetic was once measured in. `fade_test.dart` pins that
+    // arithmetic directly, which is where the regression lives: fade
+    // progress reads the wall clock, so a widget test cannot control
+    // how much real time passes between labels landing and the frame
+    // that draws them.
+    tester.view.physicalSize = const Size(600, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(labelApp(
+      MapController(),
+      EverywhereProvider(labelledTile()),
+      showLabels: true,
+      labelFadeDuration: const Duration(microseconds: 500),
+    ));
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 5)));
+      if (await hasColor(tester, labelColor)) break;
+    }
+    expect(tester.takeException(), isNull);
+    expect(await hasColor(tester, labelColor), isTrue);
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump();

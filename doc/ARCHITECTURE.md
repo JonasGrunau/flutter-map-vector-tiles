@@ -96,11 +96,16 @@ before the first frame that can draw it, never during paint. A tile
 whose symbols are still pending counts as loading for the retention
 rules, so the previous level's labels cover the gap; newly appearing
 labels then fade in over `labelFadeDuration`, drawn in a few quantized
-opacity buckets (one translucent layer each) while reserving full-size
-collision space. The per-frame label pass evaluates at a zoom quantized
-to 1/8-level steps, so the per-instance style memos — which compare
-evaluated primitives, not strings — keep hitting on every frame of a
-pinch gesture instead of missing on every fractional zoom change.
+opacity buckets (one translucent layer each, bounded to what that
+bucket paints) while reserving full-size collision space. The per-frame
+label pass evaluates at a zoom quantized to 1/8-level steps, so the
+per-instance style memos — which compare evaluated primitives, not
+strings — keep hitting on every frame of a pinch gesture instead of
+missing on every fractional zoom change. Layer visibility is gated on
+the *exact* fractional zoom rather than that quantized value: rounding a
+size costs a fraction of a pixel, while rounding a discrete cut moves it
+by up to 1/16 of a level, so labels would appear and vanish away from
+the thresholds the style declares.
 
 The whole layer is one `CustomPaint` — no per-tile widget churn, one
 repaint boundary. The painter applies the camera transform (translate ·
@@ -133,7 +138,7 @@ chunked event-loop execution.
 | --- | --- | --- |
 | memory: `PreparedTile` | data tile + theme id | entry count + bytes |
 | memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
-| memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprites, labels) | GPU texture bytes (`rasterCacheMaxBytes`, cache owns the master image, tiles hold clones) |
+| memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprite *content*, labels) | GPU texture bytes (`rasterCacheMaxBytes`, cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
 | disk: raw tile bytes | url hash | TTL + total size sweep |
 
 All caches are plain deterministic LRU implementations — no external
@@ -144,11 +149,22 @@ display-tile model owns exactly one `ui.Image` (a clone, when it came
 from the result cache); the result cache separately owns its master
 images and is shared process-wide, so revisiting a zoom level — or
 reopening a map over the same style — swaps finished tiles back in
-without touching the pipeline. Only final, fully-sourced results are
-cached, so a hit can never mask a pending retry; a background
-revalidation invalidates every cached display tile the refreshed data
-tile serves. Beyond the cache's budget, revisiting a zoom
-re-rasterizes from the `PreparedTile` LRU — cheap, since only the
+without touching the pipeline. The signature identifies the sprite sheet
+by content (`SpriteAtlas.signature`, its URL when `StyleReader` loaded
+it), never by object identity: re-reading a style builds a new atlas
+every time, so an identity key would miss on every open and strand the
+previous signature's textures. Signatures are retained past their
+layer for exactly that warm-open case, so the registry releases the
+least recently used once their combined cost exceeds the budget —
+always keeping the two most recent, so two layers over different styles
+cannot evict each other.
+
+Only final, fully-sourced results are cached, so a hit can never mask a
+pending retry. Render jobs and loads carry the tile generation they were
+built for and are dropped once it moves on, so content replaced by a
+revalidation can neither be painted nor written back into the cache that
+revalidation just invalidated. Beyond the cache's budget, revisiting a
+zoom re-rasterizes from the `PreparedTile` LRU — cheap, since only the
 visible window is processed. `VectorTileLayer.clearMemoryCache()` empties
 all three memory tiers at once — the memory-pressure valve, since the
 caches are process-wide and otherwise freed only by their budgets; the
@@ -161,9 +177,31 @@ immediately and refetched in the background (stale-while-revalidate,
 store re-decodes them, replaces the memory entry and notifies the layer,
 which re-rasterizes the affected display tiles; the previous raster is
 kept as an underlay for the duration of the fade, so the swap
-cross-fades instead of dipping to the background. A failed refetch
-changes nothing — the stale entry stays servable (deliberately not
-throttled) and is only ever deleted by the size sweep.
+cross-fades instead of dipping to the background.
+
+Three properties keep that deadline honest:
+
+- **Nothing serves content the check never reached.** A refresh
+  reports failure distinctly from "unchanged", so an absence recorded
+  from an expired sentinel is withdrawn when the source could not be
+  reached — otherwise one failed request would strand the tile for the
+  session, since `obtain` short-circuits on a known absence.
+- **A stale entry that cannot be decoded still gets refetched.** The
+  revalidation runs even when the served bytes fail to prepare, because
+  it is the only thing that rewrites the disk entry; without it a torn
+  write would fail identically on every retry until the size sweep.
+- **A display tile served from the finished-tile cache is checked
+  too** (`TileStore.revalidateIfStale`). It never reaches the stores,
+  so nothing else would notice its data expiring. Data tiles still held
+  in memory are skipped — loading them ran the check already — leaving
+  one disk lookup for the case where a rendered result outlived its
+  source data.
+
+A failed refetch changes nothing displayed: the stale entry stays
+servable and is only ever deleted by the size sweep. It does not
+throttle *loads* — that would make the failure worse than the staleness
+— but it does throttle further *refreshes* of that key, so browsing an
+expired area offline cannot start one request per memory-cache miss.
 
 On web the disk row is absent: the cache resolver
 (`cache_resolver_stub.dart` vs `cache_resolver_io.dart`, mirroring the

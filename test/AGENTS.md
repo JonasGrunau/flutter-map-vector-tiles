@@ -19,7 +19,7 @@ lifecycle or painting is covered by widget tests that pump a real
 | `tile_lifecycle_test.dart` | Widget-level: first paint, zoom changes, pan, cache attachment, disposal. The heaviest and most integration-shaped test |
 | `symbol_layouter_test.dart` | Label placement candidates, tile-seam behaviour, overzoom |
 | `raster_source_test.dart` | Raster sources declared inside vector styles, image ref-counting |
-| `tile_store_test.dart` | Memory/disk cache keying, miss paths, disposal, stale-while-revalidate (expired entries served instantly, `onRefreshed` on changed content only) |
+| `tile_store_test.dart` | Memory/disk cache keying, miss paths, disposal, stale-while-revalidate (expired entries served instantly, `onRefreshed` on changed content only, corrupt expired entries refetched, `revalidateIfStale` for results served without the stores) |
 | `curved_text_test.dart` | Text along lines and the sharp-bend fallback |
 | `sdf_icon_test.dart` | SDF sprite tinting |
 | `tile_retention_test.dart` | The pure retention predicates (17 cases) |
@@ -39,6 +39,8 @@ lifecycle or painting is covered by widget tests that pump a real
 | `css_color_test.dart` | All CSS colour syntaxes |
 | `executor_test.dart` | Executor contract: priority ordering, silent cancellation, disposal |
 | `tile_key_test.dart` | Tile coordinate arithmetic and equality |
+| `fade_test.dart` | Tile/label fade progress arithmetic, including sub-millisecond durations |
+| `sprite_atlas_signature_test.dart` | `SpriteAtlas.signature` — equal sheets agree, different ones do not (the render-signature cache key) |
 
 ## Subdirectories
 

@@ -2,8 +2,61 @@
 
 ## Unreleased
 
-README coverage for the API corners that only dartdoc knew about.
+What a full review of 2.3.0 turned up: tiles honour their freshness
+deadline again, the finished-tile cache stops stranding textures across
+map opens, and labels switch exactly at the zoom their layer declares.
 
+- ✨ **`SpriteAtlas.signature`**: a sprite sheet now identifies its
+  content — the URL `StyleReader` loaded it from, or its layout for a
+  hand-built atlas — and `SpriteAtlas` accepts an optional `cacheKey`.
+- 🎨 Stroked polygon outlines keep the corner at a ring's first vertex
+  when clipped at deep zoom. The two halves of the contour were stroked
+  separately, so butted end caps left a notch there.
+- 🎨 Labels appear and disappear at exactly their layer's `minzoom` and
+  `maxzoom`. The threshold was tested against a zoom rounded to 1/8 of a
+  level, so labels could switch up to 1/16 of a level early or late.
+- ⚡ Reopening a map over the same style paints from the finished-tile
+  cache as documented. Its key changed on every style read, so styles
+  with sprites — nearly all of them — re-rendered every open, and each
+  open stranded the previous one's textures for the process lifetime.
+  The number of retained caches is now bounded as well.
+- ⚡ Fading labels draw through layers bounded to what they cover,
+  instead of a full-screen offscreen pass per opacity step per frame.
+- ⚡ Tiles held over from the previous zoom level release their
+  cross-fade underlay at once, and render jobs queued for a tile that
+  leaves the viewport are dropped rather than waiting for the pump —
+  both used to hold a full tile texture longer than it was needed.
+- 🐛 An expired tile whose cached bytes are corrupt is refetched. It was
+  served, failed to decode, and every retry re-read the same bad entry,
+  so the tile stayed blank until the cache evicted it.
+- 🐛 A tile the source reports missing is re-checked when the
+  revalidation meant to confirm that could not reach the source. A
+  single failed request used to hide the tile for the whole session.
+- 🐛 A background revalidation is no longer lost to a tile load that was
+  already in flight: the older load could finish first, publish the
+  replaced content and make the reload look like a no-op.
+- 🐛 Content replaced by a revalidation can no longer be written back
+  into the cache that revalidation just invalidated by a render job
+  queued before it.
+- 🐛 Display tiles served from the finished-tile cache are revalidated
+  too. They never reach the tile stores, so `diskCacheTtl` did not apply
+  to them for as long as they stayed cached.
+- 🐛 A retry no longer replaces imagery that has already arrived. It
+  could flip a finished tile back to loading and — when the retry
+  recovered nothing — leave it there, pinning the previous zoom level's
+  tiles and labels on screen.
+- 🐛 Labels held over from the previous zoom level no longer stay hidden
+  for several frames when a visible tile is re-rendered mid-transition.
+- 🐛 A `labelFadeDuration` shorter than a millisecond no longer throws
+  during paint, and a fade no longer spends its first frame invisible.
+- 🐛 Setting `rasterCacheMaxBytes` to `0` at runtime releases the
+  textures actually being held; changing the style in the same rebuild
+  made it clear a different, empty cache instead.
+- ✈️ Browsing an expired area offline no longer starts a request per
+  cache miss: failed revalidations are throttled. Failed *loads* still
+  are not, so stale tiles keep painting.
+- ✈️ Tiles that finish downloading while a map is closing are written to
+  the disk cache instead of dropped, so reopening does not refetch them.
 - 📚 The README now documents the public API it never mentioned:
   tappable attribution links (`StyleAttribution.spans` /
   `AttributionSpan.url`), the exceptions `StyleReader.read()` and

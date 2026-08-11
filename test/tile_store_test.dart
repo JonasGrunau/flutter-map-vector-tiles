@@ -287,6 +287,60 @@ void main() {
       s.dispose();
     });
 
+    test('a corrupt expired entry is refetched instead of poisoning the tile',
+        () async {
+      final provider = _FixedProvider(TileResponseData(_tileBytes())); // lake
+      final cache = _ExpiredByteCache();
+      // A torn write: the entry is past its TTL *and* undecodable.
+      cache.entries['fixed/2/1/1'] = Uint8List.fromList([0xff, 0xff, 0xff]);
+      final s = swrStore(provider, cache);
+      final refreshed = Completer<TileKey>();
+      s.onRefreshed = refreshed.complete;
+
+      // There is nothing to display, but the revalidation must still
+      // run: it is the only thing that rewrites the disk entry, so
+      // without it every retry re-reads the same bytes and fails
+      // identically for as long as the entry survives.
+      expect(await s.obtain(dataKey), isNull);
+      expect(await refreshed.future, dataKey);
+      expect(classOf(s.peek(dataKey)), 'lake');
+      s.dispose();
+    });
+
+    test('revalidateIfStale refreshes a tile no longer held in memory',
+        () async {
+      final provider = _FixedProvider(TileResponseData(_tileBytes())); // lake
+      final cache = _ExpiredByteCache();
+      cache.entries['fixed/2/1/1'] = _riverTileBytes();
+      final s = swrStore(provider, cache);
+      final refreshed = Completer<TileKey>();
+      s.onRefreshed = refreshed.complete;
+
+      // Stands in for a display tile served from the finished-result
+      // cache: it never reaches obtain, so this is the only freshness
+      // check its data tile gets.
+      s.revalidateIfStale(dataKey);
+      expect(await refreshed.future, dataKey);
+      expect(classOf(s.peek(dataKey)), 'lake');
+      s.dispose();
+    });
+
+    test('revalidateIfStale skips a tile already in memory', () async {
+      final provider = _FixedProvider(TileResponseData(_tileBytes()));
+      final cache = _ExpiredByteCache();
+      cache.entries['fixed/2/1/1'] = _riverTileBytes();
+      final s = swrStore(provider, cache);
+      expect(await s.obtain(dataKey), isNotNull);
+      await pumpEventQueue();
+      final loads = provider.loads;
+
+      s.revalidateIfStale(dataKey);
+      await pumpEventQueue();
+      expect(provider.loads, loads,
+          reason: 'a tile loaded in this process was checked as it loaded');
+      s.dispose();
+    });
+
     test('a tile deleted at the source refreshes to empty', () async {
       final provider = _FixedProvider(const TileResponseNotFound());
       final cache = _ExpiredByteCache();

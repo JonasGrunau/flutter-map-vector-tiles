@@ -32,7 +32,13 @@ class ClippedRuns {
   final List<Float32List> runs;
   final Float64List startDistances;
 
-  const ClippedRuns(this.runs, this.startDistances);
+  /// Per run: whether it is a ring's complete contour, so the consumer
+  /// closes the sub-path. Only ever true for `clipPolyline(close: true)`
+  /// — see there for why a ring that survives clipping intact still
+  /// needs saying so.
+  final List<bool> closed;
+
+  const ClippedRuns(this.runs, this.startDistances, this.closed);
 }
 
 /// Reusable per-isolate scratch for the sub-run currently being emitted.
@@ -56,10 +62,20 @@ final _segmentClip = _SegmentClip();
 /// first) is processed too — used when a polygon ring is stroked as a
 /// line. Runs with fewer than 2 points yield no output; zero-length
 /// segments are skipped (they contribute nothing but a cap dot).
+///
+/// A ring is walked from its first vertex, so a contour crossing that
+/// vertex is emitted as two sub-runs — the one ending on the closing
+/// segment and the one starting at vertex 0. They are rejoined here:
+/// left apart, the stroke butts two caps together where the ring has a
+/// corner, which shows as a notch at that vertex.
 ClippedRuns clipPolyline(Float32List run, ClipRect rect, {bool close = false}) {
   final runs = <Float32List>[];
   final starts = <double>[];
   final n = run.length ~/ 2;
+  var total = 0.0;
+  // Whether the last emitted sub-run ends exactly on vertex 0, i.e. it
+  // ran through the closing segment without leaving the window.
+  var endsAtStart = false;
   if (n >= 2) {
     var open = false;
     var len = 0;
@@ -110,12 +126,41 @@ ClippedRuns clipPolyline(Float32List run, ClipRect rect, {bool close = false}) {
         append(x0 + dx * t0, y0 + dy * t0);
       }
       append(x0 + dx * t1, y0 + dy * t1);
-      if (t1 < 1) flush(); // exited the window: pen up
+      if (t1 < 1) {
+        flush(); // exited the window: pen up
+      } else if (wraps) {
+        endsAtStart = true;
+      }
       dist += segLen;
     }
     flush();
+    total = dist;
   }
-  return ClippedRuns(runs, Float64List.fromList(starts));
+
+  // A first sub-run starting at distance 0 begins at vertex 0 — the
+  // point the closing segment leads back to.
+  if (close && endsAtStart && starts.isNotEmpty && starts.first == 0) {
+    if (runs.length > 1) {
+      final tail = runs.removeLast();
+      final tailStart = starts.removeLast();
+      final head = runs.first;
+      // Drop the head's first point: the tail already ends on it.
+      runs[0] = Float32List(tail.length + head.length - 2)
+        ..setRange(0, tail.length, tail)
+        ..setRange(tail.length, tail.length + head.length - 2, head, 2);
+      // Measured from the ring's start, this contour begins before it,
+      // so patterns stay in phase across the join.
+      starts[0] = tailStart - total;
+    } else {
+      // The ring survived clipping in one piece: it already ends where
+      // it starts, and only the sub-path needs closing for the vertex
+      // to get a join instead of two caps.
+      return ClippedRuns(
+          runs, Float64List.fromList(starts), List.filled(runs.length, true));
+    }
+  }
+  return ClippedRuns(
+      runs, Float64List.fromList(starts), List.filled(runs.length, false));
 }
 
 /// Sutherland–Hodgman clip of one implicitly-closed ring against the

@@ -5,9 +5,11 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
 import 'package:flutter_map_vector_tiles/src/cache/byte_cache.dart';
+import 'package:flutter_map_vector_tiles/src/core/cancellation.dart';
 import 'package:flutter_map_vector_tiles/src/core/tile_key.dart';
 import 'package:flutter_map_vector_tiles/src/grid/raster_tile_store.dart';
 import 'package:flutter_map_vector_tiles/src/provider/memory_vector_tile_provider.dart';
+import 'package:flutter_map_vector_tiles/src/provider/vector_tile_provider.dart';
 import 'package:flutter_map_vector_tiles/src/render/display_tile_data.dart';
 import 'package:flutter_map_vector_tiles/src/render/tile_rasterizer.dart';
 import 'package:flutter_map_vector_tiles/src/style/expression.dart';
@@ -318,7 +320,51 @@ void main() {
       store.dispose();
       RasterTileStore.clearMemoryCaches();
     });
+
+    test('an unreachable source does not strand an expired absence', () async {
+      const key = TileKey(2, 1, 1);
+      final provider = _OfflineProvider('raster-absent-test');
+      final store = RasterTileStore(
+        source: RasterTileSource(provider: provider),
+        // A zero-byte entry is the known-absent sentinel, here expired.
+        diskCache: Future.value(_ExpiredByteCache()
+          ..entries['raster-absent-test/2/1/1'] = Uint8List(0)),
+      );
+
+      expect(await store.obtain(key), isNull);
+      await pumpEventQueue();
+      // The revalidation could not reach the source, so the absence is
+      // unproven. Left standing it would survive the whole session:
+      // obtain short-circuits on knownAbsent and never asks again, and
+      // the layer excludes absent tiles from its own retries.
+      expect(store.knownAbsent(key), isFalse);
+      expect(provider.loads, 1);
+
+      store.dispose();
+      RasterTileStore.clearMemoryCaches();
+    });
   });
+}
+
+/// Always fails, so a revalidation can never confirm anything.
+class _OfflineProvider extends VectorTileProvider {
+  @override
+  final String cacheKey;
+  var loads = 0;
+
+  _OfflineProvider(this.cacheKey);
+
+  @override
+  int get maximumZoom => 20;
+  @override
+  int get minimumZoom => 0;
+
+  @override
+  Future<TileResponse> load(TileKey tile,
+      {CancellationToken? cancellation}) async {
+    loads++;
+    return TileResponseError(Exception('offline'));
+  }
 }
 
 Future<Uint8List> _solidPng(Color color) async {

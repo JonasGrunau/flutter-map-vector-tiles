@@ -55,13 +55,46 @@ void main() {
       expect(cache.get(const TileKey(2, 2, 0)), isNotNull);
     });
 
-    test('a zero budget stores nothing and disposes the offered image', () {
-      final cache = TileResultCache.forSignature('t-off', 0);
-      final image = _image(4);
+    test('releaseSignature frees a signature without creating one', () {
+      final cache = TileResultCache.forSignature('t-release', 10 * 1024 * 1024);
       cache.put(const TileKey(1, 1, 1),
-          image: image, symbols: const [], renderedWith: const {});
+          image: _image(4), symbols: const [], renderedWith: const {});
+
+      TileResultCache.releaseSignature('t-release');
       expect(cache.length, 0);
-      expect(image.debugDisposed, isTrue);
+      // Asking about an unused signature must not mint a cache for it.
+      TileResultCache.releaseSignature('t-never-used');
+      expect(identical(TileResultCache.forSignature('t-release', 1024), cache),
+          isTrue);
+      addTearDown(cache.clear);
+    });
+
+    test('a new signature releases the least recently used one past budget',
+        () {
+      // 8x8 RGBA = 256 bytes + 64 overhead; the budget fits two entries,
+      // so two full signatures are over it.
+      const budget = 700;
+      final first = TileResultCache.forSignature('t-lru-a', budget);
+      final second = TileResultCache.forSignature('t-lru-b', budget);
+      for (final cache in [first, second]) {
+        for (var x = 0; x < 2; x++) {
+          cache.put(TileKey(2, x, 0),
+              image: _image(8), symbols: const [], renderedWith: const {});
+        }
+      }
+      expect(first.length, 2);
+
+      // A third style/sprite/dpr combination: without a bound each one
+      // would pin its own budget of GPU textures for the process
+      // lifetime, which is what re-reading a style used to do on every
+      // map open.
+      final third = TileResultCache.forSignature('t-lru-c', budget);
+      addTearDown(third.clear);
+      expect(first.length, 0, reason: 'least recently used, released');
+      expect(second.length, 2, reason: 'still within the combined budget');
+      expect(identical(TileResultCache.forSignature('t-lru-b', budget), second),
+          isTrue,
+          reason: 'a released cache is dropped, a retained one is reused');
     });
 
     test('removeWhere invalidates matching keys only', () {

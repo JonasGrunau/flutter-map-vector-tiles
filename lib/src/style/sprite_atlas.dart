@@ -8,11 +8,39 @@ class SpriteAtlas {
   /// The pixel ratio the sheet was rendered at (2 for `@2x`).
   final double pixelRatio;
 
+  /// Identifies the sheet this atlas was built from — its URL, when
+  /// `StyleReader` loaded it. Used by [signature]; see there for why an
+  /// atlas needs a content-derived identity.
+  final String? cacheKey;
+
   const SpriteAtlas({
     required this.image,
     required this.sprites,
     required this.pixelRatio,
+    this.cacheKey,
   });
+
+  /// Identifies this atlas's *content* for cache keys: two atlases with
+  /// equal signatures render identically, so imagery baked with one may
+  /// be reused with the other.
+  ///
+  /// Object identity cannot serve here. Re-reading a style yields a new
+  /// atlas every time, so identity would treat each map open as a
+  /// different sheet — missing every cache that outlives a layer and
+  /// stranding the entries the previous atlas left behind.
+  String get signature {
+    final key = cacheKey;
+    if (key != null) return key;
+    // No URL (a hand-built atlas): the sheet's geometry stands in.
+    final names = sprites.keys.toList()..sort();
+    var hash = Object.hash(image.width, image.height, pixelRatio, names.length);
+    for (final name in names) {
+      final sprite = sprites[name]!;
+      hash = Object.hash(hash, name, sprite.x, sprite.y, sprite.width,
+          sprite.height, sprite.pixelRatio, sprite.sdf);
+    }
+    return 'atlas:$hash';
+  }
 
   Sprite? operator [](String name) => sprites[name];
 

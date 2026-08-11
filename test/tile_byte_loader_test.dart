@@ -173,15 +173,33 @@ void main() {
       );
     });
 
-    test('failure resolves null without throttling later loads', () async {
+    test('failure is reported as unavailable, not as an unchanged tile',
+        () async {
       final cache = _MemoryByteCache();
       final provider =
           _CountingProvider(TileResponseError(Exception('offline')));
       final loader = TileByteLoader(provider, Future.value(cache));
 
-      expect(await refreshOnce(loader), isNull);
+      expect(await refreshOnce(loader), isA<TileBytesUnavailable>(),
+          reason: 'an unreachable source leaves the content unconfirmed, '
+              'which callers must be able to tell from "nothing changed"');
       expect(loader.throttled(key), isFalse,
           reason: 'the stale entry must stay servable by the next load');
+    });
+
+    test('a failed refresh throttles further refreshes of the same key',
+        () async {
+      final cache = _MemoryByteCache();
+      final provider =
+          _CountingProvider(TileResponseError(Exception('offline')));
+      final loader = TileByteLoader(provider, Future.value(cache));
+
+      expect(await refreshOnce(loader), isA<TileBytesUnavailable>());
+      // Browsing an expired area offline re-serves its stale entries on
+      // every memory-cache miss; without this each one would start
+      // another request.
+      expect(await refreshOnce(loader), isNull);
+      expect(provider.loads, 1);
     });
 
     test('concurrent refreshes coalesce to a single request', () async {

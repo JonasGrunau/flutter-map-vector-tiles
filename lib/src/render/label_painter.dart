@@ -105,6 +105,10 @@ class LabelPainter {
   /// collision grid with tiny-but-visible text.
   static const double _minVisibleTextSize = 1.0;
 
+  /// Slack added to a fade layer's bounds, covering halo strokes and the
+  /// widest text halo a style is likely to ask for.
+  static const double _fadeLayerPadding = 16.0;
+
   /// Paragraph shapings performed (cache misses); for tests asserting
   /// that zoom motion does not re-shape text.
   @visibleForTesting
@@ -193,7 +197,7 @@ class LabelPainter {
     var anyFading = false;
     for (final candidate in candidates) {
       final drawable =
-          _prepare(candidate, zoom, collision, sprites, screenSize);
+          _prepare(candidate, zoom, styleZoom, collision, sprites, screenSize);
       if (drawable != null) {
         toDraw.add(drawable);
         anyFading |= candidate.fadeOpacity < 1;
@@ -229,21 +233,31 @@ class LabelPainter {
         drawn.add(drawable.symbol);
       }
     }
-    final buckets = <double>{
-      for (final drawable in toDraw)
-        if (drawable.symbol.fadeOpacity < 1) drawable.symbol.fadeOpacity,
-    }.toList()
-      ..sort();
-    for (final opacity in buckets) {
+    // Grouped in one pass, with each bucket's painted extent, so the
+    // layer below covers only what it draws: an unbounded saveLayer
+    // allocates a full-viewport offscreen target, and there is one per
+    // bucket per frame for the whole fade.
+    final buckets = <double, List<_DrawableSymbol>>{};
+    for (final drawable in toDraw) {
+      final opacity = drawable.symbol.fadeOpacity;
+      if (opacity < 1) (buckets[opacity] ??= []).add(drawable);
+    }
+    for (final opacity in buckets.keys.toList()..sort()) {
+      final bucket = buckets[opacity]!;
+      var extent = bucket.first.bounds;
+      for (final drawable in bucket.skip(1)) {
+        extent = extent.expandToInclude(drawable.bounds);
+      }
       canvas.saveLayer(
-        null,
+        // Padded for halo bleed: the bounds are tight, and a clipped
+        // halo would be a visible artefact. The canvas intersects this
+        // with the current clip, so no screen bound is needed here.
+        extent.inflate(_fadeLayerPadding),
         Paint()..color = Color.fromRGBO(0, 0, 0, opacity),
       );
-      for (final drawable in toDraw) {
-        if (drawable.symbol.fadeOpacity == opacity) {
-          drawable.draw(canvas, devicePixelRatio);
-          drawn.add(drawable.symbol);
-        }
+      for (final drawable in bucket) {
+        drawable.draw(canvas, devicePixelRatio);
+        drawn.add(drawable.symbol);
       }
       canvas.restore();
     }
@@ -269,20 +283,29 @@ class LabelPainter {
       );
       if (layer.textOpacity.eval(ctx) <= 0) continue;
       final size = layer.textSize.eval(ctx);
-      if (size < _minVisibleTextSize) continue;
-      final fontSize = size.clamp(_minVisibleTextSize, 96.0);
-      final text = _layoutText(instance, layer, ctx, fontSize);
-      // The per-grapheme work is the expensive half for road labels.
-      if (instance.alongLine && instance.curveSafe && instance.path != null) {
-        for (final cluster in text.clusters) {
-          _glyphPainters(cluster.grapheme, text);
+      // Written as a positive test, like the one in [_prepare]: a NaN
+      // size — a style expression dividing by zero — fails `>=` and is
+      // skipped, where `if (size < min) continue` would let it through
+      // to shaping, which throws when it rounds the halo ratio.
+      if (size >= _minVisibleTextSize) {
+        final fontSize = size.clamp(_minVisibleTextSize, 96.0);
+        final text = _layoutText(instance, layer, ctx, fontSize);
+        // The per-grapheme work is the expensive half for road labels.
+        if (instance.alongLine && instance.curveSafe && instance.path != null) {
+          for (final cluster in text.clusters) {
+            _glyphPainters(cluster.grapheme, text);
+          }
         }
       }
     }
   }
 
+  /// [evalZoom] is quantized for the expression memos; [styleZoom] is
+  /// the camera's exact fractional zoom and gates visibility, which is a
+  /// discrete cut that must land where the style says it does.
   _DrawableSymbol? _prepare(
     PlacedSymbol placed,
+    double evalZoom,
     double styleZoom,
     _CollisionIndex collision,
     SpriteAtlas? sprites,
@@ -303,11 +326,14 @@ class LabelPainter {
     // The layer's zoom range is continuous (MapLibre semantics), while
     // layout gates only per integer band: a symbol stops painting the
     // moment the fractional style zoom leaves [minzoom, maxzoom) —
-    // including symbols from retained previous-level tiles.
+    // including symbols from retained previous-level tiles. Gated on the
+    // exact zoom, not the quantized one: rounding would move the cut by
+    // up to half a step, so labels would appear or vanish up to 1/16 of
+    // a level away from the threshold the style declares.
     if (!layer.coversZoom(styleZoom)) return null;
 
     final ctx = EvalContext(
-      zoom: styleZoom,
+      zoom: evalZoom,
       properties: instance.properties,
       geometryType: instance.geometryType,
       featureId: instance.featureId,
@@ -1071,6 +1097,37 @@ class _DrawableSymbol {
     this.textScale = 1,
     this.curvedGlyphs,
   });
+
+  /// Screen extent of everything [draw] paints, for bounding the fade
+  /// layer a cohort draws through. Rotated pieces contribute the circle
+  /// they sweep, so the answer is conservative and never too small.
+  Rect get bounds {
+    Rect? result;
+    void add(Rect rect) =>
+        result = result == null ? rect : result!.expandToInclude(rect);
+
+    Rect sweptCircle(Offset center, double width, double height) {
+      final diagonal = math.sqrt(width * width + height * height);
+      return Rect.fromCircle(center: center, radius: diagonal / 2 * textScale);
+    }
+
+    final icon = this.icon;
+    if (icon != null) add(icon.rect);
+    final glyphs = curvedGlyphs;
+    final text = this.text;
+    if (glyphs != null) {
+      for (final glyph in glyphs) {
+        final painter = glyph.painters.halo ?? glyph.painters.fill;
+        add(sweptCircle(glyph.position, painter.width, painter.height));
+      }
+    } else if (text != null) {
+      add(textAngle == 0
+          ? textRect
+          : sweptCircle(
+              symbol.screenAnchor, text.size.width, text.size.height));
+    }
+    return result ?? Rect.zero;
+  }
 
   void draw(Canvas canvas, double devicePixelRatio) {
     icon?.draw(canvas, devicePixelRatio);

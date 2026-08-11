@@ -94,6 +94,24 @@ void main() {
       expect(paintAt(13.9), isEmpty, reason: 'below minzoom');
       expect(paintAt(16.0), isEmpty, reason: 'maxzoom is exclusive');
     });
+
+    test('the range is gated at the exact zoom, not the quantized one', () {
+      // Size expressions are evaluated at the zoom rounded to 1/8 so the
+      // expression memos keep hitting during a pinch. Visibility is a
+      // discrete cut and must not inherit that rounding: both zooms here
+      // are inside [14, 16) but round to a bound, so gating on the
+      // rounded value moves the threshold by up to 1/16 of a level.
+      final layer = _symbolLayer(minzoom: 14, maxzoom: 16);
+      List<PlacedSymbol> paintAt(double styleZoom) => _paint(
+            layer,
+            [_symbolAt(layer, const Offset(200, 200), 'Main St')],
+            styleZoom: styleZoom,
+          );
+      expect(paintAt(13.9375), isEmpty,
+          reason: 'below minzoom, though it rounds up to exactly 14');
+      expect(paintAt(15.9375), hasLength(1),
+          reason: 'still below maxzoom, though it rounds up to exactly 16');
+    });
   });
 
   group('near-zero text-size', () {

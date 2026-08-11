@@ -314,6 +314,7 @@ class StyleReader {
           image: frame.image,
           sprites: SpriteAtlas.parseIndex(index),
           pixelRatio: ratio,
+          cacheKey: imageUri,
         );
       } catch (e) {
         logger.log('sprite sheet $indexUri not usable: $e');
