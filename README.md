@@ -183,7 +183,7 @@ Styles from MapTiler & friends are authored against that convention.
   zoom ranges match the style author's intent exactly.
 - `TileOffset.none` — evaluates the style at flutter_map's zoom directly;
   everything appears one zoom earlier/larger (the legacy
-  [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles) default,
+  `vector_map_tiles` default,
   if you need visual parity with it).
 
 ## ✈️ Offline behaviour
