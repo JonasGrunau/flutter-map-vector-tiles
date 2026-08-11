@@ -77,6 +77,11 @@ FlutterMap(
 );
 ```
 
+`style.attributions` comes pre-parsed: every entry pairs the flattened
+`text` (shown above) with `spans`, whose runs keep the `url` of the
+`<a>` tag they came from — build from those when your provider's terms
+call for *tappable* attribution links.
+
 ### 3. Clean up
 
 ```dart
@@ -164,6 +169,9 @@ imagery, only tiles panned to afterwards are re-read from disk.
 - `headers` — extra HTTP headers sent with the style, TileJSON and
   sprite requests and forwarded to the created tile providers, for
   header-authenticated services (e.g. `Authorization`).
+- `httpClient` — bring your own `http.Client` (proxying, certificate
+  pinning, tests); a passed client stays yours and is never closed for
+  you.
 
 ### 🎚️ Understanding `TileOffset`
 
@@ -243,6 +251,12 @@ vt.VectorTileLayer(
 )
 ```
 
+The sample shows the two options you'll always set;
+`NetworkVectorTileProvider` also takes `headers` (header-authenticated
+tile servers), `minimumZoom`, `maxRetries` (default 2) and an optional
+`client` if you bring your own `http.Client` — a passed client is
+shared and never closed for you.
+
 **PMTiles** single-file archives work out of the box: styles with
 `pmtiles://https://…/planet.pmtiles` source URLs just load, or open an
 archive directly:
@@ -253,6 +267,16 @@ final provider = await vt.PmTilesVectorTileProvider.open(
 );
 // → vt.TileProviders({'mySource': provider})
 ```
+
+`open` likewise accepts `headers`, `maxRetries`, a shared `client`, and
+`minimumZoom`/`maximumZoom` to override the archive header — the same
+role a style source's `minzoom`/`maxzoom` plays.
+
+Raster imagery (satellite, hillshade) wires up the same way: pass
+`rasterSources:` entries of `RasterTileSource(provider: …, tileSize:
+512)`, where the provider serves encoded PNG/JPEG/WebP bytes instead of
+MVT — `NetworkVectorTileProvider` works unchanged. 256px sources are
+fetched one zoom level deeper for the same visual scale.
 
 There's also `MemoryVectorTileProvider` (tests, bundled offline regions)
 and a small `VectorTileProvider` interface for anything else
@@ -325,6 +349,13 @@ documented in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md). 📖
   both `StyleReader` and `VectorTileLayer`; most often the style's source
   ids don't match your `TileProviders` keys, or your API key is invalid
   (HTTP 403s are logged, keys redacted).
+- **`read()` or `open()` throws** → that's the designed failure path
+  for a broken setup: `StyleReader.read()` throws `StyleReaderException`
+  when the style can't be loaded or parsed, and
+  `PmTilesVectorTileProvider.open` throws `PmTilesException` on an
+  invalid or unsupported archive (`http.ClientException` on network
+  failure) — catch these to show a retry UI. Runtime tile fetches never
+  throw into your code; failures are logged and retried instead.
 - **Labels/roads look bigger than in MapLibre** → you're probably using
   `TileOffset.none` with a 512px-convention style; use the default.
 - **Stale data after changing styles** → the disk cache keys by URL; a

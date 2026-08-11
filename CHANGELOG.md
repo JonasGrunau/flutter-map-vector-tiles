@@ -2,8 +2,15 @@
 
 ## Unreleased
 
-Documentation for the memory-pressure valve.
+README coverage for the API corners that only dartdoc knew about.
 
+- 📚 The README now documents the public API it never mentioned:
+  tappable attribution links (`StyleAttribution.spans` /
+  `AttributionSpan.url`), the exceptions `StyleReader.read()` and
+  `PmTilesVectorTileProvider.open` throw, the full option sets of
+  `NetworkVectorTileProvider` and `open()` (headers, zoom clamps,
+  retries, custom `http.Client`), `StyleReader.httpClient`, and manual
+  `RasterTileSource` wiring for raster imagery.
 - 📚 `VectorTileLayer.clearMemoryCache()` is now covered in the README and
   the architecture guide — it had been public since 2.2.0 with no mention
   outside its dartdoc.
