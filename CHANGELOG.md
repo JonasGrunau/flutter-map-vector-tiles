@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.4.0
 
 What a full review of 2.3.0 turned up: tiles honour their freshness
 deadline again, the finished-tile cache stops stranding textures across
