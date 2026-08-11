@@ -42,11 +42,14 @@ Style attribution and MVT decode performance.
   version list can tell whether to care; it does not enumerate the bullets
   below it. Every version has one — never release without it.
 - **Bullets** — one per user-visible change, each opening with the emoji for
-  its kind: ✨ feature, ⚡ performance, 🐛 fix, 💥 breaking, 🎨 rendering /
-  style support, 🌐 platform, ✈️ offline, 📚 docs, 📦 packaging or pub.dev
-  metadata, ⬆️ dependency bump, 🧹 cleanup. Headline features may bold a
-  short lead-in (`- ✨ **Style attribution**: …`). Describe the change from
-  the user's side, and for fixes say what went wrong before.
+  its kind, and **grouped by kind in this order**: 💥 breaking, ✨ feature,
+  🎨 rendering / style support, ⚡ performance, 🐛 fix, 🌐 platform,
+  ✈️ offline, 📚 docs, 📦 packaging or pub.dev metadata, ⬆️ dependency
+  bump, 🧹 cleanup. A new bullet is inserted into its kind's group — never
+  just appended to the section — with the more significant change first
+  within the group. Headline features may bold a short lead-in
+  (`- ✨ **Style attribution**: …`). Describe the change from the user's
+  side, and for fixes say what went wrong before.
 
 ## README must track the package's identity
 

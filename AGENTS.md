@@ -22,7 +22,7 @@ collision pass; cancellation is a **state**, never an exception; every
 |------|-------------|
 | `pubspec.yaml` | Package manifest — name, `version:` (source of truth for the README install snippet), dependency constraints, SDK/Flutter minimums |
 | `README.md` | User-facing documentation: quick start, configuration, style support, offline behaviour, troubleshooting |
-| `CHANGELOG.md` | One section per released version; every user-visible change lands here. Fixed shape — heading, one-sentence summary line, emoji-prefixed bullets (see `CLAUDE.md`) |
+| `CHANGELOG.md` | One section per released version; every user-visible change lands here. Fixed shape — heading, one-sentence summary line, emoji-prefixed bullets grouped by kind in a fixed order (see `CLAUDE.md`) |
 | `CLAUDE.md` | Agent working agreements — doc-sync rules, README/version rules, release gate. Imports this file via `@AGENTS.md` |
 | `analysis_options.yaml` | `flutter_lints` + strict casts/inference/raw-types, plus `prefer_final_locals`, `unawaited_futures`, `avoid_print`, `directives_ordering` |
 | `.gitignore` | Repo exclusions |

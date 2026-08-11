@@ -16,6 +16,30 @@ instant re-crossings — plus expired tiles that paint instantly and
 refresh in the background, deep-zoom performance in dense cities, and
 pub.dev gallery screenshots.
 
+- ✨ **Finished-tile cache** (`rasterCacheMaxBytes`, default 64 MiB,
+  0 disables): rasterized display tiles and their symbols are kept in a
+  process-wide LRU, so zooming out and back in — or reopening a map on
+  the same style — swaps the level back in instead of re-rendering it.
+  These are GPU texture bytes (~1 MiB per tile at devicePixelRatio 2,
+  ~2.25 MiB at 3); the default holds roughly two phone-screen zoom
+  levels at dpr 2. `VectorTileLayer.clearMemoryCache()` releases it.
+- ✨ **Label fade-in** (`labelFadeDuration`, default 150 ms, 0 restores
+  the old instant pop): newly appearing labels and icons now fade in,
+  masking the pop when a zoom level first shows symbol layers. Fading
+  labels reserve their full collision space, so placements never shift
+  mid-fade.
+- ✨ **Stale-while-revalidate tiles**: disk-cached tiles older than
+  `diskCacheTtl` are no longer refetched *before* they can paint —
+  the expired tile is shown immediately and revalidated in the
+  background. When the server returns changed data the tile
+  cross-fades to the new imagery; when the fetch fails (e.g. offline)
+  the old tile simply stays. Previously the map held back such tiles
+  for the full network round-trip (plus retries) and fell back to the
+  expired copy only after it failed.
+- 🎨 A re-rasterized tile that replaces visible imagery (background
+  refresh, a source recovered by a retry, provisional→final) now keeps
+  the previous raster underneath while the new one fades in, instead of
+  fading in over the map background.
 - ⚡ **Scale-invariant text shaping**: label text used to be re-shaped
   (two `TextPainter.layout` passes per label, inside the paint phase)
   roughly every 0.1 px of a `text-size` zoom ramp — a full-screen
@@ -36,40 +60,6 @@ pub.dev gallery screenshots.
   in the same budgeted tick that publishes a tile's symbols, and the
   retained-level label bookkeeping is memoized instead of recomputed
   per frame during transitions.
-- ✨ **Finished-tile cache** (`rasterCacheMaxBytes`, default 64 MiB,
-  0 disables): rasterized display tiles and their symbols are kept in a
-  process-wide LRU, so zooming out and back in — or reopening a map on
-  the same style — swaps the level back in instead of re-rendering it.
-  These are GPU texture bytes (~1 MiB per tile at devicePixelRatio 2,
-  ~2.25 MiB at 3); the default holds roughly two phone-screen zoom
-  levels at dpr 2. `VectorTileLayer.clearMemoryCache()` releases it.
-- ✨ **Label fade-in** (`labelFadeDuration`, default 150 ms, 0 restores
-  the old instant pop): newly appearing labels and icons now fade in,
-  masking the pop when a zoom level first shows symbol layers. Fading
-  labels reserve their full collision space, so placements never shift
-  mid-fade.
-- 🧹 DevTools timeline events (`VT render pump`, `VT rasterize`,
-  `VT symbols`, `VT labels`) around the render pipeline's UI-thread
-  stages, for profiling zoom behaviour.
-- ✨ **Stale-while-revalidate tiles**: disk-cached tiles older than
-  `diskCacheTtl` are no longer refetched *before* they can paint —
-  the expired tile is shown immediately and revalidated in the
-  background. When the server returns changed data the tile
-  cross-fades to the new imagery; when the fetch fails (e.g. offline)
-  the old tile simply stays. Previously the map held back such tiles
-  for the full network round-trip (plus retries) and fell back to the
-  expired copy only after it failed.
-- 🎨 A re-rasterized tile that replaces visible imagery (background
-  refresh, a source recovered by a retry, provisional→final) now keeps
-  the previous raster underneath while the new one fades in, instead of
-  fading in over the map background.
-- 📦 The pub.dev page now shows three screenshots (`screenshots/`), framed
-  in an iPhone bezel: Munich in OpenFreeMap Liberty, Zermatt with an Esri
-  hillshade raster blended into the vector style, and Munich in the dark
-  Fiord style.
-- 🧹 The example app draws its attribution as a rounded translucent
-  pill centered at the bottom of the map instead of a flush white bar
-  in the bottom-right corner.
 - ⚡ **Overzoom culling and clipping**: zoomed past the source's
   maxzoom (z15+ for typical OpenMapTiles sources), every display tile
   used to re-process *all* features of its data tile for every style
@@ -114,6 +104,16 @@ pub.dev gallery screenshots.
 - 🐛 When current- and previous-level copies of a label tie for the
   same spot during a zoom crossing, the current level now wins
   deterministically instead of the winner flickering between the two.
+- 📦 The pub.dev page now shows three screenshots (`screenshots/`), framed
+  in an iPhone bezel: Munich in OpenFreeMap Liberty, Zermatt with an Esri
+  hillshade raster blended into the vector style, and Munich in the dark
+  Fiord style.
+- 🧹 DevTools timeline events (`VT render pump`, `VT rasterize`,
+  `VT symbols`, `VT labels`) around the render pipeline's UI-thread
+  stages, for profiling zoom behaviour.
+- 🧹 The example app draws its attribution as a rounded translucent
+  pill centered at the bottom of the map instead of a flush white bar
+  in the bottom-right corner.
 
 ## 2.2.0
 
