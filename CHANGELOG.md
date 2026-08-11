@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Documentation for the memory-pressure valve.
+
+- 📚 `VectorTileLayer.clearMemoryCache()` is now covered in the README and
+  the architecture guide — it had been public since 2.2.0 with no mention
+  outside its dartdoc.
+
 ## 2.3.0
 
 Smooth zooming where labels live: text is shaped once and scaled,

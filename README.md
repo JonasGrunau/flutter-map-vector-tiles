@@ -4,7 +4,7 @@
 [![license: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 [![flutter_map](https://img.shields.io/badge/flutter__map-%E2%89%A5%208.2-green.svg)](https://pub.dev/packages/flutter_map)
 
-**Vector tiles for [flutter_map](https://pub.dev/packages/flutter_map).**
+**Vector tiles for [`flutter_map`](https://pub.dev/packages/flutter_map).**
 A clean, self-contained rewrite of the ideas behind
 [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles) —
 built for flutter_map ≥ 8 and modern Flutter (Impeller).
@@ -146,6 +146,15 @@ vt.VectorTileLayer(
 | `labelFadeDuration` | 150 ms | fade-in of newly appearing labels/icons (masks the pop at the zoom where symbols start); `Duration.zero` restores the instant pop |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 
+The memory caches are shared process-wide and outlive the layer — that's
+why reopening a map paints instantly instead of decoding everything
+again. If those budgets are too generous under memory pressure, the
+static `VectorTileLayer.clearMemoryCache()` releases them (decoded
+tiles, raster-source images and finished tiles alike; the disk cache is
+untouched). Call it from a memory-pressure handler such as
+`WidgetsBindingObserver.didHaveMemoryPressure` — visible maps keep their
+imagery, only tiles panned to afterwards are re-read from disk.
+
 `StyleReader` options worth knowing:
 
 - `apiKey` — substituted for `{key}` in the style URI and every URL the
@@ -159,7 +168,7 @@ vt.VectorTileLayer(
 ### 🎚️ Understanding `TileOffset`
 
 MapLibre renders 512px tiles, so at the same visual scale a MapLibre zoom
-is **one lower** than [flutter_map](https://pub.dev/packages/flutter_map)'s.
+is **one lower** than flutter_map's.
 Styles from MapTiler & friends are authored against that convention.
 
 - `TileOffset.maplibre` *(default)* — text sizes, road widths and layer
@@ -301,13 +310,13 @@ documented in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md). 📖
 
 ## 🆚 [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles)
 
-| | [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles) (stable) | this package |
+| | vector_map_tiles (stable) | this package |
 |---|---|---|
 | Packages | 3 ([`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles), [`vector_tile_renderer`](https://pub.dev/packages/vector_tile_renderer), [`executor_lib`](https://pub.dev/packages/executor_lib)) + [`stash`](https://pub.dev/packages/stash) caching | 1 |
 | Labels | baked into tile rasters / per-tile collision | screen-space pass, global collision, upright text |
 | Zoom flicker | white flash on fast zoom ([#147](https://github.com/greensopinion/flutter-vector-map-tiles/issues/147)) | ancestor retention + provisional rendering |
 | Cancellation | `CancellationException` reaches crash reporting ([#205](https://github.com/greensopinion/flutter-vector-map-tiles/issues/205)) | a state, never an exception |
-| Style zoom | evaluated at [flutter_map](https://pub.dev/packages/flutter_map) zoom (1 off vs. MapLibre) | `TileOffset.maplibre` default |
+| Style zoom | evaluated at flutter_map zoom (1 off vs. MapLibre) | `TileOffset.maplibre` default |
 | Rasters | async image encode | `Picture.toImageSync` (stays on GPU) |
 
 ## 🐛 Troubleshooting

@@ -149,7 +149,10 @@ cached, so a hit can never mask a pending retry; a background
 revalidation invalidates every cached display tile the refreshed data
 tile serves. Beyond the cache's budget, revisiting a zoom
 re-rasterizes from the `PreparedTile` LRU — cheap, since only the
-visible window is processed.
+visible window is processed. `VectorTileLayer.clearMemoryCache()` empties
+all three memory tiers at once — the memory-pressure valve, since the
+caches are process-wide and otherwise freed only by their budgets; the
+disk cache is untouched.
 
 The disk TTL is a *revalidation* deadline, not an expiry: expired
 entries — including the zero-byte "known absent" sentinels — are served
