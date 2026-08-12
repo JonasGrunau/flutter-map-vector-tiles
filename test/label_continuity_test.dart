@@ -293,6 +293,21 @@ void main() {
       );
     });
 
+    test('is deduplicated against the other labels fading out', () {
+      // A feature landing on a tile seam is claimed by both neighbours
+      // by design, and the collision pass is what removes the copy. A
+      // ghost reserves nothing a live label can see, but it must still
+      // exclude the other ghosts — otherwise a street name crossing a
+      // seam draws twice over itself, visibly doubled and doubly opaque,
+      // for the length of the fade.
+      final drawn = _paint([
+        _placed(layer, 200, text: 'Hauptstr', fadeOpacity: 0.5, ghost: true),
+        _placed(layer, 200.1,
+            text: 'Hauptstr', fadeOpacity: 0.5, ghost: true, order: 1),
+      ]);
+      expect(drawn, hasLength(1), reason: 'the seam copy was suppressed');
+    });
+
     test('loses even from a style layer that would normally win space', () {
       // Topmost layers place first, so layer 5 would beat layer 0 — but
       // ghosts place after every live label regardless of layer. A dying

@@ -123,11 +123,15 @@ finish loading. They are now handed to a fade-out: the publish that
 retires a retained tile moves its orphans into `_fadingLabels` (plain
 Dart objects, so no tile texture is pinned) and they ramp to zero over
 `labelFadeDuration`. They draw as **ghosts** — placed after every live
-label regardless of style layer, and tested against the collision index
-without ever being inserted into it. A dying label therefore cannot
-block or displace one that is staying; where a live label claims its
-space the ghost simply drops, its disappearance masked by the very label
-that replaced it. Unlike the zoom ramp below this fade is time-based,
+label regardless of style layer, and reserving nothing that a live label
+can see. A dying label therefore cannot block or displace one that is
+staying; where a live label claims its space the ghost simply drops, its
+disappearance masked by the very label that replaced it. Ghosts do
+exclude *each other*, though, in a collision index of their own: a
+feature on a tile seam is claimed by both neighbours by design and this
+pass is what removes the copy, so a departing label with no reservation
+at all would draw twice over itself — visibly doubled, and doubly
+opaque — for the length of the fade. Unlike the zoom ramp below this fade is time-based,
 because handover completes when tiles load rather than at a fixed zoom;
 a zoom level change cancels any fade still running.
 

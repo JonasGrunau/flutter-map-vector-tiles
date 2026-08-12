@@ -1257,6 +1257,11 @@ class _DrawableSymbol {
 class _CollisionIndex {
   static const double _cellSize = 128;
   final Map<int, List<Rect>> _cells = {};
+
+  /// Space taken by labels fading out, kept apart from [_cells] so they
+  /// reserve nothing against live labels while still excluding each
+  /// other — see [tryPlaceAll].
+  final Map<int, List<Rect>> _ghostCells = {};
   final int _columns;
 
   _CollisionIndex(Size screenSize)
@@ -1264,15 +1269,25 @@ class _CollisionIndex {
 
   /// Whether [rects] fit, reserving them when they do.
   ///
-  /// A [ghost] only asks: it takes no space, so a label fading out can
-  /// never block the labels that outlive it.
+  /// A [ghost] reserves nothing that a live label can see, so a label on
+  /// its way out never blocks one that outlives it. It is still placed
+  /// against the other ghosts: a feature landing on a tile seam is
+  /// claimed by both neighbours by design (see `symbol_layouter.dart`),
+  /// and this pass is what suppresses the duplicate. Without a reservation
+  /// of its own a departing label would draw twice over its own copy —
+  /// visibly doubled, and doubly opaque, for the length of the fade.
   bool tryPlaceAll(List<Rect> rects, {bool ghost = false}) {
     for (final rect in rects) {
       if (_collides(rect)) return false;
     }
-    if (ghost) return true;
+    if (ghost) {
+      for (final rect in rects) {
+        if (_collidesIn(_ghostCells, rect)) return false;
+      }
+    }
+    final cells = ghost ? _ghostCells : _cells;
     for (final rect in rects) {
-      _insert(rect);
+      _insertIn(cells, rect);
     }
     return true;
   }
@@ -1281,14 +1296,16 @@ class _CollisionIndex {
   // allocated an iterator per collision box per frame in the hottest
   // label loop.
 
-  bool _collides(Rect rect) {
+  bool _collides(Rect rect) => _collidesIn(_cells, rect);
+
+  bool _collidesIn(Map<int, List<Rect>> cells, Rect rect) {
     final minX = ((rect.left + 512) / _cellSize).floor();
     final maxX = ((rect.right + 512) / _cellSize).floor();
     final minY = ((rect.top + 512) / _cellSize).floor();
     final maxY = ((rect.bottom + 512) / _cellSize).floor();
     for (var y = minY; y <= maxY; y++) {
       for (var x = minX; x <= maxX; x++) {
-        final rects = _cells[y * _columns + x];
+        final rects = cells[y * _columns + x];
         if (rects == null) continue;
         for (final other in rects) {
           if (rect.overlaps(other)) return true;
@@ -1298,14 +1315,14 @@ class _CollisionIndex {
     return false;
   }
 
-  void _insert(Rect rect) {
+  void _insertIn(Map<int, List<Rect>> cells, Rect rect) {
     final minX = ((rect.left + 512) / _cellSize).floor();
     final maxX = ((rect.right + 512) / _cellSize).floor();
     final minY = ((rect.top + 512) / _cellSize).floor();
     final maxY = ((rect.bottom + 512) / _cellSize).floor();
     for (var y = minY; y <= maxY; y++) {
       for (var x = minX; x <= maxX; x++) {
-        (_cells[y * _columns + x] ??= []).add(rect);
+        (cells[y * _columns + x] ??= []).add(rect);
       }
     }
   }
