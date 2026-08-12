@@ -2,38 +2,43 @@
 
 ## Unreleased
 
-Labels across a zoom level change.
+Labels across a zoom level change: every appearance and disappearance
+now animates through one per-label fade.
 
+- ✨ **Per-label fades**: `labelFadeDuration` now drives one fade state
+  per label *identity* (layer, text, icon) instead of one per tile
+  cohort — rising while the label is on screen, falling once it no
+  longer is, whatever the cause. Labels fade in when a tile arrives,
+  when they win collision space mid-gesture, or when panning brings
+  them in; they fade out when the tileset stops carrying them at the
+  next zoom, when denser labelling crowds them out, or when a zoom
+  crossing cuts their layer at its `minzoom` — cases that used to pop
+  in one frame. A departing label frees its space immediately, so its
+  replacement crossfades in over it rather than popping in when the
+  fade ends, and a label mid-fade that comes back resumes from its
+  current opacity instead of restarting.
 - 🎨 Labels ramp out over the last quarter zoom level before their
   layer's declared `maxzoom` instead of snapping away, and ramp back in
-  when you zoom out across it. `minzoom` stays a hard edge — it is
-  inclusive, so fading there would leave a `minzoom: 14` layer invisible
-  on a map resting at exactly zoom 14.
-- 🎨 Labels that disappear for reasons the style does not declare — a
-  feature the tileset stops carrying at the next zoom, or one crowded
-  out by denser labelling — fade out over `labelFadeDuration` as the map
-  hands over to the new level, instead of vanishing in one frame at
-  whatever moment the tiles finished loading. A departing label keeps
-  the space it held until it is gone, so nothing jumps into a spot that
-  still shows something.
-- 🐛 Labels no longer blink when you cross a zoom level. Crossing one
-  replaces the whole display level, and the arriving tiles re-faded
-  labels the outgoing level was still drawing at full opacity. The two
-  copies competed for the same collision space, and which one won turned
-  on a sub-pixel difference in anchor position — so *some* labels dropped
-  to a fraction of their opacity and faded back in, while labels on
-  `text-allow-overlap` layers composited over themselves. Labels that
-  survive a crossing now hold full opacity; only labels genuinely new at
-  the arriving level fade in.
+  when you zoom out across it. `minzoom` gets no zoom-based ramp — it
+  is inclusive, so one would leave a `minzoom: 14` layer invisible on a
+  map resting at exactly zoom 14 — but crossing it now eases labels out
+  through the time-based fade above.
+- 🐛 Labels no longer blink — or visibly fade into themselves — when
+  you cross a zoom level. Crossing one replaces the whole display level
+  with new tiles whose labels used to carry fresh fade state, so a
+  label present at both levels could be re-faded against its own
+  still-visible copy, with collision deciding between the two on a
+  sub-pixel anchor difference. The two copies now share one fade state
+  by construction: whichever wins collision draws at the same opacity,
+  and the swap is invisible.
 - 🐛 Street names no longer flash up in the moment between a zoom-out
   crossing and the new level's tiles arriving. The crossing cuts whole
   symbol layers at their `minzoom` (POIs, typically), and the space
   their labels held went to whatever the outgoing level had been
-  suppressing — street names never previously on screen popped in at
-  full opacity, only to be faded straight back out. An outgoing level is
-  now pinned to the labels that were actually visible: it keeps them on
-  screen until the new level covers them, but can no longer introduce
-  new ones.
+  suppressing — street names never previously on screen appeared, only
+  to be faded straight back out. An outgoing level is now pinned to the
+  labels that were actually visible: it keeps them on screen until the
+  new level covers them, but can no longer introduce new ones.
 
 ## 2.4.0
 

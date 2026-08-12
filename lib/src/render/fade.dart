@@ -1,9 +1,8 @@
-/// Steps of the opacity grid all label fade opacities are quantized
+/// Steps of the opacity grid all label draw opacities are quantized
 /// onto. Fading labels draw through one `saveLayer` bucket per distinct
-/// opacity, so the grid is coarse on purpose. The widget's fade-progress
-/// quantization and the label painter's ramp/compound quantization must
-/// share this value: if they disagreed, the painter's re-rounding would
-/// silently move opacities off the caller's grid and multiply buckets.
+/// opacity, so the grid is coarse on purpose. The zoom-range ramp and
+/// the per-label fade quantize onto the same grid: if they disagreed,
+/// their compound would land off-grid and multiply buckets.
 const int labelOpacitySteps = 8;
 
 /// Elapsed fraction of a fade that began at [start], in the range

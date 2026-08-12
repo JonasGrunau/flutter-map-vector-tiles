@@ -148,7 +148,7 @@ vt.VectorTileLayer(
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source (the caches are shared process-wide; the most recently mounted layer's value wins) |
 | `rasterCacheMaxBytes` | 64 MB | finished-tile budget: zooming back to a recent level (or reopening the same style) paints instantly instead of re-rendering. GPU texture bytes — ~1 MB per tile at devicePixelRatio 2, ~2.25 MB at 3, so the default holds ≈2 phone-screen zoom levels at dpr 2 (≈1 at dpr 3). `0` disables |
 | `tileFadeDuration` | 150 ms | `Duration.zero` disables fade-in |
-| `labelFadeDuration` | 150 ms | fade-in of newly appearing labels/icons (masks the pop at the zoom where symbols start). Labels carried over from the previous zoom level are not re-faded, so crossing a zoom level does not blink them; `Duration.zero` restores the instant pop |
+| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels/icons — one fade state per label identity, so a label carried across a zoom level never re-fades or blinks; `Duration.zero` restores instant pops |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 
 The memory caches are shared process-wide and outlive the layer — that's
@@ -306,22 +306,28 @@ Nearly straight windows are drawn as a single rotated string for speed;
 scripts with contextual shaping (Arabic, Indic, …) fall back to straight
 placement so glyphs are never mis-joined.
 
-A symbol layer's zoom range is honoured exactly — nothing paints outside
-`[minzoom, maxzoom)` — but labels ramp out over the last quarter zoom
-level before a declared `maxzoom` rather than snapping away, and ramp
-back in when you zoom out across it. `minzoom` stays a hard edge: it is
-inclusive, so fading there would leave a `minzoom: 14` layer invisible
-on a map sitting at exactly zoom 14.
+A symbol layer's zoom range is honoured exactly — nothing claims label
+space outside `[minzoom, maxzoom)` — but labels ramp out over the last
+quarter zoom level before a declared `maxzoom` rather than snapping
+away, and ramp back in when you zoom out across it. (`minzoom` gets no
+such zoom-based ramp: it is inclusive, so one would leave a
+`minzoom: 14` layer invisible on a map sitting at exactly zoom 14.)
 
-Labels that disappear for reasons the style does not declare — a feature
-the tileset stops carrying at the next zoom, or one crowded out by
-denser labelling — fade out too, over `labelFadeDuration`, as the map
-hands over to the new zoom level. A departing label keeps the space it
-held until it is gone, so nothing jumps into a spot that still shows
-something. And the outgoing level only ever *keeps* labels on screen —
-it never introduces ones that were not already visible, so a label that
-had been crowded out (a street name under a POI, say) cannot flash up
-just as the level departs.
+Beyond that declared ramp, every label appearance and disappearance is
+animated per label: one fade state per label *identity* (layer, text,
+icon), rising while the label is placed and falling once it no longer
+is — whatever the reason. A feature the tileset stops carrying at the
+next zoom, a label crowded out by denser labelling, or a whole layer
+cut at its `minzoom` eases out over `labelFadeDuration` instead of
+vanishing in one frame; a departing label frees its space immediately,
+so its replacement fades in over it — a crossfade, not a pop at the
+fade's end. A label that survives a zoom level change keeps its
+opacity: the two levels' copies share one fade state, so a crossing
+can neither blink a label nor fade it into itself. And the outgoing
+level only ever *keeps* labels on screen — it never introduces ones
+that were not already visible, so a label that had been crowded out (a
+street name under a POI, say) cannot flash up just as the level
+departs.
 
 **Expressions:** the practical MapLibre set — `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,

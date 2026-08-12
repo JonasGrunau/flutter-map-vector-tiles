@@ -198,28 +198,21 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// re-derive it every frame of a zoom transition. Null = recompute.
   Set<TileKey>? _retainedSymbolKeys;
 
-  /// Labels the outgoing zoom level was showing that the arriving one
-  /// has no counterpart for, kept just long enough to fade out — see
-  /// [_handOverRetainedLabels]. Holds only Dart objects: the tiles they
-  /// came from are disposed on the usual schedule, so no tile texture is
-  /// pinned by a fade.
-  final _fadingLabels = <_FadingLabels>[];
-
-  /// A publish or grid change may have flipped a retained tile from
-  /// "still needed" to "done"; evaluated at the drain points — see
-  /// [_drainPendingHandOver].
-  var _handOverPending = false;
+  /// Fade-out fallbacks for labels whose tile is gone: when a retained
+  /// tile is disposed, its (pinned) symbols are parked here for one
+  /// fade duration, so the label pass can keep drawing a fading key's
+  /// ghost while it ramps to zero. Never placement candidates, and only
+  /// plain Dart objects — no tile texture is pinned by a fade.
+  final _ghostLabels = <_GhostLabels>[];
 
   /// The symbols the last label pass actually drew, by identity.
   ///
   /// A tile's `symbols` are placement *candidates*: the collision pass
-  /// picks the winners afresh every frame, and on a dense screen most of
-  /// them lose. Only the winners were ever on screen, so only they can
-  /// be faded out — fading a candidate that lost would make a label
-  /// appear from nowhere purely to fade away — and only they count as
-  /// covering an arriving cohort (see [_coveringLabelKeys]) — carrying a
-  /// label over a copy that was never visible would make it pop in over
-  /// empty screen. Rebuilt in place each frame, so neither ever guesses.
+  /// picks the winners afresh every frame, and on a dense screen most
+  /// of them lose. Only the winners were ever on screen, so only they
+  /// survive the retention pin (see `_updateGrid`): an outgoing level
+  /// exists to keep what was visible, never to introduce labels.
+  /// Rebuilt in place each frame, so the pin never guesses.
   final _drawnLastFrame = <SymbolInstance>{};
 
   /// Bounded retries for tiles that finalized with a source missing
@@ -332,11 +325,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
     _retained.clear();
     _retainedSymbolKeys = null;
-    _fadingLabels.clear();
-    _handOverPending = false;
-    // A theme or provider swap replaces every symbol instance; a stale
-    // snapshot would pin the old theme's expression graphs and feed the
-    // next hand-over labels that no longer exist.
+    _ghostLabels.clear();
+    // A theme or provider swap replaces every symbol instance and
+    // changes what layer indices mean; stale fade state or a stale
+    // drawn snapshot would pin the old theme's expression graphs.
+    _labelPainter.resetFades();
     _drawnLastFrame.clear();
     _currentZoom = null;
     // Without this the next _updateGrid would see an unchanged grid and
@@ -540,21 +533,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // grid is identical and the remove/create scans (plus
     // keysByDistance's allocation and sort) would be pure waste.
     if (layout == _lastLayout) {
-      // Publishes since the last frame may have completed a hand-over;
-      // run it before pruning, so a retained tile's orphans are moved
-      // to the fade-out before the tile can be disposed.
-      _drainPendingHandOver();
       _pruneRetained(camera, layout);
       return;
     }
     _lastLayout = layout;
 
     if (_currentZoom != layout.displayZoom) {
-      // Fades still running belong to the level being replaced now, and
-      // their labels were laid out two levels back. Drop them rather
-      // than let them trail a second transition — zooming back reinstates
-      // the real level anyway.
-      _fadingLabels.clear();
       // Keep the previous level's imagery underneath until the new level
       // is rasterized — this is what prevents white flicker on zoom.
       final pinLabels =
@@ -562,6 +546,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       for (final entry in _tiles.entries) {
         final existing = _retained[entry.key];
         if (existing != null && !identical(existing, entry.value)) {
+          _parkGhostLabels(existing);
           _disposeTile(existing);
         }
         // Retained tiles paint at full opacity, so their cross-fade
@@ -575,17 +560,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           // crossing typically zoom-cuts whole layers at their minzoom
           // (POIs, say), and the freed space would otherwise go to the
           // candidates those labels had been suppressing: street names
-          // never before on screen, popping in at full opacity for the
-          // moments until the arriving level fades them back out. Its
-          // losing candidates are dropped for good right here. (Skipped
-          // when nothing tracks _drawnLastFrame — see the label pass —
-          // where pinning would empty every retained cohort instead.)
+          // never before on screen, sliding in for the moments until
+          // the arriving level fades them back out. Its losing
+          // candidates are dropped for good right here. (Skipped when
+          // nothing tracks _drawnLastFrame — see the label pass — where
+          // pinning would empty every retained cohort instead.)
           entry.value.symbols =
               drawnLabels(entry.value.symbols, _drawnLastFrame);
-          // The whole pinned cohort was on screen; a shrunken list must
-          // not keep a longer carried prefix (_shownLabelKeys indexes
-          // by it).
-          entry.value.carriedSymbolCount = entry.value.symbols.length;
         }
         _retained[entry.key] = entry.value;
       }
@@ -611,16 +592,6 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       unawaited(_loadTile(tile, layout.priorityOf(key)));
     }
     _retainedSymbolKeys = null;
-
-    // The grid changed: a tile entering or leaving can flip a retained
-    // tile's needed-ness without any publish (a pan removing the one
-    // still-loading tile that kept it needed), so hand-over is
-    // re-evaluated here unconditionally — and only now that the grid is
-    // complete, never from a publish inside the creation loop above,
-    // where a synchronous result-cache hit would see a half-built grid.
-    // Before the prune, so orphans are captured ahead of any disposal.
-    _handOverPending = true;
-    _drainPendingHandOver();
     _pruneRetained(camera, layout);
   }
 
@@ -647,22 +618,19 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           ));
 
   /// Recomputes [_retainedSymbolKeys] — called lazily from the label
-  /// pass after any event invalidated it.
+  /// pass after any event invalidated it. A retained tile outside this
+  /// set still offers its labels as fade-out fallbacks (ghost-only
+  /// candidates); flipping back in is harmless, because a re-placed key
+  /// resumes its fade from the current opacity rather than popping.
   Set<TileKey> _retainedKeysWithSymbols() {
     final current = _currentStatuses(DateTime.now()).toList();
     return {
       for (final retained in _retained.values)
-        // Hand-over is one-way. A tile whose labels have been passed to
-        // the fade-out must not start drawing them again — a new tile
-        // arriving mid-transition can briefly make it "needed" once
-        // more, and its labels would then reappear at full opacity on
-        // top of their own fading copies.
-        if (!retained.labelsHandedOver &&
-            retainedSymbolsNeeded(
-              retainedKey: retained.key,
-              hasSymbols: retained.symbols.isNotEmpty,
-              current: current,
-            ))
+        if (retainedSymbolsNeeded(
+          retainedKey: retained.key,
+          hasSymbols: retained.symbols.isNotEmpty,
+          current: current,
+        ))
           retained.key,
     };
   }
@@ -682,9 +650,27 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     });
     for (final key in toRemove) {
       final tile = _retained.remove(key);
-      if (tile != null) _disposeTile(tile);
+      if (tile == null) continue;
+      _parkGhostLabels(tile);
+      _disposeTile(tile);
     }
     if (toRemove.isNotEmpty) _retainedSymbolKeys = null;
+  }
+
+  /// Parks a disposed retained tile's labels as fade-out fallbacks for
+  /// one fade duration. Its keys that the new level replaces are drawn
+  /// by the new tiles; the rest are mid-fade-out in the label painter,
+  /// and without a surviving instance to lay out, a fading label would
+  /// vanish at whatever opacity it had reached.
+  void _parkGhostLabels(_DisplayTile tile) {
+    if (tile.symbols.isEmpty ||
+        !widget.showLabels ||
+        widget.labelFadeDuration <= Duration.zero) {
+      return;
+    }
+    _ghostLabels
+        .add((key: tile.key, symbols: tile.symbols, since: DateTime.now()));
+    _ensureFadeTicker();
   }
 
   /// Disposes a tile that has left the grid, dropping any jobs still
@@ -720,7 +706,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           fadeIn: fadeIn && widget.tileFadeDuration > Duration.zero,
           symbolsPending: true,
         );
-        _publishSymbols(tile, cached.symbols, provisional: false);
+        tile.setSymbols(cached.symbols, provisional: false);
         // These labels never passed through the render pump, so nothing
         // has shaped their text — without this the first frame after a
         // reopen shapes a whole screenful of paragraphs inside paint.
@@ -985,9 +971,6 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       job.dispose();
     }
     if (_renderQueue.isEmpty) _renderTicker.stop();
-    // After the batch, not per publish: several tiles publish in one
-    // tick, and each hand-over scan walks retained × current.
-    _drainPendingHandOver();
     developer.Timeline.finishSync();
   }
 
@@ -1031,8 +1014,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           ));
     } else {
       // Still a publish: a tile that finishes with no labels at all is
-      // what lets the retained level's labels hand over to the fade-out.
-      _publishSymbols(tile, const [], provisional: job.provisional);
+      // what releases the retained level's labels over it into their
+      // fade-out.
+      tile.setSymbols(const [], provisional: job.provisional);
       _cacheResult(tile, job, const []);
     }
     _retainedSymbolKeys = null;
@@ -1053,7 +1037,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     if (symbols.isNotEmpty) _labelPainter.prewarm(symbols, styleZoom);
     developer.Timeline.finishSync();
 
-    _publishSymbols(tile, symbols, provisional: job.provisional);
+    tile.setSymbols(symbols, provisional: job.provisional);
     _cacheResult(tile, job, symbols);
     _retainedSymbolKeys = null;
     _repaint.trigger();
@@ -1063,12 +1047,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// Stores a finished tile in the result cache — final, fully sourced
   /// results only, so a cache hit can never mask a pending retry.
   ///
-  /// [symbols] is the layouter's canonical output, not the published
-  /// `tile.symbols`: publishing partition-reorders the list against
-  /// whatever happened to be retained in that instant, and caching that
-  /// order would make the shared entry — and with it the collision and
-  /// draw-order tiebreaks of every future session — depend on the zoom
-  /// path that first rendered the tile.
+  /// [symbols] is the layouter's canonical output in its canonical
+  /// order, which the collision and draw-order tiebreaks of every
+  /// future session inherit through the shared entry.
   void _cacheResult(
       _DisplayTile tile, _RenderJob job, List<SymbolInstance> symbols) {
     if (job.provisional || !job.complete) return;
@@ -1080,172 +1061,14 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     );
   }
 
-  /// Publishes [symbols] as [tile]'s labels, fading in only the ones not
-  /// already on screen over it.
-  ///
-  /// Every integer zoom crossing replaces the whole display level, so
-  /// without this the arriving tiles — new objects, with no fade history
-  /// — would fade their entire cohort in from zero while the retained
-  /// level still draws the same labels at full opacity. The two copies
-  /// then compete for the same collision space, and the winner is
-  /// decided by a sub-pixel difference in anchor position, so a label
-  /// would blink or (under `*-allow-overlap`) composite over itself for
-  /// the length of the fade.
-  ///
-  /// The tile's own previous cohort counts as covering too: a republish
-  /// (provisional→final swap, refresh, retry) must neither re-fade nor
-  /// dim labels the tile itself is already showing, however the covering
-  /// set may have shifted in between.
-  ///
-  /// [provisional] marks a cohort laid out from ancestor data. It
-  /// bridges the screen visually but must not settle the retained
-  /// level's one-shot hand-over — see [_currentStatuses].
-  void _publishSymbols(
-    _DisplayTile tile,
-    List<SymbolInstance> symbols, {
-    required bool provisional,
-  }) {
-    var covering = _coveringLabelKeys(tile.key);
-    final ownShown = _shownLabelKeys(tile);
-    if (ownShown.isNotEmpty) {
-      covering = covering.isEmpty ? ownShown : {...covering, ...ownShown};
-    }
-    final partitioned = partitionCarriedOver(symbols, covering);
-    tile.setSymbols(
-      partitioned.symbols,
-      carriedCount: partitioned.carriedCount,
-      provisional: provisional,
-      // A cohort that is already fully on screen has nothing to mask.
-      fadeIn: partitioned.carriedCount < partitioned.symbols.length &&
-          widget.labelFadeDuration > Duration.zero,
-    );
-    // Hand-over is evaluated at the drain points, never here: a
-    // result-cache hit publishes synchronously inside the grid's
-    // creation loop, where _tiles is only partially built and every
-    // retained tile would be measured against the first tile alone.
-    _handOverPending = true;
-  }
-
-  /// The continuity keys of the labels [tile] itself is currently
-  /// showing at full opacity: the whole cohort once its fade has
-  /// finished, only the carried prefix while one is running.
-  Set<Object> _shownLabelKeys(_DisplayTile tile) {
-    final symbols = tile.symbols;
-    if (symbols.isEmpty) return const {};
-    final shown =
-        tile.labelFadeProgress(DateTime.now(), widget.labelFadeDuration) >= 1
-            ? symbols.length
-            : tile.carriedSymbolCount;
-    return {
-      for (var i = 0; i < shown; i++) labelContinuityKey(symbols[i]),
-    };
-  }
-
-  /// Starts a fade-out for the labels a retained tile has stopped
-  /// drawing and the arriving level does not replace.
-  ///
-  /// Final cohorts arriving (or a grid change removing the tile that
-  /// kept a retained one needed) is what flips a retained tile from
-  /// "still needed" to "done" — up to now that dropped its labels in one
-  /// frame, so a label the tileset stops carrying at the next zoom
-  /// vanished the instant the tiles finished loading. The ones the new
-  /// level does carry are already covered: it draws them itself, at full
-  /// opacity. The rest are orphans, and they are what fades.
-  ///
-  /// Only reached through [_drainPendingHandOver], so the grid it
-  /// measures against is always complete.
-  void _handOverRetainedLabels() {
-    if (widget.labelFadeDuration <= Duration.zero ||
-        !widget.showLabels ||
-        _retained.isEmpty) {
-      return;
-    }
-    final current = _currentStatuses(DateTime.now()).toList();
-    var anyHandedOver = false;
-    var anyFading = false;
-    for (final retained in _retained.values) {
-      if (retained.symbols.isEmpty || retained.labelsHandedOver) continue;
-      if (retainedSymbolsNeeded(
-        retainedKey: retained.key,
-        hasSymbols: true,
-        current: current,
-      )) {
-        continue;
-      }
-      retained.labelsHandedOver = true;
-      anyHandedOver = true;
-      final orphans = orphanedLabels(
-        // Only what was on screen: the rest are candidates that lost
-        // collision and fading them in to fade them out would be worse
-        // than the pop this fixes.
-        drawnLabels(retained.symbols, _drawnLastFrame),
-        // What the arriving level puts in this tile's place.
-        coveringLabelKeys(retained.key, [
-          for (final tile in _tiles.values)
-            (key: tile.key, symbols: tile.symbols),
-        ]),
-      );
-      if (orphans.isEmpty) continue;
-      _fadingLabels.add((
-        key: retained.key,
-        symbols: orphans,
-        startedAt: DateTime.now(),
-      ));
-      anyFading = true;
-    }
-    // A flipped flag changes what the label pass draws, and a grid
-    // change reaches here without any publish having nulled the memo.
-    if (anyHandedOver) _retainedSymbolKeys = null;
-    if (anyFading) _ensureFadeTicker();
-  }
-
-  /// Runs [_handOverRetainedLabels] if a publish or grid change
-  /// requested it since the last drain. Drained at the end of a grid
-  /// update and of a render-pump tick — points where [_tiles] is
-  /// complete and, in the pump's case, a whole batch of publishes is
-  /// paid for with one retained × current scan.
-  void _drainPendingHandOver() {
-    if (!_handOverPending) return;
-    _handOverPending = false;
-    _handOverRetainedLabels();
-  }
-
-  /// Drops fade-outs that have finished. Returns whether any is still
-  /// running, so the fade ticker knows to keep going.
-  bool _expireFadingLabels(DateTime now) {
-    _fadingLabels.removeWhere((fading) =>
-        fadeProgressOf(fading.startedAt, now, widget.labelFadeDuration) >= 1);
-    return _fadingLabels.isNotEmpty;
-  }
-
-  /// The continuity keys of the labels the retained (previous) level is
-  /// currently showing over [key]. Empty in the steady state, where
-  /// nothing is retained — panning and first load keep fading normally.
-  ///
-  /// "Showing" is meant literally, on both axes. A retained tile whose
-  /// labels went to the fade-out draws nothing anymore (see
-  /// [_retainedKeysWithSymbols]), so it covers nothing — without the
-  /// check, a tile publishing after the hand-over would put labels up at
-  /// instant full opacity over empty screen. And candidates that never
-  /// survived collision were never visible, so they are filtered against
-  /// what the last label pass actually drew, mirroring the orphan filter
-  /// in [_handOverRetainedLabels].
-  Set<Object> _coveringLabelKeys(TileKey key) {
-    if (_retained.isEmpty) return const {};
-    final keys = <Object>{};
-    for (final retained in _retained.values) {
-      if (retained.labelsHandedOver ||
-          retained.symbols.isEmpty ||
-          !tilesOverlap(retained.key, key)) {
-        continue;
-      }
-      for (final symbol in retained.symbols) {
-        if (_drawnLastFrame.contains(symbol)) {
-          keys.add(labelContinuityKey(symbol));
-        }
-      }
-    }
-    return keys;
+  /// Drops parked fade-out fallbacks whose fade window has passed — any
+  /// key still fading from them started no later than the moment its
+  /// tile was disposed. Returns whether any are left, so the fade
+  /// ticker knows to keep going.
+  bool _expireGhostLabels(DateTime now) {
+    _ghostLabels.removeWhere((ghosts) =>
+        fadeProgressOf(ghosts.since, now, widget.labelFadeDuration) >= 1);
+    return _ghostLabels.isNotEmpty;
   }
 
   void _ensureFadeTicker() {
@@ -1259,22 +1082,34 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   void _onFadeTick(Duration _) {
     final now = DateTime.now();
-    var anyFading = _expireFadingLabels(now);
+    var anyFading = _expireGhostLabels(now);
     for (final tile in _tiles.values) {
       if (tile.fadeProgress(now, widget.tileFadeDuration) < 1) {
         anyFading = true;
       } else {
         tile.disposeUnderlay(); // fully opaque — the underlay is covered
       }
-      if (tile.labelFadeProgress(now, widget.labelFadeDuration) < 1) {
-        anyFading = true;
-      }
     }
+    // Label fades advance inside the label pass; the painter reports
+    // whether the last painted frame left any mid-flight.
+    anyFading |= _labelPainter.hasActiveFades;
     _repaint.trigger();
     if (!anyFading) {
       _fading = false;
       _fadeTicker.stop();
     }
+  }
+
+  /// Restarts the fade ticker from inside a paint. Label fades are
+  /// driven by per-frame placement, so one can begin on any painted
+  /// frame — the last frame of a gesture, say — without any publish
+  /// having primed the ticker. Deferred to after this frame: a paint
+  /// callback must not start tickers.
+  void _requestFadeFrames() {
+    if (_fading || !mounted) return;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _ensureFadeTicker();
+    });
   }
 
   double get _devicePixelRatio =>
@@ -1340,13 +1175,13 @@ class _RenderJob {
   }
 }
 
-/// A cohort of labels from a zoom level that has been handed over,
-/// fading out from [startedAt]. [key] is the display tile they were laid
-/// out for, which is what positions them.
-typedef _FadingLabels = ({
+/// A disposed retained tile's labels, parked since [since] as fade-out
+/// fallbacks — never placement candidates. [key] is the display tile
+/// they were laid out for, which is what positions them.
+typedef _GhostLabels = ({
   TileKey key,
   List<SymbolInstance> symbols,
-  DateTime startedAt,
+  DateTime since,
 });
 
 enum _TileState { loading, ready, empty }
@@ -1364,16 +1199,6 @@ class _DisplayTile {
   ui.Image? underlay;
   List<SymbolInstance> symbols = const [];
 
-  /// How many of [symbols], from the front, the previous zoom level was
-  /// already showing when this cohort was published. They are drawn at
-  /// full opacity while the rest fades in — see `_publishSymbols`.
-  var carriedSymbolCount = 0;
-
-  /// Set once this tile has been retained *and* stopped contributing
-  /// labels, so its orphans are handed to the fade-out exactly once —
-  /// see `_handOverRetainedLabels`.
-  var labelsHandedOver = false;
-
   /// Whether [symbols] came from a provisional (ancestor-data) layout
   /// rather than this tile's own final data. Provisional labels bridge
   /// the screen but do not count as symbol coverage for the retention
@@ -1386,9 +1211,6 @@ class _DisplayTile {
   var symbolsPending = false;
   var isProvisional = false;
   DateTime? readyAt;
-
-  /// When this tile's labels first appeared, for the label fade-in.
-  DateTime? symbolsReadyAt;
 
   /// The source ids baked into the last final raster, and how many
   /// retries were spent recovering the missing ones — see `_loadTile`.
@@ -1447,15 +1269,16 @@ class _DisplayTile {
     }
   }
 
+  /// Publishes [symbols] as this tile's labels. Which of them fade in
+  /// — and what their arrival fades *out* — is not decided here: the
+  /// label painter tracks one opacity per label identity across all
+  /// tiles, so a republish (provisional→final swap, refresh, retry) or
+  /// a zoom crossing simply changes which instances carry each key.
   void setSymbols(
     List<SymbolInstance> symbols, {
-    required int carriedCount,
-    required bool fadeIn,
     required bool provisional,
   }) {
-    final hadSymbols = this.symbols.isNotEmpty;
     this.symbols = symbols;
-    carriedSymbolCount = carriedCount;
     symbolsProvisional = provisional;
     symbolsPending = false;
     if (!isProvisional && state == _TileState.loading) {
@@ -1464,19 +1287,6 @@ class _DisplayTile {
           ? _TileState.empty
           : _TileState.ready;
     }
-    if (symbols.isEmpty) {
-      symbolsReadyAt = null;
-    } else if (!fadeIn) {
-      symbolsReadyAt = null; // draw at full opacity immediately
-    } else if (!hadSymbols || symbolsReadyAt == null) {
-      // No clock is running — including a republish after a fully
-      // carried-over publish (which set none): its fresh labels must
-      // still get a fade, or they would pop in at full opacity.
-      symbolsReadyAt = DateTime.now();
-    }
-    // hadSymbols && fadeIn && a clock exists: a republish replaced
-    // existing labels — keep the running (or finished) fade instead of
-    // blinking them out.
   }
 
   /// Called once the fade has finished — the underlay is fully covered.
@@ -1488,9 +1298,6 @@ class _DisplayTile {
   double fadeProgress(DateTime now, Duration duration) =>
       fadeProgressOf(readyAt, now, duration);
 
-  double labelFadeProgress(DateTime now, Duration duration) =>
-      fadeProgressOf(symbolsReadyAt, now, duration);
-
   void dispose() {
     _retryTimer?.cancel();
     cancellation.cancel();
@@ -1499,7 +1306,6 @@ class _DisplayTile {
     underlay?.dispose();
     underlay = null;
     symbols = const [];
-    carriedSymbolCount = 0;
     symbolsProvisional = false;
     symbolsPending = false;
   }
@@ -1609,16 +1415,13 @@ class _VectorMapPainter extends CustomPainter {
     final placed = <PlacedSymbol>[];
 
     // Takes the key and the list rather than a tile: labels fading out
-    // outlive the tile they were laid out for. The first [opaqueCount]
-    // symbols — the carried-over prefix — place at full opacity
-    // regardless of [fadeOpacity]: they are already on screen, and
-    // re-fading them is what made labels blink across a zoom level
-    // change.
+    // can outlive the tile they were laid out for. Ghost-only symbols
+    // never compete for placement — they are fallback drawables for
+    // keys mid-fade-out, nothing more.
     void addSymbols(
       TileKey key,
-      List<SymbolInstance> symbols,
-      double fadeOpacity, {
-      int opaqueCount = 0,
+      List<SymbolInstance> symbols, {
+      bool ghostOnly = false,
     }) {
       if (symbols.isEmpty) return;
       final rect = displayTileRect(key, camera.zoom);
@@ -1632,66 +1435,40 @@ class _VectorMapPainter extends CustomPainter {
         scale: tileScale,
         rotation: rotation,
       );
-      for (var i = 0; i < symbols.length; i++) {
-        final symbol = symbols[i];
+      for (final symbol in symbols) {
         placed.add(PlacedSymbol(
           instance: symbol,
           screenAnchor: transform.apply(symbol.anchor),
           screenAngle: symbol.alongLine ? symbol.angle + rotation : 0,
           transform: symbol.alongLine ? transform : null,
-          fadeOpacity: i < opaqueCount ? 1 : fadeOpacity,
+          ghostOnly: ghostOnly,
           order: placed.length,
         ));
       }
     }
 
     for (final tile in state._tiles.values) {
-      final progress =
-          tile.labelFadeProgress(now, state.widget.labelFadeDuration);
-      if (progress >= 1) {
-        addSymbols(tile.key, tile.symbols, 1);
-        continue;
-      }
-      // Quantized so fading tiles group into few opacity buckets (one
-      // translucent layer each in the label pass); ceil keeps a fresh
-      // cohort from starting invisible.
-      addSymbols(tile.key, tile.symbols,
-          (progress * labelOpacitySteps).ceil() / labelOpacitySteps,
-          opaqueCount: tile.carriedSymbolCount);
+      addSymbols(tile.key, tile.symbols);
     }
     // While a zoom level change is in flight, keep the previous level's
     // labels wherever the new level has no label data yet — otherwise
     // every label blinks out for a few frames on zoom. Current-level
-    // symbols are added first, so they win collisions. In steady state
-    // nothing is retained and the memoized key set need not be built.
+    // symbols are added first, so they win collisions. Once the new
+    // level covers a retained tile, its labels stop claiming space and
+    // serve only as fade-out fallbacks. In steady state nothing is
+    // retained and the memoized key set need not be built.
     if (state._retained.isNotEmpty) {
       final needed =
           state._retainedSymbolKeys ??= state._retainedKeysWithSymbols();
-      if (needed.isNotEmpty) {
-        for (final retained in state._retained.values) {
-          if (needed.contains(retained.key)) {
-            addSymbols(retained.key, retained.symbols, 1);
-          }
-        }
+      for (final retained in state._retained.values) {
+        addSymbols(retained.key, retained.symbols,
+            ghostOnly: !needed.contains(retained.key));
       }
     }
-    // Last: the labels the arriving level did not replace, on their way
-    // out. Ordinary candidates — they were on screen a frame ago and
-    // simply keep the space they already held while they fade, so the
-    // layout does not churn underneath the fade. Added after everything
-    // else, so on an exact tie a label that is staying wins.
-    for (final fading in state._fadingLabels) {
-      final progress =
-          fadeProgressOf(fading.startedAt, now, state.widget.labelFadeDuration);
-      // Floor, mirroring the fade-in's ceil: a cohort on its way out
-      // reaches zero rather than lingering at one visible step. At zero
-      // it is skipped outright — an invisible label must not keep
-      // holding its collision space, or it would block its replacement
-      // for the fade's last step and make it pop in at expiry.
-      final opacity =
-          ((1 - progress) * labelOpacitySteps).floor() / labelOpacitySteps;
-      if (opacity <= 0) continue;
-      addSymbols(fading.key, fading.symbols, opacity);
+    // Parked labels of disposed retained tiles — fallbacks for fades
+    // their tile no longer exists to draw.
+    for (final ghosts in state._ghostLabels) {
+      addSymbols(ghosts.key, ghosts.symbols, ghostOnly: true);
     }
     if (placed.isEmpty) {
       state._drawnLastFrame.clear();
@@ -1704,17 +1481,23 @@ class _VectorMapPainter extends CustomPainter {
       symbols: placed,
       sprites: state.widget.sprites,
       devicePixelRatio: devicePixelRatio,
+      labelFadeDuration: state.widget.labelFadeDuration,
+      now: now,
     );
-    // Recorded so a hand-over can fade out — and a publish can carry
-    // over — what was actually on screen, rather than every candidate
-    // offered. Rebuilt in place with a plain loop: the set keeps its
-    // capacity, so steady-state frames allocate nothing here. Left empty
-    // while label fades are disabled — nothing consumes it then.
+    // Recorded so the retention pin keeps what was actually on screen,
+    // rather than every candidate offered. Rebuilt in place with a
+    // plain loop: the set keeps its capacity, so steady-state frames
+    // allocate nothing here. Left empty while label fades are disabled
+    // — nothing consumes it then.
     state._drawnLastFrame.clear();
     if (state.widget.labelFadeDuration > Duration.zero) {
       for (final symbol in drawn) {
         state._drawnLastFrame.add(symbol.instance);
       }
+      // A fade can begin on any painted frame (placement is per frame),
+      // so the ticker that keeps fades advancing after the last gesture
+      // frame is requested from here.
+      if (state._labelPainter.hasActiveFades) state._requestFadeFrames();
     }
   }
 

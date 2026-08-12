@@ -99,79 +99,53 @@ labels then fade in over `labelFadeDuration`, drawn in a few quantized
 opacity buckets (one translucent layer each, bounded to what that
 bucket paints) while reserving full-size collision space.
 
-Which labels count as *newly appearing* is decided once, when a tile
-publishes its cohort, by `render/label_continuity.dart`. Every integer
-zoom crossing replaces the whole display level with fresh tiles that
-carry no fade history, so without this the arriving level would re-fade
-labels the retained level is still drawing at full opacity. The two
-copies then compete for the same collision space and the winner turns on
-a sub-pixel difference in anchor position — arbitrary per label, which is
-what made *some* labels blink across a crossing (and, on
-`*-allow-overlap` layers where nothing collides, composite over
-themselves). So a cohort is split against the labels *actually on
-screen* over it — what the overlapping retained tiles' last label pass
-drew, plus what the tile itself already shows, so a republish
-(provisional→final swap, refresh, retry) neither re-fades nor dims
-anything — matched on `(layer, text, icon)`. Position plays no part,
-because the two levels simplify geometry differently and a missed match
-would put the blink back, while a spurious one only makes a label appear
-instantly. The carried-over prefix draws opaque; only the rest fades.
+Which labels fade — in *and* out — is decided per frame, per label, by
+`render/label_continuity.dart`. Every label carries a position-free
+continuity key, `(layer, text, icon)`: position plays no part because
+two zoom levels simplify geometry differently, and a missed match would
+re-fade a label that never left the screen. A `LabelFadeTracker` inside
+the label painter holds one opacity per key and integrates it toward
+"placed this frame ? 1 : 0", a wall-clock fraction of the fade per
+frame. Anything that appears eases in and anything that disappears
+eases out, whatever the cause: a tile arriving, a zoom crossing handing
+over to new tiles, a collision won or lost mid-gesture, a layer cut at
+its zoom threshold. There is no per-cause bookkeeping, no publish-time
+diff, and no moment at which the tile grid must be complete — the
+one-shot hand-over whose evaluation order used to be subtle is gone.
 
-The same split answers the other direction. Labels the arriving level
-has *no* counterpart for — a feature the tileset stops carrying at the
-next zoom, or one that lost its place to denser labelling — used to
-vanish in a single frame, at whatever moment the tiles happened to
-finish loading. They are now handed to a fade-out: once nothing keeps a
-retained tile needed, its orphans move into `_fadingLabels` (plain Dart
-objects, so no tile texture is pinned) and ramp to zero over
-`labelFadeDuration`. That hand-over is evaluated at two drain points —
-after a grid update and after a render-pump tick — never inside an
-individual publish: a result-cache hit publishes synchronously while the
-grid is still being rebuilt, and measuring retention against that
-half-built grid would hand every retained tile over against the first
-tile alone. The grid-update drain also catches the no-publish case,
-where a pan removes the one still-loading tile that kept a retained
-tile needed. Provisional cohorts — laid out from ancestor data while
-the real tile loads — bridge the screen but do not settle the one-shot
-hand-over: they are nearly the previous level's own labels, so retiring
-the retained tile against them would fade out labels the final data
-still carries.
+Two properties of the tracker carry the anti-blink guarantees. One
+opacity per key: the outgoing level's copy of a label and the arriving
+level's share their fade state, so whichever copy wins collision draws
+at the same opacity and the swap is invisible — a label can never
+cross-fade against itself. And direction changes resume rather than
+restart: a key re-placed mid-fade-out rises from where it is, so a
+label briefly unplaced (a republish, a lost frame of collision) dips at
+most one opacity step instead of blinking to zero.
 
-Three rules keep that fade — and the retention window before it — from
-disturbing anything else.
+Fade-outs draw as **ghosts**. A key that stops being placed keeps being
+drawn for the length of its fade — from whatever instance of it is
+still on offer, laid out past the zoom gate that may just have cut its
+layer — but claims no collision space. Whatever replaces the label
+therefore places (and fades in) immediately, over the ghost, instead of
+waiting for the fade to end and popping into the freed space. When a
+retained tile is disposed while keys from it may still be fading, its
+symbols are parked for one fade duration as ghost-only fallbacks
+(plain Dart objects — no tile texture is pinned by a fade).
 
-Only labels that were **actually drawn** fade. A tile's `symbols` are
-placement *candidates*; the collision pass picks winners afresh every
-frame, and on a dense screen most of them lose. The layer therefore
-records what the last pass drew (`_drawnLastFrame`) and intersects the
-orphan set with it — otherwise a label that had been sitting invisible
-behind a winner would appear out of nowhere, the moment that winner
-left, purely in order to fade away. The carry-over side uses the same
-record: a candidate that never won collision covers nothing.
-
-The outgoing level can only **keep** labels on screen, never introduce
-them. The crossing that moves a level into retention pins its cohorts to
-that same drawn record (`drawnLabels`), dropping the candidates that
-were losing collision for good. A crossing typically cuts whole symbol
-layers at their `minzoom` — POIs, say — and the space their labels held
-would otherwise go, for the moments until the new level lands, to labels
-that had never been on screen: street names popping in at full opacity
-purely to be faded back out by the hand-over.
-
-Departing labels stay **ordinary collision candidates**, reserving their
-boxes at full size exactly as a fading-in cohort does. They were on
-screen a frame ago, so they simply keep the space they already held
-until they reach zero: the layout does not churn underneath the fade,
-nothing jumps into a spot that still shows something, and seam
-duplicates keep being removed by the pass that always removed them.
-Hand-over is one-way — a retained tile whose labels have gone to the
-fade-out never draws them again, so a tile arriving mid-transition
-cannot briefly make it "needed" once more and put its labels back at
-full opacity on top of their own fading copies.
-
-Unlike the zoom ramp below, this fade is time-based: hand-over completes
-when tiles load, not at a fixed zoom. A zoom level change cancels any
-fade still running rather than letting it trail a second transition.
+Retention feeds the tracker; it no longer decides fades. Retained
+previous-level tiles keep offering their labels as ordinary candidates
+while an overlapping current tile still lacks final label data (a tile
+whose symbols are pending counts as loading, and provisional
+ancestor-data cohorts do not count as coverage), and as ghost-only
+fallbacks afterwards. One rule of the retention window remains, the
+**pin**: the crossing that moves a level into retention cuts its
+cohorts to what the last frame actually drew (`drawnLabels` against
+`_drawnLastFrame` — candidates that were losing collision are dropped
+for good). An outgoing level exists to keep what was visible, never to
+introduce labels: a crossing typically cuts whole symbol layers at
+their `minzoom` — POIs, say — and without the pin the freed space would
+go, mid-transition, to labels never before on screen, purely for the
+arriving level to fade them back out.
 
 Symbols also ramp out over the last quarter zoom level before their
 layer's declared `maxzoom`, so zooming past a threshold dissolves a label

@@ -11,6 +11,7 @@ import '../style/expression.dart';
 import '../style/sprite_atlas.dart';
 import '../style/theme.dart';
 import 'fade.dart';
+import 'label_continuity.dart';
 import 'symbol_layouter.dart';
 
 /// The affine transform from a display tile's logical coordinates to
@@ -48,11 +49,13 @@ class PlacedSymbol {
   /// text can project the line geometry.
   final TileTransform? transform;
 
-  /// Fade-in opacity of the symbol's cohort (its tile's label fade),
-  /// quantized by the caller so symbols group into few draw buckets.
-  /// 1 in steady state. Fading symbols reserve collision space at full
-  /// size — placements never shift when a fade completes.
-  final double fadeOpacity;
+  /// A ghost-only candidate never competes for placement: it exists
+  /// solely as the drawable behind a label that is fading out, in case
+  /// no live instance of its continuity key is placed this frame. The
+  /// caller marks candidates from tiles that have stopped contributing
+  /// labels (a retained level the new one already covers, or a disposed
+  /// tile's parked cohort) this way.
+  final bool ghostOnly;
 
   /// Insertion index within the frame's symbol list, the final
   /// placement tiebreaker: the caller adds current-level tiles before
@@ -65,7 +68,7 @@ class PlacedSymbol {
     required this.screenAnchor,
     required this.screenAngle,
     this.transform,
-    this.fadeOpacity = 1,
+    this.ghostOnly = false,
     this.order = 0,
   });
 }
@@ -147,6 +150,32 @@ class LabelPainter {
     _retired.clear();
   }
 
+  /// Per-label fade state — one opacity per continuity key, advanced
+  /// every painted frame. See [LabelFadeTracker].
+  final _fades = LabelFadeTracker();
+
+  /// The fade tracker, for tests that assert fade state across frames.
+  @visibleForTesting
+  LabelFadeTracker get debugFades => _fades;
+
+  /// Fallback drawables for the fade-out: the first candidate seen this
+  /// frame, per tracked key, that did not get placed. Reused across
+  /// frames so steady-state paints allocate nothing here.
+  final _fallbacks = <Object, PlacedSymbol>{};
+
+  /// Whether the last paint left any label fade mid-flight. The widget
+  /// keeps its fade ticker running while this is true — placement (and
+  /// with it a fade's start or end) can change on any painted frame,
+  /// not only on a publish.
+  bool get hasActiveFades => _fades.anyActive;
+
+  /// Forgets all fade state — for theme/provider swaps, where every
+  /// symbol instance is replaced and layer indices change meaning.
+  void resetFades() {
+    _fades.clear();
+    _fallbacks.clear();
+  }
+
   /// [styleZoom] is the fractional style zoom used for size expressions.
   ///
   /// Returns the symbols that survived collision and were drawn, in
@@ -156,6 +185,12 @@ class LabelPainter {
   /// only add allocation to the hottest per-frame path.
   /// [devicePixelRatio] only sharpens SDF icon edges; it does not scale
   /// anything, so 1 is a safe default.
+  ///
+  /// A [labelFadeDuration] above zero enables the per-label fades: every
+  /// placed symbol draws at its continuity key's opacity (rising toward
+  /// 1), and keys that stopped being placed draw one more ghost per
+  /// frame — no collision claim — while they ramp to zero. [now] feeds
+  /// the fade clock and defaults to the wall clock.
   List<PlacedSymbol> paint({
     required Canvas canvas,
     required Size screenSize,
@@ -163,11 +198,13 @@ class LabelPainter {
     required List<PlacedSymbol> symbols,
     SpriteAtlas? sprites,
     double devicePixelRatio = 1,
+    Duration labelFadeDuration = Duration.zero,
+    DateTime? now,
   }) {
     developer.Timeline.startSync('VT labels');
     try {
-      return _paint(
-          canvas, screenSize, styleZoom, symbols, sprites, devicePixelRatio);
+      return _paint(canvas, screenSize, styleZoom, symbols, sprites,
+          devicePixelRatio, labelFadeDuration, now ?? DateTime.now());
     } finally {
       developer.Timeline.finishSync();
     }
@@ -180,8 +217,12 @@ class LabelPainter {
     List<PlacedSymbol> symbols,
     SpriteAtlas? sprites,
     double devicePixelRatio,
+    Duration labelFadeDuration,
+    DateTime now,
   ) {
     _disposeRetired();
+    final fades = labelFadeDuration > Duration.zero;
+    if (fades) _fades.beginFrame(now, labelFadeDuration);
     // Quantize the eval zoom to [_zoomStep] steps: the per-instance
     // memo and the zoom-only expression memos compare against the exact
     // zoom, so evaluating at the raw fractional zoom would miss every
@@ -207,18 +248,61 @@ class LabelPainter {
     final toDraw = <_DrawableSymbol>[];
     var anyFading = false;
     for (final candidate in candidates) {
+      if (candidate.ghostOnly) {
+        // Never competes for placement — only remembered, in case its
+        // key is fading out and nothing else can draw it.
+        if (fades) _recordFallback(candidate);
+        continue;
+      }
       final drawable =
           _prepare(candidate, zoom, styleZoom, collision, sprites, screenSize);
-      if (drawable != null) {
-        // The cohort's fade-in and the layer's zoom-range ramp compound:
-        // a tile that just published its labels near a layer's maxzoom
-        // is subject to both.
-        final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
-        drawable.opacity =
-            ramp <= 0 ? 0 : _quantizeOpacity(candidate.fadeOpacity * ramp);
-        toDraw.add(drawable);
-        anyFading |= drawable.opacity < 1;
+      if (drawable == null) {
+        // A candidate that lost (collision, zoom gate) may still be the
+        // only instance around of a key mid-fade-out.
+        if (fades) _recordFallback(candidate);
+        continue;
       }
+      // The label's fade and its layer's zoom-range ramp compound: a
+      // label appearing near its layer's maxzoom is subject to both.
+      final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
+      var fade = 1.0;
+      if (fades) {
+        fade = _fades.show(candidate.instance.continuityKey);
+        // A key on its first frame has no elapsed fade time yet; one
+        // step keeps it from starting invisible.
+        if (fade <= 0) fade = 1 / _opacitySteps;
+      }
+      drawable.opacity = ramp <= 0 ? 0 : _quantizeOpacity(fade * ramp);
+      toDraw.add(drawable);
+      anyFading |= drawable.opacity < 1;
+    }
+    if (fades) {
+      // Keys placed until recently but not this frame fade out, drawing
+      // one ghost each: laid out (the zoom gate bypassed — a departing
+      // label is often departing *because* the gate just cut its layer)
+      // but claiming no collision space, so whatever takes the spot
+      // fades in over the ghost instead of waiting for it to expire and
+      // popping.
+      _CollisionIndex? permissive;
+      _fades.sweep((key, opacity) {
+        final fallback = _fallbacks[key];
+        if (fallback == null) return;
+        final ramp = zoomRangeOpacity(fallback.instance.layer, styleZoom);
+        if (ramp <= 0) return;
+        // Floored, mirroring the fade-in's implicit ceil: a departing
+        // label reaches zero instead of lingering one step above it.
+        final ghostOpacity =
+            (opacity * ramp * _opacitySteps).floor() / _opacitySteps;
+        if (ghostOpacity <= 0) return;
+        final drawable = _prepare(fallback, zoom, styleZoom,
+            permissive ??= _CollisionIndex.permissive(), sprites, screenSize,
+            gateZoom: false);
+        if (drawable == null) return;
+        drawable.opacity = ghostOpacity;
+        toDraw.add(drawable);
+        anyFading = true;
+      });
+      _fallbacks.clear();
     }
     // Draw bottom style layers first so upper layers paint on top; the
     // insertion-order tiebreaker keeps draw order stable across frames.
@@ -237,13 +321,13 @@ class LabelPainter {
       return drawn;
     }
 
-    // Fading cohorts draw through one translucent layer per opacity
+    // Fading symbols draw through one translucent layer per opacity
     // bucket instead of re-shaping text at each fade step: colours are
     // baked into the paragraphs, so per-label opacity would rotate the
     // text cache, while a saveLayer per bucket costs one render pass
-    // for the few frames a fade is in flight. The caller quantizes
-    // [PlacedSymbol.fadeOpacity], so the bucket count stays small.
-    // Opaque symbols first (in layer order), fading cohorts on top.
+    // for the few frames a fade is in flight. Opacities are quantized
+    // onto the [_opacitySteps] grid, so the bucket count stays small.
+    // Opaque symbols first (in layer order), fading symbols on top.
     // A symbol the zoom ramp has retired keeps the collision space it
     // reserved in [_prepare] — placements stay put across the last step
     // of the ramp — but paints nothing.
@@ -282,6 +366,17 @@ class LabelPainter {
       canvas.restore();
     }
     return drawn;
+  }
+
+  /// Remembers [candidate] as the drawable to fade its key out with,
+  /// should the sweep find that key unplaced this frame. Only tracked
+  /// keys can fade, and the first candidate per key wins — candidates
+  /// are visited in placement-priority order, so it is the best proxy
+  /// for the instance that was on screen.
+  void _recordFallback(PlacedSymbol candidate) {
+    final key = candidate.instance.continuityKey;
+    if (!_fades.isTracked(key)) return;
+    _fallbacks[key] ??= candidate;
   }
 
   /// Opacity [layer]'s zoom range gives a symbol at [styleZoom]: 1
@@ -369,14 +464,18 @@ class LabelPainter {
   /// [evalZoom] is quantized for the expression memos; [styleZoom] is
   /// the camera's exact fractional zoom and gates visibility, which is a
   /// discrete cut that must land where the style says it does.
+  /// [gateZoom] is false only for fade-out ghosts, which draw one last
+  /// ramp past the very cut that retired them (paired with a permissive
+  /// [collision], since a ghost must not claim space either).
   _DrawableSymbol? _prepare(
     PlacedSymbol placed,
     double evalZoom,
     double styleZoom,
     _CollisionIndex collision,
     SpriteAtlas? sprites,
-    Size screenSize,
-  ) {
+    Size screenSize, {
+    bool gateZoom = true,
+  }) {
     final instance = placed.instance;
     final layer = instance.layer;
 
@@ -396,7 +495,7 @@ class LabelPainter {
     // exact zoom, not the quantized one: rounding would move the cut by
     // up to half a step, so labels would appear or vanish up to 1/16 of
     // a level away from the threshold the style declares.
-    if (!layer.coversZoom(styleZoom)) return null;
+    if (gateZoom && !layer.coversZoom(styleZoom)) return null;
 
     final ctx = EvalContext(
       zoom: evalZoom,
@@ -1154,10 +1253,10 @@ class _DrawableSymbol {
   final double textScale;
   final List<_CurvedGlyph>? curvedGlyphs;
 
-  /// Opacity this symbol actually draws at: its cohort's fade-in times
-  /// its layer's zoom-range ramp, quantized. Assigned by [_paint] once
-  /// the symbol has survived collision — every construction site would
-  /// otherwise have to thread a value none of them computes.
+  /// Opacity this symbol actually draws at: its continuity key's fade
+  /// times its layer's zoom-range ramp, quantized. Assigned by [_paint]
+  /// once the symbol has survived collision — every construction site
+  /// would otherwise have to thread a value none of them computes.
   double opacity = 1;
 
   _DrawableSymbol(
@@ -1252,12 +1351,22 @@ class _CollisionIndex {
   static const double _cellSize = 128;
   final Map<int, List<Rect>> _cells = {};
   final int _columns;
+  final bool _permissive;
 
   _CollisionIndex(Size screenSize)
-      : _columns = math.max(1, (screenSize.width / _cellSize).ceil() + 4);
+      : _columns = math.max(1, (screenSize.width / _cellSize).ceil() + 4),
+        _permissive = false;
+
+  /// An index that accepts everything and reserves nothing — for
+  /// fade-out ghosts, which draw wherever they were without claiming
+  /// space or blocking each other.
+  _CollisionIndex.permissive()
+      : _columns = 1,
+        _permissive = true;
 
   /// Whether [rects] fit, reserving them when they do.
   bool tryPlaceAll(List<Rect> rects) {
+    if (_permissive) return true;
     for (final rect in rects) {
       if (_collides(rect)) return false;
     }

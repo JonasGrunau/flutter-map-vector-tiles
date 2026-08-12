@@ -1,7 +1,6 @@
 import 'dart:ui' as ui;
 import 'dart:ui' show Offset, Size;
 
-import 'package:flutter_map_vector_tiles/src/core/tile_key.dart';
 import 'package:flutter_map_vector_tiles/src/render/label_continuity.dart';
 import 'package:flutter_map_vector_tiles/src/render/label_painter.dart';
 import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart';
@@ -45,47 +44,55 @@ SymbolInstance _symbol(
       featureId: null,
     );
 
-/// A symbol as the label pass sees it: a cohort member projected to
-/// screen space at [fadeOpacity].
-PlacedSymbol _placed(
-  SymbolThemeLayer layer,
-  double dy, {
-  String text = 'Feldkirchen',
-  double fadeOpacity = 1,
+/// An instance projected to screen space, as the label pass sees it.
+PlacedSymbol _placedAt(
+  SymbolInstance instance, {
+  Offset anchor = const Offset(200, 200),
   int order = 0,
-  int layerIndex = 0,
+  bool ghostOnly = false,
 }) =>
     PlacedSymbol(
-      instance: _symbol(layer, text: text, layerIndex: layerIndex),
-      screenAnchor: Offset(200, dy),
+      instance: instance,
+      screenAnchor: anchor,
       screenAngle: 0,
-      fadeOpacity: fadeOpacity,
       order: order,
+      ghostOnly: ghostOnly,
     );
 
+/// One label pass with fades disabled — for stories about placement
+/// alone, where fade state would only be noise.
 List<PlacedSymbol> _paint(List<PlacedSymbol> symbols, {double styleZoom = 14}) {
   final painter = LabelPainter();
+  final drawn = _frame(painter, symbols, styleZoom: styleZoom);
+  painter.dispose();
+  return drawn;
+}
+
+/// One label pass on a persistent [painter] — for stories that follow
+/// fade state across frames. A non-null [now] enables the per-label
+/// fades at [_fadeDuration].
+List<PlacedSymbol> _frame(
+  LabelPainter painter,
+  List<PlacedSymbol> symbols, {
+  double styleZoom = 14,
+  DateTime? now,
+}) {
   final recorder = ui.PictureRecorder();
   final drawn = painter.paint(
     canvas: ui.Canvas(recorder),
     screenSize: const Size(400, 400),
     styleZoom: styleZoom,
     symbols: symbols,
+    labelFadeDuration: now == null ? Duration.zero : _fadeDuration,
+    now: now,
   );
   recorder.endRecording().dispose();
-  painter.dispose();
   return drawn;
 }
 
-/// An existing instance projected to screen space — for stories that
-/// follow the same symbols across frames, where identity matters.
-PlacedSymbol _placedAt(SymbolInstance instance, {int order = 0}) =>
-    PlacedSymbol(
-      instance: instance,
-      screenAnchor: const Offset(200, 200),
-      screenAngle: 0,
-      order: order,
-    );
+const _fadeDuration = Duration(milliseconds: 100);
+final _t0 = DateTime(2026, 1, 1);
+DateTime _at(int ms) => _t0.add(Duration(milliseconds: ms));
 
 /// A street-name layer under a POI layer that only exists from zoom 13
 /// up — the shape of the pre-transition flash: the POI suppresses the
@@ -150,240 +157,234 @@ void main() {
     });
   });
 
-  group('partitionCarriedOver', () {
-    test('nothing retained: the whole cohort is fresh', () {
-      final symbols = [_symbol(layer), _symbol(layer, text: 'Aschheim')];
-      final result = partitionCarriedOver(symbols, const {});
-      expect(result.carriedCount, 0);
-      expect(result.symbols, same(symbols));
+  group('LabelFadeTracker', () {
+    test('a new key rises from zero to one over the fade duration', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      expect(tracker.show('k'), 0, reason: 'no time has elapsed yet');
+      expect(tracker.anyActive, isTrue);
+
+      tracker.beginFrame(_at(50), _fadeDuration);
+      expect(tracker.show('k'), 0.5);
+
+      tracker.beginFrame(_at(100), _fadeDuration);
+      expect(tracker.show('k'), 1);
+      tracker.sweep((_, __) => fail('nothing is fading out'));
+      expect(tracker.anyActive, isFalse, reason: 'the fade has finished');
     });
 
-    test('a fully covered cohort carries over entirely', () {
-      final symbols = [_symbol(layer), _symbol(layer, text: 'Aschheim')];
-      final result =
-          partitionCarriedOver(symbols, labelContinuityKeys([symbols]));
-      expect(result.carriedCount, symbols.length);
-      expect(result.symbols, same(symbols));
+    test('a key shown every frame stays at one', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.show('k');
+      tracker.beginFrame(_at(500), _fadeDuration);
+      expect(tracker.show('k'), 1, reason: 'a long gap completes the fade');
+      tracker.beginFrame(_at(516), _fadeDuration);
+      expect(tracker.show('k'), 1);
     });
 
-    test('a mixed cohort puts the carried-over labels first', () {
-      final carried = _symbol(layer);
-      final fresh = _symbol(layer, text: 'Riemerling');
-      final alsoFresh = _symbol(layer, text: 'Putzbrunn');
-      final symbols = [fresh, carried, alsoFresh];
-      final result = partitionCarriedOver(
-          symbols,
-          labelContinuityKeys([
-            [_symbol(layer, anchor: const Offset(3, 4))]
-          ]));
+    test('an unshown key fades out through the sweep and is dropped', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.show('k');
+      tracker.beginFrame(_at(100), _fadeDuration);
+      tracker.show('k'); // fully visible
 
-      expect(result.carriedCount, 1);
-      expect(result.symbols.first, same(carried));
-      expect(result.symbols, hasLength(3));
-      expect(result.symbols.skip(1), containsAll([fresh, alsoFresh]));
+      final fading = <double>[];
+      tracker.beginFrame(_at(125), _fadeDuration);
+      tracker.sweep((key, opacity) => fading.add(opacity));
+      tracker.beginFrame(_at(150), _fadeDuration);
+      tracker.sweep((key, opacity) => fading.add(opacity));
+      expect(fading, [0.75, 0.5]);
+      expect(tracker.isTracked('k'), isTrue);
+      expect(tracker.anyActive, isTrue);
+
+      tracker.beginFrame(_at(250), _fadeDuration);
+      tracker.sweep((_, __) => fail('the fade has completed'));
+      expect(tracker.isTracked('k'), isFalse, reason: 'self-pruning');
+      expect(tracker.anyActive, isFalse);
     });
 
-    test('never mutates the caller\'s list', () {
-      // A cache hit publishes the list the result cache owns; reordering
-      // it in place would reorder the cache entry itself.
-      final fresh = _symbol(layer, text: 'Riemerling');
-      final carried = _symbol(layer);
-      final symbols = [fresh, carried];
-      final result = partitionCarriedOver(
-          symbols,
-          labelContinuityKeys([
-            [carried]
-          ]));
-
-      expect(symbols, [fresh, carried], reason: 'input order preserved');
-      expect(result.symbols, isNot(same(symbols)));
-      expect(result.symbols, [carried, fresh]);
+    test('a key re-shown mid-fade-out resumes from its current opacity', () {
+      // The anti-blink property: a label briefly unplaced — a republish,
+      // a lost frame of collision, a level swap — dips instead of
+      // restarting from zero and never cross-fades against itself.
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.show('k');
+      tracker.beginFrame(_at(100), _fadeDuration);
+      tracker.show('k');
+      tracker.beginFrame(_at(150), _fadeDuration);
+      tracker.sweep((_, __) {}); // down to 0.5
+      tracker.beginFrame(_at(175), _fadeDuration);
+      expect(tracker.show('k'), 0.75, reason: 'rising again from 0.5');
     });
 
-    test('an empty cohort carries nothing', () {
-      final result = partitionCarriedOver(
-          const [],
-          labelContinuityKeys([
-            [_symbol(layer)]
-          ]));
-      expect(result.carriedCount, 0);
-      expect(result.symbols, isEmpty);
-    });
-  });
-
-  group('coveringLabelKeys', () {
-    RetainedCohort cohort(TileKey key, List<String> texts) => (
-          key: key,
-          symbols: [for (final text in texts) _symbol(layer, text: text)],
-        );
-
-    test('a retained parent covers the child arriving beneath it', () {
-      // Zooming in: the outgoing z14 tile still shows these labels while
-      // each of its four z15 children arrives.
-      final keys = coveringLabelKeys(const TileKey(15, 200, 200), [
-        cohort(const TileKey(14, 100, 100), ['Feldkirchen', 'Aschheim']),
-      ]);
-      expect(keys, hasLength(2));
-      expect(keys, contains(labelContinuityKey(_symbol(layer))));
+    test('is idempotent within a frame', () {
+      // Seam twins and the retained copy of a carried-over label all
+      // show the same key; only the first call advances it.
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.show('k');
+      tracker.beginFrame(_at(50), _fadeDuration);
+      expect(tracker.show('k'), 0.5);
+      expect(tracker.show('k'), 0.5);
+      tracker.beginFrame(_at(100), _fadeDuration);
+      expect(tracker.show('k'), 1);
     });
 
-    test('retained children cover the parent arriving above them', () {
-      // Zooming out: four outgoing z15 tiles, one arriving z14 parent.
-      final keys = coveringLabelKeys(const TileKey(14, 100, 100), [
-        cohort(const TileKey(15, 200, 200), ['Feldkirchen']),
-        cohort(const TileKey(15, 201, 201), ['Aschheim']),
-      ]);
-      expect(keys, hasLength(2));
+    test('a zero duration completes everything immediately', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), Duration.zero);
+      tracker.show('k');
+      tracker.beginFrame(_at(1), Duration.zero);
+      expect(tracker.show('k'), 1);
+      tracker.beginFrame(_at(2), Duration.zero);
+      tracker.sweep((_, __) => fail('a zero duration never draws ghosts'));
+      expect(tracker.isTracked('k'), isFalse);
     });
 
-    test('a retained tile elsewhere on screen covers nothing here', () {
-      final keys = coveringLabelKeys(const TileKey(15, 200, 200), [
-        cohort(const TileKey(14, 500, 500), ['Feldkirchen']),
-      ]);
-      expect(keys, isEmpty);
-    });
-
-    test('a retained tile with no labels covers nothing', () {
-      final keys = coveringLabelKeys(const TileKey(15, 200, 200), [
-        cohort(const TileKey(14, 100, 100), const []),
-      ]);
-      expect(keys, isEmpty);
-    });
-
-    test('nothing retained: the arriving cohort is free to fade', () {
-      expect(coveringLabelKeys(const TileKey(15, 200, 200), const []), isEmpty);
+    test('clear forgets everything', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.show('k');
+      tracker.clear();
+      expect(tracker.isTracked('k'), isFalse);
+      expect(tracker.anyActive, isFalse);
     });
   });
 
-  group('orphanedLabels', () {
-    test('keeps only what the arriving level does not replace', () {
-      // Feldkirchen is in the tileset at z13 but not at z14: no symbol
-      // at the arriving level will ever draw it, so it is what a
-      // fade-out has to cover.
-      final outgoing = [
-        _symbol(layer),
-        _symbol(layer, text: 'Aschheim'),
-      ];
-      final orphans = orphanedLabels(
-          outgoing,
-          labelContinuityKeys([
-            [_symbol(layer, text: 'Aschheim')]
-          ]));
-      expect(orphans, hasLength(1));
-      expect(orphans.single.text, 'Feldkirchen');
+  group('per-label fades through the painter', () {
+    test('a brand-new label draws from its very first frame', () {
+      final painter = LabelPainter();
+      final a = _symbol(layer);
+      final drawn = _frame(painter, [_placedAt(a)], now: _at(0));
+      expect(drawn.map((p) => p.instance), [a],
+          reason: 'one opacity step from the start, never invisible');
+      expect(painter.hasActiveFades, isTrue);
+      painter.dispose();
     });
 
-    test('a fully replaced cohort orphans nothing', () {
-      final outgoing = [_symbol(layer), _symbol(layer, text: 'Aschheim')];
-      expect(
-          orphanedLabels(outgoing, labelContinuityKeys([outgoing])), isEmpty);
+    test('a label present at both zoom levels never re-fades', () {
+      // The "Munich blink": the arriving level's copy is a brand-new
+      // instance, but it carries the same continuity key — one key, one
+      // opacity, so the swap is invisible.
+      final painter = LabelPainter();
+      final outgoing = _symbol(layer, text: 'München');
+      final arriving = _symbol(layer, text: 'München');
+      final key = outgoing.continuityKey;
+
+      _frame(painter, [_placedAt(outgoing)], now: _at(0));
+      _frame(painter, [_placedAt(outgoing)], now: _at(100));
+      expect(painter.debugFades.opacityOf(key), 1);
+
+      // Both copies compete for the frames the levels overlap …
+      final overlap = _frame(
+          painter, [_placedAt(arriving), _placedAt(outgoing, order: 1)],
+          now: _at(116));
+      expect(overlap, hasLength(1), reason: 'the two copies collide');
+      expect(painter.debugFades.opacityOf(key), 1, reason: 'no restart');
+
+      // … and the hand-over to the new copy alone changes nothing.
+      _frame(painter, [_placedAt(arriving)], now: _at(133));
+      expect(painter.debugFades.opacityOf(key), 1);
+      expect(painter.hasActiveFades, isFalse);
+      painter.dispose();
     });
 
-    test('an arriving level with no labels orphans everything', () {
-      final outgoing = [_symbol(layer), _symbol(layer, text: 'Aschheim')];
-      expect(orphanedLabels(outgoing, const {}), hasLength(2));
+    test('a departing label fades out as a ghost that blocks nothing', () {
+      final painter = LabelPainter();
+      final departing = _symbol(layer, text: 'Feldkirchen');
+      final replacement = _symbol(layer, text: 'Aschheim');
+
+      _frame(painter, [_placedAt(departing)], now: _at(0));
+      _frame(painter, [_placedAt(departing)], now: _at(100));
+
+      // The next level replaces it with a different label in the same
+      // spot; the departing instance is only on offer as a fallback.
+      final crossfade = _frame(
+        painter,
+        [
+          _placedAt(replacement),
+          _placedAt(departing, order: 1, ghostOnly: true)
+        ],
+        now: _at(150),
+      );
+      expect(crossfade.map((p) => p.instance).toSet(), {replacement, departing},
+          reason: 'the ghost keeps drawing but frees its space, so the '
+              'replacement fades in over it instead of popping later');
+
+      // The ghost expires; the replacement finishes its fade-in.
+      final settled = _frame(
+        painter,
+        [
+          _placedAt(replacement),
+          _placedAt(departing, order: 1, ghostOnly: true)
+        ],
+        now: _at(300),
+      );
+      expect(settled.map((p) => p.instance), [replacement]);
+      expect(painter.debugFades.isTracked(departing.continuityKey), isFalse);
+      painter.dispose();
     });
 
-    test('orphans and carry-over partition the outgoing cohort', () {
-      // The two halves must not overlap, or a label would both fade out
-      // and be redrawn opaque by the arriving level.
-      final outgoing = [
-        _symbol(layer),
-        _symbol(layer, text: 'Aschheim'),
-        _symbol(layer, text: 'Riemerling'),
-      ];
-      final arriving = labelContinuityKeys([
-        [_symbol(layer, text: 'Aschheim')]
-      ]);
-      final orphans = orphanedLabels(outgoing, arriving);
-      final carried = partitionCarriedOver(outgoing, arriving).carriedCount;
-      expect(orphans.length + carried, outgoing.length);
+    test('a label cut by its layer minzoom eases out instead of popping', () {
+      // Zooming out across the POI layer's minzoom: the gate stops the
+      // label from being *placed*, but its ghost draws one last ramp —
+      // this is the moment that used to be a hard one-frame cut.
+      final (_, poi) = _streetAndPoiLayers();
+      final painter = LabelPainter();
+      final bakery = _symbol(poi, text: 'Bäckerei', layerIndex: 1);
+
+      _frame(painter, [_placedAt(bakery)], styleZoom: 13.2, now: _at(0));
+      _frame(painter, [_placedAt(bakery)], styleZoom: 13.2, now: _at(100));
+
+      final fadingOut =
+          _frame(painter, [_placedAt(bakery)], styleZoom: 12.9, now: _at(150));
+      expect(fadingOut.map((p) => p.instance), [bakery],
+          reason: 'below minzoom, but mid-fade-out');
+
+      final gone =
+          _frame(painter, [_placedAt(bakery)], styleZoom: 12.9, now: _at(300));
+      expect(gone, isEmpty);
+      painter.dispose();
+    });
+
+    test('a candidate that was never visible does not fade out', () {
+      // Losing candidates come and go every frame; only keys that were
+      // actually shown may draw a ghost, or labels would appear out of
+      // nowhere purely to fade away.
+      final painter = LabelPainter();
+      final winner = _symbol(layer, text: 'Feldkirchen');
+      final loser = _symbol(layer, text: 'Aschheim');
+
+      // The loser collides with the winner every frame …
+      _frame(
+          painter,
+          [
+            _placedAt(winner),
+            _placedAt(loser, anchor: const Offset(200, 201), order: 1)
+          ],
+          now: _at(0));
+      // … and once it stops being offered at all, nothing of it draws.
+      final drawn = _frame(painter, [_placedAt(winner)], now: _at(50));
+      expect(drawn.map((p) => p.instance), [winner]);
+      painter.dispose();
     });
   });
 
-  group('a label fading out', () {
-    test('keeps the space it already held', () {
-      // A departing label is an ordinary candidate with a declining
-      // opacity: it was on screen a frame ago, so it holds its place for
-      // the length of the fade rather than handing it straight over.
-      // That is what stops the layout churning underneath the fade —
-      // labels do not jump into a space that still shows something.
-      final drawn = _paint([
-        _placed(layer, 200, text: 'Feldkirchen', fadeOpacity: 0.5),
-        _placed(layer, 200.2, text: 'Aschheim', order: 1),
-      ]);
-      expect(drawn, hasLength(1));
-      expect(drawn.single.instance.text, 'Feldkirchen');
-      expect(drawn.single.fadeOpacity, 0.5);
-    });
-
-    test('is deduplicated like any other label', () {
-      // A feature landing on a tile seam is claimed by both neighbours
-      // by design, and this pass is what removes the copy — including
-      // while the label is fading out, or a street name crossing a seam
-      // would draw twice over itself for the length of the fade.
-      final drawn = _paint([
-        _placed(layer, 200, text: 'Hauptstr', fadeOpacity: 0.5),
-        _placed(layer, 200.1, text: 'Hauptstr', fadeOpacity: 0.5, order: 1),
-      ]);
-      expect(drawn, hasLength(1), reason: 'the seam copy was suppressed');
-    });
-
-    test('still loses to a label on a higher style layer', () {
-      // Ordinary placement priority applies: topmost layers win space,
-      // fading or not.
-      final drawn = _paint([
-        _placed(layer, 200, text: 'Feldkirchen', fadeOpacity: 0.5),
-        _placed(layer, 200.2, text: 'Aschheim', layerIndex: 5, order: 1),
-      ]);
-      expect(drawn, hasLength(1));
-      expect(drawn.single.instance.text, 'Aschheim');
-    });
-  });
-
-  group('a label present at both zoom levels', () {
-    // Across an integer zoom crossing the arriving level and the
-    // retained one both offer the same label for a few frames. Their
-    // anchors differ by a fraction of a pixel — the two levels simplify
-    // geometry differently — so the collision index's y-ordering picks
-    // between them essentially at random. The fix is to make that choice
-    // not matter, by never re-fading a label the retained level shows.
-    test('draws opaque whichever copy wins collision', () {
+  group('two copies of one label in one frame', () {
+    test('draw once, whichever copy wins collision', () {
+      // A zoom crossing (and any tile seam) offers the same label twice
+      // for a few frames; the collision pass keeps exactly one.
       for (final arrivingFirst in [true, false]) {
-        // 199.7 vs 200.0: whichever anchor sorts first wins the space.
         final drawn = _paint([
-          _placed(layer, arrivingFirst ? 199.7 : 200.3, order: 0), // arriving
-          _placed(layer, 200.0, order: 1), // retained
+          _placedAt(_symbol(layer),
+              anchor: Offset(200, arrivingFirst ? 199.7 : 200.3)),
+          _placedAt(_symbol(layer), anchor: const Offset(200, 200), order: 1),
         ]);
         expect(drawn, hasLength(1), reason: 'the two copies collide');
-        expect(drawn.single.fadeOpacity, 1,
-            reason: 'carried over, so neither copy fades');
       }
-    });
-
-    test('a cohort that re-fades is what makes the label blink', () {
-      // The behaviour the fix removes, pinned so a regression is loud:
-      // when the arriving copy fades in it still beats the retained copy
-      // for collision space, so the label drops to a fraction of its
-      // opacity while a fully opaque copy of it is right there.
-      final drawn = _paint([
-        _placed(layer, 199.7, fadeOpacity: 0.125, order: 0), // arriving
-        _placed(layer, 200.0, order: 1), // retained
-      ]);
-      expect(drawn, hasLength(1));
-      expect(drawn.single.fadeOpacity, 0.125,
-          reason: 'the retained opaque copy was suppressed by the fading one');
-    });
-  });
-
-  group('labelContinuityKeys', () {
-    test('unions every cohort and dedupes', () {
-      final keys = labelContinuityKeys([
-        [_symbol(layer), _symbol(layer, text: 'Aschheim')],
-        [_symbol(layer, anchor: const Offset(9, 9))],
-      ]);
-      expect(keys, hasLength(2));
-      expect(keys, contains(labelContinuityKey(_symbol(layer))));
     });
   });
 
@@ -418,11 +419,11 @@ void main() {
     // The flash this prevents: a zoom-out crossing cuts the POI layer at
     // its minzoom in one frame, and the space its labels held would go
     // to whatever the outgoing cohort had been suppressing — street
-    // names never seen before, popping in at full opacity only to be
+    // names never seen before, appearing mid-transition only to be
     // faded straight back out once the new level arrives.
     final (street, poi) = _streetAndPoiLayers();
 
-    test('a candidate a zoom-cut label was suppressing does not pop in', () {
+    test('a candidate a zoom-cut label was suppressing does not appear', () {
       final streetName = _symbol(street, text: 'Hauptstr', layerIndex: 0);
       final poiName = _symbol(poi, text: 'Bäckerei', layerIndex: 1);
       final cohort = [streetName, poiName];

@@ -1,10 +1,6 @@
-import '../core/tile_key.dart';
-import '../grid/tile_retention.dart';
-import 'symbol_layouter.dart';
+import 'dart:math' as math;
 
-/// A retained (previous zoom level) tile's labels, as the continuity
-/// rules see them.
-typedef RetainedCohort = ({TileKey key, List<SymbolInstance> symbols});
+import 'symbol_layouter.dart';
 
 /// Identity of a label for cross-zoom continuity: the same text (or the
 /// same icon) on the same style layer.
@@ -21,34 +17,9 @@ typedef RetainedCohort = ({TileKey key, List<SymbolInstance> symbols});
 ///
 /// A record, not an `Object.hash` value: set membership must compare the
 /// actual triple, or a hash collision between unrelated labels would
-/// silently conflate them.
-Object labelContinuityKey(SymbolInstance symbol) =>
-    (symbol.layerIndex, symbol.text, symbol.iconName);
-
-/// The continuity keys of every label in [cohorts], for
-/// [partitionCarriedOver].
-Set<Object> labelContinuityKeys(Iterable<List<SymbolInstance>> cohorts) {
-  final keys = <Object>{};
-  for (final cohort in cohorts) {
-    for (final symbol in cohort) {
-      keys.add(labelContinuityKey(symbol));
-    }
-  }
-  return keys;
-}
-
-/// The continuity keys of the labels the retained level is currently
-/// showing over [key] — what a cohort arriving at [key] must not fade in
-/// again, because copies of it are already on screen.
-///
-/// Only overlapping cohorts count: a retained tile elsewhere on screen
-/// says nothing about what is visible here.
-Set<Object> coveringLabelKeys(TileKey key, Iterable<RetainedCohort> retained) =>
-    labelContinuityKeys([
-      for (final cohort in retained)
-        if (cohort.symbols.isNotEmpty && tilesOverlap(cohort.key, key))
-          cohort.symbols,
-    ]);
+/// silently conflate them. Memoized on the instance — the label pass
+/// looks it up per candidate per frame.
+Object labelContinuityKey(SymbolInstance symbol) => symbol.continuityKey;
 
 /// The subset of [symbols] that was actually on screen, per [drawn] —
 /// the identity set of the symbols the last label pass drew.
@@ -57,14 +28,10 @@ Set<Object> coveringLabelKeys(TileKey key, Iterable<RetainedCohort> retained) =>
 /// an outgoing level exists to *keep* what was visible until the new
 /// level covers it, never to introduce labels. Its losing candidates
 /// would otherwise pop in mid-transition the instant a zoom-range cut
-/// removes whatever was suppressing them — street names flashing up at
-/// full opacity just before a level with sparser labelling arrives,
-/// only to be faded straight back out by the hand-over.
-///
-/// The hand-over applies the same filter again at fade-out time: a
-/// symbol drawn when its level was replaced may stop being drawn later
-/// (losing its spot to an arriving label), and must not be revived just
-/// to fade. Returns [symbols] itself when nothing is filtered out.
+/// removes whatever was suppressing them — street names flashing up
+/// just before a level with sparser labelling arrives, only to be faded
+/// straight back out by the new level. Returns [symbols] itself when
+/// nothing is filtered out.
 List<SymbolInstance> drawnLabels(
   List<SymbolInstance> symbols,
   Set<SymbolInstance> drawn,
@@ -78,59 +45,114 @@ List<SymbolInstance> drawnLabels(
   return result.length == symbols.length ? symbols : result;
 }
 
-/// The labels of an outgoing cohort that the arriving level has no
-/// counterpart for — the ones about to disappear.
+/// Per-label fade state, keyed by [labelContinuityKey]: one opacity per
+/// label *identity*, whatever instance happens to draw it.
 ///
-/// Some are features the tileset simply stops carrying at the next zoom;
-/// others lost their place to the new level's denser labelling. Either
-/// way nothing will draw them once the outgoing level is dropped, so
-/// they are what a fade-out has to cover. [arriving] is the key set of
-/// the cohorts replacing this one.
-List<SymbolInstance> orphanedLabels(
-  List<SymbolInstance> symbols,
-  Set<Object> arriving,
-) =>
-    [
-      for (final symbol in symbols)
-        if (!arriving.contains(labelContinuityKey(symbol))) symbol,
-    ];
+/// Every frame the label pass marks the keys it placed ([show]); the
+/// [sweep] then walks every other tracked key downward. Opacity moves
+/// toward "placed ? 1 : 0" by the fraction of a fade one frame spans,
+/// so any appearance eases in and any disappearance eases out — a tile
+/// arriving, a level handing over, a collision won or lost, a zoom cut
+/// — all through the same mechanism, with no per-cause bookkeeping.
+///
+/// Two properties carry the anti-blink guarantees:
+///
+/// * One opacity per key. Two copies of the same label (the outgoing
+///   level's and the arriving one's) can never cross-fade against each
+///   other: whichever copy wins placement draws at the key's single
+///   opacity. This is what stops a label "fading into itself" across a
+///   zoom crossing.
+/// * Direction changes resume, never restart. A key re-placed mid
+///   fade-out rises from its current opacity, so a label briefly
+///   unplaced — a tile republish, a lost frame of collision — dips at
+///   most a step instead of blinking to zero.
+///
+/// The tracker is self-pruning: a key that stays unplaced fades to zero
+/// and is dropped, so the map holds roughly the set of recently visible
+/// labels. Pure Dart and clock-agnostic — the caller supplies `now` —
+/// which is what makes it unit-testable.
+class LabelFadeTracker {
+  final _states = <Object, _KeyFade>{};
+  var _frame = 0;
+  DateTime? _lastFrameAt;
 
-/// Splits [symbols] into the ones [covering] is already showing and the
-/// rest, as one list with the carried-over ones first and the length of
-/// that prefix.
-///
-/// The caller fades in only the suffix, so a label that survives a zoom
-/// level change holds full opacity while its copy on the outgoing level
-/// is still drawn — the two are then pixel-identical, and it stops
-/// mattering which one the collision index happens to pick.
-///
-/// Never reorders [symbols] in place — the caller may be publishing a
-/// list the result cache owns, and mutating that would reorder the cache
-/// entry itself. When carried and fresh labels must be separated the
-/// result is a freshly allocated list; when the split is trivial (all
-/// carried, all fresh, or nothing to split) the input list is returned
-/// as-is, untouched. Treat the returned list as unowned either way.
-({List<SymbolInstance> symbols, int carriedCount}) partitionCarriedOver(
-  List<SymbolInstance> symbols,
-  Set<Object> covering,
-) {
-  if (covering.isEmpty || symbols.isEmpty) {
-    return (symbols: symbols, carriedCount: 0);
+  /// Fraction of a full fade this frame advances.
+  var _step = 0.0;
+  var _anyActive = false;
+
+  /// Whether the last frame left any fade mid-flight — the caller keeps
+  /// scheduling frames while true.
+  bool get anyActive => _anyActive;
+
+  /// Whether [key] currently holds fade state (visible or fading out).
+  bool isTracked(Object key) => _states.containsKey(key);
+
+  /// The tracked opacity of [key], or null when untracked.
+  double? opacityOf(Object key) => _states[key]?.opacity;
+
+  /// Starts a frame at [now]. The step is derived from the elapsed
+  /// wall-clock time, so fades are frame-rate independent; a long gap
+  /// (a suspended app) simply completes them.
+  void beginFrame(DateTime now, Duration fadeDuration) {
+    _frame++;
+    final last = _lastFrameAt;
+    _lastFrameAt = now;
+    final span = fadeDuration.inMicroseconds;
+    _step = span <= 0 || last == null
+        ? 1.0
+        : (now.difference(last).inMicroseconds / span).clamp(0.0, 1.0);
+    _anyActive = false;
   }
-  final carried = <SymbolInstance>[];
-  final fresh = <SymbolInstance>[];
-  for (final symbol in symbols) {
-    if (covering.contains(labelContinuityKey(symbol))) {
-      carried.add(symbol);
-    } else {
-      fresh.add(symbol);
+
+  /// Marks [key] as placed this frame and returns its opacity, risen by
+  /// this frame's step. A key new to the tracker starts at 0 — the
+  /// caller's quantization keeps its first frame one step above
+  /// invisible. Idempotent within a frame: seam twins and the retained
+  /// copy of a carried-over label share one state.
+  double show(Object key) {
+    final state = _states[key];
+    if (state == null) {
+      _states[key] = _KeyFade()..stamp = _frame;
+      _anyActive = true;
+      return 0;
     }
+    if (state.stamp == _frame) return state.opacity;
+    state.stamp = _frame;
+    if (state.opacity < 1) {
+      state.opacity = math.min(1, state.opacity + _step);
+      if (state.opacity < 1) _anyActive = true;
+    }
+    return state.opacity;
   }
-  if (fresh.isEmpty) return (symbols: symbols, carriedCount: symbols.length);
-  if (carried.isEmpty) return (symbols: symbols, carriedCount: 0);
-  // Read the prefix length before the cascade: record fields evaluate
-  // left to right, so `carriedCount: carried.length` after an inline
-  // `carried..addAll(fresh)` would report the combined length.
-  final carriedCount = carried.length;
-  return (symbols: carried..addAll(fresh), carriedCount: carriedCount);
+
+  /// Advances every key *not* shown this frame toward zero, reporting
+  /// the ones still visible to [fadingOut] so the caller can draw their
+  /// ghosts; keys that reached zero are dropped. Call once per frame,
+  /// after all [show] calls. [fadingOut] must not touch the tracker.
+  void sweep(void Function(Object key, double opacity) fadingOut) {
+    _states.removeWhere((key, state) {
+      if (state.stamp == _frame) return false;
+      state.opacity -= _step;
+      if (state.opacity <= 0) return true;
+      _anyActive = true;
+      fadingOut(key, state.opacity);
+      return false;
+    });
+  }
+
+  /// Forgets everything — for theme/provider swaps, where every symbol
+  /// instance is replaced and layer indices change meaning.
+  void clear() {
+    _states.clear();
+    _lastFrameAt = null;
+    _anyActive = false;
+  }
+}
+
+class _KeyFade {
+  var opacity = 0.0;
+
+  /// The frame this key was last shown in — [LabelFadeTracker.sweep]
+  /// fades everything whose stamp is stale.
+  var stamp = 0;
 }

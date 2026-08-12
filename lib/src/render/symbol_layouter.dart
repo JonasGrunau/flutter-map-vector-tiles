@@ -97,6 +97,13 @@ class SymbolInstance {
   /// the label pass consults this per frame for along-line labels.
   late final bool curveSafe = _curveSafe(text);
 
+  /// Cross-zoom fade identity — see `labelContinuityKey` in
+  /// `label_continuity.dart` for why it is this position-free record.
+  /// Memoized here because the label pass needs it per candidate per
+  /// frame, and a record allocation per lookup would churn the young
+  /// generation on every painted frame.
+  late final Object continuityKey = (layerIndex, text, iconName);
+
   static bool _curveSafe(String text) {
     for (final r in text.runes) {
       final ok = r < 0x0590 || // Latin, Greek, Cyrillic, combining marks
