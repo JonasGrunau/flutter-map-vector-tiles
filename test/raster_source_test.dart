@@ -298,8 +298,10 @@ void main() {
       const key = TileKey(2, 1, 1);
       final store = RasterTileStore(
         source: RasterTileSource(
-          provider: MemoryVectorTileProvider(
-              tiles: {key: green}, cacheKey: 'raster-swr-test'),
+          // A remote source: stale-while-revalidate is about the disk
+          // cache standing in for one, so the provider must be a kind
+          // that is mirrored onto disk.
+          provider: _RemoteProvider('raster-swr-test', green),
         ),
         diskCache: Future.value(
             _ExpiredByteCache()..entries['raster-swr-test/2/1/1'] = red),
@@ -347,6 +349,25 @@ void main() {
 }
 
 /// Always fails, so a revalidation can never confirm anything.
+/// Serves one tile everywhere, and caches to disk like a network source.
+class _RemoteProvider extends VectorTileProvider {
+  @override
+  final String cacheKey;
+  final Uint8List bytes;
+
+  _RemoteProvider(this.cacheKey, this.bytes);
+
+  @override
+  int get maximumZoom => 20;
+  @override
+  int get minimumZoom => 0;
+
+  @override
+  Future<TileResponse> load(TileKey tile,
+          {CancellationToken? cancellation}) async =>
+      TileResponseData(bytes);
+}
+
 class _OfflineProvider extends VectorTileProvider {
   @override
   final String cacheKey;

@@ -113,6 +113,32 @@ class StyleReader {
   /// on the browser HTTP cache instead.
   final Future<String> Function()? cachePath;
 
+  /// Supplies the provider for a style source, bypassing the URL the
+  /// style document declares for it. Return null to fall through to
+  /// normal resolution.
+  ///
+  /// This is how a bundled offline archive replaces a hosted source while
+  /// the style still contributes its theme, sprites and attribution —
+  /// useful when the archive lives at a path only known at runtime, which
+  /// no style document can name:
+  ///
+  /// ```dart
+  /// final archive = await MbTilesVectorTileProvider.open(path);
+  /// final style = await StyleReader(
+  ///   uri: 'asset://styles/liberty.json',
+  ///   resolveProvider: (id) async => id == 'openmaptiles' ? archive : null,
+  /// ).read();
+  /// ```
+  ///
+  /// Applies to raster sources as much as vector ones. The source's own
+  /// `attribution` still applies; only the TileJSON-derived fallback is
+  /// unavailable, since no TileJSON is fetched.
+  ///
+  /// The returned provider becomes owned by the [Style]: `Style.dispose()`
+  /// disposes it along with the rest. Open one per style rather than
+  /// sharing a single provider between two.
+  final Future<VectorTileProvider?> Function(String sourceId)? resolveProvider;
+
   const StyleReader({
     required this.uri,
     this.apiKey,
@@ -122,6 +148,7 @@ class StyleReader {
     this.cache = true,
     this.refreshAfter = const Duration(hours: 12),
     this.cachePath,
+    this.resolveProvider,
   });
 
   Future<Style> read() async {
@@ -161,12 +188,12 @@ class StyleReader {
             // in MapLibre — that is how a style overrides its upstream.
             final _Source? built;
             if (type == 'vector') {
-              built = await _createProvider(loader, map, styleUrl);
+              built = await _createProvider(loader, id, map, styleUrl);
               if (built != null) providers[id] = built.provider;
             } else {
               // MapLibre source default maxzoom is 22; rasters routinely
               // go deeper than the vector default of 14.
-              built = await _createProvider(loader, map, styleUrl,
+              built = await _createProvider(loader, id, map, styleUrl,
                   defaultMaxZoom: 22);
               if (built != null) {
                 rasterSources[id] = RasterTileSource(
@@ -237,10 +264,17 @@ class StyleReader {
 
   Future<_Source?> _createProvider(
     _Loader loader,
+    String sourceId,
     Map<String, Object?> source,
     String styleUrl, {
     int defaultMaxZoom = 14,
   }) async {
+    // Before any URL is looked at: the caller may be serving this source
+    // from somewhere the style document cannot describe, such as a local
+    // archive at a path only known at runtime.
+    final substitute = await resolveProvider?.call(sourceId);
+    if (substitute != null) return _Source(substitute);
+
     List<Object?>? tiles = source['tiles'] as List<Object?>?;
     var minZoom = (source['minzoom'] as num?)?.toInt();
     var maxZoom = (source['maxzoom'] as num?)?.toInt();

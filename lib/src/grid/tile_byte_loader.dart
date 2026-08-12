@@ -71,6 +71,13 @@ class TileByteLoader {
 
   TileByteLoader(this.provider, this.diskCache);
 
+  /// [diskCache], or null when the provider serves tiles from local
+  /// storage already and opted out of being mirrored onto disk. Every
+  /// cache access below goes through this rather than [diskCache], so the
+  /// opt-out covers reads as much as writes.
+  Future<ByteCache?> get _cache async =>
+      provider.cacheBytesToDisk ? await diskCache : null;
+
   String cacheKeyOf(TileKey key) =>
       '${provider.cacheKey}/${key.z}/${key.x}/${key.y}';
 
@@ -104,7 +111,7 @@ class TileByteLoader {
     bool Function() disposed,
   ) async {
     final cacheKey = cacheKeyOf(key);
-    final cache = await diskCache;
+    final cache = await _cache;
     if (disposed() || cancellation.isCancelled) {
       return const TileBytesUnavailable();
     }
@@ -173,7 +180,7 @@ class TileByteLoader {
   /// going through [load] — they would otherwise never notice the entry
   /// expiring. One disk lookup: no decode, no network.
   Future<Uint8List?> expiredBytes(TileKey key) async {
-    final cache = await diskCache;
+    final cache = await _cache;
     if (cache == null) return null;
     final cacheKey = cacheKeyOf(key);
     if (await cache.get(cacheKey) != null) return null; // still fresh
@@ -217,7 +224,7 @@ class TileByteLoader {
     if (!_refreshing.add(key)) return null;
     try {
       final response = await provider.load(key, cancellation: cancellation);
-      final cache = await diskCache;
+      final cache = await _cache;
       // As in [load], the disk entry is rewritten before disposal is
       // honoured — the fetch already happened, and leaving the entry
       // expired would make the next open repeat it.

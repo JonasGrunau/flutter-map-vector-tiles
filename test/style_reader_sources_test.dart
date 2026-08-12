@@ -1,6 +1,9 @@
 import 'dart:convert';
 
+import 'package:flutter_map_vector_tiles/src/core/cancellation.dart';
+import 'package:flutter_map_vector_tiles/src/core/tile_key.dart';
 import 'package:flutter_map_vector_tiles/src/provider/network_vector_tile_provider.dart';
+import 'package:flutter_map_vector_tiles/src/provider/vector_tile_provider.dart';
 import 'package:flutter_map_vector_tiles/src/style/style_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -211,4 +214,109 @@ void main() {
         style.providers.providers['v']! as NetworkVectorTileProvider;
     expect(provider.headers, const {'authorization': 'Bearer t'});
   });
+
+  group('resolveProvider', () {
+    const styleUrl = 'https://example.com/style.json';
+
+    Map<String, Object?> routesWith(Map<String, Object?> sources) => {
+          styleUrl: {
+            'version': 8,
+            'sources': sources,
+            'layers': _minimalLayers
+          },
+        };
+
+    test('substitutes a provider for the named source, before its url',
+        () async {
+      final substitute = _StubProvider();
+      final asked = <String>[];
+      final style = await StyleReader(
+        uri: styleUrl,
+        // The url would 404 if it were ever fetched.
+        httpClient: _serving(routesWith({
+          'v': {'type': 'vector', 'url': 'https://example.com/absent.json'},
+        })),
+        cache: false,
+        resolveProvider: (id) async {
+          asked.add(id);
+          return id == 'v' ? substitute : null;
+        },
+      ).read();
+      addTearDown(style.dispose);
+
+      expect(asked, ['v']);
+      expect(style.providers.providers['v'], same(substitute));
+    });
+
+    test('returning null falls through to normal resolution', () async {
+      final style = await StyleReader(
+        uri: styleUrl,
+        httpClient: _serving(routesWith({
+          'v': {
+            'type': 'vector',
+            'tiles': ['https://example.com/{z}/{x}/{y}.pbf'],
+          },
+        })),
+        cache: false,
+        resolveProvider: (id) async => null,
+      ).read();
+      addTearDown(style.dispose);
+
+      expect(style.providers.providers['v'], isA<NetworkVectorTileProvider>());
+    });
+
+    test('applies to raster sources too', () async {
+      final substitute = _StubProvider();
+      final style = await StyleReader(
+        uri: styleUrl,
+        httpClient: _serving(routesWith({
+          'v': {
+            'type': 'vector',
+            'tiles': ['https://example.com/{z}/{x}/{y}.pbf'],
+          },
+          'sat': {'type': 'raster', 'url': 'https://example.com/absent.json'},
+        })),
+        cache: false,
+        resolveProvider: (id) async => id == 'sat' ? substitute : null,
+      ).read();
+      addTearDown(style.dispose);
+
+      expect(style.rasterSources['sat']!.provider, same(substitute));
+      expect(style.providers.providers['v'], isA<NetworkVectorTileProvider>());
+    });
+
+    test('the style takes ownership and disposes the substitute', () async {
+      final substitute = _StubProvider();
+      final style = await StyleReader(
+        uri: styleUrl,
+        httpClient: _serving(routesWith({
+          'v': {'type': 'vector', 'url': 'https://example.com/absent.json'},
+        })),
+        cache: false,
+        resolveProvider: (id) async => substitute,
+      ).read();
+
+      expect(substitute.disposed, isFalse);
+      style.dispose();
+      expect(substitute.disposed, isTrue);
+    });
+  });
+}
+
+class _StubProvider extends VectorTileProvider {
+  var disposed = false;
+
+  @override
+  int get maximumZoom => 14;
+  @override
+  int get minimumZoom => 0;
+  @override
+  String get cacheKey => 'stub';
+
+  @override
+  Future<TileResponse> load(TileKey tile, {CancellationToken? cancellation}) =>
+      Future.value(const TileResponseNotFound());
+
+  @override
+  void dispose() => disposed = true;
 }

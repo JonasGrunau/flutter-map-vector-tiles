@@ -15,6 +15,7 @@ the test itself.
 |------|-------------|
 | `mvt_builder.dart` | `MvtTileBuilder` / `MvtLayerBuilder` — a minimal MVT (protobuf) encoder: layers, features, tags, geometry commands, varint and tag writing |
 | `pmtiles_builder.dart` | `PmTilesArchiveBuilder` — a minimal PMTiles v3 archive writer: header, delta-varint directories, optional leaf splitting and pluggable compression. Web-safe (arithmetic only) so the same fixtures run in the browser suite |
+| `mbtiles_builder.dart` | `MbTilesArchiveBuilder` — writes a `.mbtiles` file to a path: metadata rows, tiles at TMS coordinates, and optionally the deduplicating `map`/`images` view schema. Also `dropTilesTable()`, for the invalid-archive case. The write sits behind a conditional import (`_io` / `_stub`) |
 
 ## For AI Agents
 
@@ -27,6 +28,20 @@ the test itself.
   refactor the two to share code.
 - When adding wire-format support to the decoder, add the corresponding
   *encoding* here from the spec, not from the decoder's implementation.
+- **`mbtiles_builder.dart` is the one exception, and cannot be otherwise** —
+  SQLite is the container, so only SQLite writes it; there is no independent
+  implementation to write. The independence that matters is kept a level up:
+  fixtures are laid out with plain `CREATE TABLE` / `INSERT` against the
+  spec's schema, so the table shape and the TMS row convention under test are
+  expressed separately from the provider's read query. Keep it that way —
+  never build a fixture by calling into `lib/src/provider/mbtiles/`.
+- **Never import `package:sqlite3` from a file under `test/` directly** — only
+  through `mbtiles_builder_io.dart`, behind the conditional import.
+  `@TestOn('vm')` gates when a test *runs*, not whether it compiles: `dart:io`
+  survives a web compile (the web SDK has it, and it throws at runtime),
+  but `package:sqlite3` reaches `dart:ffi`, which does not exist there. One
+  direct import breaks `flutter test --platform chrome` for the entire suite,
+  with an error naming `sqlite3`'s generated bindings rather than your file.
 
 ### Testing Requirements
 

@@ -48,6 +48,12 @@ class MemoryVectorTileProvider extends VectorTileProvider {
     return 'memory:${tiles.length}:$h';
   }
 
+  /// The tiles are in memory already; a disk copy would only duplicate
+  /// what the caller is holding, and absent coordinates would each leave
+  /// a zero-byte sentinel behind.
+  @override
+  bool get cacheBytesToDisk => false;
+
   @override
   Future<TileResponse> load(TileKey tile,
       {CancellationToken? cancellation}) async {

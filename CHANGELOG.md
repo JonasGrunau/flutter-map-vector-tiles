@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+Offline archives you ship yourself. MBTiles files — what QGIS, tilemaker
+and TileServer GL produce — now render directly, and any provider of your
+own can stand in for a source of a hosted style.
+
+- ✨ **MBTiles archives**: `MbTilesVectorTileProvider.open('…/region.mbtiles')`
+  serves tiles from a local SQLite archive, vector or raster. Rows are
+  read on a dedicated isolate, so a cold lookup never costs a frame, and
+  the archive's `metadata` table — attribution, bounds, suggested camera —
+  is exposed as `MbTilesMetadata`. This is the guaranteed-offline
+  counterpart to the visited-places disk cache.
+- ✨ **Bring your own provider**: `StyleReader(resolveProvider: …)` swaps
+  in a provider for any source by id, so a bundled archive can back a
+  hosted style while that style still supplies the theme, sprites and
+  attribution. Works for raster sources too.
+- ⚡ Providers backed by local storage no longer duplicate their tiles
+  into the on-disk cache, or leave a zero-byte marker for every
+  coordinate they do not cover. Opt a custom provider out with the new
+  `VectorTileProvider.cacheBytesToDisk`; `MemoryVectorTileProvider` and
+  the MBTiles provider already do.
+- 🌐 MBTiles is native-only — archives are SQLite files read through
+  `dart:ffi`, and on web `open` throws `UnsupportedError`. On Android,
+  Windows and Linux the app must also depend on `sqlite3_flutter_libs`;
+  iOS and macOS use the system library.
+- ⬆️ New `sqlite3 ^2.4.0` dependency. It is pure Dart plus FFI and loads
+  nothing until an archive is opened, so apps that never touch MBTiles
+  pay no size or startup cost.
+
 ## 2.5.0
 
 Labels that hold still. Every appearance and disappearance animates

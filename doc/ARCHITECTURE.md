@@ -16,6 +16,7 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │
      ├─ TileStore (memory LRU of PreparedTile)
      │      └─ miss: bytes ◄─ DiskCache ◄─ VectorTileProvider (network…)
+     │                 (local providers — MBTiles, memory — skip DiskCache)
      │              └─ IsolatePool: decode MVT + filter per theme layer
      │                             └─ PreparedTile (compact, transferable)
      │
@@ -239,7 +240,7 @@ chunked event-loop execution.
 | memory: `PreparedTile` | data tile + theme id | entry count + bytes |
 | memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
 | memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprite *content*, labels) | GPU texture bytes (`rasterCacheMaxBytes`, cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
-| disk: raw tile bytes | url hash | TTL + total size sweep |
+| disk: raw tile bytes | hash of `provider.cacheKey` + z/x/y | TTL + total size sweep |
 
 All caches are plain deterministic LRU implementations — no external
 cache framework. Every `ui.Image` has exactly one owner and is disposed
@@ -269,6 +270,16 @@ visible window is processed. `VectorTileLayer.clearMemoryCache()` empties
 all three memory tiers at once — the memory-pressure valve, since the
 caches are process-wide and otherwise freed only by their budgets; the
 disk cache is untouched.
+
+The disk layer is skipped entirely for providers whose bytes already
+live on the device — `VectorTileProvider.cacheBytesToDisk` returns false
+for the MBTiles and memory providers. Mirroring them would store every
+tile twice and leave a zero-byte sentinel for each coordinate the source
+does not cover. The opt-out covers reads as well as writes, so an entry
+written before a source became local cannot shadow it; with no cache
+behind it, `TileByteLoader` never reports bytes as stale and the
+revalidation machinery below simply never engages. Failure throttling is
+independent of the cache and stays active either way.
 
 The disk TTL is a *revalidation* deadline, not an expiry: expired
 entries — including the zero-byte "known absent" sentinels — are served
@@ -351,6 +362,28 @@ archive.
 All 64-bit offsets and tile IDs are computed with multiply/add
 arithmetic (exact to 2^53) rather than bitwise ops, which dart2js
 truncates to 32 bits — the same constraint the MVT decoder observes.
+
+MBTiles archives are the local counterpart, and are wired up in code
+rather than by a URL scheme: a device-absolute path is not something a
+portable style document can name, so `StyleReader(resolveProvider:)`
+substitutes a provider for a source id instead — a general hook that
+also covers raster sources and any other custom provider. `package:
+sqlite3` is synchronous, and provider loads run on the UI isolate, so
+`MbTilesVectorTileProvider` keeps the database handle on a dedicated
+reader isolate and exchanges request/response records over a port; the
+handshake carries the `metadata` table and the resolved zoom range back,
+because `minimumZoom`/`maximumZoom` are synchronous getters and must be
+known before `open()` returns. Rows are TMS (counted from the bottom)
+while `TileKey` is XYZ, so the provider flips y; queries always go
+through the `tiles` relation, which covers both the flat table and the
+deduplicating `map`/`images` view schema. Blobs are handed through
+exactly as stored — `pbf` archives hold gzip per the spec, inflated by
+`prepareTileSync` on the worker for the same reason PMTiles defers it.
+The whole implementation sits behind a conditional import
+(`mbtiles_reader_stub.dart` / `_io.dart`, mirroring
+`cache/cache_resolver.dart`) so that no web compile reaches `dart:ffi`
+and the package keeps its web platform tag; a browser-only test asserts
+the stub throws.
 
 ## What was deliberately changed vs. vector_map_tiles
 

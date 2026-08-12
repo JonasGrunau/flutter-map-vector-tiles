@@ -32,7 +32,10 @@ class _CountingProvider extends VectorTileProvider {
   /// When set, responses are held back until it completes.
   Future<void>? gate;
 
-  _CountingProvider(this.response);
+  @override
+  final bool cacheBytesToDisk;
+
+  _CountingProvider(this.response, {this.cacheBytesToDisk = true});
 
   @override
   int get maximumZoom => 14;
@@ -122,6 +125,67 @@ void main() {
     expect(result, isA<TileBytesLoaded>());
     expect((result as TileBytesLoaded).bytes, bytes);
     expect(result.stale, isFalse);
+  });
+
+  group('providers that opt out of disk caching', () {
+    test('data responses are not mirrored onto disk', () async {
+      final cache = _MemoryByteCache();
+      final bytes = Uint8List.fromList([1, 2, 3]);
+      final provider =
+          _CountingProvider(TileResponseData(bytes), cacheBytesToDisk: false);
+      final loader = TileByteLoader(provider, Future.value(cache));
+
+      final result = await loadOnce(loader);
+      expect((result as TileBytesLoaded).bytes, bytes);
+      expect(result.stale, isFalse);
+      await pumpEventQueue(); // a write would land here
+      expect(cache.puts, 0);
+      expect(cache.entries, isEmpty);
+    });
+
+    test('absence leaves no sentinel behind', () async {
+      final cache = _MemoryByteCache();
+      final provider = _CountingProvider(const TileResponseNotFound(),
+          cacheBytesToDisk: false);
+      final loader = TileByteLoader(provider, Future.value(cache));
+
+      expect(await loadOnce(loader), isA<TileBytesAbsent>());
+      await pumpEventQueue();
+      expect(cache.puts, 0);
+      expect(cache.entries, isEmpty);
+
+      // And the provider is asked every time, since nothing was recorded.
+      expect(await loadOnce(loader), isA<TileBytesAbsent>());
+      expect(provider.loads, 2);
+    });
+
+    test('an existing disk entry does not shadow the provider', () async {
+      // Written by an earlier release, before the source became local.
+      final cache = _MemoryByteCache();
+      cache.entries['counting/3/1/2'] = Uint8List.fromList([9, 9]);
+      final fresh = Uint8List.fromList([1]);
+      final provider =
+          _CountingProvider(TileResponseData(fresh), cacheBytesToDisk: false);
+      final loader = TileByteLoader(provider, Future.value(cache));
+
+      final result = await loadOnce(loader);
+      expect((result as TileBytesLoaded).bytes, fresh);
+      expect(provider.loads, 1);
+    });
+
+    test('nothing is ever stale, so revalidation never engages', () async {
+      final cache = _MemoryByteCache();
+      cache.entries['counting/3/1/2'] = Uint8List.fromList([9, 9]);
+      final provider = _CountingProvider(
+          TileResponseData(Uint8List.fromList([1])),
+          cacheBytesToDisk: false);
+      final loader =
+          TileByteLoader(provider, Future.value(_ExpiredCache(cache)));
+
+      final result = await loadOnce(loader);
+      expect((result as TileBytesLoaded).stale, isFalse);
+      expect(await loader.expiredBytes(key), isNull);
+    });
   });
 
   group('refresh', () {

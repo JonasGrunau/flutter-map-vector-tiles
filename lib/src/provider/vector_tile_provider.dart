@@ -52,6 +52,21 @@ abstract class VectorTileProvider {
   /// different keys.
   String get cacheKey;
 
+  /// Whether the pipeline should mirror this provider's bytes into the
+  /// on-disk tile cache.
+  ///
+  /// True for remote sources, where that cache is what makes a revisit
+  /// instant and offline. Override to false for providers already backed
+  /// by local storage: a local archive would otherwise be copied tile by
+  /// tile into a second on-disk copy, and every absent tile would leave a
+  /// zero-byte sentinel behind.
+  ///
+  /// Opting out skips the disk cache on the way *in* as well — a stale
+  /// entry written before the source became local must not shadow it.
+  /// Stale-while-revalidate therefore never engages for such a provider;
+  /// failure throttling still does.
+  bool get cacheBytesToDisk => true;
+
   Future<TileResponse> load(TileKey tile, {CancellationToken? cancellation});
 
   void dispose() {}
