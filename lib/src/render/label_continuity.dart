@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' show Size;
 
 import 'symbol_layouter.dart';
 
@@ -155,4 +156,70 @@ class _KeyFade {
   /// The frame this key was last shown in — [LabelFadeTracker.sweep]
   /// fades everything whose stamp is stale.
   var stamp = 0;
+}
+
+/// Decides which frames re-run the label collision pass.
+///
+/// Placement is deliberately *not* a per-frame decision. Label boxes
+/// scale with the zoom and swing with the rotation, so a gesture drags
+/// neighbouring labels through each other constantly; re-placing every
+/// frame samples every one of those transients, and a label that lost a
+/// spot for three frames disappears and comes straight back. That reads
+/// as flicker even when both directions are faded — the collision
+/// decision is simply being observed far more often than it is
+/// meaningful. MapLibre re-places on a timer (once per fade duration)
+/// and holds the decision frozen in between, accepting a little
+/// transient overlap in exchange; this is that timer.
+///
+/// Between passes the caller replays the last decision: layout still
+/// follows the camera every frame, only *who is shown* is frozen. A
+/// pass also runs the moment the candidate set itself changes
+/// ([generation]) or the viewport is resized, so labels from a tile
+/// that just landed never wait on the clock.
+class PlacementThrottle {
+  DateTime? _lastPass;
+  int _generation = 0;
+  Size _screenSize = Size.zero;
+  var _deferred = false;
+
+  /// Whether the last frame deferred a pass, and one is therefore still
+  /// owed. The caller keeps scheduling frames while this is true: a
+  /// frozen decision was taken at an older camera, and once a gesture
+  /// stops producing frames nothing else would ever re-place it.
+  bool get deferred => _deferred;
+
+  /// Whether this frame runs a full collision pass. Records the answer,
+  /// so it must be called exactly once per frame.
+  ///
+  /// An [interval] of zero places every frame — that is what disabling
+  /// the label fades asks for, since without fades a frozen decision
+  /// buys nothing and every change is a hard cut anyway.
+  bool shouldPlace({
+    required DateTime now,
+    required Duration interval,
+    required int generation,
+    required Size screenSize,
+  }) {
+    final last = _lastPass;
+    final due = last == null ||
+        interval <= Duration.zero ||
+        generation != _generation ||
+        screenSize != _screenSize ||
+        !now.isBefore(last.add(interval)) ||
+        // A clock stepped backwards (manual change, NTP) would otherwise
+        // freeze placement until it caught up again.
+        now.isBefore(last);
+    _deferred = !due;
+    if (!due) return false;
+    _lastPass = now;
+    _generation = generation;
+    _screenSize = screenSize;
+    return true;
+  }
+
+  /// Forgets the last pass, so the next frame places again.
+  void reset() {
+    _lastPass = null;
+    _deferred = false;
+  }
 }

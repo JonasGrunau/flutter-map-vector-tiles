@@ -70,12 +70,20 @@ List<PlacedSymbol> _paint(List<PlacedSymbol> symbols, {double styleZoom = 14}) {
 
 /// One label pass on a persistent [painter] — for stories that follow
 /// fade state across frames. A non-null [now] enables the per-label
-/// fades at [_fadeDuration].
+/// fades at [_fadeDuration], and with them the throttled placement:
+/// frames closer together than that replay the last decision.
+///
+/// [generation] defaults to one derived from the offered instances,
+/// modelling the layer's contract — it bumps its placement generation
+/// whenever the candidate set changes, so a story that swaps a level's
+/// labels in gets a real placement pass rather than a frozen one. Pass
+/// it explicitly to hold the set constant across frames.
 List<PlacedSymbol> _frame(
   LabelPainter painter,
   List<PlacedSymbol> symbols, {
   double styleZoom = 14,
   DateTime? now,
+  int? generation,
 }) {
   final recorder = ui.PictureRecorder();
   final drawn = painter.paint(
@@ -84,11 +92,17 @@ List<PlacedSymbol> _frame(
     styleZoom: styleZoom,
     symbols: symbols,
     labelFadeDuration: now == null ? Duration.zero : _fadeDuration,
+    placementGeneration: generation ?? _generationOf(symbols),
     now: now,
   );
   recorder.endRecording().dispose();
   return drawn;
 }
+
+/// A placement generation that changes exactly when the offered
+/// instances do.
+int _generationOf(List<PlacedSymbol> symbols) => Object.hashAll(
+    [for (final symbol in symbols) identityHashCode(symbol.instance)]);
 
 const _fadeDuration = Duration(milliseconds: 100);
 final _t0 = DateTime(2026, 1, 1);
@@ -254,6 +268,73 @@ void main() {
     });
   });
 
+  group('PlacementThrottle', () {
+    const screen = Size(400, 400);
+    bool place(
+      PlacementThrottle throttle,
+      int ms, {
+      int generation = 0,
+      Size screenSize = screen,
+      Duration interval = _fadeDuration,
+    }) =>
+        throttle.shouldPlace(
+          now: _at(ms),
+          interval: interval,
+          generation: generation,
+          screenSize: screenSize,
+        );
+
+    test('places once, then holds the decision for an interval', () {
+      final throttle = PlacementThrottle();
+      expect(place(throttle, 0), isTrue, reason: 'nothing to replay yet');
+      expect(place(throttle, 50), isFalse);
+      expect(throttle.deferred, isTrue, reason: 'a pass is owed');
+      expect(place(throttle, 100), isTrue);
+      expect(throttle.deferred, isFalse);
+      // The interval runs from the last pass, not from fixed multiples.
+      expect(place(throttle, 150), isFalse);
+      expect(place(throttle, 200), isTrue);
+    });
+
+    test('a changed candidate set places without waiting', () {
+      final throttle = PlacementThrottle();
+      expect(place(throttle, 0), isTrue);
+      expect(place(throttle, 10, generation: 1), isTrue,
+          reason: 'a tile just published labels — they must not wait out '
+              'the interval invisible');
+      expect(place(throttle, 20, generation: 1), isFalse);
+    });
+
+    test('a resize places without waiting', () {
+      final throttle = PlacementThrottle();
+      expect(place(throttle, 0), isTrue);
+      expect(place(throttle, 10, screenSize: const Size(400, 800)), isTrue);
+    });
+
+    test('without fades every frame places', () {
+      final throttle = PlacementThrottle();
+      expect(place(throttle, 0, interval: Duration.zero), isTrue);
+      expect(place(throttle, 1, interval: Duration.zero), isTrue);
+      expect(throttle.deferred, isFalse);
+    });
+
+    test('a clock that steps backwards places again', () {
+      final throttle = PlacementThrottle();
+      expect(place(throttle, 500), isTrue);
+      expect(place(throttle, 400), isTrue,
+          reason: 'otherwise placement freezes until the clock catches up');
+    });
+
+    test('reset places on the next frame', () {
+      final throttle = PlacementThrottle();
+      expect(place(throttle, 0), isTrue);
+      expect(place(throttle, 10), isFalse);
+      throttle.reset();
+      expect(place(throttle, 20), isTrue);
+      expect(throttle.deferred, isFalse);
+    });
+  });
+
   group('per-label fades through the painter', () {
     test('a brand-new label draws from its very first frame', () {
       final painter = LabelPainter();
@@ -369,6 +450,81 @@ void main() {
       // … and once it stops being offered at all, nothing of it draws.
       final drawn = _frame(painter, [_placedAt(winner)], now: _at(50));
       expect(drawn.map((p) => p.instance), [winner]);
+      painter.dispose();
+    });
+  });
+
+  group('placement frozen between passes', () {
+    test('a collision the camera creates mid-interval is not acted on', () {
+      // Two labels with room to spare when the decision is taken; the
+      // camera then drifts them into each other. Deciding afresh every
+      // frame is what makes a label vanish for a moment and come back
+      // — between passes the pair is simply allowed to overlap.
+      final painter = LabelPainter();
+      final west = _symbol(layer, text: 'Feldkirchen');
+      final east = _symbol(layer, text: 'Aschheim');
+      const generation = 7;
+
+      List<PlacedSymbol> frame(int ms, double gap) => _frame(
+            painter,
+            [
+              _placedAt(west, anchor: Offset(200 - gap, 200)),
+              _placedAt(east, anchor: Offset(200 + gap, 200), order: 1),
+            ],
+            now: _at(ms),
+            generation: generation,
+          );
+
+      expect(frame(0, 80).map((p) => p.instance).toSet(), {west, east});
+      frame(100, 80); // a second pass; both are fully faded in by now
+
+      expect(frame(150, 2).map((p) => p.instance).toSet(), {west, east},
+          reason: 'the decision taken at the last pass still stands');
+      expect(painter.placementPending, isTrue,
+          reason: 'the layer keeps painting until the pass it owes runs');
+
+      // The next pass resolves the overlap — once, and through a fade.
+      frame(200, 2);
+      expect(painter.debugFades.opacityOf(west.continuityKey), 1);
+      expect(painter.debugFades.opacityOf(east.continuityKey), lessThan(1),
+          reason: 'the loser eases out instead of blinking away');
+      painter.dispose();
+    });
+
+    test('a label with two candidates keeps the one it is drawn from', () {
+      // A street name reaching the pass twice — the two carriageways of
+      // one road, or the outgoing and arriving level of a zoom. Which
+      // copy the priority sort puts first is decided by their screen y,
+      // so a pan that reorders them walks the name across the street.
+      final painter = LabelPainter();
+      final north = _symbol(layer, text: 'Rosenheimer Straße');
+      final south = _symbol(layer, text: 'Rosenheimer Straße');
+      const generation = 3;
+
+      final first = _frame(
+        painter,
+        [
+          _placedAt(north, anchor: const Offset(200, 198)),
+          _placedAt(south, anchor: const Offset(200, 202), order: 1),
+        ],
+        now: _at(0),
+        generation: generation,
+      );
+      expect(first.map((p) => p.instance), [north],
+          reason: 'the copy higher up the screen sorts first');
+
+      // The pan reverses their order; the sitting copy is tried first.
+      final panned = _frame(
+        painter,
+        [
+          _placedAt(south, anchor: const Offset(200, 198)),
+          _placedAt(north, anchor: const Offset(200, 202), order: 1),
+        ],
+        now: _at(100),
+        generation: generation,
+      );
+      expect(panned.map((p) => p.instance), [north],
+          reason: 'the name stays on the side of the street it is already on');
       painter.dispose();
     });
   });

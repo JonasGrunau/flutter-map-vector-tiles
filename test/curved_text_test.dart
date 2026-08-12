@@ -181,6 +181,46 @@ void main() {
     expect(placed, hasLength(1));
   });
 
+  test('a near-vertical road holds its reading direction', () {
+    final layer = _lineLayer();
+    // A road running almost straight down the screen. Which way its
+    // label reads is decided by a few pixels of chord, and every change
+    // of mind mirrors the label — including any perpendicular
+    // `text-offset`, which is measured in the label's own frame — to
+    // the other side of the street.
+    final path = _path(const [Offset(100, 0), Offset(103, 300)]);
+    final instance = _lineSymbol(layer, path, 'Hauptstraße').instance;
+
+    PlacedSymbol rotated(double degrees) {
+      final rotation = degrees * math.pi / 180;
+      final transform =
+          TileTransform(origin: Offset.zero, scale: 1, rotation: rotation);
+      return PlacedSymbol(
+        instance: instance,
+        screenAnchor: transform.apply(instance.anchor),
+        screenAngle: instance.angle + rotation,
+        transform: transform,
+      );
+    }
+
+    expect(_paint([rotated(0)]), hasLength(1));
+    expect(instance.uprightFlip, isFalse,
+        reason: 'reads down and to the right');
+
+    // One degree of rotation takes the road past vertical …
+    _paint([rotated(1)]);
+    expect(instance.uprightFlip, isFalse,
+        reason: 'inside the dead band the label is left as it is');
+
+    // … and only a clear turn the other way reverses it.
+    _paint([rotated(10)]);
+    expect(instance.uprightFlip, isTrue);
+    _paint([rotated(1)]);
+    expect(instance.uprightFlip, isTrue, reason: 'sticky in both directions');
+    _paint([rotated(-10)]);
+    expect(instance.uprightFlip, isFalse);
+  });
+
   test('two labels on the same spot still collide', () {
     final layer = _lineLayer();
     final path = _path(const [Offset(0, 100), Offset(300, 100)]);

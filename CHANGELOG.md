@@ -2,8 +2,10 @@
 
 ## Unreleased
 
-Labels across a zoom level change: every appearance and disappearance
-now animates through one per-label fade.
+Labels that hold still. Every appearance and disappearance animates
+through one per-label fade, and which labels win their space is decided
+on a timer instead of on every frame — so gestures no longer flicker
+labels out and back, or walk them around the map.
 
 - ✨ **Per-label fades**: `labelFadeDuration` now drives one fade state
   per label *identity* (layer, text, icon) instead of one per tile
@@ -23,6 +25,27 @@ now animates through one per-label fade.
   is inclusive, so one would leave a `minzoom: 14` layer invisible on a
   map resting at exactly zoom 14 — but crossing it now eases labels out
   through the time-based fade above.
+- ⚡ Frames between two collision passes lay out only the labels that
+  are on screen, skipping the candidates that lost — most of them on a
+  dense screen — and reserve no collision space at all.
+- 🐛 Labels no longer wink out for a moment and return while you zoom.
+  Collision was re-decided on every painted frame, and label boxes scale
+  with the zoom, so every brush past a neighbour was acted on: a label
+  lost its spot for a few frames and took it straight back. The
+  collision pass now runs once per `labelFadeDuration` (at most every
+  300 ms) and its decision is held in between, with the labels allowed
+  to overlap for those frames — the trade MapLibre makes. Labels from a
+  tile that just landed still place immediately.
+- 🐛 Labels no longer wander while you pan. A name that can be drawn
+  from more than one feature — a street label on both carriageways, or
+  the same name coming from two zoom levels — jumped between them as
+  their screen order changed; a label with `text-variable-anchor` hopped
+  to its second anchor and back when a neighbour brushed past; and a
+  road running near vertical flipped its label's reading direction on
+  alternate frames, mirroring it (and any perpendicular `text-offset`)
+  to the other side of the street each time. Each of those choices is
+  now kept from the previous placement unless it genuinely stops
+  fitting.
 - 🐛 Labels no longer blink — or visibly fade into themselves — when
   you cross a zoom level. Crossing one replaces the whole display level
   with new tiles whose labels used to carry fresh fade state, so a

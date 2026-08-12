@@ -147,6 +147,48 @@ their `minzoom` — POIs, say — and without the pin the freed space would
 go, mid-transition, to labels never before on screen, purely for the
 arriving level to fade them back out.
 
+**Placement itself is throttled.** The collision pass does not run every
+frame: it runs once per `labelFadeDuration` (capped at 300 ms), and the
+frames in between replay its decision — layout still follows the camera,
+only *who is shown* is frozen, and the replay claims no collision space
+at all. Deciding afresh every frame samples every transient a gesture
+produces: label boxes scale with the zoom and swing with the rotation,
+so neighbours drift through each other constantly, and a label that lost
+its spot for three frames disappears and comes straight back. Fading
+those changes makes them smoother but not fewer — the fix is to observe
+the decision less often than the camera changes it, which is what
+MapLibre does, at the price of a little transient overlap between
+passes. A pass also runs immediately whenever the candidate set itself
+changes (the widget bumps a placement generation whenever symbols are
+published, tiles come and go, or a retained cohort changes role) or the
+viewport is resized, so labels from a tile that just landed never wait
+on the clock. Because a frozen decision would otherwise outlive the
+gesture that produced it, the painter reports the pass it owes and the
+fade ticker keeps painting until it runs.
+
+Three placement choices are remembered per symbol instance so that a
+pass reproduces the last one rather than re-deriving it from scratch —
+each is a spot where an arbitrary tie-break used to move a label that
+had no reason to move:
+
+* **Which candidate draws a label.** A street name reaches the pass more
+  than once (the two carriageways of one road; the outgoing and arriving
+  copy at a zoom crossing), and which one sorts first depends on their
+  screen y — so a slow pan walked the name across the street. The
+  copy already drawn is tried ahead of the others *of its own label*,
+  never ahead of another label, so priority between labels is untouched.
+* **Which `text-variable-anchor` it sits at.** Anchors are tried in
+  style order, except the one the label is already at, which is tried
+  first: a neighbour brushing past no longer pushes a label to its
+  second choice and back.
+* **Which way an along-line label reads.** The bare test — is the
+  label's end left of its start — has its threshold exactly where a road
+  runs vertical on screen, where the answer is a pixel of camera noise;
+  a road near vertical flipped its label on alternate frames, and since
+  a perpendicular `text-offset` is measured in the label's own frame,
+  each flip also mirrored the label to the other side of the street. The
+  decision now holds until the line is clearly (≈4.6°) past vertical.
+
 Symbols also ramp out over the last quarter zoom level before their
 layer's declared `maxzoom`, so zooming past a threshold dissolves a label
 instead of snapping it away. The ramp is a function of zoom alone — no

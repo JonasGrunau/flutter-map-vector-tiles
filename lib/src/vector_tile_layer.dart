@@ -198,6 +198,21 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// re-derive it every frame of a zoom transition. Null = recompute.
   Set<TileKey>? _retainedSymbolKeys;
 
+  /// Bumped whenever the set of label candidates changes. The label
+  /// painter freezes its collision decision between passes, and a
+  /// changed generation is what tells it that the frozen decision was
+  /// taken over a set of labels that no longer exists — so tiles that
+  /// just landed place on the next frame instead of waiting out the
+  /// throttle.
+  var _labelGeneration = 0;
+
+  /// Invalidates everything derived from the current label candidates:
+  /// the memoized retained-key set, and the painter's frozen placement.
+  void _labelCandidatesChanged() {
+    _retainedSymbolKeys = null;
+    _labelGeneration++;
+  }
+
   /// Fade-out fallbacks for labels whose tile is gone: when a retained
   /// tile is disposed, its (pinned) symbols are parked here for one
   /// fade duration, so the label pass can keep drawing a fading key's
@@ -324,12 +339,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       tile.dispose();
     }
     _retained.clear();
-    _retainedSymbolKeys = null;
+    _labelCandidatesChanged();
     _ghostLabels.clear();
     // A theme or provider swap replaces every symbol instance and
-    // changes what layer indices mean; stale fade state or a stale
-    // drawn snapshot would pin the old theme's expression graphs.
-    _labelPainter.resetFades();
+    // changes what layer indices mean; stale fade state, a stale frozen
+    // placement or a stale drawn snapshot would pin the old theme's
+    // expression graphs.
+    _labelPainter.reset();
     _drawnLastFrame.clear();
     _currentZoom = null;
     // Without this the next _updateGrid would see an unchanged grid and
@@ -352,6 +368,14 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // flag per frame, so disabling hides labels immediately but enabling
     // needs the live tiles re-laid-out.
     if (widget.showLabels && !oldWidget.showLabels) refresh = true;
+    if (!widget.showLabels && oldWidget.showLabels) {
+      // The label pass stops running, so its fade and placement state
+      // stops being updated: settle it here, or the fade ticker keeps
+      // scheduling frames for labels that no longer paint.
+      _labelPainter.reset();
+      _drawnLastFrame.clear();
+      _ghostLabels.clear();
+    }
     if (oldWidget.memoryCacheMaxBytes != widget.memoryCacheMaxBytes) {
       for (final store in _stores.values) {
         store.memoryCacheMaxBytes = widget.memoryCacheMaxBytes;
@@ -591,7 +615,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       _tiles[key] = tile;
       unawaited(_loadTile(tile, layout.priorityOf(key)));
     }
-    _retainedSymbolKeys = null;
+    _labelCandidatesChanged();
     _pruneRetained(camera, layout);
   }
 
@@ -654,7 +678,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       _parkGhostLabels(tile);
       _disposeTile(tile);
     }
-    if (toRemove.isNotEmpty) _retainedSymbolKeys = null;
+    if (toRemove.isNotEmpty) _labelCandidatesChanged();
   }
 
   /// Parks a disposed retained tile's labels as fade-out fallbacks for
@@ -714,7 +738,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           _labelPainter.prewarm(
               cached.symbols, _styleZoomOf(tile.key.z.toDouble()));
         }
-        _retainedSymbolKeys = null;
+        _labelCandidatesChanged();
         _repaint.trigger();
         _ensureFadeTicker();
         // Serving a rendered result bypasses the stores, and with them
@@ -929,7 +953,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     tile.symbolsPending = _symbolsFollow(tile, sources);
     // That flag feeds the retained-label decision: a tile awaiting
     // symbols keeps the previous level's labels covering it.
-    _retainedSymbolKeys = null;
+    _labelCandidatesChanged();
     if (!_renderTicker.isActive) _renderTicker.start();
   }
 
@@ -1019,7 +1043,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       tile.setSymbols(const [], provisional: job.provisional);
       _cacheResult(tile, job, const []);
     }
-    _retainedSymbolKeys = null;
+    _labelCandidatesChanged();
     _repaint.trigger();
     _ensureFadeTicker();
   }
@@ -1039,7 +1063,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
     tile.setSymbols(symbols, provisional: job.provisional);
     _cacheResult(tile, job, symbols);
-    _retainedSymbolKeys = null;
+    _labelCandidatesChanged();
     _repaint.trigger();
     _ensureFadeTicker();
   }
@@ -1091,8 +1115,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
     }
     // Label fades advance inside the label pass; the painter reports
-    // whether the last painted frame left any mid-flight.
-    anyFading |= _labelPainter.hasActiveFades;
+    // whether the last painted frame left any mid-flight. A frame that
+    // replayed a frozen placement also owes a pass — without one more
+    // frame, a decision taken mid-gesture would stand for good once the
+    // gesture stops producing frames.
+    anyFading |= _labelPainter.hasActiveFades || _labelPainter.placementPending;
     _repaint.trigger();
     if (!anyFading) {
       _fading = false;
@@ -1472,6 +1499,12 @@ class _VectorMapPainter extends CustomPainter {
     }
     if (placed.isEmpty) {
       state._drawnLastFrame.clear();
+      // Nothing is on offer, so nothing can fade and nothing can be
+      // placed. The painter's flags are read by the fade ticker, and
+      // left at whatever the last frame with labels set them to they
+      // would keep it scheduling frames forever — a fade with no
+      // instance left to draw it, a pass with nothing to place.
+      state._labelPainter.reset();
       return;
     }
     final drawn = state._labelPainter.paint(
@@ -1482,6 +1515,7 @@ class _VectorMapPainter extends CustomPainter {
       sprites: state.widget.sprites,
       devicePixelRatio: devicePixelRatio,
       labelFadeDuration: state.widget.labelFadeDuration,
+      placementGeneration: state._labelGeneration,
       now: now,
     );
     // Recorded so the retention pin keeps what was actually on screen,
@@ -1494,10 +1528,13 @@ class _VectorMapPainter extends CustomPainter {
       for (final symbol in drawn) {
         state._drawnLastFrame.add(symbol.instance);
       }
-      // A fade can begin on any painted frame (placement is per frame),
-      // so the ticker that keeps fades advancing after the last gesture
-      // frame is requested from here.
-      if (state._labelPainter.hasActiveFades) state._requestFadeFrames();
+      // A fade can begin on any painted frame, and a frame that replayed
+      // a frozen placement owes a pass, so the ticker that keeps both
+      // going after the last gesture frame is requested from here.
+      if (state._labelPainter.hasActiveFades ||
+          state._labelPainter.placementPending) {
+        state._requestFadeFrames();
+      }
     }
   }
 

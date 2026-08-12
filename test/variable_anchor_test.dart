@@ -105,6 +105,28 @@ void main() {
     expect(placed, hasLength(1));
   });
 
+  test('a label stays at the anchor it was placed at', () {
+    // Anchors are tried in style order, so a neighbour that crowds a
+    // label off its first choice for one pass would send it back the
+    // moment it leaves — a label hopping around its own point. The
+    // anchor it is sitting at is tried ahead of the style's order.
+    final layer = _symbolLayer(variableAnchor: ['top', 'bottom']);
+    final alpha = _symbolAt(layer, const Offset(200, 200), 'Alpha');
+    final beta = _symbolAt(layer, const Offset(200, 190), 'Beta');
+
+    expect(_paint(layer, [alpha]), hasLength(1));
+    expect(alpha.instance.anchorMemo, 'top', reason: 'the style order');
+
+    _paint(layer, [beta, alpha]);
+    expect(alpha.instance.anchorMemo, 'bottom',
+        reason: 'the neighbour sorts first and takes the top anchor');
+
+    _paint(layer, [alpha]);
+    expect(alpha.instance.anchorMemo, 'bottom',
+        reason: 'the neighbour is gone, but a label that already fits '
+            'does not move');
+  });
+
   test('distant symbols are unaffected by variable anchors', () {
     final layer = _symbolLayer(variableAnchor: ['top', 'bottom']);
     final placed = _paint(layer, [

@@ -148,7 +148,7 @@ vt.VectorTileLayer(
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source (the caches are shared process-wide; the most recently mounted layer's value wins) |
 | `rasterCacheMaxBytes` | 64 MB | finished-tile budget: zooming back to a recent level (or reopening the same style) paints instantly instead of re-rendering. GPU texture bytes — ~1 MB per tile at devicePixelRatio 2, ~2.25 MB at 3, so the default holds ≈2 phone-screen zoom levels at dpr 2 (≈1 at dpr 3). `0` disables |
 | `tileFadeDuration` | 150 ms | `Duration.zero` disables fade-in |
-| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels/icons — one fade state per label identity, so a label carried across a zoom level never re-fades or blinks; `Duration.zero` restores instant pops |
+| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels/icons — one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided (capped at 300 ms; new labels always place at once). `Duration.zero` restores instant pops and per-frame collision |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 
 The memory caches are shared process-wide and outlive the layer — that's
@@ -328,6 +328,21 @@ level only ever *keeps* labels on screen — it never introduces ones
 that were not already visible, so a label that had been crowded out (a
 street name under a POI, say) cannot flash up just as the level
 departs.
+
+Which labels win their space is decided on a timer rather than every
+frame — once per `labelFadeDuration` (at most every 300 ms), with the
+decision held in between, and immediately whenever new labels arrive.
+Zooming and rotating drag labels through each other constantly, and
+re-deciding on every frame turns each of those brushes past into a
+label that disappears and comes straight back; between decisions
+neighbours are simply allowed to overlap for a moment, as they are in
+MapLibre. Labels also keep their position rather than re-deriving it:
+one that can be drawn from more than one feature (a street name on both
+carriageways, or the same name from two zoom levels) stays on the one
+it is already on, a label at a `text-variable-anchor` stays at the
+anchor it took, and a road label near vertical keeps reading the way it
+was reading — so a slow pan no longer walks a street name across its
+street.
 
 **Expressions:** the practical MapLibre set — `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,

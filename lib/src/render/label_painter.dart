@@ -123,6 +123,19 @@ class LabelPainter {
   /// approaching a declared edge of its layer's zoom range.
   static const double _zoomFadeWindow = 0.25;
 
+  /// Ceiling on how stale a frozen placement decision may get. The
+  /// interval otherwise follows the label fade duration — a decision
+  /// change always gets to finish fading before the next one can be
+  /// taken, which is the relationship MapLibre ties the two by — but a
+  /// style asking for second-long fades should not also freeze
+  /// collision for a second.
+  static const Duration _maxPlacementInterval = Duration(milliseconds: 300);
+
+  /// How far past vertical an along-line label's direction must swing
+  /// before its reading direction flips, as a cosine of the on-screen
+  /// line angle (≈4.6°). See [_readsBackwards].
+  static const double _flipHysteresis = 0.08;
+
   /// Paragraph shapings performed (cache misses); for tests asserting
   /// that zoom motion does not re-shape text.
   @visibleForTesting
@@ -163,18 +176,47 @@ class LabelPainter {
   /// frames so steady-state paints allocate nothing here.
   final _fallbacks = <Object, PlacedSymbol>{};
 
+  /// When the collision pass re-runs; between passes its decision is
+  /// replayed. See [PlacementThrottle].
+  final _placement = PlacementThrottle();
+
+  /// The instances that won space at the last full pass — the frozen
+  /// decision itself. Between passes only these compete (everything
+  /// else is skipped before it is even laid out), and at the next pass
+  /// they are tried ahead of the other candidates of their own label,
+  /// so a label that can be drawn from two instances keeps the one it
+  /// already occupies. `SymbolInstance` does not override `==`, so this
+  /// is an identity set.
+  final _winners = <SymbolInstance>{};
+
   /// Whether the last paint left any label fade mid-flight. The widget
   /// keeps its fade ticker running while this is true — placement (and
   /// with it a fade's start or end) can change on any painted frame,
   /// not only on a publish.
   bool get hasActiveFades => _fades.anyActive;
 
-  /// Forgets all fade state — for theme/provider swaps, where every
-  /// symbol instance is replaced and layer indices change meaning.
-  void resetFades() {
+  /// Whether a placement pass is still owed because the last frame
+  /// replayed a frozen decision. The widget keeps scheduling frames
+  /// while this is true, so the decision taken during a gesture is
+  /// re-evaluated once at the camera the gesture ended at.
+  bool get placementPending => _placement.deferred;
+
+  /// Forgets all fade and placement state — for theme/provider swaps,
+  /// where every symbol instance is replaced and layer indices change
+  /// meaning.
+  void reset() {
     _fades.clear();
     _fallbacks.clear();
+    _winners.clear();
+    _placement.reset();
   }
+
+  /// How often the collision pass re-runs at this fade duration.
+  @visibleForTesting
+  static Duration placementInterval(Duration labelFadeDuration) =>
+      labelFadeDuration < _maxPlacementInterval
+          ? labelFadeDuration
+          : _maxPlacementInterval;
 
   /// [styleZoom] is the fractional style zoom used for size expressions.
   ///
@@ -189,8 +231,14 @@ class LabelPainter {
   /// A [labelFadeDuration] above zero enables the per-label fades: every
   /// placed symbol draws at its continuity key's opacity (rising toward
   /// 1), and keys that stopped being placed draw one more ghost per
-  /// frame — no collision claim — while they ramp to zero. [now] feeds
-  /// the fade clock and defaults to the wall clock.
+  /// frame — no collision claim — while they ramp to zero. It also sets
+  /// how often the collision pass re-runs (see [placementInterval]);
+  /// frames in between replay the last decision. [now] feeds both
+  /// clocks and defaults to the wall clock.
+  ///
+  /// [placementGeneration] identifies the candidate set: change it
+  /// whenever symbols are added, removed or re-published and the next
+  /// frame places instead of replaying.
   List<PlacedSymbol> paint({
     required Canvas canvas,
     required Size screenSize,
@@ -199,12 +247,21 @@ class LabelPainter {
     SpriteAtlas? sprites,
     double devicePixelRatio = 1,
     Duration labelFadeDuration = Duration.zero,
+    int placementGeneration = 0,
     DateTime? now,
   }) {
     developer.Timeline.startSync('VT labels');
     try {
-      return _paint(canvas, screenSize, styleZoom, symbols, sprites,
-          devicePixelRatio, labelFadeDuration, now ?? DateTime.now());
+      return _paint(
+          canvas,
+          screenSize,
+          styleZoom,
+          symbols,
+          sprites,
+          devicePixelRatio,
+          labelFadeDuration,
+          placementGeneration,
+          now ?? DateTime.now());
     } finally {
       developer.Timeline.finishSync();
     }
@@ -218,18 +275,35 @@ class LabelPainter {
     SpriteAtlas? sprites,
     double devicePixelRatio,
     Duration labelFadeDuration,
+    int placementGeneration,
     DateTime now,
   ) {
     _disposeRetired();
     final fades = labelFadeDuration > Duration.zero;
     if (fades) _fades.beginFrame(now, labelFadeDuration);
+    // Whether this frame decides placement afresh or replays the last
+    // decision. Layout happens either way — only the winners move on a
+    // replay frame, not the choice of who they are.
+    final placing = _placement.shouldPlace(
+      now: now,
+      interval: placementInterval(labelFadeDuration),
+      generation: placementGeneration,
+      screenSize: screenSize,
+    );
     // Quantize the eval zoom to [_zoomStep] steps: the per-instance
     // memo and the zoom-only expression memos compare against the exact
     // zoom, so evaluating at the raw fractional zoom would miss every
     // one of them on every frame of a pinch. Integer zooms are fixed
     // points of the rounding.
     final zoom = (styleZoom * _zoomStep).round() / _zoomStep;
-    final collision = _CollisionIndex(screenSize);
+    // Replaying frames claim no space: the decision was taken at the
+    // last pass and holds until the next one. A real index here would
+    // re-decide the pairs the camera has drifted together since — which
+    // on a zoom-out is most of them, and re-deciding is the flicker
+    // this exists to remove. Slight overlap between passes is the trade
+    // MapLibre makes for the same reason.
+    final collision =
+        placing ? _CollisionIndex(screenSize) : _CollisionIndex.permissive();
     // Placement priority: topmost style layers first (they win space),
     // then by symbol-sort-key, then by y, then by insertion order — the
     // last term keeps the non-stable sort deterministic and lets
@@ -244,13 +318,22 @@ class LabelPainter {
         if (byY != 0) return byY;
         return a.order - b.order;
       });
+    if (placing && _winners.isNotEmpty) _promoteIncumbents(candidates);
 
     final toDraw = <_DrawableSymbol>[];
     var anyFading = false;
+    if (placing) _winners.clear();
     for (final candidate in candidates) {
       if (candidate.ghostOnly) {
         // Never competes for placement — only remembered, in case its
         // key is fading out and nothing else can draw it.
+        if (fades) _recordFallback(candidate);
+        continue;
+      }
+      if (!placing && !_winners.contains(candidate.instance)) {
+        // Replaying: the frozen decision says this candidate is not on
+        // screen, so it is not even laid out. On a dense screen most
+        // candidates lose, which is most of the label pass's work.
         if (fades) _recordFallback(candidate);
         continue;
       }
@@ -262,6 +345,7 @@ class LabelPainter {
         if (fades) _recordFallback(candidate);
         continue;
       }
+      if (placing) _winners.add(candidate.instance);
       // The label's fade and its layer's zoom-range ramp compound: a
       // label appearing near its layer's maxzoom is subject to both.
       final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
@@ -366,6 +450,39 @@ class LabelPainter {
       canvas.restore();
     }
     return drawn;
+  }
+
+  /// Moves each label's sitting tenant ahead of its rivals *within its
+  /// own continuity key*, in place.
+  ///
+  /// One label often has several candidates on screen: a street name
+  /// repeats along its road and again on the parallel carriageway, and
+  /// a zoom crossing puts the outgoing and arriving level's copies up
+  /// at once. Which of them the priority sort puts first depends on the
+  /// anchors' screen y, so a slow pan reorders them and the name jumps
+  /// across the street and back. Trying the one already drawn first
+  /// pins it there for as long as it still fits.
+  ///
+  /// Only the order *inside* a key changes: the key still competes for
+  /// space at the position its best candidate earned, so this can never
+  /// let one label outrank another. Each key is promoted at most once —
+  /// with two candidates, which is the case that matters, that is
+  /// exactly right, and with more it still puts a tenant first.
+  void _promoteIncumbents(List<PlacedSymbol> candidates) {
+    Map<Object, int>? firstRival;
+    for (var i = 0; i < candidates.length; i++) {
+      final candidate = candidates[i];
+      if (candidate.ghostOnly) continue;
+      final key = candidate.instance.continuityKey;
+      if (!_winners.contains(candidate.instance)) {
+        (firstRival ??= {})[key] ??= i;
+        continue;
+      }
+      final rival = firstRival?.remove(key);
+      if (rival == null) continue; // already first among its key
+      candidates[i] = candidates[rival];
+      candidates[rival] = candidate;
+    }
   }
 
   /// Remembers [candidate] as the drawable to fade its key out with,
@@ -507,10 +624,19 @@ class LabelPainter {
     // A label the style has faded out is skipped rather than laid out:
     // reserving collision space for invisible text would suppress the
     // visible labels around it.
+    //
+    // A replaying frame decides no space, so it also re-reads the one
+    // space decision that changes what is drawn rather than where:
+    // `text-optional` text that lost its box at the last pass stays
+    // dropped until the next one.
     _LaidOutText? text;
     var fontSize = _shapeSize;
     var textScale = 1.0;
-    if (instance.text.isNotEmpty && layer.textOpacity.eval(ctx) > 0) {
+    final replaying = collision.permissive;
+    if (!replaying) instance.textDropped = false;
+    if (!(replaying && instance.textDropped) &&
+        instance.text.isNotEmpty &&
+        layer.textOpacity.eval(ctx) > 0) {
       final size = layer.textSize.eval(ctx);
       if (size >= _minVisibleTextSize) {
         fontSize = size.clamp(_minVisibleTextSize, 96.0);
@@ -573,7 +699,7 @@ class LabelPainter {
           return _prepareCurved(
               placed, layer, ctx, text, fontSize, textScale, icon, collision);
         }
-        lineTextAngle = _uprightAngle(placed.screenAngle);
+        lineTextAngle = _uprightAngle(instance, placed.screenAngle);
       }
     }
 
@@ -618,6 +744,7 @@ class LabelPainter {
           text != null &&
           layer.textOptional.eval(ctx) &&
           collision.tryPlaceAll([icon.rect.inflate(2)])) {
+        instance.textDropped = true;
         return _DrawableSymbol(placed, icon: icon);
       }
       return null;
@@ -633,9 +760,17 @@ class LabelPainter {
     );
   }
 
-  /// `text-variable-anchor` placement: anchors are tried in style order;
-  /// the first whose boxes fit the collision index wins. `text-offset`
-  /// is ignored in this mode; `text-radial-offset` applies per anchor.
+  /// `text-variable-anchor` placement: anchors are tried in style order
+  /// — except for the one this label was last placed at, which is tried
+  /// ahead of them all — and the first whose boxes fit the collision
+  /// index wins. `text-offset` is ignored in this mode;
+  /// `text-radial-offset` applies per anchor.
+  ///
+  /// Preferring the sitting anchor is what keeps a label from hopping
+  /// around its own point: without it, a neighbour that brushes past
+  /// for a moment pushes the label to its second choice, and the label
+  /// snaps back the moment the neighbour moves on. MapLibre carries the
+  /// previous anchor into its next placement for the same reason.
   _DrawableSymbol? _prepareVariableAnchor(
     PlacedSymbol placed,
     SymbolThemeLayer layer,
@@ -652,7 +787,15 @@ class LabelPainter {
     final allowOverlap = layer.textAllowOverlap.eval(ctx);
     final width = text.size.width * textScale;
     final height = text.size.height * textScale;
-    for (final anchorName in anchors) {
+    final instance = placed.instance;
+    // Index -1 is the remembered anchor, which the style-order loop
+    // then skips. A memo the style no longer offers (a data-driven
+    // anchor list) is ignored.
+    final memo = instance.anchorMemo;
+    final sitting = memo != null && anchors.contains(memo) ? memo : null;
+    for (var i = sitting == null ? 0 : -1; i < anchors.length; i++) {
+      final anchorName = i < 0 ? sitting! : anchors[i];
+      if (i >= 0 && anchorName == sitting) continue;
       final shifted = placed.screenAnchor + _radialShift(anchorName, radial);
       final textRect = _anchoredRect(anchorName, shifted, width, height);
       final boxes = [
@@ -660,6 +803,7 @@ class LabelPainter {
         if (icon != null) icon.rect.inflate(2),
       ];
       if (allowOverlap || collision.tryPlaceAll(boxes)) {
+        instance.anchorMemo = anchorName;
         return _DrawableSymbol(placed,
             icon: icon, text: text, textRect: textRect, textScale: textScale);
       }
@@ -667,6 +811,7 @@ class LabelPainter {
     if (icon != null &&
         layer.textOptional.eval(ctx) &&
         collision.tryPlaceAll([icon.rect.inflate(2)])) {
+      instance.textDropped = true;
       return _DrawableSymbol(placed, icon: icon);
     }
     return null;
@@ -714,6 +859,7 @@ class LabelPainter {
       if (icon != null &&
           layer.textOptional.eval(ctx) &&
           collision.tryPlaceAll([icon.rect.inflate(2)])) {
+        instance.textDropped = true;
         return _DrawableSymbol(placed, icon: icon);
       }
       return null;
@@ -729,10 +875,17 @@ class LabelPainter {
     if (d0 < 0 || d1 > path.length) return iconFallback();
 
     // Reading direction: walk the path backwards when the label would
-    // come out upside-down on screen.
+    // come out upside-down on screen. Measured over the label's own
+    // span rather than the whole line, and held across the vertical it
+    // would otherwise flip at (see [_readsBackwards]).
     final s0 = transform.apply(path.pointAt(d0));
     final s1 = transform.apply(path.pointAt(d1));
-    final reversed = layer.textKeepUpright.eval(ctx) && s1.dx < s0.dx;
+    final chord = s1 - s0;
+    final chordLength = chord.distance;
+    final backwards = chordLength > 0
+        ? _readsBackwards(instance, chord.dx / chordLength)
+        : instance.uprightFlip ?? false;
+    final reversed = layer.textKeepUpright.eval(ctx) && backwards;
 
     final offset = layer.textOffset.eval(ctx);
     final perp = offset.length > 1 ? offset[1] * fontSize : 0.0;
@@ -776,7 +929,7 @@ class LabelPainter {
     // The window under the label is essentially straight: draw it as a
     // single rotated string, which is much cheaper.
     if (maxDeviation < 0.02 && perp == 0) {
-      final angle = _uprightAngle(placed.screenAngle);
+      final angle = _orientAngle(placed.screenAngle, backwards);
       final textRect = Rect.fromCenter(
           center: placed.screenAnchor,
           width: text.size.width * textScale,
@@ -1033,14 +1186,45 @@ class LabelPainter {
     return Rect.fromLTWH(anchor.dx + dx, anchor.dy + dy, width, height);
   }
 
-  /// Keeps along-line text upright: angles are folded into
-  /// (-π/2, π/2].
-  static double _uprightAngle(double angle) {
-    var a = _foldAngle(angle);
-    if (a > math.pi / 2) a -= math.pi;
-    if (a <= -math.pi / 2) a += math.pi;
-    return a;
+  /// Whether an along-line label reads right-to-left on screen, and so
+  /// has to be turned around to stay upright. [cosine] is the cosine of
+  /// its on-screen direction: positive reads left-to-right.
+  ///
+  /// The answer is sticky within [_flipHysteresis] of vertical, and is
+  /// remembered on the instance. The bare test — is the end left of the
+  /// start — puts its threshold exactly where a road runs vertical on
+  /// screen, and there the sign is camera noise: a road within a degree
+  /// of vertical turns its label around on alternate frames. That is
+  /// visible as more than a mirrored string, because a perpendicular
+  /// `text-offset` is measured in the label's own frame and flips with
+  /// it — the name jumps to the other side of the street and back. A
+  /// dead band turns the label around once, a few degrees past
+  /// vertical, and not again until the line clearly points the other
+  /// way.
+  static bool _readsBackwards(SymbolInstance instance, double cosine) {
+    final previous = instance.uprightFlip;
+    final backwards = previous == null
+        ? cosine < 0
+        : (previous ? cosine < _flipHysteresis : cosine < -_flipHysteresis);
+    instance.uprightFlip = backwards;
+    return backwards;
   }
+
+  /// Drawing angle for along-line text: [screenAngle] folded into
+  /// (-π, π], turned around when the label would otherwise read
+  /// backwards.
+  static double _orientAngle(double screenAngle, bool backwards) {
+    final a = _foldAngle(screenAngle);
+    return backwards ? _foldAngle(a + math.pi) : a;
+  }
+
+  /// Keeps along-line text upright, deciding the turn-around through
+  /// [_readsBackwards] rather than by folding the angle into
+  /// (-π/2, π/2] — the fold's boundary is the vertical the label
+  /// oscillates around.
+  static double _uprightAngle(SymbolInstance instance, double screenAngle) =>
+      _orientAngle(
+          screenAngle, _readsBackwards(instance, math.cos(screenAngle)));
 
   static Color _withOpacity(Color color, double opacity) =>
       opacity >= 1 ? color : color.withValues(alpha: color.a * opacity);
@@ -1359,10 +1543,16 @@ class _CollisionIndex {
 
   /// An index that accepts everything and reserves nothing — for
   /// fade-out ghosts, which draw wherever they were without claiming
-  /// space or blocking each other.
+  /// space or blocking each other, and for the frames that replay a
+  /// frozen placement, where the decision has already been taken.
   _CollisionIndex.permissive()
       : _columns = 1,
         _permissive = true;
+
+  /// Whether this index decides nothing. Symbol preparation reads it to
+  /// replay the parts of a placement that space, not geometry, decided
+  /// — which anchor a label took, whether its text was dropped.
+  bool get permissive => _permissive;
 
   /// Whether [rects] fit, reserving them when they do.
   bool tryPlaceAll(List<Rect> rects) {
