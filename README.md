@@ -38,7 +38,7 @@ your other layers; this package only draws the map.
 ```yaml
 dependencies:
   flutter_map: ^8.2.0
-  flutter_map_vector_tiles: ^2.5.0
+  flutter_map_vector_tiles: ^2.6.0
 ```
 
 ### 2. Load a style & drop in the layer
@@ -110,7 +110,7 @@ flutter run --dart-define=MAPTILER_KEY=yourKey
 | 🟢 Self-hosted (TileServer GL, Martin, …) | any MapLibre `style.json` | verified against the MapLibre demo tiles; relative tile templates supported |
 | 🟢 [Protomaps](https://protomaps.com) hosted API | `https://api.protomaps.com/styles/v5/light/en.json?key={key}` | verified against the v5 `light` style; the style embeds the key in an absolute `…/tiles/v4/{z}/{x}/{y}.mvt?key=…` template. On web, allow-list your origin per key in the Protomaps account portal — `localhost` is exempt |
 | 🟢 [PMTiles](https://docs.protomaps.com/pmtiles/) archives | `pmtiles://https://…/planet.pmtiles` source URLs in any style | single-file archives served via HTTP range requests — verified against the Protomaps sample archives; gzip-internal archives only (brotli/zstd are rejected) |
-| 🟢 [MBTiles](https://github.com/mapbox/mbtiles-spec) archives | wired up in code, not by URL — see [Custom tile sources](#-custom-tile-sources) | local SQLite archives from QGIS, tilemaker or TileServer GL; both the flat `tiles` table and the deduplicating `map`/`images` view schema. Native only |
+| 🟢 [MBTiles](https://github.com/mapbox/mbtiles-spec) archives | wired up in code via [`flutter_map_vector_tiles_mbtiles`](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles) | local SQLite archives from QGIS, tilemaker or TileServer GL. A companion package, so this one stays free of `dart:ffi`. Native only |
 
 The reader is tolerant either way: unsupported layer types, paint
 properties and expressions are skipped per-layer with a warning — one
@@ -207,11 +207,11 @@ Everything you looked at recently keeps working without network:
 
 This is a *visited-places* cache, not region pre-download. For a
 guaranteed offline region, ship a tile archive instead: point
-[`MbTilesVectorTileProvider`](#-custom-tile-sources) at a `.mbtiles`
-file, or `PmTilesVectorTileProvider` at a `.pmtiles` one, alongside an
-`asset://` style. Nothing about that path touches the network, and
-archives are excluded from the disk cache — they are the local copy
-already.
+`PmTilesVectorTileProvider` at a `.pmtiles` file, or
+[`flutter_map_vector_tiles_mbtiles`](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles)
+at a `.mbtiles` one, alongside an `asset://` style. Nothing about that
+path touches the network, and a local archive is excluded from the disk
+cache — it is the local copy already.
 
 Disk caching — and with it the offline behaviour above — is native-only;
 see [Web support](#-web-support) for what applies in the browser.
@@ -237,9 +237,9 @@ native:
   `Access-Control-Allow-Headers` when preflighted).
 - **PMTiles gunzip** uses the browser's native `DecompressionStream`
   (available in every browser that runs Flutter web).
-- **No MBTiles** — archives are SQLite files read through `dart:ffi`, so
-  `MbTilesVectorTileProvider.open` throws `UnsupportedError` in the
-  browser. PMTiles fills the same role over HTTP range requests.
+- **No MBTiles** — the companion package reads SQLite through `dart:ffi`,
+  which has no web implementation. PMTiles fills the same role in the
+  browser, over HTTP range requests.
 
 ## 🔌 Custom tile sources
 
@@ -279,34 +279,22 @@ final provider = await vt.PmTilesVectorTileProvider.open(
 `minimumZoom`/`maximumZoom` to override the archive header — the same
 role a style source's `minzoom`/`maxzoom` plays.
 
-**MBTiles** archives — the SQLite container QGIS, tilemaker and
-TileServer GL emit — render from local storage, with no network at all:
+**MBTiles** archives live in a companion package,
+[`flutter_map_vector_tiles_mbtiles`](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles)
+— separate because they need SQLite through `dart:ffi`, which would cost
+every app here a native dependency and this package its web support:
 
 ```dart
-final provider = await vt.MbTilesVectorTileProvider.open(
-  '${(await getApplicationSupportDirectory()).path}/bavaria.mbtiles',
-);
-// → vt.TileProviders({'openmaptiles': provider})
+final provider = await MbTilesVectorTileProvider.open('…/bavaria.mbtiles');
 ```
 
-`open` accepts `minimumZoom`/`maximumZoom` (overriding what the archive
-declares) and a `cacheKey`. Rows are read on a dedicated isolate, so a
-cold lookup on a large archive never costs you a frame. The archive's
-`metadata` table is exposed as `provider.metadata` — `attribution`,
-`bounds`, the suggested camera and every row verbatim. Raster archives
-(`png`/`jpg`/`webp`) go through `RasterTileSource` instead, unchanged.
+**Anything else** you can write yourself against `VectorTileProvider` —
+it is four members. Two hooks exist for that:
 
-> **Native only, and one extra dependency on some platforms.** MBTiles
-> archives are SQLite read through `dart:ffi`. iOS and macOS use the
-> system library, but **Android, Windows and Linux need the app to add
-> `sqlite3_flutter_libs`** (~1.5 MB per Android ABI). Apps that never
-> open an archive add nothing — nothing is loaded until `open` is
-> called. On web, `open` throws `UnsupportedError`; use PMTiles there.
-
-To keep a hosted style's theme, sprites and attribution while serving
-its tiles from an archive, substitute the provider by source id — handy
-because an archive's path is only known at runtime, so no style document
-can name it:
+`resolveProvider` substitutes your provider into a style by source id, so
+you keep the style's theme, sprites and attribution and replace only the
+tiles. Handy when the source lives somewhere no style document can name,
+like a device-absolute path:
 
 ```dart
 final style = await vt.StyleReader(
@@ -315,8 +303,15 @@ final style = await vt.StyleReader(
 ).read();
 ```
 
-Returning null falls through to the style's own URL, and the `Style`
-takes ownership of whatever you return — `style.dispose()` disposes it.
+Returning null falls through to the style's own URL, it applies to raster
+sources too, and the `Style` takes ownership of whatever you return —
+`style.dispose()` disposes it.
+
+`cacheBytesToDisk => false` tells the pipeline your provider is already
+backed by local storage, so the disk cache is skipped in both directions
+rather than storing a second copy of what you have. Use
+`vt.SingleFlight` to coalesce concurrent loads, as the built-in providers
+do.
 
 Raster imagery (satellite, hillshade) wires up the same way: pass
 `rasterSources:` entries of `RasterTileSource(provider: …, tileSize:
@@ -441,14 +436,8 @@ documented in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md). 📖
   invalid or unsupported archive (`http.ClientException` on network
   failure) — catch these to show a retry UI. Runtime tile fetches never
   throw into your code; failures are logged and retried instead.
-- **`MbTilesVectorTileProvider.open` throws `MbTilesException`** → the
-  file is missing, is not a SQLite database, or has no `tiles` table.
-  An `UnsupportedError` instead means web, and a failure to load the
-  native library on Android, Windows or Linux means the app is missing
-  the `sqlite3_flutter_libs` dependency.
-- **MBTiles archive renders upside down** → not something this package
-  can produce (it flips TMS rows itself), so suspect an archive written
-  with XYZ rows. Check `metadata`'s `scheme` key.
+- **Anything MBTiles-related** → see the companion package's own
+  [troubleshooting section](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles).
 - **Labels/roads look bigger than in MapLibre** → you're probably using
   `TileOffset.none` with a 512px-convention style; use the default.
 - **Stale data after changing styles** → the disk cache keys by URL; a

@@ -13,7 +13,7 @@ implementation detail.
 
 | File | Description |
 |------|-------------|
-| `flutter_map_vector_tiles.dart` | The public API barrel. Exports `VectorTileLayer`, `StyleReader`/`Style`, `Theme`/`ThemeReader`, the provider hierarchy (incl. `PmTilesVectorTileProvider` and the PMTiles format API: `PmTilesHeader`, `PmTilesDirectory`, `PmTilesEntry`, `PmTilesCompression`, `PmTilesException`, `zxyToTileId`, `pmTilesMaxAddressableZoom`, plus `MbTilesVectorTileProvider`, `MbTilesMetadata` and `MbTilesException`), `TileKey`, `TileOffset`, `TileProviders`, `SpriteAtlas`, `StyleAttribution`/`AttributionSpan`, `Logger`, and the `show`-limited `CancellationToken` (from `src/core/cancellation.dart` — `JoinedCancellationToken` stays internal) and `EvalContext` (from `src/style/expression.dart`) |
+| `flutter_map_vector_tiles.dart` | The public API barrel. Exports `VectorTileLayer`, `StyleReader`/`Style`, `Theme`/`ThemeReader`, the provider hierarchy (incl. `PmTilesVectorTileProvider` and the PMTiles format API: `PmTilesHeader`, `PmTilesDirectory`, `PmTilesEntry`, `PmTilesCompression`, `PmTilesException`, `zxyToTileId`, `pmTilesMaxAddressableZoom`), `TileKey`, `TileOffset`, `TileProviders`, `SpriteAtlas`, `StyleAttribution`/`AttributionSpan`, `Logger`, and the `show`-limited `CancellationToken` (from `src/core/cancellation.dart` — `JoinedCancellationToken` stays internal), `SingleFlight` (for third-party providers) and `EvalContext` (from `src/style/expression.dart`) |
 
 ## Subdirectories
 

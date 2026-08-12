@@ -32,9 +32,6 @@ lifecycle or painting is covered by widget tests that pump a real
 | `pmtiles_test.dart` | PMTiles: Hilbert tile IDs (spec anchors + bijection), directory decode/lookup, range-request provider (leaves, coalescing, cancellation), `pmtiles://` style wiring |
 | `pmtiles_gzip_test.dart` | VM-only: gzip-compressed archives via `dart:io` gzip; brotli/zstd rejection |
 | `pmtiles_gunzip_web_test.dart` | Browser-only: `DecompressionStream` gunzip round-trip |
-| `mbtiles_test.dart` | VM-only: MBTiles provider — the TMS↔XYZ row flip, the `map`/`images` view schema, zoom range from metadata vs. derived, blobs staying gzipped for the worker, cache identity across a replaced archive, cancellation, and the open-failure paths |
-| `mbtiles_metadata_test.dart` | `MbTilesMetadata` parsing, including its tolerance of malformed rows. Runs in the browser suite too — the file is deliberately IO-free |
-| `mbtiles_web_test.dart` | Browser-only: `open` throws `UnsupportedError`. Its real job is compiling — if the conditional import ever resolved to the `dart:ffi` half on web, this file would fail to build |
 | `mvt_decoder_test.dart` | MVT decoding against independently built fixtures |
 | `variable_anchor_test.dart` | Variable text anchors |
 | `tile_precision_test.dart` | Tile transform precision |

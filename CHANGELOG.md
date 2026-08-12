@@ -1,33 +1,31 @@
 # Changelog
 
-## Unreleased
+## 2.6.0
 
-Offline archives you ship yourself. MBTiles files — what QGIS, tilemaker
-and TileServer GL produce — now render directly, and any provider of your
-own can stand in for a source of a hosted style.
+Everything a third-party tile source needs. Providers can now be
+substituted into a hosted style, opt out of the disk cache, and coalesce
+their own requests — enough that
+[`flutter_map_vector_tiles_mbtiles`](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles)
+adds MBTiles archives without this package taking on SQLite.
 
-- ✨ **MBTiles archives**: `MbTilesVectorTileProvider.open('…/region.mbtiles')`
-  serves tiles from a local SQLite archive, vector or raster. Rows are
-  read on a dedicated isolate, so a cold lookup never costs a frame, and
-  the archive's `metadata` table — attribution, bounds, suggested camera —
-  is exposed as `MbTilesMetadata`. This is the guaranteed-offline
-  counterpart to the visited-places disk cache.
 - ✨ **Bring your own provider**: `StyleReader(resolveProvider: …)` swaps
-  in a provider for any source by id, so a bundled archive can back a
+  in a provider for any source by id, so a local archive can back a
   hosted style while that style still supplies the theme, sprites and
-  attribution. Works for raster sources too.
+  attribution. Returning null falls through to the style's own URL, and
+  it applies to raster sources too. This replaces the need for per-format
+  URL schemes: a device-absolute path is not something a portable style
+  document can name.
+- ✨ `SingleFlight` is exported, so a provider outside this package can
+  coalesce concurrent loads the same way the built-in ones do rather than
+  hand-rolling an in-flight map.
 - ⚡ Providers backed by local storage no longer duplicate their tiles
   into the on-disk cache, or leave a zero-byte marker for every
   coordinate they do not cover. Opt a custom provider out with the new
-  `VectorTileProvider.cacheBytesToDisk`; `MemoryVectorTileProvider` and
-  the MBTiles provider already do.
-- 🌐 MBTiles is native-only — archives are SQLite files read through
-  `dart:ffi`, and on web `open` throws `UnsupportedError`. On Android,
-  Windows and Linux the app must also depend on `sqlite3_flutter_libs`;
-  iOS and macOS use the system library.
-- ⬆️ New `sqlite3 ^2.4.0` dependency. It is pure Dart plus FFI and loads
-  nothing until an archive is opened, so apps that never touch MBTiles
-  pay no size or startup cost.
+  `VectorTileProvider.cacheBytesToDisk`; `MemoryVectorTileProvider`
+  already does. The opt-out covers reads as well as writes, so an entry
+  written before a source became local cannot shadow it.
+- 📚 The offline documentation now points at a real MBTiles
+  implementation instead of describing one you would have to write.
 
 ## 2.5.0
 

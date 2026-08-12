@@ -61,14 +61,19 @@ collision pass; cancellation is a **state**, never an exception; every
 - **Web is supported since 2.0.0** — tile preparation runs on a yielding
   event-loop executor there instead of isolates, PMTiles gunzip uses
   `DecompressionStream`, and web-only tests exist (`flutter test --platform
-  chrome`). Two limitations: there is no persistent disk cache on web
+  chrome`). The one real limitation: there is no persistent disk cache on web
   (`path_provider` has no web support) — tiles and styles fall back to the
-  in-memory caches and the browser's HTTP cache — and MBTiles archives do not
-  work there at all (SQLite via `dart:ffi`). Keep changes web-safe: no bare
-  `dart:io` or `package:sqlite3` outside conditional imports, no bitwise ops
-  on values past 32 bits (see the MVT decoder's arithmetic). Losing the web
-  platform tag in `pana` is a release blocker, so run the browser suite when
-  touching anything platform-sensitive.
+  in-memory caches and the browser's HTTP cache. Keep changes web-safe: no
+  bare `dart:io` outside conditional imports, no bitwise ops on values past
+  32 bits (see the MVT decoder's arithmetic). Losing the web platform tag in
+  `pana` is a release blocker, so run the browser suite when touching
+  anything platform-sensitive.
+- **This package takes no native dependencies.** Anything needing `dart:ffi`
+  or a platform channel belongs in a companion package behind
+  `VectorTileProvider` — as MBTiles does, in
+  `flutter_map_vector_tiles_mbtiles`. That is what keeps this one installable
+  everywhere with no setup. Adding a provider hook the companion needs is
+  fine and expected; adding the dependency itself is not.
 
 ### Testing Requirements
 
@@ -106,13 +111,17 @@ release blockers.
 - `flutter_map` ^8.2.0 — host map framework; it owns camera, gestures, layers
 - `http` ^1.2.0 — tile and style fetching
 - `path_provider` ^2.1.0 — disk cache directory (no web support)
-- `sqlite3` ^2.4.0 — MBTiles archives; used only behind the conditional import
-  in `lib/src/provider/mbtiles/`, so `dart:ffi` never reaches a web compile.
-  Held below 3.0.0 on purpose: 3.x requires SDK 3.10 and compiles SQLite into
-  every consumer through a native-assets build hook, whether they open an
-  archive or not
 - `latlong2`, `characters`, `meta` — coordinates, grapheme clustering for label
   layout, annotations
 - `flutter_lints` ^6.0.0 (dev)
+
+### Companions
+
+- [`flutter_map_vector_tiles_mbtiles`](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles)
+  — MBTiles archives, kept out of this package because they need SQLite via
+  `dart:ffi`. It consumes only the public barrel; `cacheBytesToDisk`,
+  `StyleReader.resolveProvider` and the `SingleFlight` export exist for it and
+  for anyone else writing a provider, so think twice before changing their
+  semantics
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

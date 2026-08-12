@@ -4,10 +4,13 @@
 library;
 
 export 'src/core/cancellation.dart' show CancellationToken;
+// For third-party providers: coalescing concurrent loads correctly is
+// part of the provider contract, and hand-rolling an in-flight map walks
+// into a documented deadlock. JoinedCancellationToken stays internal —
+// it never appears in this type's public signature.
+export 'src/core/single_flight.dart' show SingleFlight;
 export 'src/core/tile_key.dart';
 export 'src/logger.dart';
-export 'src/provider/mbtiles/mbtiles_metadata.dart';
-export 'src/provider/mbtiles/mbtiles_vector_tile_provider.dart';
 export 'src/provider/memory_vector_tile_provider.dart';
 export 'src/provider/network_vector_tile_provider.dart';
 export 'src/provider/pmtiles/pmtiles_format.dart';

@@ -16,7 +16,7 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │
      ├─ TileStore (memory LRU of PreparedTile)
      │      └─ miss: bytes ◄─ DiskCache ◄─ VectorTileProvider (network…)
-     │                 (local providers — MBTiles, memory — skip DiskCache)
+     │                 (providers backed by local storage skip DiskCache)
      │              └─ IsolatePool: decode MVT + filter per theme layer
      │                             └─ PreparedTile (compact, transferable)
      │
@@ -273,7 +273,8 @@ disk cache is untouched.
 
 The disk layer is skipped entirely for providers whose bytes already
 live on the device — `VectorTileProvider.cacheBytesToDisk` returns false
-for the MBTiles and memory providers. Mirroring them would store every
+for the memory provider and for local-archive providers such as the
+companion MBTiles package. Mirroring them would store every
 tile twice and leave a zero-byte sentinel for each coordinate the source
 does not cover. The opt-out covers reads as well as writes, so an entry
 written before a source became local cannot shadow it; with no cache
@@ -363,27 +364,23 @@ All 64-bit offsets and tile IDs are computed with multiply/add
 arithmetic (exact to 2^53) rather than bitwise ops, which dart2js
 truncates to 32 bits — the same constraint the MVT decoder observes.
 
-MBTiles archives are the local counterpart, and are wired up in code
-rather than by a URL scheme: a device-absolute path is not something a
-portable style document can name, so `StyleReader(resolveProvider:)`
-substitutes a provider for a source id instead — a general hook that
-also covers raster sources and any other custom provider. `package:
-sqlite3` is synchronous, and provider loads run on the UI isolate, so
-`MbTilesVectorTileProvider` keeps the database handle on a dedicated
-reader isolate and exchanges request/response records over a port; the
-handshake carries the `metadata` table and the resolved zoom range back,
-because `minimumZoom`/`maximumZoom` are synchronous getters and must be
-known before `open()` returns. Rows are TMS (counted from the bottom)
-while `TileKey` is XYZ, so the provider flips y; queries always go
-through the `tiles` relation, which covers both the flat table and the
-deduplicating `map`/`images` view schema. Blobs are handed through
-exactly as stored — `pbf` archives hold gzip per the spec, inflated by
-`prepareTileSync` on the worker for the same reason PMTiles defers it.
-The whole implementation sits behind a conditional import
-(`mbtiles_reader_stub.dart` / `_io.dart`, mirroring
-`cache/cache_resolver.dart`) so that no web compile reaches `dart:ffi`
-and the package keeps its web platform tag; a browser-only test asserts
-the stub throws.
+Local archives are the counterpart, and they are wired up in code rather
+than by a URL scheme: a device-absolute path is not something a portable
+style document can name. `StyleReader(resolveProvider:)` substitutes a
+provider for a source id instead — consulted before any URL is read, so
+it covers vector and raster sources alike, and the substituted provider
+is owned by the `Style` like any other.
+
+MBTiles specifically lives outside this package, in
+`flutter_map_vector_tiles_mbtiles`. The reason is dependency shape, not
+layering: MBTiles is SQLite through `dart:ffi`, which would give every
+consumer here a native dependency and cost the web platform tag, to
+serve a minority of them. Three pieces of this package exist to make
+that split work, and are worth treating as contract rather than
+implementation detail: `VectorTileProvider.cacheBytesToDisk`,
+`StyleReader.resolveProvider`, and the exported `SingleFlight`. Together
+they are enough to write a fully first-class provider from outside —
+which is the standard any future format adapter should be held to.
 
 ## What was deliberately changed vs. vector_map_tiles
 

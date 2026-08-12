@@ -3,7 +3,7 @@ description: >-
   Vector tiles for flutter_map: a clean, self-contained MapLibre-style
   vector tile layer with isolate-based decoding, raster tile caching and
   screen-space label collision.
-version: 2.5.0
+version: 2.6.0
 repository: https://github.com/JonasGrunau/flutter-map-vector-tiles
 issue_tracker: https://github.com/JonasGrunau/flutter-map-vector-tiles/issues
 topics:
@@ -12,7 +12,6 @@ topics:
   - maplibre
   - map
   - pmtiles
-  - mbtiles
 
 screenshots:
   - description: >-
@@ -49,11 +48,6 @@ dependencies:
   latlong2: ">=0.9.1 <0.11.0"
   meta: ^1.11.0
   path_provider: ^2.1.0
-  # Reads .mbtiles archives. Pure Dart + FFI: apps that never open one
-  # never load the native library, so this costs them nothing. Capped
-  # below 3.0.0 deliberately — 3.x needs SDK 3.10 and builds SQLite into
-  # every consumer via a native-assets hook, used or not.
-  sqlite3: ^2.4.0
 
 dev_dependencies:
   flutter_test:
