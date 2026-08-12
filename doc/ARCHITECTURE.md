@@ -97,7 +97,33 @@ whose symbols are still pending counts as loading for the retention
 rules, so the previous level's labels cover the gap; newly appearing
 labels then fade in over `labelFadeDuration`, drawn in a few quantized
 opacity buckets (one translucent layer each, bounded to what that
-bucket paints) while reserving full-size collision space. The per-frame
+bucket paints) while reserving full-size collision space.
+
+Which labels count as *newly appearing* is decided once, when a tile
+publishes its cohort, by `render/label_continuity.dart`. Every integer
+zoom crossing replaces the whole display level with fresh tiles that
+carry no fade history, so without this the arriving level would re-fade
+labels the retained level is still drawing at full opacity. The two
+copies then compete for the same collision space and the winner turns on
+a sub-pixel difference in anchor position — arbitrary per label, which is
+what made *some* labels blink across a crossing (and, on
+`*-allow-overlap` layers where nothing collides, composite over
+themselves). So a cohort is split against the labels the overlapping
+retained tiles are showing, matched on `(layer, text, icon)` — position
+plays no part, because the two levels simplify geometry differently and a
+missed match would put the blink back, while a spurious one only makes a
+label appear instantly. The carried-over prefix draws opaque; only the
+rest fades.
+
+Symbols also ramp out over the last quarter zoom level before their
+layer's declared `maxzoom`, so zooming past a threshold dissolves a label
+instead of snapping it away. The ramp is a function of zoom alone — no
+per-symbol history, and exactly reversible — and lives *inside* the
+range, reaching zero at the threshold where the hard cut takes over.
+Only `maxzoom` ramps: `minzoom` is inclusive, so a symmetric ramp would
+leave a `minzoom: 14` layer invisible on a map resting at exactly zoom
+14. The ramp may dim a symbol the style is about to remove, never one
+the style says is fully visible. The per-frame
 label pass evaluates at a zoom quantized to 1/8-level steps, so the
 per-instance style memos — which compare evaluated primitives, not
 strings — keep hitting on every frame of a pinch gesture instead of

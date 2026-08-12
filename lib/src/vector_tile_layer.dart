@@ -24,6 +24,7 @@ import 'pipeline/executor/executor.dart';
 import 'pipeline/prepared_tile.dart';
 import 'render/display_tile_data.dart';
 import 'render/fade.dart';
+import 'render/label_continuity.dart';
 import 'render/label_painter.dart';
 import 'render/pattern_resolver.dart';
 import 'render/symbol_layouter.dart';
@@ -636,8 +637,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           fadeIn: fadeIn && widget.tileFadeDuration > Duration.zero,
           symbolsPending: true,
         );
-        tile.setSymbols(cached.symbols,
-            fadeIn: widget.labelFadeDuration > Duration.zero);
+        _publishSymbols(tile, cached.symbols);
         // These labels never passed through the render pump, so nothing
         // has shaped their text — without this the first frame after a
         // reopen shapes a whole screenful of paragraphs inside paint.
@@ -944,7 +944,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             generation: job.generation,
           ));
     } else {
-      tile.setSymbols(const [], fadeIn: false);
+      tile.setSymbols(const [], carriedCount: 0, fadeIn: false);
       _cacheResult(tile, job);
     }
     _retainedSymbolKeys = null;
@@ -965,7 +965,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     if (symbols.isNotEmpty) _labelPainter.prewarm(symbols, styleZoom);
     developer.Timeline.finishSync();
 
-    tile.setSymbols(symbols, fadeIn: widget.labelFadeDuration > Duration.zero);
+    _publishSymbols(tile, symbols);
     _cacheResult(tile, job);
     _retainedSymbolKeys = null;
     _repaint.trigger();
@@ -983,6 +983,39 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       renderedWith: tile.renderedWith ?? const {},
     );
   }
+
+  /// Publishes [symbols] as [tile]'s labels, fading in only the ones the
+  /// previous zoom level is not already showing over it.
+  ///
+  /// Every integer zoom crossing replaces the whole display level, so
+  /// without this the arriving tiles — new objects, with no fade history
+  /// — would fade their entire cohort in from zero while the retained
+  /// level still draws the same labels at full opacity. The two copies
+  /// then compete for the same collision space, and the winner is
+  /// decided by a sub-pixel difference in anchor position, so a label
+  /// would blink or (under `*-allow-overlap`) composite over itself for
+  /// the length of the fade.
+  void _publishSymbols(_DisplayTile tile, List<SymbolInstance> symbols) {
+    final partitioned =
+        partitionCarriedOver(symbols, _coveringLabelKeys(tile.key));
+    tile.setSymbols(
+      partitioned.symbols,
+      carriedCount: partitioned.carriedCount,
+      // A cohort the previous level covers entirely has nothing to mask.
+      fadeIn: partitioned.carriedCount < partitioned.symbols.length &&
+          widget.labelFadeDuration > Duration.zero,
+    );
+  }
+
+  /// The continuity keys of the labels the retained (previous) level is
+  /// currently showing over [key]. Empty in the steady state, where
+  /// nothing is retained — panning and first load keep fading normally.
+  Set<Object> _coveringLabelKeys(TileKey key) => _retained.isEmpty
+      ? const {}
+      : coveringLabelKeys(key, [
+          for (final retained in _retained.values)
+            (key: retained.key, symbols: retained.symbols),
+        ]);
 
   void _ensureFadeTicker() {
     final anyFades = widget.tileFadeDuration > Duration.zero ||
@@ -1091,6 +1124,11 @@ class _DisplayTile {
   ui.Image? underlay;
   List<SymbolInstance> symbols = const [];
 
+  /// How many of [symbols], from the front, the previous zoom level was
+  /// already showing when this cohort was published. They are drawn at
+  /// full opacity while the rest fades in — see `_publishSymbols`.
+  var carriedSymbolCount = 0;
+
   /// A symbol-extraction job is queued for this tile: its labels are
   /// not there yet, so for retention purposes it still counts as
   /// loading even when its raster already landed.
@@ -1158,9 +1196,14 @@ class _DisplayTile {
     }
   }
 
-  void setSymbols(List<SymbolInstance> symbols, {required bool fadeIn}) {
+  void setSymbols(
+    List<SymbolInstance> symbols, {
+    required int carriedCount,
+    required bool fadeIn,
+  }) {
     final hadSymbols = this.symbols.isNotEmpty;
     this.symbols = symbols;
+    carriedSymbolCount = carriedCount;
     symbolsPending = false;
     if (!isProvisional && state == _TileState.loading) {
       // Deferred classification of a final, image-less tile.
@@ -1199,6 +1242,7 @@ class _DisplayTile {
     underlay?.dispose();
     underlay = null;
     symbols = const [];
+    carriedSymbolCount = 0;
     symbolsPending = false;
   }
 }
@@ -1306,8 +1350,10 @@ class _VectorMapPainter extends CustomPainter {
     final now = DateTime.now();
     final placed = <PlacedSymbol>[];
 
-    void addSymbols(_DisplayTile tile, double fadeOpacity) {
-      if (tile.symbols.isEmpty) return;
+    void addSymbols(_DisplayTile tile, double fadeOpacity,
+        {int start = 0, int? end}) {
+      final last = end ?? tile.symbols.length;
+      if (start >= last) return;
       final rect = displayTileRect(tile.key, camera.zoom);
       final tileScale = rect.width / TileRasterizer.logicalTileSize;
       final d = rect.topLeft - worldCenter;
@@ -1319,7 +1365,8 @@ class _VectorMapPainter extends CustomPainter {
         scale: tileScale,
         rotation: rotation,
       );
-      for (final symbol in tile.symbols) {
+      for (var i = start; i < last; i++) {
+        final symbol = tile.symbols[i];
         placed.add(PlacedSymbol(
           instance: symbol,
           screenAnchor: transform.apply(symbol.anchor),
@@ -1332,12 +1379,21 @@ class _VectorMapPainter extends CustomPainter {
     }
 
     for (final tile in state._tiles.values) {
+      final progress =
+          tile.labelFadeProgress(now, state.widget.labelFadeDuration);
+      if (progress >= 1) {
+        addSymbols(tile, 1);
+        continue;
+      }
+      // Labels the outgoing level is still showing skip the fade — they
+      // are already on screen, and re-fading them is what made labels
+      // blink across a zoom level change.
+      addSymbols(tile, 1, end: tile.carriedSymbolCount);
       // Quantized to 1/8 steps so fading tiles group into few opacity
       // buckets (one translucent layer each in the label pass); ceil
       // keeps a fresh cohort from starting invisible.
-      final progress =
-          tile.labelFadeProgress(now, state.widget.labelFadeDuration);
-      addSymbols(tile, progress >= 1 ? 1 : (progress * 8).ceil() / 8);
+      addSymbols(tile, (progress * 8).ceil() / 8,
+          start: tile.carriedSymbolCount);
     }
     // While a zoom level change is in flight, keep the previous level's
     // labels wherever the new level has no label data yet — otherwise

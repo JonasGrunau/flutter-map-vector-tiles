@@ -19,7 +19,8 @@ clips at tile seams.
 | `tile_rasterizer.dart` | `TileRasterizer.paint()` — draws background/fill/line/raster/circle layers of one display tile into a `Canvas` (which the layer turns into an image via `Picture.toImageSync`). Culls features on their decode-time bounds against the display window (+64px buffer) before any expression work, clips geometry to the window from overzoom shift 2, and handles fill and line patterns, dash arrays (phase-anchored to the un-clipped run start), raster colour matrices, and the `_TileTransform` from tile-extent units to logical pixels |
 | `geometry_clipper.dart` | `clipPolyline` (segment-wise Liang–Barsky, emitting sub-runs plus their distance from the original run start for dash/stamp phase; with `close:` it walks the ring's closing segment and rejoins the contour that crosses vertex 0, so a stroked ring keeps its join there instead of butting two caps) and `clipRing` (Sutherland–Hodgman, winding-preserving) over tile-extent `Float32List`s — pure functions, no canvas |
 | `fade.dart` | `fadeProgressOf` — elapsed fraction of a fade, in microseconds. Shared by the tile and label fades; the unit matters (see the file) |
-| `label_painter.dart` | `LabelPainter` — the per-frame screen-space pass (~1000 lines): text shaped once at a 16 px reference size and drawn scaled through the canvas transform, grapheme clustering, halos (baked as a quantized em-ratio stroke), variable text anchors, curved text along lines (with a max-angle bail-out to an icon-only fallback), SDF icon tinting, upright rotation, cohort fade-in via per-opacity-bucket `saveLayer`s, `prewarm()` for shaping a tile's labels inside the render pump, and `_CollisionIndex`, a grid-bucketed screen-space collision index. Evaluates at a 1/8-level-quantized zoom so its memos survive pinch gestures |
+| `label_continuity.dart` | Which labels of an arriving cohort were already on screen at the previous zoom level, so only the rest fades in: `labelContinuityKey` (`(layer, text, icon)` — deliberately position-free), `coveringLabelKeys` (what the overlapping retained tiles are showing) and `partitionCarriedOver` (carried-over prefix first, plus its length). Pure; the widget only supplies the retained cohorts |
+| `label_painter.dart` | `LabelPainter` — the per-frame screen-space pass (~1000 lines): text shaped once at a 16 px reference size and drawn scaled through the canvas transform, grapheme clustering, halos (baked as a quantized em-ratio stroke), variable text anchors, curved text along lines (with a max-angle bail-out to an icon-only fallback), SDF icon tinting, upright rotation, cohort fade-in and the `zoomRangeOpacity` ramp out before a declared `maxzoom` (compounded into `_DrawableSymbol.opacity`) via per-opacity-bucket `saveLayer`s, `prewarm()` for shaping a tile's labels inside the render pump, and `_CollisionIndex`, a grid-bucketed screen-space collision index. Evaluates at a 1/8-level-quantized zoom so its memos survive pinch gestures |
 | `symbol_layouter.dart` | `SymbolLayouter.layout()` — extracts label/icon placement candidates (`SymbolInstance`, with its `TextStyleMemo` label-pass memo) from a prepared tile: polygon centroids, line midpoints, and spaced placements along lines via `SymbolPath` (precomputed cumulative lengths, `pointAt`/`angleAt`). Bounds-culls features before expression evaluation; along-line targets are enumerated only within the tile window while keeping their full-line parametrization. Gates layers by zoom-band intersection (`coversZoomBand`) — the precise per-frame cut is the label pass's job. `anySymbolLayerCovers()` lets the render pump skip the symbol phase when no symbol layer intersects the tile's band |
 | `display_tile_data.dart` | `DisplayTileData` — the prepared data backing one display tile, per style source, plus its raster tiles |
 | `pattern_resolver.dart` | `PatternResolver` — crops `fill-pattern` / `line-pattern` sprites out of the atlas into standalone images suitable for a tiled `ImageShader` |
@@ -99,8 +100,12 @@ clips at tile seams.
   overzoom (via `TileRasterizer.debugDisableCulling`)
 - `test/label_painter_zoom_test.dart` — label zoom quantization and cache-key
   stability under fractional zoom sweeps
-- `test/label_zoom_gating_test.dart` — per-frame layer zoom-range gate,
-  near-zero `text-size` skip, insertion-order collision tiebreak
+- `test/label_zoom_gating_test.dart` — per-frame layer zoom-range gate, the
+  `maxzoom` fade-out ramp, near-zero `text-size` skip, insertion-order
+  collision tiebreak
+- `test/label_continuity_test.dart` — cross-zoom label carry-over: key
+  identity, cohort partitioning, and the two-copies-collide case a zoom
+  crossing produces
 - `test/rasterize_benchmark_test.dart` — manual overzoom cost benchmark
   (`--run-skipped`)
 - `test/tile_precision_test.dart` — transform precision

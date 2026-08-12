@@ -148,7 +148,7 @@ vt.VectorTileLayer(
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source (the caches are shared process-wide; the most recently mounted layer's value wins) |
 | `rasterCacheMaxBytes` | 64 MB | finished-tile budget: zooming back to a recent level (or reopening the same style) paints instantly instead of re-rendering. GPU texture bytes — ~1 MB per tile at devicePixelRatio 2, ~2.25 MB at 3, so the default holds ≈2 phone-screen zoom levels at dpr 2 (≈1 at dpr 3). `0` disables |
 | `tileFadeDuration` | 150 ms | `Duration.zero` disables fade-in |
-| `labelFadeDuration` | 150 ms | fade-in of newly appearing labels/icons (masks the pop at the zoom where symbols start); `Duration.zero` restores the instant pop |
+| `labelFadeDuration` | 150 ms | fade-in of newly appearing labels/icons (masks the pop at the zoom where symbols start). Labels carried over from the previous zoom level are not re-faded, so crossing a zoom level does not blink them; `Duration.zero` restores the instant pop |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 
 The memory caches are shared process-wide and outlive the layer — that's
@@ -305,6 +305,15 @@ semantics: `text-max-angle` rejects labels on sharp bends,
 Nearly straight windows are drawn as a single rotated string for speed;
 scripts with contextual shaping (Arabic, Indic, …) fall back to straight
 placement so glyphs are never mis-joined.
+
+A symbol layer's zoom range is honoured exactly — nothing paints outside
+`[minzoom, maxzoom)` — but labels ramp out over the last quarter zoom
+level before a declared `maxzoom` rather than snapping away, and ramp
+back in when you zoom out across it. `minzoom` stays a hard edge: it is
+inclusive, so fading there would leave a `minzoom: 14` layer invisible
+on a map sitting at exactly zoom 14. This applies to zoom ranges the
+*style* declares; a label the tileset itself stops carrying at higher
+zoom still disappears when its tile does.
 
 **Expressions:** the practical MapLibre set — `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,

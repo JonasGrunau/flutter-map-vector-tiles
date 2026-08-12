@@ -114,6 +114,68 @@ void main() {
     });
   });
 
+  group('zoom-range fade-out', () {
+    test('full opacity until the window before a declared maxzoom', () {
+      final layer = _symbolLayer(minzoom: 10, maxzoom: 16);
+      expect(LabelPainter.zoomRangeOpacity(layer, 12), 1);
+      expect(LabelPainter.zoomRangeOpacity(layer, 15.5), 1);
+    });
+
+    test('ramps down to zero approaching maxzoom', () {
+      final layer = _symbolLayer(maxzoom: 16);
+      final ramp = [15.8, 15.85, 15.9, 15.95, 16.0]
+          .map((z) => LabelPainter.zoomRangeOpacity(layer, z))
+          .toList();
+      expect(ramp.first, lessThan(1));
+      expect(ramp.last, 0, reason: 'fully faded exactly at the threshold');
+      for (var i = 1; i < ramp.length; i++) {
+        expect(ramp[i], lessThanOrEqualTo(ramp[i - 1]),
+            reason: 'monotonic: $ramp');
+      }
+    });
+
+    test('is quantized, so a fade spans few saveLayer buckets', () {
+      final layer = _symbolLayer(maxzoom: 16);
+      for (final zoom in [15.79, 15.83, 15.87, 15.91, 15.97]) {
+        final opacity = LabelPainter.zoomRangeOpacity(layer, zoom);
+        expect((opacity * 8) % 1, 0, reason: 'off the 1/8 grid at $zoom');
+      }
+    });
+
+    test('a layer with no declared maxzoom never ramps', () {
+      // The reader substitutes 24 for an absent maxzoom; that stands for
+      // "unset", not for an edge the style drew.
+      final layer = _symbolLayer(minzoom: 10);
+      expect(LabelPainter.zoomRangeOpacity(layer, 23.9), 1);
+      expect(LabelPainter.zoomRangeOpacity(layer, 20), 1);
+    });
+
+    test('minzoom never ramps — it is inclusive', () {
+      // A symmetric ramp would leave a `minzoom: 14` layer invisible on a
+      // map resting at exactly zoom 14, which is both the common resting
+      // case and the first zoom the style asks for that label.
+      final layer = _symbolLayer(minzoom: 14, maxzoom: 18);
+      expect(LabelPainter.zoomRangeOpacity(layer, 14.0), 1);
+      expect(
+        _paint(layer, [_symbolAt(layer, const Offset(200, 200), 'Main St')],
+            styleZoom: 14.0),
+        hasLength(1),
+      );
+    });
+
+    test('a symbol mid-ramp still draws; at the threshold it does not', () {
+      final layer = _symbolLayer(maxzoom: 16);
+      List<PlacedSymbol> paintAt(double styleZoom) => _paint(
+            layer,
+            [_symbolAt(layer, const Offset(200, 200), 'Main St')],
+            styleZoom: styleZoom,
+          );
+      expect(paintAt(15.8), hasLength(1), reason: 'mid-ramp, still visible');
+      expect(paintAt(15.99), isEmpty,
+          reason: 'ramped to zero — inside the range, but painting nothing');
+    });
+  });
+
   group('near-zero text-size', () {
     test('text shrunk away by a zoom ramp is not drawn', () {
       final layer = _symbolLayer(

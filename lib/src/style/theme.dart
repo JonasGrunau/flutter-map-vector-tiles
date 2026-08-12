@@ -66,6 +66,14 @@ sealed class ThemeLayer {
     this.referencedProperties,
   });
 
+  /// The values the reader substitutes for an absent `minzoom` /
+  /// `maxzoom`. A layer sitting exactly on one of these has no edge the
+  /// style asked for there, which the label pass needs to know: it fades
+  /// symbols out approaching a *declared* edge, and must not ramp
+  /// against a bound that only stands in for "unset".
+  static const double defaultMinzoom = 0;
+  static const double defaultMaxzoom = 24;
+
   /// Style zoom range check. Per spec, maxzoom is exclusive-ish (a layer
   /// with maxzoom 14 disappears at zoom >= 14); minzoom inclusive.
   bool coversZoom(double zoom) => zoom >= minzoom && zoom < maxzoom;

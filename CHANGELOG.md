@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+Labels across a zoom level change.
+
+- 🎨 Labels ramp out over the last quarter zoom level before their
+  layer's declared `maxzoom` instead of snapping away, and ramp back in
+  when you zoom out across it. `minzoom` stays a hard edge — it is
+  inclusive, so fading there would leave a `minzoom: 14` layer invisible
+  on a map resting at exactly zoom 14.
+- 🐛 Labels no longer blink when you cross a zoom level. Crossing one
+  replaces the whole display level, and the arriving tiles re-faded
+  labels the outgoing level was still drawing at full opacity. The two
+  copies competed for the same collision space, and which one won turned
+  on a sub-pixel difference in anchor position — so *some* labels dropped
+  to a fraction of their opacity and faded back in, while labels on
+  `text-allow-overlap` layers composited over themselves. Labels that
+  survive a crossing now hold full opacity; only labels genuinely new at
+  the arriving level fade in.
+
 ## 2.4.0
 
 What a full review of 2.3.0 turned up: tiles honour their freshness

@@ -45,8 +45,8 @@ class ThemeReader {
     final paint = _map(json['paint']);
     final parser = ExpressionParser();
     final filter = parser.parseFilter(json['filter']);
-    final minzoom = toNumber(json['minzoom']) ?? 0;
-    final maxzoom = toNumber(json['maxzoom']) ?? 24;
+    final minzoom = toNumber(json['minzoom']) ?? ThemeLayer.defaultMinzoom;
+    final maxzoom = toNumber(json['maxzoom']) ?? ThemeLayer.defaultMaxzoom;
     final source = json['source'] as String?;
     final sourceLayer = json['source-layer'] as String?;
 

@@ -109,6 +109,15 @@ class LabelPainter {
   /// widest text halo a style is likely to ask for.
   static const double _fadeLayerPadding = 16.0;
 
+  /// Draw opacities are quantized to this many steps so translucent
+  /// symbols group into a handful of `saveLayer` buckets instead of one
+  /// per label.
+  static const double _opacitySteps = 8;
+
+  /// Width, in style zoom levels, of the ramp that fades a symbol out
+  /// approaching a declared edge of its layer's zoom range.
+  static const double _zoomFadeWindow = 0.25;
+
   /// Paragraph shapings performed (cache misses); for tests asserting
   /// that zoom motion does not re-shape text.
   @visibleForTesting
@@ -199,8 +208,14 @@ class LabelPainter {
       final drawable =
           _prepare(candidate, zoom, styleZoom, collision, sprites, screenSize);
       if (drawable != null) {
+        // The cohort's fade-in and the layer's zoom-range ramp compound:
+        // a tile that just published its labels near a layer's maxzoom
+        // is subject to both.
+        final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
+        drawable.opacity =
+            ramp <= 0 ? 0 : _quantizeOpacity(candidate.fadeOpacity * ramp);
         toDraw.add(drawable);
-        anyFading |= candidate.fadeOpacity < 1;
+        anyFading |= drawable.opacity < 1;
       }
     }
     // Draw bottom style layers first so upper layers paint on top; the
@@ -227,8 +242,11 @@ class LabelPainter {
     // for the few frames a fade is in flight. The caller quantizes
     // [PlacedSymbol.fadeOpacity], so the bucket count stays small.
     // Opaque symbols first (in layer order), fading cohorts on top.
+    // A symbol the zoom ramp has retired keeps the collision space it
+    // reserved in [_prepare] — placements stay put across the last step
+    // of the ramp — but paints nothing.
     for (final drawable in toDraw) {
-      if (drawable.symbol.fadeOpacity >= 1) {
+      if (drawable.opacity >= 1) {
         drawable.draw(canvas, devicePixelRatio);
         drawn.add(drawable.symbol);
       }
@@ -239,8 +257,8 @@ class LabelPainter {
     // bucket per frame for the whole fade.
     final buckets = <double, List<_DrawableSymbol>>{};
     for (final drawable in toDraw) {
-      final opacity = drawable.symbol.fadeOpacity;
-      if (opacity < 1) (buckets[opacity] ??= []).add(drawable);
+      final opacity = drawable.opacity;
+      if (opacity > 0 && opacity < 1) (buckets[opacity] ??= []).add(drawable);
     }
     for (final opacity in buckets.keys.toList()..sort()) {
       final bucket = buckets[opacity]!;
@@ -263,6 +281,46 @@ class LabelPainter {
     }
     return drawn;
   }
+
+  /// Opacity [layer]'s zoom range gives a symbol at [styleZoom]: 1
+  /// everywhere except the last [_zoomFadeWindow] before a declared
+  /// `maxzoom`, over which it ramps to 0. Zooming in past the threshold
+  /// then dissolves the label instead of snapping it away, and because
+  /// the ramp is a function of zoom alone it is exactly reversible —
+  /// zoom back out and the label ramps in again — with no per-symbol
+  /// history to keep.
+  ///
+  /// The ramp lives *inside* the range and reaches 0 at the threshold,
+  /// so [ThemeLayer.coversZoom] stays the source of truth in [_prepare]
+  /// and nothing paints outside `[minzoom, maxzoom)`.
+  ///
+  /// Only `maxzoom` ramps. It is exclusive, so the window covers zooms
+  /// where the style is about to drop the label anyway. `minzoom` is
+  /// inclusive: a symmetric ramp there would render a `minzoom: 14`
+  /// layer *invisible* on a map resting at exactly zoom 14, which is
+  /// both the common resting case and the first zoom the style asks for
+  /// that label. The ramp may dim a symbol the style is about to
+  /// remove, never one the style says is fully visible.
+  ///
+  /// [ThemeLayer.defaultMaxzoom] is what the reader substitutes for an
+  /// absent bound — an absence, not an edge the style drew, so it never
+  /// ramps.
+  @visibleForTesting
+  static double zoomRangeOpacity(ThemeLayer layer, double styleZoom) {
+    if (layer.maxzoom >= ThemeLayer.defaultMaxzoom) return 1;
+    final opacity = (layer.maxzoom - styleZoom) / _zoomFadeWindow;
+    if (opacity >= 1) return 1;
+    // Floored, so the ramp reaches exactly 0 at the threshold and hands
+    // over to the hard cut instead of vanishing from a visible step.
+    return (opacity.clamp(0.0, 1.0) * _opacitySteps).floor() / _opacitySteps;
+  }
+
+  /// Quantizes a draw opacity onto the [_opacitySteps] grid, keeping
+  /// anything still visible at least one step above zero: only a symbol
+  /// [zoomRangeOpacity] has fully retired draws at 0.
+  static double _quantizeOpacity(double opacity) => opacity <= 0
+      ? 0
+      : math.max(1, (opacity * _opacitySteps).round()) / _opacitySteps;
 
   /// Shapes the text (and, for curved along-line labels, the per-glyph
   /// painters) of [symbols] into the caches ahead of the first frame
@@ -1088,7 +1146,13 @@ class _DrawableSymbol {
   final double textScale;
   final List<_CurvedGlyph>? curvedGlyphs;
 
-  const _DrawableSymbol(
+  /// Opacity this symbol actually draws at: its cohort's fade-in times
+  /// its layer's zoom-range ramp, quantized. Assigned by [_paint] once
+  /// the symbol has survived collision — every construction site would
+  /// otherwise have to thread a value none of them computes.
+  double opacity = 1;
+
+  _DrawableSymbol(
     this.symbol, {
     this.icon,
     this.text,
