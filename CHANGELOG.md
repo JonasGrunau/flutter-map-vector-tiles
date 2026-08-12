@@ -25,6 +25,15 @@ Labels across a zoom level change.
   `text-allow-overlap` layers composited over themselves. Labels that
   survive a crossing now hold full opacity; only labels genuinely new at
   the arriving level fade in.
+- 🐛 Street names no longer flash up in the moment between a zoom-out
+  crossing and the new level's tiles arriving. The crossing cuts whole
+  symbol layers at their `minzoom` (POIs, typically), and the space
+  their labels held went to whatever the outgoing level had been
+  suppressing — street names never previously on screen popped in at
+  full opacity, only to be faded straight back out. An outgoing level is
+  now pinned to the labels that were actually visible: it keeps them on
+  screen until the new level covers them, but can no longer introduce
+  new ones.
 
 ## 2.4.0
 

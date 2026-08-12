@@ -15,7 +15,7 @@ depended on by everything.
 
 | File | Description |
 |------|-------------|
-| `vector_tile_layer.dart` | The `VectorTileLayer` widget and its state — the orchestrator (~800 lines). Owns tile stores, the display-tile map, retained-tile pruning, the raster job queue, the fade ticker, and the `CustomPainter` that draws tile images then labels |
+| `vector_tile_layer.dart` | The `VectorTileLayer` widget and its state — the orchestrator (~1700 lines). Owns tile stores, the display-tile map, retained-tile pruning, the raster job queue, the fade ticker, the `CustomPainter` that draws tile images then labels, and cross-zoom label continuity: publish-time carry-over partitioning against what is actually on screen, the one-shot hand-over of a retired level's labels, and the `_fadingLabels` fade-out registry |
 | `tile_providers.dart` | `TileProviders` (providers keyed by style source id) and `RasterTileSource` (a raster source declared inside a vector style) |
 | `tile_offset.dart` | `TileOffset` — relates display zoom to data/style zoom. `TileOffset.maplibre` (offset −1, 512px convention) is the default |
 | `logger.dart` | `Logger` abstraction plus a console implementation; the only sanctioned diagnostic channel (`avoid_print` is enforced) |

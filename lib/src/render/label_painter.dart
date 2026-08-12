@@ -10,6 +10,7 @@ import '../cache/lru_cache.dart';
 import '../style/expression.dart';
 import '../style/sprite_atlas.dart';
 import '../style/theme.dart';
+import 'fade.dart';
 import 'symbol_layouter.dart';
 
 /// The affine transform from a display tile's logical coordinates to
@@ -111,8 +112,9 @@ class LabelPainter {
 
   /// Draw opacities are quantized to this many steps so translucent
   /// symbols group into a handful of `saveLayer` buckets instead of one
-  /// per label.
-  static const double _opacitySteps = 8;
+  /// per label. Shared with the widget layer's fade-progress
+  /// quantization — see [labelOpacitySteps].
+  static const int _opacitySteps = labelOpacitySteps;
 
   /// Width, in style zoom levels, of the ramp that fades a symbol out
   /// approaching a declared edge of its layer's zoom range.
@@ -308,7 +310,13 @@ class LabelPainter {
   @visibleForTesting
   static double zoomRangeOpacity(ThemeLayer layer, double styleZoom) {
     if (layer.maxzoom >= ThemeLayer.defaultMaxzoom) return 1;
-    final opacity = (layer.maxzoom - styleZoom) / _zoomFadeWindow;
+    // A band narrower than the window shrinks the ramp to fit: the ramp
+    // must still start at 1 at the inclusive minzoom, or a layer with a
+    // sub-window band would never reach full opacity anywhere in its
+    // declared range.
+    final window = math.min(_zoomFadeWindow, layer.maxzoom - layer.minzoom);
+    if (window <= 0) return 1; // degenerate band: coversZoom rejects it
+    final opacity = (layer.maxzoom - styleZoom) / window;
     if (opacity >= 1) return 1;
     // Floored, so the ramp reaches exactly 0 at the threshold and hands
     // over to the hard cut instead of vanishing from a visible step.

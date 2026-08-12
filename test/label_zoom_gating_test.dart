@@ -150,6 +150,18 @@ void main() {
       expect(LabelPainter.zoomRangeOpacity(layer, 20), 1);
     });
 
+    test('a band narrower than the window still peaks at full opacity', () {
+      // The ramp shrinks to fit the declared band: with a fixed window a
+      // minzoom 14 / maxzoom 14.2 layer would sit at 0.8 even at its
+      // inclusive minzoom and never reach full opacity anywhere.
+      final layer = _symbolLayer(minzoom: 14, maxzoom: 14.2);
+      expect(LabelPainter.zoomRangeOpacity(layer, 14.0), 1,
+          reason: 'full opacity at the inclusive minzoom');
+      expect(LabelPainter.zoomRangeOpacity(layer, 14.1), lessThan(1));
+      expect(LabelPainter.zoomRangeOpacity(layer, 14.2), 0,
+          reason: 'still fully faded exactly at the threshold');
+    });
+
     test('minzoom never ramps — it is inclusive', () {
       // A symmetric ramp would leave a `minzoom: 14` layer invisible on a
       // map resting at exactly zoom 14, which is both the common resting

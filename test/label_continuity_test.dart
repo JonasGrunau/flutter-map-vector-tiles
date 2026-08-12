@@ -63,18 +63,57 @@ PlacedSymbol _placed(
       order: order,
     );
 
-List<PlacedSymbol> _paint(List<PlacedSymbol> symbols) {
+List<PlacedSymbol> _paint(List<PlacedSymbol> symbols, {double styleZoom = 14}) {
   final painter = LabelPainter();
   final recorder = ui.PictureRecorder();
   final drawn = painter.paint(
     canvas: ui.Canvas(recorder),
     screenSize: const Size(400, 400),
-    styleZoom: 14,
+    styleZoom: styleZoom,
     symbols: symbols,
   );
   recorder.endRecording().dispose();
   painter.dispose();
   return drawn;
+}
+
+/// An existing instance projected to screen space — for stories that
+/// follow the same symbols across frames, where identity matters.
+PlacedSymbol _placedAt(SymbolInstance instance, {int order = 0}) =>
+    PlacedSymbol(
+      instance: instance,
+      screenAnchor: const Offset(200, 200),
+      screenAngle: 0,
+      order: order,
+    );
+
+/// A street-name layer under a POI layer that only exists from zoom 13
+/// up — the shape of the pre-transition flash: the POI suppresses the
+/// street name until a zoom-out cuts the POI layer at its minzoom.
+(SymbolThemeLayer, SymbolThemeLayer) _streetAndPoiLayers() {
+  final theme = const ThemeReader().read({
+    'layers': [
+      {
+        'id': 'street-name',
+        'type': 'symbol',
+        'source': 's',
+        'source-layer': 'road',
+        'layout': {'text-field': '{name}'},
+      },
+      {
+        'id': 'poi',
+        'type': 'symbol',
+        'source': 's',
+        'source-layer': 'poi',
+        'minzoom': 13,
+        'layout': {'text-field': '{name}'},
+      },
+    ],
+  });
+  return (
+    theme.layers[0] as SymbolThemeLayer,
+    theme.layers[1] as SymbolThemeLayer,
+  );
 }
 
 void main() {
@@ -345,6 +384,76 @@ void main() {
       ]);
       expect(keys, hasLength(2));
       expect(keys, contains(labelContinuityKey(_symbol(layer))));
+    });
+  });
+
+  group('drawnLabels', () {
+    test('keeps only what the last frame drew, in order', () {
+      final a = _symbol(layer, text: 'A');
+      final b = _symbol(layer, text: 'B');
+      final c = _symbol(layer, text: 'C');
+      expect(drawnLabels([a, b, c], {c, a}), [a, c]);
+    });
+
+    test('returns the input list itself when everything was drawn', () {
+      final a = _symbol(layer);
+      final cohort = [a];
+      expect(identical(drawnLabels(cohort, {a}), cohort), isTrue);
+    });
+
+    test('nothing drawn: the cohort is emptied', () {
+      expect(drawnLabels([_symbol(layer)], const {}), isEmpty);
+    });
+
+    test('membership is by identity, not label equality', () {
+      // Two instances of the same feature (seam twins) are distinct
+      // candidates; drawing one must not pin the other.
+      final drawnTwin = _symbol(layer);
+      final otherTwin = _symbol(layer);
+      expect(drawnLabels([otherTwin], {drawnTwin}), isEmpty);
+    });
+  });
+
+  group('an outgoing cohort is pinned to what was on screen', () {
+    // The flash this prevents: a zoom-out crossing cuts the POI layer at
+    // its minzoom in one frame, and the space its labels held would go
+    // to whatever the outgoing cohort had been suppressing — street
+    // names never seen before, popping in at full opacity only to be
+    // faded straight back out once the new level arrives.
+    final (street, poi) = _streetAndPoiLayers();
+
+    test('a candidate a zoom-cut label was suppressing does not pop in', () {
+      final streetName = _symbol(street, text: 'Hauptstr', layerIndex: 0);
+      final poiName = _symbol(poi, text: 'Bäckerei', layerIndex: 1);
+      final cohort = [streetName, poiName];
+
+      // The last frame before the crossing: the POI wins the shared spot.
+      final drawn = _paint(
+        [_placedAt(streetName), _placedAt(poiName, order: 1)],
+        styleZoom: 13.2,
+      );
+      expect(drawn.map((p) => p.instance), [poiName]);
+
+      // The crossing pins the cohort to what was drawn. The next frame's
+      // style zoom is below the POI layer's minzoom, so its label is
+      // gone — and the freed space stays empty instead of flashing the
+      // street name in.
+      final pinned = drawnLabels(cohort, {for (final p in drawn) p.instance});
+      expect(
+        _paint([for (final s in pinned) _placedAt(s)], styleZoom: 12.9),
+        isEmpty,
+      );
+    });
+
+    test('without the pin, the freed space flashes the loser in', () {
+      // The behaviour the pin removes, kept so a regression is loud.
+      final streetName = _symbol(street, text: 'Hauptstr', layerIndex: 0);
+      final poiName = _symbol(poi, text: 'Bäckerei', layerIndex: 1);
+      final drawn = _paint(
+        [_placedAt(streetName), _placedAt(poiName, order: 1)],
+        styleZoom: 12.9,
+      );
+      expect(drawn.map((p) => p.instance), [streetName]);
     });
   });
 }

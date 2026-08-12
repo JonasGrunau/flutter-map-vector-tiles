@@ -318,7 +318,10 @@ the tileset stops carrying at the next zoom, or one crowded out by
 denser labelling — fade out too, over `labelFadeDuration`, as the map
 hands over to the new zoom level. A departing label keeps the space it
 held until it is gone, so nothing jumps into a spot that still shows
-something.
+something. And the outgoing level only ever *keeps* labels on screen —
+it never introduces ones that were not already visible, so a label that
+had been crowded out (a street name under a POI, say) cannot flash up
+just as the level departs.
 
 **Expressions:** the practical MapLibre set — `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,

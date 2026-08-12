@@ -108,23 +108,37 @@ copies then compete for the same collision space and the winner turns on
 a sub-pixel difference in anchor position — arbitrary per label, which is
 what made *some* labels blink across a crossing (and, on
 `*-allow-overlap` layers where nothing collides, composite over
-themselves). So a cohort is split against the labels the overlapping
-retained tiles are showing, matched on `(layer, text, icon)` — position
-plays no part, because the two levels simplify geometry differently and a
-missed match would put the blink back, while a spurious one only makes a
-label appear instantly. The carried-over prefix draws opaque; only the
-rest fades.
+themselves). So a cohort is split against the labels *actually on
+screen* over it — what the overlapping retained tiles' last label pass
+drew, plus what the tile itself already shows, so a republish
+(provisional→final swap, refresh, retry) neither re-fades nor dims
+anything — matched on `(layer, text, icon)`. Position plays no part,
+because the two levels simplify geometry differently and a missed match
+would put the blink back, while a spurious one only makes a label appear
+instantly. The carried-over prefix draws opaque; only the rest fades.
 
 The same split answers the other direction. Labels the arriving level
 has *no* counterpart for — a feature the tileset stops carrying at the
 next zoom, or one that lost its place to denser labelling — used to
 vanish in a single frame, at whatever moment the tiles happened to
-finish loading. They are now handed to a fade-out: the publish that
-retires a retained tile moves its orphans into `_fadingLabels` (plain
-Dart objects, so no tile texture is pinned) and they ramp to zero over
-`labelFadeDuration`.
+finish loading. They are now handed to a fade-out: once nothing keeps a
+retained tile needed, its orphans move into `_fadingLabels` (plain Dart
+objects, so no tile texture is pinned) and ramp to zero over
+`labelFadeDuration`. That hand-over is evaluated at two drain points —
+after a grid update and after a render-pump tick — never inside an
+individual publish: a result-cache hit publishes synchronously while the
+grid is still being rebuilt, and measuring retention against that
+half-built grid would hand every retained tile over against the first
+tile alone. The grid-update drain also catches the no-publish case,
+where a pan removes the one still-loading tile that kept a retained
+tile needed. Provisional cohorts — laid out from ancestor data while
+the real tile loads — bridge the screen but do not settle the one-shot
+hand-over: they are nearly the previous level's own labels, so retiring
+the retained tile against them would fade out labels the final data
+still carries.
 
-Two rules keep that fade from disturbing anything else.
+Three rules keep that fade — and the retention window before it — from
+disturbing anything else.
 
 Only labels that were **actually drawn** fade. A tile's `symbols` are
 placement *candidates*; the collision pass picks winners afresh every
@@ -132,7 +146,17 @@ frame, and on a dense screen most of them lose. The layer therefore
 records what the last pass drew (`_drawnLastFrame`) and intersects the
 orphan set with it — otherwise a label that had been sitting invisible
 behind a winner would appear out of nowhere, the moment that winner
-left, purely in order to fade away.
+left, purely in order to fade away. The carry-over side uses the same
+record: a candidate that never won collision covers nothing.
+
+The outgoing level can only **keep** labels on screen, never introduce
+them. The crossing that moves a level into retention pins its cohorts to
+that same drawn record (`drawnLabels`), dropping the candidates that
+were losing collision for good. A crossing typically cuts whole symbol
+layers at their `minzoom` — POIs, say — and the space their labels held
+would otherwise go, for the moments until the new level lands, to labels
+that had never been on screen: street names popping in at full opacity
+purely to be faded back out by the hand-over.
 
 Departing labels stay **ordinary collision candidates**, reserving their
 boxes at full size exactly as a fading-in cohort does. They were on
