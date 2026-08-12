@@ -13,9 +13,9 @@ Labels across a zoom level change.
   feature the tileset stops carrying at the next zoom, or one crowded
   out by denser labelling — fade out over `labelFadeDuration` as the map
   hands over to the new level, instead of vanishing in one frame at
-  whatever moment the tiles finished loading. They yield collision space
-  to the labels replacing them, so a departing label never overlaps or
-  displaces one that is staying.
+  whatever moment the tiles finished loading. A departing label keeps
+  the space it held until it is gone, so nothing jumps into a spot that
+  still shows something.
 - 🐛 Labels no longer blink when you cross a zoom level. Crossing one
   replaces the whole display level, and the arriving tiles re-faded
   labels the outgoing level was still drawing at full opacity. The two

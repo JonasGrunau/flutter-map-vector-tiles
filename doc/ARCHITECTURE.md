@@ -122,18 +122,32 @@ vanish in a single frame, at whatever moment the tiles happened to
 finish loading. They are now handed to a fade-out: the publish that
 retires a retained tile moves its orphans into `_fadingLabels` (plain
 Dart objects, so no tile texture is pinned) and they ramp to zero over
-`labelFadeDuration`. They draw as **ghosts** — placed after every live
-label regardless of style layer, and reserving nothing that a live label
-can see. A dying label therefore cannot block or displace one that is
-staying; where a live label claims its space the ghost simply drops, its
-disappearance masked by the very label that replaced it. Ghosts do
-exclude *each other*, though, in a collision index of their own: a
-feature on a tile seam is claimed by both neighbours by design and this
-pass is what removes the copy, so a departing label with no reservation
-at all would draw twice over itself — visibly doubled, and doubly
-opaque — for the length of the fade. Unlike the zoom ramp below this fade is time-based,
-because handover completes when tiles load rather than at a fixed zoom;
-a zoom level change cancels any fade still running.
+`labelFadeDuration`.
+
+Two rules keep that fade from disturbing anything else.
+
+Only labels that were **actually drawn** fade. A tile's `symbols` are
+placement *candidates*; the collision pass picks winners afresh every
+frame, and on a dense screen most of them lose. The layer therefore
+records what the last pass drew (`_drawnLastFrame`) and intersects the
+orphan set with it — otherwise a label that had been sitting invisible
+behind a winner would appear out of nowhere, the moment that winner
+left, purely in order to fade away.
+
+Departing labels stay **ordinary collision candidates**, reserving their
+boxes at full size exactly as a fading-in cohort does. They were on
+screen a frame ago, so they simply keep the space they already held
+until they reach zero: the layout does not churn underneath the fade,
+nothing jumps into a spot that still shows something, and seam
+duplicates keep being removed by the pass that always removed them.
+Hand-over is one-way — a retained tile whose labels have gone to the
+fade-out never draws them again, so a tile arriving mid-transition
+cannot briefly make it "needed" once more and put its labels back at
+full opacity on top of their own fading copies.
+
+Unlike the zoom ramp below, this fade is time-based: hand-over completes
+when tiles load, not at a fixed zoom. A zoom level change cancels any
+fade still running rather than letting it trail a second transition.
 
 Symbols also ramp out over the last quarter zoom level before their
 layer's declared `maxzoom`, so zooming past a threshold dissolves a label

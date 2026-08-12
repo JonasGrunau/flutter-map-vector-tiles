@@ -316,8 +316,9 @@ on a map sitting at exactly zoom 14.
 Labels that disappear for reasons the style does not declare — a feature
 the tileset stops carrying at the next zoom, or one crowded out by
 denser labelling — fade out too, over `labelFadeDuration`, as the map
-hands over to the new zoom level. They yield space to the labels that
-replace them rather than overlapping them.
+hands over to the new zoom level. A departing label keeps the space it
+held until it is gone, so nothing jumps into a spot that still shows
+something.
 
 **Expressions:** the practical MapLibre set — `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,

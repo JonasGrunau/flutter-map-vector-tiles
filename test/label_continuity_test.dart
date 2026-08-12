@@ -54,7 +54,6 @@ PlacedSymbol _placed(
   double fadeOpacity = 1,
   int order = 0,
   int layerIndex = 0,
-  bool ghost = false,
 }) =>
     PlacedSymbol(
       instance: _symbol(layer, text: text, layerIndex: layerIndex),
@@ -62,7 +61,6 @@ PlacedSymbol _placed(
       screenAngle: 0,
       fadeOpacity: fadeOpacity,
       order: order,
-      ghost: ghost,
     );
 
 List<PlacedSymbol> _paint(List<PlacedSymbol> symbols) {
@@ -265,57 +263,39 @@ void main() {
   });
 
   group('a label fading out', () {
-    test('yields its space to a live label, and never blocks one', () {
-      // The ghost sorts first on y, so without the ghost rules it would
-      // take the space and the live label would be dropped. Instead the
-      // live label places, and the ghost — tested against the finished
-      // layout, reserving nothing — steps aside. Its disappearance is
-      // masked by the very label that replaced it.
+    test('keeps the space it already held', () {
+      // A departing label is an ordinary candidate with a declining
+      // opacity: it was on screen a frame ago, so it holds its place for
+      // the length of the fade rather than handing it straight over.
+      // That is what stops the layout churning underneath the fade —
+      // labels do not jump into a space that still shows something.
       final drawn = _paint([
-        _placed(layer, 200, text: 'Feldkirchen', fadeOpacity: 0.5, ghost: true),
+        _placed(layer, 200, text: 'Feldkirchen', fadeOpacity: 0.5),
         _placed(layer, 200.2, text: 'Aschheim', order: 1),
       ]);
       expect(drawn, hasLength(1));
-      expect(drawn.single.instance.text, 'Aschheim');
+      expect(drawn.single.instance.text, 'Feldkirchen');
+      expect(drawn.single.fadeOpacity, 0.5);
     });
 
-    test('still fades out where nothing live claims its space', () {
-      // The ordinary case: the arriving level simply has no label here,
-      // so the ghost draws at its fade opacity until it reaches zero.
-      final drawn = _paint([
-        _placed(layer, 200, text: 'Feldkirchen', fadeOpacity: 0.5, ghost: true),
-        _placed(layer, 340, text: 'Aschheim', order: 1),
-      ]);
-      expect(drawn, hasLength(2));
-      expect(
-        drawn.singleWhere((s) => s.instance.text == 'Feldkirchen').fadeOpacity,
-        0.5,
-      );
-    });
-
-    test('is deduplicated against the other labels fading out', () {
+    test('is deduplicated like any other label', () {
       // A feature landing on a tile seam is claimed by both neighbours
-      // by design, and the collision pass is what removes the copy. A
-      // ghost reserves nothing a live label can see, but it must still
-      // exclude the other ghosts — otherwise a street name crossing a
-      // seam draws twice over itself, visibly doubled and doubly opaque,
-      // for the length of the fade.
+      // by design, and this pass is what removes the copy — including
+      // while the label is fading out, or a street name crossing a seam
+      // would draw twice over itself for the length of the fade.
       final drawn = _paint([
-        _placed(layer, 200, text: 'Hauptstr', fadeOpacity: 0.5, ghost: true),
-        _placed(layer, 200.1,
-            text: 'Hauptstr', fadeOpacity: 0.5, ghost: true, order: 1),
+        _placed(layer, 200, text: 'Hauptstr', fadeOpacity: 0.5),
+        _placed(layer, 200.1, text: 'Hauptstr', fadeOpacity: 0.5, order: 1),
       ]);
       expect(drawn, hasLength(1), reason: 'the seam copy was suppressed');
     });
 
-    test('loses even from a style layer that would normally win space', () {
-      // Topmost layers place first, so layer 5 would beat layer 0 — but
-      // ghosts place after every live label regardless of layer. A dying
-      // label never outranks one that is staying.
+    test('still loses to a label on a higher style layer', () {
+      // Ordinary placement priority applies: topmost layers win space,
+      // fading or not.
       final drawn = _paint([
-        _placed(layer, 200,
-            text: 'Feldkirchen', layerIndex: 5, fadeOpacity: 0.5, ghost: true),
-        _placed(layer, 200.2, text: 'Aschheim', order: 1),
+        _placed(layer, 200, text: 'Feldkirchen', fadeOpacity: 0.5),
+        _placed(layer, 200.2, text: 'Aschheim', layerIndex: 5, order: 1),
       ]);
       expect(drawn, hasLength(1));
       expect(drawn.single.instance.text, 'Aschheim');

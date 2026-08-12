@@ -205,6 +205,16 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// pinned by a fade.
   final _fadingLabels = <_FadingLabels>[];
 
+  /// The symbols the last label pass actually drew, by identity.
+  ///
+  /// A tile's `symbols` are placement *candidates*: the collision pass
+  /// picks the winners afresh every frame, and on a dense screen most of
+  /// them lose. Only the winners were ever on screen, so only they can
+  /// be faded out — fading a candidate that lost would make a label
+  /// appear from nowhere purely to fade away. Rebuilt in place each
+  /// frame, so the fade-out never has to guess.
+  final _drawnLastFrame = <SymbolInstance>{};
+
   /// Bounded retries for tiles that finalized with a source missing
   /// after a transient failure. Fired just past the stores' failure
   /// throttle, so each attempt can actually reach the network again.
@@ -588,11 +598,17 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     final current = _currentStatuses(DateTime.now()).toList();
     return {
       for (final retained in _retained.values)
-        if (retainedSymbolsNeeded(
-          retainedKey: retained.key,
-          hasSymbols: retained.symbols.isNotEmpty,
-          current: current,
-        ))
+        // Hand-over is one-way. A tile whose labels have been passed to
+        // the fade-out must not start drawing them again — a new tile
+        // arriving mid-transition can briefly make it "needed" once
+        // more, and its labels would then reappear at full opacity on
+        // top of their own fading copies.
+        if (!retained.labelsHandedOver &&
+            retainedSymbolsNeeded(
+              retainedKey: retained.key,
+              hasSymbols: retained.symbols.isNotEmpty,
+              current: current,
+            ))
           retained.key,
     };
   }
@@ -1046,7 +1062,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
       retained.labelsHandedOver = true;
       final orphans = orphanedLabels(
-        retained.symbols,
+        // Only what was on screen: the rest are candidates that lost
+        // collision and fading them in to fade them out would be worse
+        // than the pop this fixes.
+        [
+          for (final symbol in retained.symbols)
+            if (_drawnLastFrame.contains(symbol)) symbol,
+        ],
         // What the arriving level puts in this tile's place.
         labelContinuityKeys([
           for (final tile in _tiles.values)
@@ -1436,7 +1458,6 @@ class _VectorMapPainter extends CustomPainter {
       double fadeOpacity, {
       int start = 0,
       int? end,
-      bool ghost = false,
     }) {
       final last = end ?? symbols.length;
       if (start >= last) return;
@@ -1460,7 +1481,6 @@ class _VectorMapPainter extends CustomPainter {
           transform: symbol.alongLine ? transform : null,
           fadeOpacity: fadeOpacity,
           order: placed.length,
-          ghost: ghost,
         ));
       }
     }
@@ -1499,7 +1519,10 @@ class _VectorMapPainter extends CustomPainter {
       }
     }
     // Last: the labels the arriving level did not replace, on their way
-    // out. Ghosts, so a dying label never takes space from a live one.
+    // out. Ordinary candidates — they were on screen a frame ago and
+    // simply keep the space they already held while they fade, so the
+    // layout does not churn underneath the fade. Added after everything
+    // else, so on an exact tie a label that is staying wins.
     for (final fading in state._fadingLabels) {
       final progress =
           fadeProgressOf(fading.startedAt, now, state.widget.labelFadeDuration);
@@ -1510,11 +1533,13 @@ class _VectorMapPainter extends CustomPainter {
         // Floor, mirroring the fade-in's ceil: a cohort on its way out
         // reaches zero rather than lingering at one visible step.
         ((1 - progress) * 8).floor() / 8,
-        ghost: true,
       );
     }
-    if (placed.isEmpty) return;
-    state._labelPainter.paint(
+    if (placed.isEmpty) {
+      state._drawnLastFrame.clear();
+      return;
+    }
+    final drawn = state._labelPainter.paint(
       canvas: canvas,
       screenSize: size,
       styleZoom: styleZoom,
@@ -1522,6 +1547,13 @@ class _VectorMapPainter extends CustomPainter {
       sprites: state.widget.sprites,
       devicePixelRatio: devicePixelRatio,
     );
+    // Recorded so a hand-over can fade out what was on screen rather
+    // than every candidate the outgoing level offered. Rebuilt in place:
+    // the set keeps its capacity, so this costs no allocation per frame
+    // once the screen's label count has settled.
+    state._drawnLastFrame
+      ..clear()
+      ..addAll(drawn.map((symbol) => symbol.instance));
   }
 
   @override

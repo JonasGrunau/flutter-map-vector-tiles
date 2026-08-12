@@ -59,14 +59,6 @@ class PlacedSymbol {
   /// level's copy wins deterministically (`List.sort` is not stable).
   final int order;
 
-  /// A label on its way out — the arriving zoom level has no counterpart
-  /// for it, so it is fading rather than being placed. Ghosts are tested
-  /// against the collision index but never inserted into it: a dying
-  /// label must not block or displace a live one. If its space is
-  /// already taken it is simply dropped, which costs nothing — it was
-  /// leaving anyway.
-  final bool ghost;
-
   const PlacedSymbol({
     required this.instance,
     required this.screenAnchor,
@@ -74,7 +66,6 @@ class PlacedSymbol {
     this.transform,
     this.fadeOpacity = 1,
     this.order = 0,
-    this.ghost = false,
   });
 }
 
@@ -202,11 +193,6 @@ class LabelPainter {
     // current-level tiles beat retained ones on exact ties.
     final candidates = symbols
       ..sort((a, b) {
-        // Labels on their way out place last, whatever layer they are
-        // on: a ghost reserves nothing, so testing it against the
-        // finished live layout is what stops it drawing over the label
-        // that is taking its place. Live always beats dying.
-        if (a.ghost != b.ghost) return a.ghost ? 1 : -1;
         final byLayer = b.instance.layerIndex - a.instance.layerIndex;
         if (byLayer != 0) return byLayer;
         final bySortKey = a.instance.sortKey.compareTo(b.instance.sortKey);
@@ -519,12 +505,12 @@ class LabelPainter {
     final allowOverlap = text != null
         ? layer.textAllowOverlap.eval(ctx)
         : layer.iconAllowOverlap.eval(ctx);
-    if (!allowOverlap && !collision.tryPlaceAll(boxes, ghost: placed.ghost)) {
+    if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
       // Icon may still be placed when text is optional.
       if (icon != null &&
           text != null &&
           layer.textOptional.eval(ctx) &&
-          collision.tryPlaceAll([icon.rect.inflate(2)], ghost: placed.ghost)) {
+          collision.tryPlaceAll([icon.rect.inflate(2)])) {
         return _DrawableSymbol(placed, icon: icon);
       }
       return null;
@@ -566,14 +552,14 @@ class LabelPainter {
         textRect.inflate(padding),
         if (icon != null) icon.rect.inflate(2),
       ];
-      if (allowOverlap || collision.tryPlaceAll(boxes, ghost: placed.ghost)) {
+      if (allowOverlap || collision.tryPlaceAll(boxes)) {
         return _DrawableSymbol(placed,
             icon: icon, text: text, textRect: textRect, textScale: textScale);
       }
     }
     if (icon != null &&
         layer.textOptional.eval(ctx) &&
-        collision.tryPlaceAll([icon.rect.inflate(2)], ghost: placed.ghost)) {
+        collision.tryPlaceAll([icon.rect.inflate(2)])) {
       return _DrawableSymbol(placed, icon: icon);
     }
     return null;
@@ -620,7 +606,7 @@ class LabelPainter {
     _DrawableSymbol? iconFallback() {
       if (icon != null &&
           layer.textOptional.eval(ctx) &&
-          collision.tryPlaceAll([icon.rect.inflate(2)], ghost: placed.ghost)) {
+          collision.tryPlaceAll([icon.rect.inflate(2)])) {
         return _DrawableSymbol(placed, icon: icon);
       }
       return null;
@@ -692,7 +678,7 @@ class LabelPainter {
         _rotatedBounds(textRect, placed.screenAnchor, angle).inflate(padding),
         if (icon != null) icon.rect.inflate(2),
       ];
-      if (!allowOverlap && !collision.tryPlaceAll(boxes, ghost: placed.ghost)) {
+      if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
         return iconFallback();
       }
       return _DrawableSymbol(placed,
@@ -715,7 +701,7 @@ class LabelPainter {
             .inflate(padding),
       if (icon != null) icon.rect.inflate(2),
     ];
-    if (!allowOverlap && !collision.tryPlaceAll(boxes, ghost: placed.ghost)) {
+    if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
       return iconFallback();
     }
 
@@ -1257,37 +1243,18 @@ class _DrawableSymbol {
 class _CollisionIndex {
   static const double _cellSize = 128;
   final Map<int, List<Rect>> _cells = {};
-
-  /// Space taken by labels fading out, kept apart from [_cells] so they
-  /// reserve nothing against live labels while still excluding each
-  /// other — see [tryPlaceAll].
-  final Map<int, List<Rect>> _ghostCells = {};
   final int _columns;
 
   _CollisionIndex(Size screenSize)
       : _columns = math.max(1, (screenSize.width / _cellSize).ceil() + 4);
 
   /// Whether [rects] fit, reserving them when they do.
-  ///
-  /// A [ghost] reserves nothing that a live label can see, so a label on
-  /// its way out never blocks one that outlives it. It is still placed
-  /// against the other ghosts: a feature landing on a tile seam is
-  /// claimed by both neighbours by design (see `symbol_layouter.dart`),
-  /// and this pass is what suppresses the duplicate. Without a reservation
-  /// of its own a departing label would draw twice over its own copy —
-  /// visibly doubled, and doubly opaque, for the length of the fade.
-  bool tryPlaceAll(List<Rect> rects, {bool ghost = false}) {
+  bool tryPlaceAll(List<Rect> rects) {
     for (final rect in rects) {
       if (_collides(rect)) return false;
     }
-    if (ghost) {
-      for (final rect in rects) {
-        if (_collidesIn(_ghostCells, rect)) return false;
-      }
-    }
-    final cells = ghost ? _ghostCells : _cells;
     for (final rect in rects) {
-      _insertIn(cells, rect);
+      _insert(rect);
     }
     return true;
   }
@@ -1296,16 +1263,14 @@ class _CollisionIndex {
   // allocated an iterator per collision box per frame in the hottest
   // label loop.
 
-  bool _collides(Rect rect) => _collidesIn(_cells, rect);
-
-  bool _collidesIn(Map<int, List<Rect>> cells, Rect rect) {
+  bool _collides(Rect rect) {
     final minX = ((rect.left + 512) / _cellSize).floor();
     final maxX = ((rect.right + 512) / _cellSize).floor();
     final minY = ((rect.top + 512) / _cellSize).floor();
     final maxY = ((rect.bottom + 512) / _cellSize).floor();
     for (var y = minY; y <= maxY; y++) {
       for (var x = minX; x <= maxX; x++) {
-        final rects = cells[y * _columns + x];
+        final rects = _cells[y * _columns + x];
         if (rects == null) continue;
         for (final other in rects) {
           if (rect.overlaps(other)) return true;
@@ -1315,14 +1280,14 @@ class _CollisionIndex {
     return false;
   }
 
-  void _insertIn(Map<int, List<Rect>> cells, Rect rect) {
+  void _insert(Rect rect) {
     final minX = ((rect.left + 512) / _cellSize).floor();
     final maxX = ((rect.right + 512) / _cellSize).floor();
     final minY = ((rect.top + 512) / _cellSize).floor();
     final maxY = ((rect.bottom + 512) / _cellSize).floor();
     for (var y = minY; y <= maxY; y++) {
       for (var x = minX; x <= maxX; x++) {
-        (cells[y * _columns + x] ??= []).add(rect);
+        (_cells[y * _columns + x] ??= []).add(rect);
       }
     }
   }
