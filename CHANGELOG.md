@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.5.0
 
 Labels that hold still. Every appearance and disappearance animates
 through one per-label fade, and which labels win their space is decided
