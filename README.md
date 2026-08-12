@@ -311,9 +311,13 @@ A symbol layer's zoom range is honoured exactly — nothing paints outside
 level before a declared `maxzoom` rather than snapping away, and ramp
 back in when you zoom out across it. `minzoom` stays a hard edge: it is
 inclusive, so fading there would leave a `minzoom: 14` layer invisible
-on a map sitting at exactly zoom 14. This applies to zoom ranges the
-*style* declares; a label the tileset itself stops carrying at higher
-zoom still disappears when its tile does.
+on a map sitting at exactly zoom 14.
+
+Labels that disappear for reasons the style does not declare — a feature
+the tileset stops carrying at the next zoom, or one crowded out by
+denser labelling — fade out too, over `labelFadeDuration`, as the map
+hands over to the new zoom level. They yield space to the labels that
+replace them rather than overlapping them.
 
 **Expressions:** the practical MapLibre set — `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,

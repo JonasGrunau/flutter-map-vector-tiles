@@ -45,6 +45,23 @@ Set<Object> coveringLabelKeys(TileKey key, Iterable<RetainedCohort> retained) =>
           cohort.symbols,
     ]);
 
+/// The labels of an outgoing cohort that the arriving level has no
+/// counterpart for — the ones about to disappear.
+///
+/// Some are features the tileset simply stops carrying at the next zoom;
+/// others lost their place to the new level's denser labelling. Either
+/// way nothing will draw them once the outgoing level is dropped, so
+/// they are what a fade-out has to cover. [arriving] is the key set of
+/// the cohorts replacing this one.
+List<SymbolInstance> orphanedLabels(
+  List<SymbolInstance> symbols,
+  Set<Object> arriving,
+) =>
+    [
+      for (final symbol in symbols)
+        if (!arriving.contains(labelContinuityKey(symbol))) symbol,
+    ];
+
 /// Splits [symbols] into the ones [covering] is already showing and the
 /// rest, as one list with the carried-over ones first and the length of
 /// that prefix.

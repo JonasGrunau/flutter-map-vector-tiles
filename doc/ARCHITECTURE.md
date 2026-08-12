@@ -115,6 +115,22 @@ missed match would put the blink back, while a spurious one only makes a
 label appear instantly. The carried-over prefix draws opaque; only the
 rest fades.
 
+The same split answers the other direction. Labels the arriving level
+has *no* counterpart for — a feature the tileset stops carrying at the
+next zoom, or one that lost its place to denser labelling — used to
+vanish in a single frame, at whatever moment the tiles happened to
+finish loading. They are now handed to a fade-out: the publish that
+retires a retained tile moves its orphans into `_fadingLabels` (plain
+Dart objects, so no tile texture is pinned) and they ramp to zero over
+`labelFadeDuration`. They draw as **ghosts** — placed after every live
+label regardless of style layer, and tested against the collision index
+without ever being inserted into it. A dying label therefore cannot
+block or displace one that is staying; where a live label claims its
+space the ghost simply drops, its disappearance masked by the very label
+that replaced it. Unlike the zoom ramp below this fade is time-based,
+because handover completes when tiles load rather than at a fixed zoom;
+a zoom level change cancels any fade still running.
+
 Symbols also ramp out over the last quarter zoom level before their
 layer's declared `maxzoom`, so zooming past a threshold dissolves a label
 instead of snapping it away. The ramp is a function of zoom alone — no

@@ -9,6 +9,13 @@ Labels across a zoom level change.
   when you zoom out across it. `minzoom` stays a hard edge — it is
   inclusive, so fading there would leave a `minzoom: 14` layer invisible
   on a map resting at exactly zoom 14.
+- 🎨 Labels that disappear for reasons the style does not declare — a
+  feature the tileset stops carrying at the next zoom, or one crowded
+  out by denser labelling — fade out over `labelFadeDuration` as the map
+  hands over to the new level, instead of vanishing in one frame at
+  whatever moment the tiles finished loading. They yield collision space
+  to the labels replacing them, so a departing label never overlaps or
+  displaces one that is staying.
 - 🐛 Labels no longer blink when you cross a zoom level. Crossing one
   replaces the whole display level, and the arriving tiles re-faded
   labels the outgoing level was still drawing at full opacity. The two

@@ -59,6 +59,14 @@ class PlacedSymbol {
   /// level's copy wins deterministically (`List.sort` is not stable).
   final int order;
 
+  /// A label on its way out — the arriving zoom level has no counterpart
+  /// for it, so it is fading rather than being placed. Ghosts are tested
+  /// against the collision index but never inserted into it: a dying
+  /// label must not block or displace a live one. If its space is
+  /// already taken it is simply dropped, which costs nothing — it was
+  /// leaving anyway.
+  final bool ghost;
+
   const PlacedSymbol({
     required this.instance,
     required this.screenAnchor,
@@ -66,6 +74,7 @@ class PlacedSymbol {
     this.transform,
     this.fadeOpacity = 1,
     this.order = 0,
+    this.ghost = false,
   });
 }
 
@@ -193,6 +202,11 @@ class LabelPainter {
     // current-level tiles beat retained ones on exact ties.
     final candidates = symbols
       ..sort((a, b) {
+        // Labels on their way out place last, whatever layer they are
+        // on: a ghost reserves nothing, so testing it against the
+        // finished live layout is what stops it drawing over the label
+        // that is taking its place. Live always beats dying.
+        if (a.ghost != b.ghost) return a.ghost ? 1 : -1;
         final byLayer = b.instance.layerIndex - a.instance.layerIndex;
         if (byLayer != 0) return byLayer;
         final bySortKey = a.instance.sortKey.compareTo(b.instance.sortKey);
@@ -505,12 +519,12 @@ class LabelPainter {
     final allowOverlap = text != null
         ? layer.textAllowOverlap.eval(ctx)
         : layer.iconAllowOverlap.eval(ctx);
-    if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
+    if (!allowOverlap && !collision.tryPlaceAll(boxes, ghost: placed.ghost)) {
       // Icon may still be placed when text is optional.
       if (icon != null &&
           text != null &&
           layer.textOptional.eval(ctx) &&
-          collision.tryPlaceAll([icon.rect.inflate(2)])) {
+          collision.tryPlaceAll([icon.rect.inflate(2)], ghost: placed.ghost)) {
         return _DrawableSymbol(placed, icon: icon);
       }
       return null;
@@ -552,14 +566,14 @@ class LabelPainter {
         textRect.inflate(padding),
         if (icon != null) icon.rect.inflate(2),
       ];
-      if (allowOverlap || collision.tryPlaceAll(boxes)) {
+      if (allowOverlap || collision.tryPlaceAll(boxes, ghost: placed.ghost)) {
         return _DrawableSymbol(placed,
             icon: icon, text: text, textRect: textRect, textScale: textScale);
       }
     }
     if (icon != null &&
         layer.textOptional.eval(ctx) &&
-        collision.tryPlaceAll([icon.rect.inflate(2)])) {
+        collision.tryPlaceAll([icon.rect.inflate(2)], ghost: placed.ghost)) {
       return _DrawableSymbol(placed, icon: icon);
     }
     return null;
@@ -606,7 +620,7 @@ class LabelPainter {
     _DrawableSymbol? iconFallback() {
       if (icon != null &&
           layer.textOptional.eval(ctx) &&
-          collision.tryPlaceAll([icon.rect.inflate(2)])) {
+          collision.tryPlaceAll([icon.rect.inflate(2)], ghost: placed.ghost)) {
         return _DrawableSymbol(placed, icon: icon);
       }
       return null;
@@ -678,7 +692,7 @@ class LabelPainter {
         _rotatedBounds(textRect, placed.screenAnchor, angle).inflate(padding),
         if (icon != null) icon.rect.inflate(2),
       ];
-      if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
+      if (!allowOverlap && !collision.tryPlaceAll(boxes, ghost: placed.ghost)) {
         return iconFallback();
       }
       return _DrawableSymbol(placed,
@@ -701,7 +715,7 @@ class LabelPainter {
             .inflate(padding),
       if (icon != null) icon.rect.inflate(2),
     ];
-    if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
+    if (!allowOverlap && !collision.tryPlaceAll(boxes, ghost: placed.ghost)) {
       return iconFallback();
     }
 
@@ -1248,10 +1262,15 @@ class _CollisionIndex {
   _CollisionIndex(Size screenSize)
       : _columns = math.max(1, (screenSize.width / _cellSize).ceil() + 4);
 
-  bool tryPlaceAll(List<Rect> rects) {
+  /// Whether [rects] fit, reserving them when they do.
+  ///
+  /// A [ghost] only asks: it takes no space, so a label fading out can
+  /// never block the labels that outlive it.
+  bool tryPlaceAll(List<Rect> rects, {bool ghost = false}) {
     for (final rect in rects) {
       if (_collides(rect)) return false;
     }
+    if (ghost) return true;
     for (final rect in rects) {
       _insert(rect);
     }

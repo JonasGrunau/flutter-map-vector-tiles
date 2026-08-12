@@ -53,13 +53,16 @@ PlacedSymbol _placed(
   String text = 'Feldkirchen',
   double fadeOpacity = 1,
   int order = 0,
+  int layerIndex = 0,
+  bool ghost = false,
 }) =>
     PlacedSymbol(
-      instance: _symbol(layer, text: text),
+      instance: _symbol(layer, text: text, layerIndex: layerIndex),
       screenAnchor: Offset(200, dy),
       screenAngle: 0,
       fadeOpacity: fadeOpacity,
       order: order,
+      ghost: ghost,
     );
 
 List<PlacedSymbol> _paint(List<PlacedSymbol> symbols) {
@@ -212,6 +215,95 @@ void main() {
 
     test('nothing retained: the arriving cohort is free to fade', () {
       expect(coveringLabelKeys(const TileKey(15, 200, 200), const []), isEmpty);
+    });
+  });
+
+  group('orphanedLabels', () {
+    test('keeps only what the arriving level does not replace', () {
+      // Feldkirchen is in the tileset at z13 but not at z14: no symbol
+      // at the arriving level will ever draw it, so it is what a
+      // fade-out has to cover.
+      final outgoing = [
+        _symbol(layer),
+        _symbol(layer, text: 'Aschheim'),
+      ];
+      final orphans = orphanedLabels(
+          outgoing,
+          labelContinuityKeys([
+            [_symbol(layer, text: 'Aschheim')]
+          ]));
+      expect(orphans, hasLength(1));
+      expect(orphans.single.text, 'Feldkirchen');
+    });
+
+    test('a fully replaced cohort orphans nothing', () {
+      final outgoing = [_symbol(layer), _symbol(layer, text: 'Aschheim')];
+      expect(
+          orphanedLabels(outgoing, labelContinuityKeys([outgoing])), isEmpty);
+    });
+
+    test('an arriving level with no labels orphans everything', () {
+      final outgoing = [_symbol(layer), _symbol(layer, text: 'Aschheim')];
+      expect(orphanedLabels(outgoing, const {}), hasLength(2));
+    });
+
+    test('orphans and carry-over partition the outgoing cohort', () {
+      // The two halves must not overlap, or a label would both fade out
+      // and be redrawn opaque by the arriving level.
+      final outgoing = [
+        _symbol(layer),
+        _symbol(layer, text: 'Aschheim'),
+        _symbol(layer, text: 'Riemerling'),
+      ];
+      final arriving = labelContinuityKeys([
+        [_symbol(layer, text: 'Aschheim')]
+      ]);
+      final orphans = orphanedLabels(outgoing, arriving);
+      final carried = partitionCarriedOver(outgoing, arriving).carriedCount;
+      expect(orphans.length + carried, outgoing.length);
+    });
+  });
+
+  group('a label fading out', () {
+    test('yields its space to a live label, and never blocks one', () {
+      // The ghost sorts first on y, so without the ghost rules it would
+      // take the space and the live label would be dropped. Instead the
+      // live label places, and the ghost — tested against the finished
+      // layout, reserving nothing — steps aside. Its disappearance is
+      // masked by the very label that replaced it.
+      final drawn = _paint([
+        _placed(layer, 200, text: 'Feldkirchen', fadeOpacity: 0.5, ghost: true),
+        _placed(layer, 200.2, text: 'Aschheim', order: 1),
+      ]);
+      expect(drawn, hasLength(1));
+      expect(drawn.single.instance.text, 'Aschheim');
+    });
+
+    test('still fades out where nothing live claims its space', () {
+      // The ordinary case: the arriving level simply has no label here,
+      // so the ghost draws at its fade opacity until it reaches zero.
+      final drawn = _paint([
+        _placed(layer, 200, text: 'Feldkirchen', fadeOpacity: 0.5, ghost: true),
+        _placed(layer, 340, text: 'Aschheim', order: 1),
+      ]);
+      expect(drawn, hasLength(2));
+      expect(
+        drawn.singleWhere((s) => s.instance.text == 'Feldkirchen').fadeOpacity,
+        0.5,
+      );
+    });
+
+    test('loses even from a style layer that would normally win space', () {
+      // Topmost layers place first, so layer 5 would beat layer 0 — but
+      // ghosts place after every live label regardless of layer. A dying
+      // label never outranks one that is staying.
+      final drawn = _paint([
+        _placed(layer, 200,
+            text: 'Feldkirchen', layerIndex: 5, fadeOpacity: 0.5, ghost: true),
+        _placed(layer, 200.2, text: 'Aschheim', order: 1),
+      ]);
+      expect(drawn, hasLength(1));
+      expect(drawn.single.instance.text, 'Aschheim');
     });
   });
 
