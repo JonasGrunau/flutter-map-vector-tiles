@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.6.1
+
+Documentation only — the style support section, rewritten to be
+scannable. The library is unchanged from 2.6.0.
+
+- 📚 **Style support**: layer types are a table with a row per type,
+  icons and expressions sit together as the reference block they are,
+  and the label behaviour becomes a Labels subsection of bold-led
+  bullets instead of five dense paragraphs — with the zoom-handover
+  guarantees split out from the general fade rule, since they answer a
+  different question. No behaviour claim changed.
+
 ## 2.6.0
 
 Everything a third-party tile source needs: providers can now be

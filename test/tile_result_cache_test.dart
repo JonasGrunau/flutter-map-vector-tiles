@@ -174,22 +174,20 @@ void main() {
           ),
         ),
       ));
-      // `settle` returns at first paint, and only *finished* tiles enter
-      // the cache — so wait for the buffer ring too, or the counts below
-      // are compared against a level that was never fully rendered.
-      await settleLoads(tester, provider);
+      // `settle` returns at first paint; keep pumping so the buffer
+      // ring finishes too — only *finished* tiles enter the cache.
+      await settle(tester);
+      await sampleDuring(tester, frames: 40);
       expect(await centrePixel(tester), land);
 
       controller.move(const LatLng(48.1725, 11.7375), 13);
-      await settleLoads(tester, provider);
+      await settle(tester);
+      await sampleDuring(tester, frames: 40);
       expect(await centrePixel(tester), land);
 
       final rasterized = TileRasterizer.debugRasterizeCount;
       final laidOut = SymbolLayouter.debugLayoutCount;
 
-      // `settle`, not `settleLoads`: this counts what painting the level
-      // again costs, and the buffer ring beyond it is a question this
-      // test does not ask.
       controller.move(const LatLng(48.1725, 11.7375), 14);
       await settle(tester);
       expect(await centrePixel(tester), land);
