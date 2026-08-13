@@ -326,72 +326,75 @@ disk cache doesn't store a second copy of what you already have.
 
 ## 🎨 Style support
 
-**Layer types:** `background`, `fill` (incl. `fill-pattern`), `line`
-(incl. `line-pattern`, dashes, casing), `symbol` (incl. curved line
-text, `text-variable-anchor` / `text-radial-offset`), `circle`, and
-`raster` — raster sources inside vector styles (satellite/hybrid
-imagery) draw at their layer position with `raster-opacity`,
-brightness/contrast/saturation/hue-rotate matching MapLibre's shader
-math (`fill-extrusion` renders as flat fill; `hillshade`, `heatmap` and
-`sky` are skipped with a log line).
+**Layer types**
 
-**Icons:** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
-per `icon-color`, `icon-halo-color` and `icon-halo-width` — dark
-MapLibre styles ship their icons this way. Ordinary sprites are drawn
-with the colours baked into the sheet.
+| Type | Support |
+|---|---|
+| `background`, `fill`, `line`, `circle` | full — including `fill-pattern`, `line-pattern`, dashes and casing |
+| `symbol` | full — including curved line text and `text-variable-anchor` / `text-radial-offset`; see [Labels](#-labels) below |
+| `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity` and brightness/contrast/saturation/hue-rotate matching MapLibre's shader math |
+| `fill-extrusion` | renders as a flat fill |
+| `hillshade`, `heatmap`, `sky` | skipped, with a log line |
 
-Road labels curve glyph-by-glyph along their line with MapLibre
-semantics: `text-max-angle` rejects labels on sharp bends,
-`text-keep-upright` flips reading direction, and
-`text-rotation-alignment: viewport` keeps shield text horizontal.
-Nearly straight windows are drawn as a single rotated string for speed;
-scripts with contextual shaping (Arabic, Indic, …) fall back to straight
-placement so glyphs are never mis-joined.
+**Icons** — SDF sprite sheets (`"sdf": true`) are thresholded and tinted
+per `icon-color`, `icon-halo-color` and `icon-halo-width`; dark MapLibre
+styles ship their icons this way. Ordinary sprites are drawn with the
+colours baked into the sheet.
 
-A symbol layer's zoom range is honoured exactly — nothing claims label
-space outside `[minzoom, maxzoom)` — but labels ramp out over the last
-quarter zoom level before a declared `maxzoom` rather than snapping
-away, and ramp back in when you zoom out across it. (`minzoom` gets no
-such zoom-based ramp: it is inclusive, so one would leave a
-`minzoom: 14` layer invisible on a map sitting at exactly zoom 14.)
-
-Beyond that declared ramp, every label appearance and disappearance is
-animated per label: one fade state per label *identity* (layer, text,
-icon), rising while the label is placed and falling once it no longer
-is — whatever the reason. A feature the tileset stops carrying at the
-next zoom, a label crowded out by denser labelling, or a whole layer
-cut at its `minzoom` eases out over `labelFadeDuration` instead of
-vanishing in one frame; a departing label frees its space immediately,
-so its replacement fades in over it — a crossfade, not a pop at the
-fade's end. A label that survives a zoom level change keeps its
-opacity: the two levels' copies share one fade state, so a crossing
-can neither blink a label nor fade it into itself. And the outgoing
-level only ever *keeps* labels on screen — it never introduces ones
-that were not already visible, so a label that had been crowded out (a
-street name under a POI, say) cannot flash up just as the level
-departs.
-
-Which labels win their space is decided on a timer rather than every
-frame — once per `labelFadeDuration` (at most every 300 ms), with the
-decision held in between, and immediately whenever new labels arrive.
-Zooming and rotating drag labels through each other constantly, and
-re-deciding on every frame turns each of those brushes past into a
-label that disappears and comes straight back; between decisions
-neighbours are simply allowed to overlap for a moment, as they are in
-MapLibre. Labels also keep their position rather than re-deriving it:
-one that can be drawn from more than one feature (a street name on both
-carriageways, or the same name from two zoom levels) stays on the one
-it is already on, a label at a `text-variable-anchor` stays at the
-anchor it took, and a road label near vertical keeps reading the way it
-was reading — so a slow pan no longer walks a street name across its
-street. Those choices are remembered per label and position rather than
-per tile, so they survive a zoom level handing over or a tile being
-re-rendered underneath a label that never left the screen.
-
-**Expressions:** the practical MapLibre set — `get`/`has`, comparisons,
+**Expressions** — the practical MapLibre set: `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,
 exponential, cubic-bezier), math, string & color operators, `let`/`var`,
 legacy filters, legacy `{stops}` functions and `{token}` templates.
+
+### 🏷️ Labels
+
+Text and icons are drawn per frame in screen space instead of being baked
+into the tile rasters. That is what the behaviour below is built on:
+
+- **Curved along the road** — glyphs are placed one by one with MapLibre
+  semantics: `text-max-angle` rejects labels on sharp bends,
+  `text-keep-upright` flips reading direction, and
+  `text-rotation-alignment: viewport` keeps shield text horizontal. Nearly
+  straight windows are drawn as a single rotated string for speed; scripts
+  with contextual shaping (Arabic, Indic, …) fall back to straight
+  placement so glyphs are never mis-joined.
+- **Zoom ranges, with a ramp at the top** — nothing claims label space
+  outside a symbol layer's `[minzoom, maxzoom)`, but labels ramp out over
+  the last quarter zoom level before a declared `maxzoom` rather than
+  snapping away, and ramp back in when you zoom out across it. `minzoom`
+  gets no such ramp: it is inclusive, so one would leave a `minzoom: 14`
+  layer invisible on a map sitting at exactly zoom 14.
+- **One fade state per label identity** — beyond that declared ramp, every
+  appearance and disappearance is animated per label (layer, text, icon),
+  rising while the label is placed and falling once it no longer is —
+  whatever the reason. A feature the tileset stops carrying at the next
+  zoom, a label crowded out by denser labelling, or a whole layer cut at
+  its `minzoom` eases out over `labelFadeDuration` instead of vanishing in
+  one frame. A departing label frees its space immediately, so its
+  replacement fades in over it: a crossfade, not a pop at the fade's end.
+- **No blink when a zoom level hands over** — a label that survives the
+  change keeps its opacity, because the two levels' copies share one fade
+  state; a crossing can neither blink a label nor fade it into itself. The
+  outgoing level also only ever *keeps* labels on screen — it never
+  introduces ones that were not already visible, so a label that had been
+  crowded out (a street name under a POI, say) cannot flash up just as the
+  level departs.
+- **Placement is remembered, not re-derived** — a label that can be drawn
+  from more than one feature (a street name on both carriageways, or the
+  same name from two zoom levels) stays on the one it is already on, a
+  label at a `text-variable-anchor` stays at the anchor it took, and a road
+  label near vertical keeps reading the way it was reading — so a slow pan
+  no longer walks a street name across its street. Those choices are
+  remembered per label and position rather than per tile, so they survive a
+  zoom level handing over or a tile being re-rendered underneath a label
+  that never left the screen.
+- **Collision is decided on a timer** — once per `labelFadeDuration` (at
+  most every 300 ms), with the decision held in between, and immediately
+  whenever new labels arrive. Zooming and rotating drag labels through each
+  other constantly, and re-deciding on every frame turns each of those
+  brushes past into a label that disappears and comes straight back;
+  between decisions neighbours are simply allowed to overlap for a moment,
+  as they are in MapLibre.
 
 ## 🏗️ Architecture
 
