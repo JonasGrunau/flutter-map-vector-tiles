@@ -1,24 +1,13 @@
 # Changelog
 
-## Unreleased
-
-- 🐛 Street names no longer flip to the other side of their street, and
-  labels at a `text-variable-anchor` no longer hop, at the moment a zoom
-  level hands over or a tile is re-rendered. The choices a label makes
-  when it is placed — which anchor it sits at, which way it reads — were
-  kept on the symbol instance, and a new zoom level's copy of a street
-  is a new instance: it decided again from scratch, at full opacity,
-  with no fade to cover the change. They are now remembered per label
-  and position, so the arriving copy inherits what the label it replaces
-  was sitting on.
-
 ## 2.6.0
 
-Everything a third-party tile source needs. Providers can now be
+Everything a third-party tile source needs: providers can now be
 substituted into a hosted style, opt out of the disk cache, and coalesce
 their own requests — enough that
 [`flutter_map_vector_tiles_mbtiles`](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles)
-adds MBTiles archives without this package taking on SQLite.
+adds MBTiles archives without this package taking on SQLite. Labels also
+hold the spot they are sitting on across a zoom crossing.
 
 - ✨ **Bring your own provider**: `StyleReader(resolveProvider: …)` swaps
   in a provider for any source by id, so a local archive can back a
@@ -36,6 +25,15 @@ adds MBTiles archives without this package taking on SQLite.
   `VectorTileProvider.cacheBytesToDisk`; `MemoryVectorTileProvider`
   already does. The opt-out covers reads as well as writes, so an entry
   written before a source became local cannot shadow it.
+- 🐛 Street names no longer flip to the other side of their street, and
+  labels at a `text-variable-anchor` no longer hop, at the moment a zoom
+  level hands over or a tile is re-rendered. The choices a label makes
+  when it is placed — which anchor it sits at, which way it reads — were
+  kept on the symbol instance, and a new zoom level's copy of a street
+  is a new instance: it decided again from scratch, at full opacity,
+  with no fade to cover the change. They are now remembered per label
+  and position, so the arriving copy inherits what the label it replaces
+  was sitting on.
 - 📚 The offline documentation now points at a real MBTiles
   implementation instead of describing one you would have to write.
 
