@@ -128,22 +128,19 @@ void main() {
     final controller = MapController();
 
     await tester.pumpWidget(labelApp(controller, provider, showLabels: false));
-    await settle(tester);
+    // Every tile fetched, not just the centre one painted: a tile still
+    // in flight when the flag flips below is re-requested for that
+    // reason alone, and would be mistaken for a refetch.
+    await settleLoads(tester, provider);
     expect(await hasColor(tester, labelColor), isFalse,
         reason: 'labels are disabled');
-    final loadsBefore = provider.loads;
-    expect(loadsBefore, greaterThan(0));
+    expect(provider.loads, greaterThan(0));
 
     await tester.pumpWidget(labelApp(controller, provider, showLabels: true));
-    for (var i = 0; i < 30; i++) {
-      await tester.pump(const Duration(milliseconds: 16));
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 5)));
-      if (await hasColor(tester, labelColor)) break;
-    }
+    await pumpUntil(tester, () => hasColor(tester, labelColor));
     expect(await hasColor(tester, labelColor), isTrue,
         reason: 'live tiles must re-lay-out their symbols');
-    expect(provider.loads, loadsBefore,
+    expect(provider.reloads, 0,
         reason: 'the re-layout must reuse already-decoded tiles');
 
     await tester.pumpWidget(const SizedBox());
@@ -158,14 +155,10 @@ void main() {
     final provider = EverywhereProvider(labelledTile());
     final controller = MapController();
 
+    // Not `settle`: this tile's label sits on the map centre, so the
+    // centre pixel it waits for is the label's lime, never the land red.
     await tester.pumpWidget(labelApp(controller, provider, showLabels: true));
-    await settle(tester);
-    for (var i = 0; i < 30; i++) {
-      await tester.pump(const Duration(milliseconds: 16));
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 5)));
-      if (await hasColor(tester, labelColor)) break;
-    }
+    await pumpUntil(tester, () => hasColor(tester, labelColor));
     expect(await hasColor(tester, labelColor), isTrue);
 
     await tester.pumpWidget(labelApp(controller, provider, showLabels: false));
@@ -194,12 +187,7 @@ void main() {
       showLabels: true,
       labelFadeDuration: const Duration(microseconds: 500),
     ));
-    for (var i = 0; i < 30; i++) {
-      await tester.pump(const Duration(milliseconds: 16));
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 5)));
-      if (await hasColor(tester, labelColor)) break;
-    }
+    await pumpUntil(tester, () => hasColor(tester, labelColor));
     expect(tester.takeException(), isNull);
     expect(await hasColor(tester, labelColor), isTrue);
 

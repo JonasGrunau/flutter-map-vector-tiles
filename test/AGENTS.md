@@ -80,6 +80,10 @@ is no CI to catch either.
 - Plain `test()`/`testWidgets()` with `expect` — no mocks, no code generation.
 - Fixtures are built in-test from `fixtures/mvt_builder.dart` rather than
   checked in as binary blobs, so the input to a failing test is readable.
+- Widget tests wait on the wall clock (`pumpUntil` / `settle` / `settleLoads`
+  from `fixtures/lifecycle_harness.dart`), never on a fixed number of pumped
+  frames — see `fixtures/AGENTS.md` for why a frame count silently becomes a
+  shorter deadline under parallel load.
 - Fixture encoders must be web-safe too. `mvt_builder.dart`'s `zig()` uses
   arithmetic, not `(v << 1) ^ (v >> 31)`: under dart2js the shift form
   mis-encodes negative deltas, which would make the decoder's round-trip

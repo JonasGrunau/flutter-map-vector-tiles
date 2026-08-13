@@ -15,6 +15,7 @@ the test itself.
 |------|-------------|
 | `mvt_builder.dart` | `MvtTileBuilder` / `MvtLayerBuilder` — a minimal MVT (protobuf) encoder: layers, features, tags, geometry commands, varint and tag writing |
 | `pmtiles_builder.dart` | `PmTilesArchiveBuilder` — a minimal PMTiles v3 archive writer: header, delta-varint directories, optional leaf splitting and pluggable compression. Web-safe (arithmetic only) so the same fixtures run in the browser suite |
+| `lifecycle_harness.dart` | The widget-test harness: `app()` (a `FlutterMap` with one `VectorTileLayer` at a fixed 600×600), `CountingProvider` / `EverywhereProvider`, the pixel readers (`centrePixel`, `fullyPainted`) and the waits (`pumpUntil`, `settle`, `settleLoads`, `sampleDuring`) |
 
 ## For AI Agents
 
@@ -38,6 +39,22 @@ failing decoder test.
 
 - Builders return `Uint8List` ready to hand to `decodeMvt` or to a
   `MemoryVectorTileProvider`.
+- **Widget tests wait on the wall clock, never on a frame count.** The decode
+  isolates and disk IO these tests wait for run outside the fake clock, so a
+  `for (var i = 0; i < 30; i++) pump()` loop is a *shorter* deadline the busier
+  the machine is — which is how the lifecycle tests used to flake in a parallel
+  suite while passing alone. Wait with `pumpUntil` (or `settle` /
+  `settleLoads`, both built on it) and let the timeout be the bound.
+- **`settle` returns at the centre pixel; `settleLoads` waits for the grid.**
+  Anything that compares what a *later* phase fetches or renders needs
+  `settleLoads`: `settle` leaves the rest of the screenful — and the off-screen
+  buffer ring — still in flight, and a tile in flight when the layer rebuilds
+  is legitimately requested again, which then reads as a refetch of something
+  already loaded. Pass `painted: false` when the tiles are not expected to
+  paint at all, as during a simulated outage.
+- **Assert `reloads`, not a `loads` snapshot**, for "this must reuse what it
+  already has". A key fetched twice is unambiguous whenever it happens, where a
+  count captured between two phases attributes late arrivals to the wrong one.
 
 ## Dependencies
 

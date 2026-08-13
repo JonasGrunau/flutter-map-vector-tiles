@@ -9,24 +9,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'fixtures/lifecycle_harness.dart';
 
 /// Fails every load until [failing] is cleared — a network outage.
-class OutageProvider extends VectorTileProvider {
+class OutageProvider extends CountingProvider {
   final Uint8List bytes;
   var failing = true;
-  var loads = 0;
 
   OutageProvider(this.bytes);
 
-  @override
-  int get maximumZoom => 20;
-  @override
-  int get minimumZoom => 0;
   @override
   String get cacheKey => 'outage';
 
   @override
   Future<TileResponse> load(TileKey tile,
       {CancellationToken? cancellation}) async {
-    loads++;
+    note(tile);
     if (failing) return TileResponseError(Exception('offline'));
     return TileResponseData(bytes);
   }
@@ -59,6 +54,12 @@ void main() {
       await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 5)));
     }
+    // Those ten frames are normally the grid's whole first attempt. This
+    // is the guarantee: on a loaded machine they can all pass before the
+    // first tile is so much as requested, and the outage below would
+    // then be cleared before anything had failed. Waiting for *quiet*
+    // instead would spend the retry budget this test needs intact.
+    await pumpUntil(tester, () async => provider.loads > 0);
     expect(await centrePixel(tester), background,
         reason: 'every load failed — tiles finalize without the source');
     final failedLoads = provider.loads;
@@ -95,6 +96,11 @@ void main() {
       await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 5)));
     }
+    // Let the attempts those timers started actually reach the provider
+    // before counting them: one still on its way lands in the window
+    // below instead, where it reads as a timer that should not have
+    // fired at all.
+    await settleLoads(tester, provider, painted: false);
     final afterBudget = provider.loads;
 
     // No timer may fire any more.

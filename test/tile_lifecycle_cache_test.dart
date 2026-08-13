@@ -43,8 +43,22 @@ void main() {
     await tester.pumpWidget(
       app(MapController(), first, cachePath: () async => dir.path),
     );
-    await settle(tester);
+    // The *whole* grid, not just the centre tile: what the reopen below
+    // asserts is that nothing goes to the network, so every tile the
+    // second layer will ask for — buffer ring included — has to have
+    // been fetched here first.
+    await settleLoads(tester, first);
     expect(first.loads, greaterThan(0), reason: 'nothing was cached yet');
+
+    // Disk writes are fire-and-forget — a tile is displayed without
+    // waiting for its cache entry to land. Tearing the map down while
+    // they are still in flight is what made this test a coin toss.
+    expect(
+        await pumpUntil(
+            tester, () async => diskEntries(dir) == first.served.length),
+        isTrue,
+        reason: 'only ${diskEntries(dir)} of ${first.served.length} '
+            'fetched tiles reached the disk');
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
@@ -66,7 +80,8 @@ void main() {
     ));
     await tester.pump();
     cacheReady.complete();
-    await settle(tester);
+    expect(await pumpUntil(tester, () => fullyPainted(tester)), isTrue,
+        reason: 'the reopened map never finished painting');
 
     expect(await centrePixel(tester), land);
     expect(second.loads, 0, reason: 'the screenful was already on disk');
@@ -75,3 +90,12 @@ void main() {
     await tester.pump();
   });
 }
+
+/// Entries the disk cache has committed under [dir] — one `.bin` file per
+/// cached tile. The `.tmp` files of writes still in flight are excluded,
+/// which is what makes this a completion signal.
+int diskEntries(Directory dir) => dir
+    .listSync()
+    .whereType<File>()
+    .where((f) => f.path.endsWith('.bin'))
+    .length;

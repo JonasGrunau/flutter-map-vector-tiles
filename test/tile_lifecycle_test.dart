@@ -94,20 +94,26 @@ void main() {
     // The memory cache is what keeps a pan-away-and-back from hitting
     // the network again, so it must survive tiles leaving the viewport.
     await withMap(tester, (controller, provider) async {
+      // The whole grid, not just the centre tile: a tile still in flight
+      // when the pan starts is cancelled and fetched again on the way
+      // back, which is not the refetch this test is looking for.
+      await settleLoads(tester, provider);
       final afterFirstPaint = provider.loads;
       expect(afterFirstPaint, greaterThan(0));
 
       controller.move(const LatLng(48.60, 12.40), 14);
       await settle(tester);
-      final afterPanAway = provider.loads;
-      expect(afterPanAway, greaterThan(afterFirstPaint),
+      expect(provider.loads, greaterThan(afterFirstPaint),
           reason: 'new ground genuinely needs fetching');
 
       controller.move(const LatLng(48.1725, 11.7375), 14);
       await settle(tester);
 
       expect(await centrePixel(tester), land);
-      expect(provider.loads, afterPanAway,
+      // Not a `loads` snapshot taken before the move: the ground panned
+      // away from is still filling in its buffer ring, and those loads
+      // would be counted against the return trip.
+      expect(provider.reloads, 0,
           reason: 'the original tiles should come back from memory');
     });
   });
@@ -123,7 +129,10 @@ void main() {
     addTearDown(tester.view.reset);
 
     await tester.pumpWidget(app(MapController(), provider));
-    await settle(tester);
+    // The whole grid, not just the centre tile: a tile still in flight
+    // when the layer goes away never reached the decoded cache, so the
+    // reopen fetches it again for a reason this test is not about.
+    await settleLoads(tester, provider);
     final afterFirstOpen = provider.loads;
     expect(afterFirstOpen, greaterThan(0));
 
