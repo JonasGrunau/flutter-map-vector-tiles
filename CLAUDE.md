@@ -74,3 +74,15 @@ Before publishing (see also `CHANGELOG.md`):
 2. `flutter analyze` — clean.
 3. `flutter test` — all green.
 4. `dart pub publish --dry-run` and a pana run; the package holds full pub points.
+
+Shipping a version is: a `Release X.Y.Z` commit, a `vX.Y.Z` tag, and
+`dart pub publish`.
+
+**No GitHub Releases.** The release notes would only repeat
+`CHANGELOG.md`, which ships in the package and is what pub.dev's
+changelog tab renders — a second copy on GitHub is one more place to
+forget. The tags stay: `dart pub publish` uploads the *working tree*
+rather than a commit, so `vX.Y.Z` is the only record of which source
+actually became a published version, and what makes
+`git diff v2.5.0..v2.6.0` or a checkout of the version a bug report
+names possible.
