@@ -396,9 +396,12 @@ is owned by the `Style` like any other.
 
 MBTiles specifically lives outside this package, in
 `flutter_map_vector_tiles_mbtiles`. The reason is dependency shape, not
-layering: MBTiles is SQLite through `dart:ffi`, which would give every
-consumer here a native dependency and cost the web platform tag, to
-serve a minority of them. Three pieces of this package exist to make
+layering: MBTiles is SQLite through `dart:ffi`, which would cost the web
+platform tag here — and `package:sqlite3` 3.x bundles a prebuilt SQLite
+into every consumer through a build hook with no link-hook pruning, plus
+requiring Flutter 3.38. Both costs are right for a package whose users
+all want an archive reader, and wrong for one where most users never
+open one. Three pieces of this package exist to make
 that split work, and are worth treating as contract rather than
 implementation detail: `VectorTileProvider.cacheBytesToDisk`,
 `StyleReader.resolveProvider`, and the exported `SingleFlight`. Together
