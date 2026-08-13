@@ -58,6 +58,11 @@ class SymbolPath {
 
 /// A single label/icon placement candidate within a display tile,
 /// in logical tile coordinates (0..256).
+///
+/// Holds no placement state on purpose: an instance is rebuilt whenever
+/// its display tile is laid out, which is exactly when a label is
+/// crossing zoom levels and most needs its choices to hold. Those live
+/// in `PlacementMemory`, keyed by label and position instead.
 class SymbolInstance {
   final SymbolThemeLayer layer;
 
@@ -90,28 +95,6 @@ class SymbolInstance {
   /// key strings are rebuilt only when a style ramp actually crosses a
   /// quantization step — not once per zoom step, and never per frame.
   TextStyleMemo? textStyleMemo;
-
-  /// The `text-variable-anchor` this label was last placed at. Tried
-  /// first at the next placement, so an anchor only moves when it
-  /// genuinely stops fitting — a label that hopped to its second choice
-  /// because a neighbour brushed past it for one pass would otherwise
-  /// hop straight back. Null until the label is first placed, and never
-  /// set for labels whose layer declares no variable anchors.
-  String? anchorMemo;
-
-  /// Whether this label's text lost its space at the last placement and
-  /// only its icon was drawn (`text-optional`). Replayed between
-  /// placement passes, where nothing competes for space and the text
-  /// would otherwise flash back in for those frames.
-  bool textDropped = false;
-
-  /// Whether this along-line label last read *against* its line's
-  /// direction. Sticky: see `LabelPainter._readsBackwards`, which only
-  /// changes the answer once the line is clearly past vertical, because
-  /// the raw test flips at exactly vertical — where a road's on-screen
-  /// direction is a pixel of camera noise, and every flip mirrors the
-  /// label to the other side of the line.
-  bool? uprightFlip;
 
   /// Whether per-glyph curved rendering is safe for [text]: re-shaping
   /// each cluster in isolation only preserves scripts without

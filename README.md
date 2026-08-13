@@ -384,7 +384,9 @@ carriageways, or the same name from two zoom levels) stays on the one
 it is already on, a label at a `text-variable-anchor` stays at the
 anchor it took, and a road label near vertical keeps reading the way it
 was reading — so a slow pan no longer walks a street name across its
-street.
+street. Those choices are remembered per label and position rather than
+per tile, so they survive a zoom level handing over or a tile being
+re-rendered underneath a label that never left the screen.
 
 **Expressions:** the practical MapLibre set — `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,

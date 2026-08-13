@@ -189,6 +189,16 @@ class LabelPainter {
   /// is an identity set.
   final _winners = <SymbolInstance>{};
 
+  /// The placement choices each label is sitting on — kept here rather
+  /// than on the instances, which are replaced under a label that never
+  /// left the screen. See [PlacementMemory].
+  final _memory = PlacementMemory();
+
+  /// The placement memory, for tests that assert a label's remembered
+  /// choices across frames.
+  @visibleForTesting
+  PlacementMemory get debugPlacement => _memory;
+
   /// Whether the last paint left any label fade mid-flight. The widget
   /// keeps its fade ticker running while this is true — placement (and
   /// with it a fade's start or end) can change on any painted frame,
@@ -208,6 +218,7 @@ class LabelPainter {
     _fades.clear();
     _fallbacks.clear();
     _winners.clear();
+    _memory.clear();
     _placement.reset();
   }
 
@@ -290,6 +301,7 @@ class LabelPainter {
       generation: placementGeneration,
       screenSize: screenSize,
     );
+    _memory.beginFrame(prune: placing);
     // Quantize the eval zoom to [_zoomStep] steps: the per-instance
     // memo and the zoom-only expression memos compare against the exact
     // zoom, so evaluating at the raw fractional zoom would miss every
@@ -614,6 +626,11 @@ class LabelPainter {
     // a level away from the threshold the style declares.
     if (gateZoom && !layer.coversZoom(styleZoom)) return null;
 
+    // What this label decided last time it was placed — by position, so
+    // the instance that arrives with a new zoom level inherits what the
+    // one it replaces was sitting on.
+    final sitting = _memory.sitting(instance.continuityKey, anchor);
+
     final ctx = EvalContext(
       zoom: evalZoom,
       properties: instance.properties,
@@ -633,8 +650,8 @@ class LabelPainter {
     var fontSize = _shapeSize;
     var textScale = 1.0;
     final replaying = collision.permissive;
-    if (!replaying) instance.textDropped = false;
-    if (!(replaying && instance.textDropped) &&
+    if (!replaying) sitting.textDropped = false;
+    if (!(replaying && sitting.textDropped) &&
         instance.text.isNotEmpty &&
         layer.textOpacity.eval(ctx) > 0) {
       final size = layer.textSize.eval(ctx);
@@ -684,7 +701,7 @@ class LabelPainter {
         : null;
     if (text != null && variableAnchors != null && variableAnchors.isNotEmpty) {
       return _prepareVariableAnchor(placed, layer, ctx, text, fontSize,
-          textScale, icon, variableAnchors, collision);
+          textScale, icon, variableAnchors, collision, sitting);
     }
 
     // Along-line text follows the line glyph by glyph, unless the style
@@ -696,10 +713,10 @@ class LabelPainter {
         if (instance.path != null &&
             placed.transform != null &&
             instance.curveSafe) {
-          return _prepareCurved(
-              placed, layer, ctx, text, fontSize, textScale, icon, collision);
+          return _prepareCurved(placed, layer, ctx, text, fontSize, textScale,
+              icon, collision, sitting);
         }
-        lineTextAngle = _uprightAngle(instance, placed.screenAngle);
+        lineTextAngle = _uprightAngle(sitting, placed.screenAngle);
       }
     }
 
@@ -744,7 +761,7 @@ class LabelPainter {
           text != null &&
           layer.textOptional.eval(ctx) &&
           collision.tryPlaceAll([icon.rect.inflate(2)])) {
-        instance.textDropped = true;
+        sitting.textDropped = true;
         return _DrawableSymbol(placed, icon: icon);
       }
       return null;
@@ -781,21 +798,22 @@ class LabelPainter {
     _DrawableIcon? icon,
     List<String> anchors,
     _CollisionIndex collision,
+    SittingPlacement sitting,
   ) {
     final padding = layer.textPadding.eval(ctx);
     final radial = layer.textRadialOffset.eval(ctx) * fontSize;
     final allowOverlap = layer.textAllowOverlap.eval(ctx);
     final width = text.size.width * textScale;
     final height = text.size.height * textScale;
-    final instance = placed.instance;
     // Index -1 is the remembered anchor, which the style-order loop
-    // then skips. A memo the style no longer offers (a data-driven
-    // anchor list) is ignored.
-    final memo = instance.anchorMemo;
-    final sitting = memo != null && anchors.contains(memo) ? memo : null;
-    for (var i = sitting == null ? 0 : -1; i < anchors.length; i++) {
-      final anchorName = i < 0 ? sitting! : anchors[i];
-      if (i >= 0 && anchorName == sitting) continue;
+    // then skips. A remembered anchor the style no longer offers (a
+    // data-driven anchor list) is ignored.
+    final remembered = sitting.anchor;
+    final seat =
+        remembered != null && anchors.contains(remembered) ? remembered : null;
+    for (var i = seat == null ? 0 : -1; i < anchors.length; i++) {
+      final anchorName = i < 0 ? seat! : anchors[i];
+      if (i >= 0 && anchorName == seat) continue;
       final shifted = placed.screenAnchor + _radialShift(anchorName, radial);
       final textRect = _anchoredRect(anchorName, shifted, width, height);
       final boxes = [
@@ -803,7 +821,7 @@ class LabelPainter {
         if (icon != null) icon.rect.inflate(2),
       ];
       if (allowOverlap || collision.tryPlaceAll(boxes)) {
-        instance.anchorMemo = anchorName;
+        sitting.anchor = anchorName;
         return _DrawableSymbol(placed,
             icon: icon, text: text, textRect: textRect, textScale: textScale);
       }
@@ -811,7 +829,7 @@ class LabelPainter {
     if (icon != null &&
         layer.textOptional.eval(ctx) &&
         collision.tryPlaceAll([icon.rect.inflate(2)])) {
-      instance.textDropped = true;
+      sitting.textDropped = true;
       return _DrawableSymbol(placed, icon: icon);
     }
     return null;
@@ -848,6 +866,7 @@ class LabelPainter {
     double textScale,
     _DrawableIcon? icon,
     _CollisionIndex collision,
+    SittingPlacement sitting,
   ) {
     final instance = placed.instance;
     final path = instance.path!;
@@ -859,7 +878,7 @@ class LabelPainter {
       if (icon != null &&
           layer.textOptional.eval(ctx) &&
           collision.tryPlaceAll([icon.rect.inflate(2)])) {
-        instance.textDropped = true;
+        sitting.textDropped = true;
         return _DrawableSymbol(placed, icon: icon);
       }
       return null;
@@ -883,8 +902,8 @@ class LabelPainter {
     final chord = s1 - s0;
     final chordLength = chord.distance;
     final backwards = chordLength > 0
-        ? _readsBackwards(instance, chord.dx / chordLength)
-        : instance.uprightFlip ?? false;
+        ? _readsBackwards(sitting, chord.dx / chordLength)
+        : sitting.flip ?? false;
     final reversed = layer.textKeepUpright.eval(ctx) && backwards;
 
     final offset = layer.textOffset.eval(ctx);
@@ -1201,12 +1220,12 @@ class LabelPainter {
   /// dead band turns the label around once, a few degrees past
   /// vertical, and not again until the line clearly points the other
   /// way.
-  static bool _readsBackwards(SymbolInstance instance, double cosine) {
-    final previous = instance.uprightFlip;
+  static bool _readsBackwards(SittingPlacement sitting, double cosine) {
+    final previous = sitting.flip;
     final backwards = previous == null
         ? cosine < 0
         : (previous ? cosine < _flipHysteresis : cosine < -_flipHysteresis);
-    instance.uprightFlip = backwards;
+    sitting.flip = backwards;
     return backwards;
   }
 
@@ -1222,9 +1241,9 @@ class LabelPainter {
   /// [_readsBackwards] rather than by folding the angle into
   /// (-π/2, π/2] — the fold's boundary is the vertical the label
   /// oscillates around.
-  static double _uprightAngle(SymbolInstance instance, double screenAngle) =>
+  static double _uprightAngle(SittingPlacement sitting, double screenAngle) =>
       _orientAngle(
-          screenAngle, _readsBackwards(instance, math.cos(screenAngle)));
+          screenAngle, _readsBackwards(sitting, math.cos(screenAngle)));
 
   static Color _withOpacity(Color color, double opacity) =>
       opacity >= 1 ? color : color.withValues(alpha: color.a * opacity);

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- 🐛 Street names no longer flip to the other side of their street, and
+  labels at a `text-variable-anchor` no longer hop, at the moment a zoom
+  level hands over or a tile is re-rendered. The choices a label makes
+  when it is placed — which anchor it sits at, which way it reads — were
+  kept on the symbol instance, and a new zoom level's copy of a street
+  is a new instance: it decided again from scratch, at full opacity,
+  with no fade to cover the change. They are now remembered per label
+  and position, so the arriving copy inherits what the label it replaces
+  was sitting on.
+
 ## 2.6.0
 
 Everything a third-party tile source needs. Providers can now be

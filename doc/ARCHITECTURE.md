@@ -167,10 +167,9 @@ on the clock. Because a frozen decision would otherwise outlive the
 gesture that produced it, the painter reports the pass it owes and the
 fade ticker keeps painting until it runs.
 
-Three placement choices are remembered per symbol instance so that a
-pass reproduces the last one rather than re-deriving it from scratch —
-each is a spot where an arbitrary tie-break used to move a label that
-had no reason to move:
+Three placement choices are remembered so that a pass reproduces the
+last one rather than re-deriving it from scratch — each is a spot where
+an arbitrary tie-break used to move a label that had no reason to move:
 
 * **Which candidate draws a label.** A street name reaches the pass more
   than once (the two carriageways of one road; the outgoing and arriving
@@ -189,6 +188,30 @@ had no reason to move:
   a perpendicular `text-offset` is measured in the label's own frame,
   each flip also mirrored the label to the other side of the street. The
   decision now holds until the line is clearly (≈4.6°) past vertical.
+
+The last two live in a **placement memory** on the painter, keyed by
+continuity key *and* screen position, rather than on the
+`SymbolInstance`. Instances are built per display-tile layout, so a zoom
+crossing, a provisional→final swap or any re-layout hands the painter a
+brand-new object for a street that never left the screen; state kept on
+the instance dies exactly there, and since the continuity key is
+unchanged the arriving copy's cold decision lands at full opacity, with
+no crossfade to cover it. Entries are matched to the nearest sighting
+within 32 px and refreshed every painted frame, so a label moves only as
+far as the camera does between frames, and the repeats of one name along
+a single street (`symbol-spacing`, 250 px by default) keep their own.
+
+Position belongs in *that* key and not in the continuity key, because
+the two answer different questions and fail in opposite directions. A
+missed match costs a *fade* the blink it exists to prevent, so the
+continuity key errs loose; for a *decision* a loose key is what does the
+damage — every same-named street would share one side of the road —
+while a missed match merely decides cold. This is the useful core of
+MapLibre's `CrossTileSymbolIndex`, which matches symbols across zoom
+levels by position for much the same reason. The index proper is not
+worth porting: it exists to give MapLibre's per-tile placement a
+cross-tile identity, which a screen-space pass over every level's
+candidates at once already has.
 
 Symbols also ramp out over the last quarter zoom level before their
 layer's declared `maxzoom`, so zooming past a threshold dissolves a label

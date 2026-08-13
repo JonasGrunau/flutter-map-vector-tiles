@@ -1,5 +1,5 @@
 import 'dart:math' as math;
-import 'dart:ui' show Size;
+import 'dart:ui' show Offset, Size;
 
 import 'symbol_layouter.dart';
 
@@ -222,4 +222,134 @@ class PlacementThrottle {
     _lastPass = null;
     _deferred = false;
   }
+}
+
+/// The placement choices a label has already made, held apart from the
+/// [SymbolInstance] that made them.
+///
+/// Each of these is a tie-break the geometry alone does not settle, and
+/// each is visible the moment it changes its mind — so what matters is
+/// not which way it goes but that it keeps going that way. See
+/// [PlacementMemory] for why they cannot live on the instance.
+class SittingPlacement {
+  /// The `text-variable-anchor` this label was last placed at, tried
+  /// first at the next placement so an anchor only moves when it
+  /// genuinely stops fitting. Null until the label is first placed, and
+  /// never set for labels whose layer declares no variable anchors.
+  String? anchor;
+
+  /// Whether this along-line label last read *against* its line's
+  /// direction. Sticky — see `LabelPainter._readsBackwards`.
+  bool? flip;
+
+  /// Whether this label's text lost its space at the last placement and
+  /// only its icon was drawn (`text-optional`). Replayed between passes,
+  /// where nothing competes for space and the text would otherwise flash
+  /// back in for those frames.
+  bool textDropped = false;
+
+  Offset _at;
+  int _seen;
+
+  SittingPlacement._(this._at, this._seen);
+}
+
+/// Where each label's [SittingPlacement] lives: keyed by continuity key
+/// *and* screen position, so a decision outlives the instance that took
+/// it.
+///
+/// A `SymbolInstance` is built per display-tile layout, so every zoom
+/// crossing, provisional→final swap and re-layout hands the painter a
+/// brand-new object for a street that never left the screen. State kept
+/// on the instance dies with it: the arriving copy picks its anchor and
+/// its reading direction cold, and since its continuity key is unchanged
+/// the fade tracker already holds it at full opacity — so the new choice
+/// lands instantly, with no crossfade to cover it. That is a name
+/// jumping to the other side of its street at the exact moment a zoom
+/// level hands over.
+///
+/// Position is part of the key here, unlike [labelContinuityKey], and
+/// deliberately so: the two are keys for different questions, whose
+/// failure directions point opposite ways. Missing a match costs a
+/// *fade* the blink it exists to prevent, so that key errs loose. For a
+/// *decision*, a loose key is what does the damage — every "Hauptstraße"
+/// on screen would share one side-of-the-street — while a missed match
+/// merely decides cold, which is the behaviour we already have. This is
+/// the useful core of MapLibre's `CrossTileSymbolIndex`, which matches
+/// symbols across zoom levels by position for much the same reason; the
+/// index proper exists to give MapLibre's per-tile placement an identity
+/// our screen-space pass already has.
+///
+/// Entries are matched to the nearest sighting within [_radius] and
+/// refreshed on every painted frame, so between two frames a label moves
+/// only as far as the camera does. [_radius] stays well inside the
+/// default `symbol-spacing`, so the repeats of one name along a single
+/// street keep their own entries.
+class PlacementMemory {
+  /// How far a label may move between sightings and still be recognised
+  /// as the same one, in logical pixels.
+  static const _radius = 32.0;
+
+  /// Frames an entry survives unseen. Passes are the slow clock here
+  /// (one per fade duration, capped at 300ms), so this has to span
+  /// several of them; a map that is not painting is not moving either,
+  /// which is why the clock is frames rather than wall time.
+  static const _maxIdleFrames = 90;
+
+  final _entries = <Object, List<SittingPlacement>>{};
+  var _frame = 0;
+
+  /// Starts a frame. Expiry runs only on [prune] frames — the placement
+  /// passes — since it walks every entry and nothing can go stale in
+  /// between anyway.
+  void beginFrame({required bool prune}) {
+    _frame++;
+    if (!prune) return;
+    _entries.removeWhere((key, entries) {
+      entries.removeWhere((entry) => _frame - entry._seen > _maxIdleFrames);
+      return entries.isEmpty;
+    });
+  }
+
+  /// The placement state for the label [key] sitting at [position],
+  /// creating it on first sight. Refreshes the entry's position, so it
+  /// follows the camera.
+  SittingPlacement sitting(Object key, Offset position) {
+    final entries = _entries[key] ??= <SittingPlacement>[];
+    final match = _nearest(entries, position);
+    if (match == null) {
+      final entry = SittingPlacement._(position, _frame);
+      entries.add(entry);
+      return entry;
+    }
+    match._at = position;
+    match._seen = _frame;
+    return match;
+  }
+
+  /// The placement state remembered for [key] near [position], without
+  /// creating one. For tests, and for callers that only want to know
+  /// whether a label has been placed before.
+  SittingPlacement? lookup(Object key, Offset position) {
+    final entries = _entries[key];
+    return entries == null ? null : _nearest(entries, position);
+  }
+
+  static SittingPlacement? _nearest(
+      List<SittingPlacement> entries, Offset position) {
+    SittingPlacement? best;
+    var bestDistance = _radius * _radius;
+    for (final entry in entries) {
+      final distance = (entry._at - position).distanceSquared;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = entry;
+      }
+    }
+    return best;
+  }
+
+  /// Forgets everything — for theme/provider swaps, where layer indices
+  /// change meaning and no remembered choice still applies.
+  void clear() => _entries.clear();
 }

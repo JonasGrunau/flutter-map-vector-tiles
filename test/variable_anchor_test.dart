@@ -51,19 +51,32 @@ PlacedSymbol _symbolAt(
       screenAngle: 0,
     );
 
-List<PlacedSymbol> _paint(SymbolThemeLayer layer, List<PlacedSymbol> symbols) {
-  final painter = LabelPainter();
+/// Paints one frame. Pass [painter] to keep the placement memory across
+/// frames, the way the layer does — a throwaway painter remembers
+/// nothing.
+List<PlacedSymbol> _paint(
+  SymbolThemeLayer layer,
+  List<PlacedSymbol> symbols, {
+  LabelPainter? painter,
+}) {
+  final own = painter ?? LabelPainter();
   final recorder = ui.PictureRecorder();
-  final placed = painter.paint(
+  final placed = own.paint(
     canvas: Canvas(recorder),
     screenSize: const Size(400, 400),
     styleZoom: 12,
     symbols: symbols,
   );
   recorder.endRecording().dispose();
-  painter.dispose();
+  if (painter == null) own.dispose();
   return placed;
 }
+
+/// The anchor [painter] remembers for [symbol]'s label.
+String? _anchorOf(LabelPainter painter, PlacedSymbol symbol) =>
+    painter.debugPlacement
+        .lookup(symbol.instance.continuityKey, symbol.screenAnchor)
+        ?.anchor;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -113,18 +126,41 @@ void main() {
     final layer = _symbolLayer(variableAnchor: ['top', 'bottom']);
     final alpha = _symbolAt(layer, const Offset(200, 200), 'Alpha');
     final beta = _symbolAt(layer, const Offset(200, 190), 'Beta');
+    final painter = LabelPainter();
+    addTearDown(painter.dispose);
 
-    expect(_paint(layer, [alpha]), hasLength(1));
-    expect(alpha.instance.anchorMemo, 'top', reason: 'the style order');
+    expect(_paint(layer, [alpha], painter: painter), hasLength(1));
+    expect(_anchorOf(painter, alpha), 'top', reason: 'the style order');
 
-    _paint(layer, [beta, alpha]);
-    expect(alpha.instance.anchorMemo, 'bottom',
+    _paint(layer, [beta, alpha], painter: painter);
+    expect(_anchorOf(painter, alpha), 'bottom',
         reason: 'the neighbour sorts first and takes the top anchor');
 
-    _paint(layer, [alpha]);
-    expect(alpha.instance.anchorMemo, 'bottom',
+    _paint(layer, [alpha], painter: painter);
+    expect(_anchorOf(painter, alpha), 'bottom',
         reason: 'the neighbour is gone, but a label that already fits '
             'does not move');
+  });
+
+  test('a label that changes instance keeps its anchor', () {
+    // A tile republish (provisional→final, a zoom level handing over)
+    // replaces the instance under a label that never left the screen.
+    // Deciding the anchor cold there sends it back to the style's first
+    // choice — the label hops, instantly, with no fade to cover it.
+    final layer = _symbolLayer(variableAnchor: ['top', 'bottom']);
+    final alpha = _symbolAt(layer, const Offset(200, 200), 'Alpha');
+    final beta = _symbolAt(layer, const Offset(200, 190), 'Beta');
+    final painter = LabelPainter();
+    addTearDown(painter.dispose);
+
+    _paint(layer, [beta, alpha], painter: painter);
+    expect(_anchorOf(painter, alpha), 'bottom');
+
+    // Same label, one pixel over, from a freshly laid-out tile.
+    final republished = _symbolAt(layer, const Offset(200, 201), 'Alpha');
+    _paint(layer, [republished], painter: painter);
+    expect(_anchorOf(painter, republished), 'bottom',
+        reason: 'the arriving instance inherits where the label was sitting');
   });
 
   test('distant symbols are unaffected by variable anchors', () {

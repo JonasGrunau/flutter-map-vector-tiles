@@ -77,19 +77,28 @@ PlacedSymbol _lineSymbol(
   );
 }
 
-List<PlacedSymbol> _paint(List<PlacedSymbol> symbols) {
-  final painter = LabelPainter();
+/// Paints one frame. Pass [painter] to keep the placement memory across
+/// frames, the way the layer does — a throwaway painter remembers
+/// nothing.
+List<PlacedSymbol> _paint(List<PlacedSymbol> symbols, {LabelPainter? painter}) {
+  final own = painter ?? LabelPainter();
   final recorder = ui.PictureRecorder();
-  final placed = painter.paint(
+  final placed = own.paint(
     canvas: Canvas(recorder),
     screenSize: const Size(400, 400),
     styleZoom: 12,
     symbols: symbols,
   );
   recorder.endRecording().dispose();
-  painter.dispose();
+  if (painter == null) own.dispose();
   return placed;
 }
+
+/// The reading direction [painter] remembers for [symbol]'s label.
+bool? _flipOf(LabelPainter painter, PlacedSymbol symbol) =>
+    painter.debugPlacement
+        .lookup(symbol.instance.continuityKey, symbol.screenAnchor)
+        ?.flip;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -190,35 +199,74 @@ void main() {
     // the other side of the street.
     final path = _path(const [Offset(100, 0), Offset(103, 300)]);
     final instance = _lineSymbol(layer, path, 'Hauptstraße').instance;
+    final painter = LabelPainter();
+    addTearDown(painter.dispose);
 
+    // Spun about the label's own anchor, so the road turns under a
+    // label that stays where it is on screen.
     PlacedSymbol rotated(double degrees) {
       final rotation = degrees * math.pi / 180;
+      final cosR = math.cos(rotation), sinR = math.sin(rotation);
+      final a = instance.anchor;
+      final spun = Offset(a.dx * cosR - a.dy * sinR, a.dx * sinR + a.dy * cosR);
       final transform =
-          TileTransform(origin: Offset.zero, scale: 1, rotation: rotation);
+          TileTransform(origin: a - spun, scale: 1, rotation: rotation);
       return PlacedSymbol(
         instance: instance,
-        screenAnchor: transform.apply(instance.anchor),
+        screenAnchor: transform.apply(a),
         screenAngle: instance.angle + rotation,
         transform: transform,
       );
     }
 
-    expect(_paint([rotated(0)]), hasLength(1));
-    expect(instance.uprightFlip, isFalse,
+    final upright = rotated(0);
+    expect(_paint([upright], painter: painter), hasLength(1));
+    expect(_flipOf(painter, upright), isFalse,
         reason: 'reads down and to the right');
 
     // One degree of rotation takes the road past vertical …
-    _paint([rotated(1)]);
-    expect(instance.uprightFlip, isFalse,
+    _paint([rotated(1)], painter: painter);
+    expect(_flipOf(painter, upright), isFalse,
         reason: 'inside the dead band the label is left as it is');
 
     // … and only a clear turn the other way reverses it.
-    _paint([rotated(10)]);
-    expect(instance.uprightFlip, isTrue);
-    _paint([rotated(1)]);
-    expect(instance.uprightFlip, isTrue, reason: 'sticky in both directions');
-    _paint([rotated(-10)]);
-    expect(instance.uprightFlip, isFalse);
+    _paint([rotated(10)], painter: painter);
+    expect(_flipOf(painter, upright), isTrue);
+    _paint([rotated(1)], painter: painter);
+    expect(_flipOf(painter, upright), isTrue,
+        reason: 'sticky in both directions');
+    _paint([rotated(-10)], painter: painter);
+    expect(_flipOf(painter, upright), isFalse);
+  });
+
+  test('a road that changes instance keeps its reading direction', () {
+    // The same street as the tile set hands over: a new zoom level's
+    // copy is a different SymbolInstance, laid out from geometry
+    // simplified differently, so its chord can point the other way by a
+    // pixel. Deciding cold there turns the name around — and mirrors it
+    // to the other side of the street — at the moment the level swaps.
+    final layer = _lineLayer();
+    final outgoing = _lineSymbol(
+        layer, _path(const [Offset(100, 0), Offset(103, 300)]), 'Hauptstraße');
+    final arriving = _lineSymbol(
+        layer, _path(const [Offset(100, 0), Offset(99, 300)]), 'Hauptstraße');
+    expect(
+        (arriving.screenAnchor - outgoing.screenAnchor).distance, lessThan(32),
+        reason: 'the two levels put the anchor within a match radius');
+
+    final cold = LabelPainter();
+    addTearDown(cold.dispose);
+    _paint([arriving], painter: cold);
+    expect(_flipOf(cold, arriving), isTrue,
+        reason: 'on its own the arriving copy reads the other way');
+
+    final painter = LabelPainter();
+    addTearDown(painter.dispose);
+    _paint([outgoing], painter: painter);
+    expect(_flipOf(painter, outgoing), isFalse);
+    _paint([arriving], painter: painter);
+    expect(_flipOf(painter, arriving), isFalse,
+        reason: 'it inherits the direction the copy it replaces was read at');
   });
 
   test('two labels on the same spot still collide', () {

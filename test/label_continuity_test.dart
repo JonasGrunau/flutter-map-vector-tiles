@@ -335,6 +335,62 @@ void main() {
     });
   });
 
+  group('PlacementMemory', () {
+    const key = 'road-label/Hauptstraße';
+
+    test('a label near where it was sits back down at its own entry', () {
+      final memory = PlacementMemory();
+      memory.beginFrame(prune: true);
+      memory.sitting(key, const Offset(200, 200)).flip = true;
+
+      memory.beginFrame(prune: true);
+      expect(memory.sitting(key, const Offset(204, 203)).flip, isTrue,
+          reason: 'the same label, a few pixels along');
+      expect(memory.sitting(key, const Offset(200, 500)).flip, isNull,
+          reason: 'the same name further down the street decides its own');
+    });
+
+    test('the entry follows the label it was matched to', () {
+      final memory = PlacementMemory();
+      memory.beginFrame(prune: true);
+      memory.sitting(key, const Offset(100, 100)).anchor = 'bottom';
+      // Twenty pixels a frame for five frames: never more than the match
+      // radius at once, so the entry travels with it.
+      for (var i = 1; i <= 5; i++) {
+        memory.beginFrame(prune: true);
+        expect(
+            memory.sitting(key, Offset(100 + 20.0 * i, 100)).anchor, 'bottom');
+      }
+      expect(memory.lookup(key, const Offset(100, 100)), isNull,
+          reason: 'it is no longer where it started');
+    });
+
+    test('different labels never share an entry', () {
+      final memory = PlacementMemory();
+      memory.beginFrame(prune: true);
+      memory.sitting(key, const Offset(200, 200)).flip = true;
+      expect(memory.sitting('other-key', const Offset(200, 200)).flip, isNull);
+    });
+
+    test('an entry expires once its label has been gone a while', () {
+      final memory = PlacementMemory();
+      memory.beginFrame(prune: true);
+      memory.sitting(key, const Offset(200, 200)).anchor = 'bottom';
+      for (var i = 0; i < 200; i++) {
+        memory.beginFrame(prune: true);
+      }
+      expect(memory.lookup(key, const Offset(200, 200)), isNull);
+    });
+
+    test('clear forgets everything', () {
+      final memory = PlacementMemory();
+      memory.beginFrame(prune: true);
+      memory.sitting(key, const Offset(200, 200)).anchor = 'bottom';
+      memory.clear();
+      expect(memory.lookup(key, const Offset(200, 200)), isNull);
+    });
+  });
+
   group('per-label fades through the painter', () {
     test('a brand-new label draws from its very first frame', () {
       final painter = LabelPainter();
