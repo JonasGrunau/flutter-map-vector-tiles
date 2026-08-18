@@ -39,6 +39,12 @@ turn tile keys into prepared vector tiles or decoded raster images.
   theme/provider signature — `TileStore._memorySignature` and the layer's
   `_resultSignature` exist so two styles (or the same style over different
   endpoints) never collide.
+- **Outliving the layer means outliving its GPU context.** `TileResultCache`
+  and `RasterTileStore` hold `ui.Image`s that iOS can invalidate while the
+  app is backgrounded — Impeller hands back solid magenta, which caches like
+  any other tile. `VectorTileLayer` clears both on the way back in
+  (`_discardSuspectRasters`), so a new cache of GPU-resident images needs a
+  static clear the layer can reach, not just an eviction budget.
 - **Only final, fully-sourced results enter the result cache.** Caching a
   provisional or partial tile would let a later cache hit mask the retry
   that was supposed to recover the missing source.

@@ -41,6 +41,20 @@ depended on by everything.
   it. It is also where lifecycle bugs live: `_clearTiles`, `dispose` and
   `didUpdateWidget` must keep every `ui.Image`, isolate and pending request
   accounted for.
+- **The app-lifecycle members are an engine workaround, and are labelled
+  as one.** iOS revokes GPU access for a backgrounded process and
+  Impeller fills a rejected `toImageSync` texture with solid magenta
+  rather than failing, so the layer refuses to rasterize below
+  `AppLifecycleState.resumed` and rebuilds its GPU-resident images on the
+  way back (`_recoverIfSuspect`, `_discardSuspectRasters`). Two things
+  to keep true while it lives: the "has been away" mark is `static` on
+  purpose — the caches it condemns outlive any one layer — and anything
+  new that creates a `ui.Image` must be reachable from that recovery.
+  The block comment above `_foregrounded` records the exact upstream gap
+  and the condition for deleting the lot; it is tracked as
+  [flutter#191255](https://github.com/flutter/flutter/issues/191255).
+  Do not delete the workaround on the strength of the *other* "pink
+  images" issues — they are all closed, and all the decode path.
 - Respect the layering. `core/` and `cache/` must not import upward; `pipeline/`
   must not import `render/` or the widget.
 - New style features usually mean coordinated edits in three places:

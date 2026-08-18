@@ -165,7 +165,7 @@ class VectorTileLayer extends StatefulWidget {
 }
 
 class _VectorTileLayerState extends State<VectorTileLayer>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   late TilePrepareExecutor _executor;
   late final Future<ByteCache?> _diskCache;
   final _stores = <String, TileStore>{};
@@ -237,14 +237,178 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   Duration get _loadRetryDelay =>
       TileByteLoader.errorRetryDelay + const Duration(seconds: 1);
 
+  // ---------------------------------------------------------------
+  // Working around an engine bug: magenta rasters after a backgrounding
+  //
+  // iOS revokes GPU access for the whole process while an app is in the
+  // background. A `toImageSync` raster whose Metal work is rejected does
+  // not fail — Impeller fills the texture with solid magenta — and
+  // nothing above the rasterizer can tell that from a real tile, so it
+  // paints and caches like one. Process-wide caching then makes a
+  // moment's bad luck last the whole session.
+  //
+  // The engine *has* this guard; `toImageSync` just does not use it.
+  // Checked against flutter/flutter@master, August 2026, in
+  // `engine/src/flutter/shell/common/snapshot_controller_impeller.cc`:
+  //
+  //   * `MakeImpellerSnapshot` — the async path behind `Picture.toImage`
+  //     — runs under `GetIsGpuDisabledSyncSwitch()` and, when the GPU is
+  //     disabled, parks the work via `StoreTaskForGPU` until it is back.
+  //   * `MakeImpellerSnapshotSync` — the path behind
+  //     `Picture.toImageSync` — calls `DoMakeRasterSnapshot` directly.
+  //     No sync switch, no deferral: it rasterizes regardless.
+  //
+  // The engine's shipped fixes for the same symptom (#169378, #169596,
+  // cherry-picked in #170846, plus the follow-up #190445) all harden the
+  // *image decode/upload* path — `instantiateImageCodec` — and leave
+  // offscreen render passes alone. Tracked upstream as
+  // https://github.com/flutter/flutter/issues/191255, filed from this
+  // investigation; every *other* "pink images" issue is closed and is
+  // the decode path, so a closed-issue search is not evidence that this
+  // is fixed.
+  //
+  // TO REMOVE THIS WORKAROUND: watch flutter/flutter#191255, and check
+  // whether `MakeImpellerSnapshotSync` consults
+  // `GetIsGpuDisabledSyncSwitch()`. Once it defers instead of
+  // rasterizing into a revoked context, every member below and the
+  // `_foregrounded` guards in `_pumpRenderQueue` and `_enqueueRaster`
+  // can go, along with `WidgetsBindingObserver` and
+  // `test/app_lifecycle_raster_test.dart` — then raise the package's
+  // Flutter constraint to the first release carrying the fix. Deleting
+  // it early is not a cosmetic regression: it puts permanently magenta
+  // tiles back into a process-wide cache.
+  // ---------------------------------------------------------------
+
+  /// Whether the platform is in a state where rasterizing is safe.
+  ///
+  /// The window that matters is `inactive`, not `paused`: the scheduler
+  /// keeps frames enabled through `inactive` — that is what draws the
+  /// app-switcher snapshot on the way out and the first frames on the
+  /// way back in — while iOS revokes the context somewhere alongside
+  /// it. A frame-driven render pump left running there rasterizes into
+  /// a context it is losing or has not been given back. From `hidden`
+  /// onwards no frames are produced at all, so the gate costs nothing
+  /// and simply stays shut. Only `resumed` is safe.
+  ///
+  /// This narrows the window rather than closing it, which is why the
+  /// recovery below is the actual guarantee: `toImageSync` returns a
+  /// *deferred* image, and the raster thread can get to it after the
+  /// transition that the gate was checked before.
+  ///
+  /// Seeded from the binding rather than assumed, so a layer mounted
+  /// while the app is already away does not rasterize its opening
+  /// screenful into a context it does not have. `lifecycleState` is null
+  /// until the first platform message arrives — and stays null under
+  /// `flutter test` — and that has to read as foregrounded, or a layer
+  /// waiting to be told it may paint would never paint at all.
+  var _foregrounded = true;
+
+  /// How many times the app has left the foreground.
+  ///
+  /// Process-wide, because the caches a departure condemns are
+  /// process-wide too. A map screen rebuilt on the way back in is a
+  /// brand-new layer with a brand-new observer, which lived through no
+  /// departure at all — a per-layer flag would leave it reading suspect
+  /// textures out of a cache that no surviving observer was there to
+  /// clear.
+  ///
+  /// Counted from `hidden` onwards rather than from `inactive`: iOS
+  /// revokes the context in `applicationDidEnterBackground`, so a
+  /// control-centre swipe or a permission dialog — neither of which
+  /// goes further than `inactive` — must not cost a screenful of
+  /// re-rasterization.
+  static var _departures = 0;
+
+  /// Whether the app is away right now, so that the several layers one
+  /// screen may hold count a single departure once between them.
+  static var _away = false;
+
+  /// The departure this layer has already recovered from; it recovers
+  /// whenever this falls behind [_departures].
+  late int _recovered;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    _foregrounded = lifecycle == null || lifecycle == AppLifecycleState.resumed;
+    // A layer mounting while the app is away — or into a return that no
+    // other layer was left mounted to notice — lived through no
+    // departure of its own, but the caches it is about to read were
+    // filled before one. It starts a departure behind, and so recovers
+    // alongside the layers that did live through it.
+    _recovered = _away ? _departures - 1 : _departures;
+    if (_foregrounded) _away = false;
     _executor = TilePrepareExecutor(concurrency: widget.concurrency);
     _fadeTicker = createTicker(_onFadeTick);
     _renderTicker = createTicker(_pumpRenderQueue);
     _diskCache = _obtainDiskCache();
     _buildStores();
+    _recoverIfSuspect();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!mounted) return;
+    _foregrounded = state == AppLifecycleState.resumed;
+    if (!_foregrounded) {
+      if (state != AppLifecycleState.inactive && !_away) {
+        _away = true;
+        _departures++;
+      }
+      return;
+    }
+    _away = false;
+    _recoverIfSuspect();
+    // The pump stops its own ticker when it is asked to run while the
+    // app is away; whatever it left queued is still queued.
+    if (!_renderQueue.isEmpty && !_renderTicker.isActive) {
+      _renderTicker.start();
+    }
+  }
+
+  /// Rebuilds anything this layer may be holding — or about to read —
+  /// from before the last departure, once it is safe to rasterize again.
+  ///
+  /// Part of the `toImageSync` workaround documented above; it goes when
+  /// the engine defers a snapshot instead of rasterizing into a revoked
+  /// context.
+  void _recoverIfSuspect() {
+    if (!_foregrounded || _recovered == _departures) return;
+    _recovered = _departures;
+    _discardSuspectRasters();
+  }
+
+  /// Drops every image that may have been rasterized against a revoked
+  /// GPU context, and rebuilds it from data that cannot have been.
+  ///
+  /// This is the load-bearing half of the `toImageSync` workaround
+  /// documented above the lifecycle fields — the gate only narrows the
+  /// window, this is what guarantees a magenta tile cannot outlive one
+  /// resume. It goes when the engine's sync snapshot path defers.
+  ///
+  /// Recovery is cheap because only the last step of the pipeline is
+  /// affected: decoded geometry is `Float32List`s on the Dart heap, so
+  /// this is a re-rasterize pass — no network, no isolate, no decode.
+  /// Live tiles keep their current imagery until the replacement lands
+  /// (see [_refreshTiles]), so the recovery costs no blank frame.
+  ///
+  /// The order is load-bearing. The finished-result cache has to go
+  /// first, or [_refreshTiles] hands back the very textures it is
+  /// replacing: refreshing a tile resets `renderedWith`, and that is
+  /// precisely what sends [_loadTile] to the cache again.
+  void _discardSuspectRasters() {
+    TileResultCache.clearAll();
+    // Raster-source images are decoded rather than recorded, but they
+    // are uploaded to the same context and are baked into the tiles
+    // about to be re-rasterized. Their bytes stay on disk.
+    RasterTileStore.clearMemoryCaches();
+    // Pattern stamps are `toImageSync` images too, and the refresh
+    // below bakes them into every fill and line that uses one.
+    _patterns?.dispose();
+    _patterns = null;
+    _refreshTiles();
   }
 
   /// The stores hold this future and await it before reaching for the
@@ -528,6 +692,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _fadeTicker.dispose();
     _renderTicker.dispose();
     _clearTiles();
@@ -954,7 +1119,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // That flag feeds the retained-label decision: a tile awaiting
     // symbols keeps the previous level's labels covering it.
     _labelCandidatesChanged();
-    if (!_renderTicker.isActive) _renderTicker.start();
+    if (_foregrounded && !_renderTicker.isActive) _renderTicker.start();
   }
 
   /// Whether a raster job for [tile] will be followed by a symbol
@@ -967,6 +1132,15 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           widget.theme, _styleZoomOf(tile.key.z.toDouble()));
 
   void _pumpRenderQueue(Duration _) {
+    // Rasterizing while the app is away yields magenta textures that the
+    // result cache would then serve for the life of the process. Park
+    // the queue instead — [didChangeAppLifecycleState] restarts it.
+    // Engine workaround; see the block above [_foregrounded] for what
+    // has to change upstream before this can go.
+    if (!_foregrounded) {
+      _renderTicker.stop();
+      return;
+    }
     developer.Timeline.startSync('VT render pump');
     final stopwatch = Stopwatch()..start();
     var processed = 0;

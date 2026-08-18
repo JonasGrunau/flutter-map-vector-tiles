@@ -161,6 +161,16 @@ untouched). Call it from a memory-pressure handler such as
 `WidgetsBindingObserver.didHaveMemoryPressure` — visible maps keep their
 imagery, only tiles panned to afterwards are re-read from disk.
 
+One thing the layer does with those caches on its own: when the app
+comes back from the background it throws the finished tiles away and
+re-renders them. iOS revokes GPU access for a backgrounded process, and
+a tile rasterized just as that happens comes back as a solid magenta
+image that nothing above can distinguish from a real one — so the layer
+stops rasterizing while the app is on its way out and treats what it has
+as suspect on the way back in. Recovery costs no network and no
+decoding, the decoded geometry never left memory, and the imagery on
+screen is only replaced once the new render is ready.
+
 `StyleReader` options worth knowing:
 
 - `apiKey` — substituted for `{key}` in the style URI and every URL the
@@ -451,6 +461,17 @@ documented in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md). 📖
 - **Blank map on web** → open the browser console; missing
   `Access-Control-Allow-Origin` headers on the style or tile host block
   every request (see [Web support](#-web-support)).
+- **Solid magenta tiles after reopening the app on iOS** → tiles
+  rasterized while iOS had revoked the process's GPU access. The layer
+  handles this itself now; on 2.6.1 and earlier the corrupted tiles are
+  cached for the life of the process, and calling
+  `VectorTileLayer.clearMemoryCache()` on `AppLifecycleState.resumed` is
+  the workaround. The underlying engine gap is
+  [flutter#191255](https://github.com/flutter/flutter/issues/191255).
+  Note that magenta from *decoded* images — sprites, raster sources — is
+  the same iOS bug one layer down, outside this package's reach
+  ([flutter#166668](https://github.com/flutter/flutter/issues/166668),
+  fixed in 3.32); keep your Flutter up to date.
 
 ## 🤝 Contributing
 

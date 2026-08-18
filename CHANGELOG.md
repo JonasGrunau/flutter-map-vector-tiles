@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+Surviving an app backgrounding on iOS.
+
+- 🐛 **Magenta tiles after resuming an app**: iOS revokes GPU access
+  while an app is in the background, and Impeller fills a texture whose
+  Metal work was rejected with solid magenta rather than failing — so a
+  tile rasterized on the way out or on the way back in returned a
+  perfectly ordinary-looking image that was pure magenta, and the
+  process-wide finished-tile cache then served it for the rest of the
+  session. The layer now watches the app lifecycle: it stops rasterizing
+  from `inactive` onwards (parking the work rather than dropping it),
+  and on the way back it discards the finished-tile cache, the
+  raster-source images and the pattern stamps, then re-rasterizes what
+  is on screen. Recovery reads no network and decodes nothing — the
+  geometry never left the Dart heap — and the old imagery stays up until
+  its replacement lands, so there is no blank frame. A map screen
+  rebuilt during the return is covered too: the "has been away" mark is
+  process-wide, not per layer. This works around an engine gap rather
+  than fixing it — Impeller parks an async `Picture.toImage` snapshot
+  while the GPU is disabled but rasterizes `Picture.toImageSync`
+  regardless — so it is written to be deleted once
+  [flutter#191255](https://github.com/flutter/flutter/issues/191255)
+  lands.
+
 ## 2.6.1
 
 Documentation only — the style support section, rewritten to be

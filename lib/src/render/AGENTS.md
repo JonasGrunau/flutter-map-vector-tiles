@@ -96,7 +96,18 @@ clips at tile seams.
   the symbol's `textScale`; a missed multiplication shows up as collision
   drift between text sizes, not as a crash.
 - **`toImageSync` keeps rasters on the GPU** — no async readback. Do not
-  replace it with `toImage()`.
+  replace it with `toImage()`. The corollary is that a raster is only as
+  durable as the process's GPU access: iOS revokes it while the app is
+  backgrounded, and Impeller fills a rejected texture with solid magenta
+  instead of failing, so a raster made at the wrong moment looks entirely
+  legitimate. `VectorTileLayer` works around it by gating the render pump
+  on the app lifecycle and re-rasterizing on the way back — anything new
+  that mints a `ui.Image` (as `PatternResolver` does) has to be reachable
+  from that recovery, or it will hold magenta for the life of the
+  process. The workaround is temporary by intent: the engine parks async
+  snapshots when the GPU is disabled and just doesn't do it for the sync
+  path, so see the block above `_foregrounded` in `vector_tile_layer.dart`
+  for the removal condition.
 - **SDF icons need the SDF paint path** (`_sdfPaint` with an edge threshold
   scaled by device pixel ratio); tinting an SDF sprite as a normal image
   produces dark blobs, a bug this code has already been fixed for once.

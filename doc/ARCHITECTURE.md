@@ -294,6 +294,69 @@ all three memory tiers at once — the memory-pressure valve, since the
 caches are process-wide and otherwise freed only by their budgets; the
 disk cache is untouched.
 
+### Surviving a backgrounding
+
+**This section describes a workaround for an engine bug, not a design
+commitment — see the end of it for when to delete the whole thing.**
+
+Being GPU-resident is what makes a finished tile cheap to keep and cheap
+to draw, and it is also the one thing about it that an operating system
+can take away. iOS revokes GPU access for a backgrounded process, and a
+`toImageSync` raster whose Metal work is rejected does not fail —
+Impeller fills the texture with solid magenta. Nothing above the
+rasterizer can tell such an image from a real tile, so it paints, and
+caches, exactly like one; process-wide caching then makes a moment's bad
+luck last the whole session.
+
+The layer therefore tracks the app lifecycle, and the state that matters
+is `inactive`, not `paused`. The scheduler keeps frames enabled through
+`inactive` — that is what draws the app-switcher snapshot on the way out
+and the first frames on the way back in — while the context is revoked
+somewhere alongside it; from `hidden` onwards no frames are produced at
+all. So the render pump refuses to run below `resumed`, parking its
+queue rather than dropping it, and on the return the layer discards the
+finished-tile cache, the raster-source images and the pattern stamps and
+re-rasterizes its live tiles. That recovery is cheap for the same reason
+the pipeline is split the way it is: only the last stage was affected,
+and the decoded geometry it re-renders from never left the Dart heap —
+no network, no isolate, no decode. Live tiles keep their imagery until
+the replacement lands, so nothing blanks.
+
+The "has been away" mark is process-wide rather than per layer, because
+what it condemns is: a map screen rebuilt during the return is a
+brand-new layer that lived through no backgrounding of its own, and a
+per-layer flag would leave it reading suspect textures out of a cache no
+surviving observer was there to clear. A departure that only reaches
+`inactive` — a permission dialog, a control-centre swipe — gates
+rasterization but marks nothing, so the common case costs no re-render.
+
+Of the two halves, the recovery is the guarantee and the gate is only a
+mitigation: `toImageSync` hands back a *deferred* image, so the raster
+thread can get to it after the transition the gate was checked before.
+
+**When this can go.** The engine already has the guard this needs and
+does not apply it to the sync path. In
+`engine/src/flutter/shell/common/snapshot_controller_impeller.cc` (read
+against `flutter/flutter@master`, August 2026),
+`MakeImpellerSnapshot` — behind `Picture.toImage` — runs under
+`GetIsGpuDisabledSyncSwitch()` and parks the work via `StoreTaskForGPU`
+when the GPU is disabled, while `MakeImpellerSnapshotSync` — behind
+`Picture.toImageSync` — calls `DoMakeRasterSnapshot` directly, with no
+switch and no deferral. The engine's shipped fixes for the same symptom
+([#169378](https://github.com/flutter/flutter/pull/169378),
+[#169596](https://github.com/flutter/flutter/pull/169596), cherry-picked
+in [#170846](https://github.com/flutter/flutter/pull/170846), and the
+follow-up [#190445](https://github.com/flutter/flutter/pull/190445)) all
+harden the image *decode* path instead. The `toImageSync` variant is
+tracked upstream as
+[flutter#191255](https://github.com/flutter/flutter/issues/191255), filed
+from this investigation — every *other* "pink images" issue is closed and
+is the decode path, so finding those closed is not evidence that this is
+fixed. Once the sync path defers, drop this section along with the
+lifecycle members in `vector_tile_layer.dart` and
+`test/app_lifecycle_raster_test.dart`, and raise the package's Flutter
+constraint to the first release carrying the fix.
+
 The disk layer is skipped entirely for providers whose bytes already
 live on the device — `VectorTileProvider.cacheBytesToDisk` returns false
 for the memory provider and for local-archive providers such as the

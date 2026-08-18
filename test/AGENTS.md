@@ -17,6 +17,7 @@ lifecycle or painting is covered by widget tests that pump a real
 |------|-------------|
 | `expression_test.dart` | Style expression compilation: operators, interpolation, legacy syntax, coercions |
 | `tile_lifecycle_test.dart` | Widget-level: first paint, zoom changes, pan, cache attachment, disposal. The heaviest and most integration-shaped test |
+| `app_lifecycle_raster_test.dart` | The app-backgrounding defence: no rasterizing below `resumed`, parked work resuming, re-rasterization and cache distrust after a departure (including by a layer mounted only after the return), and an `inactive`-only interruption costing nothing. Drives lifecycle with `tester.binding.handleAppLifecycleStateChanged`; note that `pump()` is inert from `hidden` on, because the scheduler disables frames there — the assertions that need frames use `inactive` |
 | `symbol_layouter_test.dart` | Label placement candidates, tile-seam behaviour, overzoom |
 | `raster_source_test.dart` | Raster sources declared inside vector styles, image ref-counting |
 | `tile_store_test.dart` | Memory/disk cache keying, miss paths, disposal, stale-while-revalidate (expired entries served instantly, `onRefreshed` on changed content only, corrupt expired entries refetched, `revalidateIfStale` for results served without the stores) |
