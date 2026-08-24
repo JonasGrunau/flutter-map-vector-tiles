@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.7.0
 
 Zoom crossings on label-dense maps: the finished-tile cache now sizes
 itself for the device, and the label work a crossing pays for is spread
