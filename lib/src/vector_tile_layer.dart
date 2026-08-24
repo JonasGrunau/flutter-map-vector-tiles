@@ -12,6 +12,7 @@ import 'cache/byte_cache.dart';
 import 'cache/cache_resolver.dart';
 import 'core/cancellation.dart';
 import 'core/tile_key.dart';
+import 'core/tile_zoom.dart';
 import 'grid/grid_layout.dart';
 import 'grid/raster_tile_store.dart';
 import 'grid/render_job_queue.dart';
@@ -115,11 +116,18 @@ class VectorTileLayer extends StatefulWidget {
   /// level swaps its imagery in instead of re-rendering it. Shared
   /// process-wide per style, like [memoryCacheMaxBytes]. Zero disables.
   ///
+  /// Defaults to [autoRasterCacheBytes], which sizes the budget for the
+  /// actual device pixel ratio and viewport — see
+  /// [autoRasterCacheBytesFor]. A fixed byte count overrides it.
+  ///
   /// These are GPU texture bytes: one tile costs `(256·dpr)²·4` bytes —
   /// ~1 MiB at devicePixelRatio 2, ~2.25 MiB at 3 — and one phone
-  /// viewport is ~25-35 tiles per zoom level. The default 64 MiB holds
-  /// roughly two levels at dpr 2 and one at dpr 3; raise it on dpr-3
-  /// devices if zoom round-trips should stay entirely warm.
+  /// viewport is ~25-35 tiles per zoom level, so a *single* level runs
+  /// to ~80 MiB on a large dpr-3 phone. That is why a fixed default is
+  /// the wrong shape: the 64 MiB this used to default to held about two
+  /// levels at dpr 2 but under one at dpr 3, so on exactly the densest
+  /// devices a zoom round trip evicted the level it was returning to
+  /// and re-rendered the screen every crossing.
   final int rasterCacheMaxBytes;
 
   /// Whether to draw text/icon symbol layers.
@@ -141,10 +149,53 @@ class VectorTileLayer extends StatefulWidget {
     this.memoryCacheMaxBytes = 24 * 1024 * 1024,
     this.tileFadeDuration = const Duration(milliseconds: 150),
     this.labelFadeDuration = const Duration(milliseconds: 150),
-    this.rasterCacheMaxBytes = 64 * 1024 * 1024,
+    this.rasterCacheMaxBytes = autoRasterCacheBytes,
     this.showLabels = true,
     this.logger = const Logger.noop(),
   });
+
+  /// [rasterCacheMaxBytes] value meaning "size it for this device".
+  ///
+  /// Negative so it can never collide with a real byte budget, and so
+  /// the documented `0` still means *disabled*.
+  static const int autoRasterCacheBytes = -1;
+
+  /// How many screenfuls of finished tiles [autoRasterCacheBytes] aims
+  /// to hold. Two would be the bare minimum for a zoom round trip — one
+  /// level each side of a threshold — and the half is headroom for the
+  /// buffer ring and a partly-scrolled third level. Measured on a
+  /// dpr-3 phone crossing a POI threshold at ~7 crossings/second: at
+  /// two-and-a-half levels the crossing re-rendered nothing at all,
+  /// and doubling the budget again changed nothing, so this is the knee
+  /// rather than a guess.
+  static const double _cacheLevels = 2.5;
+
+  /// Floor and ceiling for the automatic budget. The floor keeps small
+  /// windows (a map in a card, a phone in split view) from caching so
+  /// little that nothing survives a crossing; the ceiling keeps a large
+  /// desktop window from pinning an unreasonable amount of GPU memory,
+  /// since these are textures and not evictable pages.
+  static const int _minAutoCacheBytes = 64 * 1024 * 1024;
+  static const int _maxAutoCacheBytes = 256 * 1024 * 1024;
+
+  /// The automatic [rasterCacheMaxBytes] for a [viewport] at
+  /// [devicePixelRatio]: enough finished tiles for [_cacheLevels]
+  /// screenfuls, clamped to a sane range.
+  ///
+  /// The tile count mirrors `GridLayout.forCamera(buffer: 1)`: a screen
+  /// spans at most `ceil(extent / 256) + 1` tiles per axis, plus one
+  /// each side for the buffer ring.
+  @visibleForTesting
+  static int autoRasterCacheBytesFor(Size viewport, double devicePixelRatio) {
+    final tilePx = displayTileSize * devicePixelRatio;
+    final tileBytes = tilePx * tilePx * 4;
+    final tilesX = (viewport.width / displayTileSize).ceil() + 3;
+    final tilesY = (viewport.height / displayTileSize).ceil() + 3;
+    final perLevel = tilesX * tilesY * tileBytes;
+    return (perLevel * _cacheLevels)
+        .round()
+        .clamp(_minAutoCacheBytes, _maxAutoCacheBytes);
+  }
 
   /// Releases the decoded tiles held in memory between map opens.
   ///
@@ -548,8 +599,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         store.memoryCacheMaxBytes = widget.memoryCacheMaxBytes;
       }
     }
-    if (oldWidget.rasterCacheMaxBytes != widget.rasterCacheMaxBytes &&
-        widget.rasterCacheMaxBytes <= 0) {
+    if (_rasterCacheBytesOf(oldWidget) != _rasterCacheBytesOf(widget) &&
+        _rasterCacheBytesOf(widget) <= 0) {
       // Disabled at runtime: release the textures held for what this
       // layer was rendering. The *old* widget names that cache — this
       // update may also have changed the theme or sprites, and clearing
@@ -683,12 +734,29 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   /// The finished-tile cache for the current render signature, shared
   /// process-wide so a reopened map paints instantly. Null when
+  /// The byte budget this layer is actually running with: the widget's
+  /// value, or one sized for the device when it asks for the automatic
+  /// one. Only the sentinel is special — every other value is taken
+  /// literally, so `0` still disables exactly as documented.
+  int _rasterCacheBytesOf(VectorTileLayer layer) =>
+      layer.rasterCacheMaxBytes == VectorTileLayer.autoRasterCacheBytes
+          ? VectorTileLayer.autoRasterCacheBytesFor(
+              _viewportSize, _devicePixelRatio)
+          : layer.rasterCacheMaxBytes;
+
+  /// The viewport the automatic budget is sized against, refreshed in
+  /// `build`. Zero until the first one, which cannot precede any cache
+  /// access: every load starts from `_updateGrid`, which `build` calls.
+  Size _viewportSize = Size.zero;
+
   /// disabled via [VectorTileLayer.rasterCacheMaxBytes] — the one place
   /// that decides whether this layer caches at all.
-  TileResultCache? get _resultCache => widget.rasterCacheMaxBytes <= 0
-      ? null
-      : TileResultCache.forSignature(
-          _resultSignature, widget.rasterCacheMaxBytes);
+  TileResultCache? get _resultCache {
+    final bytes = _rasterCacheBytesOf(widget);
+    return bytes <= 0
+        ? null
+        : TileResultCache.forSignature(_resultSignature, bytes);
+  }
 
   @override
   void dispose() {
@@ -889,19 +957,44 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       final cached = _resultCache?.get(tile.key);
       if (cached != null) {
         tile.renderedWith = cached.renderedWith;
+        final owesShaping = cached.symbols.isNotEmpty;
         tile.setImage(
           image: cached.image?.clone(),
           provisional: false,
           fadeIn: fadeIn && widget.tileFadeDuration > Duration.zero,
-          symbolsPending: true,
+          symbolsPending: owesShaping,
         );
-        tile.setSymbols(cached.symbols, provisional: false);
-        // These labels never passed through the render pump, so nothing
-        // has shaped their text — without this the first frame after a
-        // reopen shapes a whole screenful of paragraphs inside paint.
-        if (cached.symbols.isNotEmpty) {
-          _labelPainter.prewarm(
-              cached.symbols, _styleZoomOf(tile.key.z.toDouble()));
+        if (owesShaping) {
+          // The imagery is free — that is what the cache is for — but
+          // these labels never passed through the render pump, so
+          // nothing has shaped their text. Shaping them here would be
+          // the worst place for it: this runs synchronously inside
+          // `build` (there is no `await` above it, and `_updateGrid`
+          // calls `_loadTile` for every tile of the arriving level), so
+          // a warm zoom crossing would shape a whole screen's labels —
+          // tens of milliseconds — in one frame, outside every budget
+          // this class has. Queue it as a symbol phase that owes only
+          // the shaping instead, and let the pump slice it.
+          _renderQueue.enqueueSymbols(
+            tile,
+            priority,
+            _RenderJob(
+              sources: const {},
+              rasters: const {},
+              provisional: false,
+              priority: priority,
+              fadeIn: fadeIn,
+              complete: true,
+              generation: tile.loadGeneration,
+              fromCache: true,
+              symbols: cached.symbols,
+            ),
+          );
+          if (_foregrounded && !_renderTicker.isActive) {
+            unawaited(_renderTicker.start());
+          }
+        } else {
+          tile.setSymbols(const [], provisional: false);
         }
         _labelCandidatesChanged();
         _repaint.trigger();
@@ -1131,6 +1224,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       SymbolLayouter.anySymbolLayerCovers(
           widget.theme, _styleZoomOf(tile.key.z.toDouble()));
 
+  /// Wall-clock the render pump may spend per frame. Checked before
+  /// every job *and* between the labels of a symbol job's shaping, so
+  /// no single unit of work can run away with the frame.
+  static const int _pumpBudget = 4000;
+
   void _pumpRenderQueue(Duration _) {
     // Rasterizing while the app is away yields magenta textures that the
     // result cache would then serve for the life of the process. Park
@@ -1149,7 +1247,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // budget is checked before every job — it cannot preempt inside
     // one, which is why a tile's two phases are separate jobs.
     while (!_renderQueue.isEmpty &&
-        (processed == 0 || stopwatch.elapsedMicroseconds < 4000)) {
+        (processed == 0 || stopwatch.elapsedMicroseconds < _pumpBudget)) {
       final next = _renderQueue.pop()!;
       final tile = next.key;
       final job = next.job;
@@ -1162,7 +1260,20 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           case RenderPhase.raster:
             _rasterizeJob(tile, job);
           case RenderPhase.symbols:
-            _layoutSymbolsJob(tile, job);
+            if (!_symbolsJob(tile, job, stopwatch)) {
+              // Shaping ran out of tick. The job keeps its cursor and
+              // its already-extracted candidates; requeueing rather
+              // than looping here is what lets a raster for another
+              // tile — or a newer one for this tile, which supersedes
+              // it — take its turn first.
+              assert(
+                  job.rasters.isEmpty,
+                  'a requeued symbols job must own no raster handles: the '
+                  'pump skips dispose() for it');
+              _renderQueue.enqueueSymbols(tile, job.priority, job);
+              processed++;
+              continue;
+            }
         }
         processed++;
       }
@@ -1222,24 +1333,44 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _ensureFadeTicker();
   }
 
-  void _layoutSymbolsJob(_DisplayTile tile, _RenderJob job) {
+  /// One slice of a tile's symbol phase: extract the candidates (once),
+  /// then shape their text for as long as this tick allows. Returns
+  /// whether the phase finished — the caller requeues the job if not.
+  ///
+  /// The tile publishes nothing until the whole batch is shaped. That
+  /// is the point: the label pass shapes on a text-cache miss, so
+  /// handing it a half-shaped tile would just move the remaining cost
+  /// into paint, which has no budget. Until then [_DisplayTile.symbolsPending]
+  /// stays set, which is what keeps the previous level's labels
+  /// covering the tile — the same mechanism that already covers the
+  /// gap between a tile's raster and its symbols.
+  bool _symbolsJob(_DisplayTile tile, _RenderJob job, Stopwatch tick) {
     developer.Timeline.startSync('VT symbols');
     final styleZoom = _styleZoomOf(tile.key.z.toDouble());
-    final data = DisplayTileData(
-        displayKey: tile.key, sources: job.sources, rasters: const {});
-    final symbols = SymbolLayouter.layout(
-        theme: widget.theme, data: data, styleZoom: styleZoom);
-    // Shape the labels' text now, inside the budgeted tick — the next
-    // paint finds everything in the text caches instead of shaping a
-    // whole tile's labels during the paint phase.
-    if (symbols.isNotEmpty) _labelPainter.prewarm(symbols, styleZoom);
+    var symbols = job.symbols;
+    if (symbols == null) {
+      // Extraction is cheap next to shaping (sub-ms against several ms
+      // on a dense tile), so it runs whole rather than in slices.
+      final data = DisplayTileData(
+          displayKey: tile.key, sources: job.sources, rasters: const {});
+      symbols = job.symbols = SymbolLayouter.layout(
+          theme: widget.theme, data: data, styleZoom: styleZoom);
+    }
+    job.shapeCursor = _labelPainter.prewarm(
+      symbols,
+      styleZoom,
+      from: job.shapeCursor,
+      outOfBudget: () => tick.elapsedMicroseconds >= _pumpBudget,
+    );
     developer.Timeline.finishSync();
+    if (job.shapeCursor < symbols.length) return false;
 
     tile.setSymbols(symbols, provisional: job.provisional);
     _cacheResult(tile, job, symbols);
     _labelCandidatesChanged();
     _repaint.trigger();
     _ensureFadeTicker();
+    return true;
   }
 
   /// Stores a finished tile in the result cache — final, fully sourced
@@ -1250,7 +1381,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// future session inherit through the shared entry.
   void _cacheResult(
       _DisplayTile tile, _RenderJob job, List<SymbolInstance> symbols) {
-    if (job.provisional || !job.complete) return;
+    if (job.provisional || !job.complete || job.fromCache) return;
     _resultCache?.put(
       tile.key,
       image: tile.image?.clone(),
@@ -1319,6 +1450,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
+    // Sized before the grid update: that is what triggers the loads
+    // that consult the result cache.
+    _viewportSize = camera.nonRotatedSize;
     _updateGrid(camera);
     return CustomPaint(
       size: camera.nonRotatedSize,
@@ -1359,7 +1493,23 @@ class _RenderJob {
   /// sources predate whatever replaced them.
   final int generation;
 
-  const _RenderJob({
+  /// Whether this job's content came straight out of the result cache,
+  /// in which case it is already there and must not be re-put — a
+  /// second `put` under the same key mints a second master image and
+  /// disposes the one the display tile's clone came from.
+  final bool fromCache;
+
+  /// The symbol phase's extracted candidates, held across the ticks its
+  /// shaping is spread over. Null until the phase's first slice runs
+  /// (or set up front by the result-cache path, which has them already
+  /// and only owes the shaping).
+  List<SymbolInstance>? symbols;
+
+  /// How far [LabelPainter.prewarm] has got through [symbols]. The
+  /// batch is published only once this reaches its length.
+  int shapeCursor = 0;
+
+  _RenderJob({
     required this.sources,
     required this.rasters,
     required this.provisional,
@@ -1367,6 +1517,8 @@ class _RenderJob {
     required this.fadeIn,
     required this.complete,
     required this.generation,
+    this.fromCache = false,
+    this.symbols,
   });
 
   void dispose() {

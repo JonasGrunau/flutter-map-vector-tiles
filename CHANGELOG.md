@@ -1,5 +1,65 @@
 # Changelog
 
+## Unreleased
+
+Zoom crossings on label-dense maps: the finished-tile cache now sizes
+itself for the device, and the label work a crossing pays for is spread
+across frames instead of landing in one.
+
+- ✨ **`rasterCacheMaxBytes` sizes itself** (`VectorTileLayer.autoRasterCacheBytes`,
+  the new default): the budget is computed from the live viewport and
+  device pixel ratio — 2.5 screenfuls of finished tiles, clamped to
+  64–256 MiB — instead of a fixed 64 MiB. Pass a byte count to pin it;
+  `0` still disables.
+- ⚡ **Crossing a zoom threshold no longer re-renders the level it
+  returns to**: one display tile costs `(256·dpr)²·4` GPU texture bytes
+  and a phone screenful is 25–35 tiles, so a single zoom level runs to
+  ~80 MiB on a large dpr-3 phone — against which the old fixed 64 MiB
+  default held **0.81 of a level**. The cache could not hold even the
+  screen in front of it, so zooming in and out across a threshold
+  evicted the level it was about to return to and re-rendered
+  everything, every crossing. Measured on a dpr-3 phone oscillating
+  across a POI threshold ~7 times a second, an 8-second window went
+  from ~1200 re-rasterizations and ~1200 re-layouts to **zero**, frames
+  over the 120 Hz budget from 4.7% to **0%**, and the frame rate from
+  115 to a pinned 120 fps.
+- ⚡ **The label shaping that a zoom crossing pays for is now spread
+  over frames**: extracting a tile's label candidates costs well under a
+  millisecond, but *shaping* their text costs 2–9 ms on a dense city
+  tile — several times the render pump's whole per-frame budget, which
+  until now was checked only between jobs and so could not interrupt
+  one. A dozen such tiles land per crossing. The symbol phase is now
+  resumable: it shapes in slices, yields when the frame's budget is
+  spent, and resumes on the next tick, publishing the tile only once the
+  whole batch is shaped (a half-shaped tile handed to the label pass
+  would simply be shaped during paint instead, where there is no budget
+  at all). Measured over one screen of real city tiles, the worst pump
+  tick drops from ~9 ms to ~4 ms and no tick exceeds the budget, for the
+  same total work. Meanwhile the previous level's labels keep covering
+  the tile, as they already did between its raster and its symbols.
+- ⚡ **Returning to a cached zoom level no longer shapes a screenful of
+  labels in one frame**: a finished-tile cache hit is served
+  synchronously inside `build`, and the grid loads every tile of the
+  arriving level in one pass, so the shaping it owed — the text caches
+  are not part of what is cached — all landed in a single frame,
+  outside every budget the layer has. It now goes through the render
+  pump like any other symbol work.
+- ⚡ **Labels fade in in waves**: tiles finish one per frame, so a
+  screen's labels used to arrive over tens of frames, each starting its
+  own fade — and since every distinct label opacity is drawn through its
+  own translucent layer, whose bounds are the union of the labels in it,
+  a crossing could be drawing through up to seven effectively
+  full-screen `saveLayer`s at once. Labels arriving while a fade is in
+  flight now join the next wave instead of starting their own, so
+  everything fading in shares one opacity and the peak drops from seven
+  layers to two. A label can now wait up to `labelFadeDuration` before
+  it starts fading in; one appearing on a quiet map still starts
+  immediately. (Honest scope: on the dpr-3 phone this was measured on,
+  raster-thread time was already low either way — under 2.5 ms at the
+  99th percentile, with no frame over budget — so this is a reduction in
+  render passes and a steadier fade, not the source of the frame-time
+  win above.)
+
 ## 2.6.2
 
 Surviving an app backgrounding on iOS.

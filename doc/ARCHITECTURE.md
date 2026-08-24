@@ -92,8 +92,20 @@ matter which display tile lays it out — while being *enumerated* only
 inside the tile's window. It runs as its own budgeted job after the
 tile's raster (skipped entirely when no symbol layer intersects the
 tile's zoom band),
-and the tile's label text is shaped into the caches in that same tick —
-before the first frame that can draw it, never during paint. A tile
+and the tile's label text is shaped into the caches before the first
+frame that can draw it, never during paint.
+
+That shaping is the expensive half — several times a frame's whole
+render budget on a dense city tile, against sub-millisecond extraction —
+so the symbol phase is **resumable**: it extracts the candidates once,
+then shapes them in slices, checking the tick's budget between labels
+and requeueing itself with a cursor when the budget runs out. The pump's
+budget is therefore honoured *within* a job, not merely between jobs;
+before this, one dense tile could overrun the whole tick several times
+over, and there are a dozen such tiles in a crossing. A tile publishes
+nothing until its whole batch is shaped — the label pass shapes on a
+text-cache miss, so offering it a half-shaped tile would move the
+remaining cost straight into paint, which has no budget at all. A tile
 whose symbols are still pending counts as loading for the retention
 rules, so the previous level's labels cover the gap; newly appearing
 labels then fade in over `labelFadeDuration`, drawn in a few quantized
@@ -122,6 +134,34 @@ cross-fade against itself. And direction changes resume rather than
 restart: a key re-placed mid-fade-out rises from where it is, so a
 label briefly unplaced (a republish, a lost frame of collision) dips at
 most one opacity step instead of blinking to zero.
+
+Labels fade **in** in waves, not individually. The render pump publishes
+roughly one tile per frame, so a crossing hands the painter a screen's
+labels over tens of frames; giving each key its own fade clock puts them
+at as many different opacities, and each distinct opacity costs a
+`saveLayer` whose bounds are the union of its members' — which, for
+screen-scattered POI labels, is the whole screen. A crossing could
+therefore be drawing through seven effectively full-screen `saveLayer`s
+at once, on every frame of the crossing — and none of it is visible to
+Dart-side timing, since `saveLayer` merely records an op and the cost
+lands on the raster thread. (On the dpr-3 phone this was measured on,
+that raster cost turned out to be small — under 2.5 ms at the 99th
+percentile, no frame over budget — so the cohorts below are a reduction
+in render passes and a steadier fade, not a measured frame-time win.
+The frame-time win at a crossing came from the pump slicing and the
+cache sizing.) So arrivals join a *cohort* instead: at most one
+cohort is ever rising, later arrivals accumulate in the next one at zero,
+and each wave starts only once the one ahead has landed. Every label
+fading in therefore shares a single opacity — one bucket — and the peak
+drops to two passes over about 1× the screen. A label appearing on a
+quiet map is never held back: with nothing in flight its wave starts on
+the frame it arrives, so a map that paints one frame still shows its
+labels. Joining at zero rather than at the wave's current opacity is what
+keeps a late arrival from popping in half-visible; the cost is that it
+waits, invisible but already holding the collision space it won, for at
+most one fade duration. Fade-*outs* keep their own per-key clocks — a
+departure starts from wherever that label had got to, which is not a
+value a cohort can share.
 
 Fade-outs draw as **ghosts**. A key that stops being placed keeps being
 drawn for the length of its fade — from whatever instance of it is
@@ -262,7 +302,7 @@ chunked event-loop execution.
 | --- | --- | --- |
 | memory: `PreparedTile` | data tile + theme id | entry count + bytes |
 | memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
-| memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprite *content*, labels) | GPU texture bytes (`rasterCacheMaxBytes`, cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
+| memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprite *content*, labels) | GPU texture bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
 | disk: raw tile bytes | hash of `provider.cacheKey` + z/x/y | TTL + total size sweep |
 
 All caches are plain deterministic LRU implementations — no external
@@ -282,6 +322,35 @@ layer for exactly that warm-open case, so the registry releases the
 least recently used once their combined cost exceeds the budget —
 always keeping the two most recent, so two layers over different styles
 cannot evict each other.
+
+A result-cache hit hands back a finished raster and a finished symbol
+list, but not shaped text — the text caches belong to the live
+`LabelPainter`, not to the cache. The hit is served synchronously inside
+`build` (nothing awaits above it, and the grid update loads every tile
+of the arriving level in one pass), so shaping there would put a whole
+screen's paragraphs into a single frame — the very spike the pump's
+budget exists to prevent, on the path that is supposed to be the fast
+one. The hit therefore takes the imagery immediately and enqueues a
+symbol phase that owes only the shaping, which the pump slices like any
+other. Those jobs are flagged so they are not written back into the
+cache they came from: a second `put` under the same key would mint a
+second master image and dispose the one the display tile's clone came
+from.
+
+The budget for that cache is sized from the device rather than fixed.
+One display tile costs `(256·dpr)²·4` GPU texture bytes and one phone
+screenful is 25–35 tiles, so a *single* zoom level runs to ~80 MiB on a
+large dpr-3 phone — against which the 64 MiB this used to default to
+held **0.81 of a level**. The cache could not hold even the screen it
+was looking at, so oscillating across a zoom threshold evicted the level
+it was about to return to and re-rendered everything, every crossing.
+`autoRasterCacheBytesFor` budgets 2.5 screenfuls instead (clamped to
+64–256 MiB): two levels is the minimum a round trip needs, one each side
+of the threshold, and the half is headroom for the buffer ring. Measured
+on a dpr-3 phone crossing a POI threshold about seven times a second,
+that took a crossing from ~1200 re-rasterizations and ~1200 re-layouts
+per eight seconds to **zero**, and doubling the budget again changed
+nothing — so it is the knee, not a guess.
 
 Only final, fully-sourced results are cached, so a hit can never mask a
 pending retry. Render jobs and loads carry the tile generation they were

@@ -363,10 +363,15 @@ class LabelPainter {
       final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
       var fade = 1.0;
       if (fades) {
-        fade = _fades.show(candidate.instance.continuityKey);
+        final key = candidate.instance.continuityKey;
+        fade = _fades.show(key);
         // A key on its first frame has no elapsed fade time yet; one
-        // step keeps it from starting invisible.
-        if (fade <= 0) fade = 1 / _opacitySteps;
+        // step keeps it from starting invisible. A key queued behind an
+        // arrival wave still in flight reports zero for the opposite
+        // reason, and must keep it: it is laid out and holds the
+        // collision space it won — the spot is reserved — but paints
+        // nothing until its own wave starts.
+        if (fade <= 0 && !_fades.isWaiting(key)) fade = 1 / _opacitySteps;
       }
       drawable.opacity = ramp <= 0 ? 0 : _quantizeOpacity(fade * ramp);
       toDraw.add(drawable);
@@ -556,13 +561,32 @@ class LabelPainter {
 
   /// Shapes the text (and, for curved along-line labels, the per-glyph
   /// painters) of [symbols] into the caches ahead of the first frame
-  /// that draws them. Called from the render pump when a tile's symbols
-  /// are published, so the shaping cost lands in the budgeted tick
-  /// instead of the paint phase. Best-effort: [paint] still shapes
-  /// lazily on a cache miss.
-  void prewarm(List<SymbolInstance> symbols, double styleZoom) {
+  /// that draws them. Called from the render pump before a tile's
+  /// symbols are published, so the shaping cost lands in the budgeted
+  /// tick instead of the paint phase.
+  ///
+  /// Resumable: shaping a dense tile costs several times a frame's
+  /// whole render budget (measured 2–9 ms per tile on a real city
+  /// style), so the pump runs it in slices. Starts at [from] and stops
+  /// once [outOfBudget] says the tick is spent, returning the index to
+  /// resume at — `symbols.length` when the batch is done. Always shapes
+  /// at least one label per call, so a caller arriving with no budget
+  /// left still makes progress instead of spinning on one index.
+  ///
+  /// The caller must not publish [symbols] as placement candidates
+  /// before this reports completion: the label pass shapes on a cache
+  /// miss, so a half-shaped tile offered to it would move the rest of
+  /// the cost straight back into paint, where there is no budget at all.
+  int prewarm(
+    List<SymbolInstance> symbols,
+    double styleZoom, {
+    int from = 0,
+    bool Function()? outOfBudget,
+  }) {
     final zoom = (styleZoom * _zoomStep).round() / _zoomStep;
-    for (final instance in symbols) {
+    for (var i = from; i < symbols.length; i++) {
+      if (i > from && (outOfBudget?.call() ?? false)) return i;
+      final instance = symbols[i];
       if (instance.text.isEmpty) continue;
       final layer = instance.layer;
       final ctx = EvalContext(
@@ -588,6 +612,7 @@ class LabelPainter {
         }
       }
     }
+    return symbols.length;
   }
 
   /// [evalZoom] is quantized for the expression memos; [styleZoom] is

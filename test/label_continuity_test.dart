@@ -268,6 +268,130 @@ void main() {
     });
   });
 
+  group('LabelFadeTracker arrival cohorts', () {
+    test('keys appearing in one frame share an opacity', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.show('a');
+      tracker.show('b');
+      tracker.beginFrame(_at(50), _fadeDuration);
+      expect(tracker.show('a'), 0.5);
+      expect(tracker.show('b'), 0.5,
+          reason: 'one wave, one opacity, one saveLayer bucket');
+      expect(tracker.isWaiting('a'), isFalse);
+      expect(tracker.isWaiting('b'), isFalse);
+    });
+
+    test('a key arriving mid-wave waits at zero instead of popping', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.show('early');
+
+      // Half way through the first wave a second label lands.
+      tracker.beginFrame(_at(50), _fadeDuration);
+      expect(tracker.show('early'), 0.5);
+      expect(tracker.show('late'), 0,
+          reason: 'joining at 0.5 would pop it half-visible');
+      expect(tracker.isWaiting('late'), isTrue,
+          reason: 'the painter must not floor a queued key to one step');
+
+      // Still queued while the first wave is in flight.
+      tracker.beginFrame(_at(75), _fadeDuration);
+      expect(tracker.show('early'), 0.75);
+      expect(tracker.show('late'), 0);
+      expect(tracker.isWaiting('late'), isTrue);
+
+      // The first wave lands; the second starts on the next frame.
+      tracker.beginFrame(_at(110), _fadeDuration);
+      expect(tracker.show('early'), 1);
+      expect(tracker.show('late'), 0);
+      tracker.beginFrame(_at(150), _fadeDuration);
+      expect(tracker.show('late'), greaterThan(0),
+          reason: 'its wave is rising now');
+      expect(tracker.isWaiting('late'), isFalse);
+    });
+
+    test('everything queued behind one wave rises as a single later wave', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.show('first');
+      // Three labels arrive on three separate frames while 'first' rises.
+      for (final (ms, key) in [(30, 'a'), (60, 'b'), (90, 'c')]) {
+        tracker.beginFrame(_at(ms), _fadeDuration);
+        tracker.show('first');
+        tracker.show(key);
+      }
+      // Once the leading wave lands they share one opacity, however many
+      // frames apart they showed up — this is what collapses the buckets.
+      tracker.beginFrame(_at(160), _fadeDuration);
+      for (final k in ['first', 'a', 'b', 'c']) {
+        tracker.show(k);
+      }
+      tracker.beginFrame(_at(210), _fadeDuration);
+      tracker.show('first');
+      final opacities = {
+        for (final k in ['a', 'b', 'c']) tracker.show(k),
+      };
+      expect(opacities, hasLength(1),
+          reason: 'three arrival frames, one fade-in bucket');
+      expect(opacities.single, greaterThan(0));
+    });
+
+    test('a quiet map never holds a lone label back', () {
+      final tracker = LabelFadeTracker();
+      // Nothing in flight, so each arrival opens and starts its own wave.
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.show('a');
+      expect(tracker.isWaiting('a'), isFalse);
+      tracker.beginFrame(_at(200), _fadeDuration); // 'a' is done
+      tracker.show('a');
+      tracker.show('b');
+      expect(tracker.isWaiting('b'), isFalse,
+          reason: 'the previous wave landed, so this one starts at once');
+    });
+
+    test('a departing key leaves its wave and decays on its own', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.show('a');
+      tracker.show('b');
+      tracker.beginFrame(_at(50), _fadeDuration);
+      expect(tracker.show('a'), 0.5);
+      expect(tracker.show('b'), 0.5);
+
+      // 'b' is not placed this frame, so it leaves the wave.
+      tracker.beginFrame(_at(75), _fadeDuration);
+      tracker.show('a');
+      final ghosts = <Object, double>{};
+      tracker.sweep((key, opacity) => ghosts[key] = opacity);
+      expect(ghosts.keys, ['b']);
+      expect(ghosts['b'], closeTo(0.25, 1e-9),
+          reason: 'it falls from where the wave had carried it');
+      expect(tracker.isWaiting('b'), isFalse);
+
+      // Re-placed mid-fade-out it resumes from where it is, rather than
+      // being dragged back to its old wave's opacity or restarting.
+      tracker.beginFrame(_at(90), _fadeDuration);
+      final resumed = tracker.show('b');
+      expect(resumed, greaterThan(0.25));
+      expect(resumed, lessThan(1));
+    });
+
+    test('a waiting key that is never placed again is dropped', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.show('early');
+      tracker.beginFrame(_at(50), _fadeDuration);
+      tracker.show('early');
+      tracker.show('queued'); // joins the waiting wave at 0
+      tracker.beginFrame(_at(100), _fadeDuration);
+      tracker.show('early');
+      tracker.sweep((_, __) {});
+      expect(tracker.isTracked('queued'), isFalse,
+          reason: 'a queued key that stops being offered must not leak');
+    });
+  });
+
   group('PlacementThrottle', () {
     const screen = Size(400, 400);
     bool place(

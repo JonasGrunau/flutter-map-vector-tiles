@@ -11,6 +11,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 
 import 'fixtures/lifecycle_harness.dart';
+import 'show_labels_test.dart'
+    show hasColor, labelApp, labelColor, labelledTile;
 
 ui.Image _image(int size) {
   final recorder = ui.PictureRecorder();
@@ -195,6 +197,40 @@ void main() {
           reason: 'the level-14 tiles must come from the result cache');
       expect(SymbolLayouter.debugLayoutCount, laidOut,
           reason: 'symbol extraction must come from the result cache too');
+    });
+
+    testWidgets('cached labels are published by the pump, and still drawn',
+        (tester) async {
+      // The result-cache hit runs inside `build` (no await precedes it),
+      // so shaping its labels there would put a whole arriving level's
+      // paragraphs into one frame. The shaping is handed to the render
+      // pump instead — which must not lose the labels on the way.
+      tester.view.physicalSize = const Size(600, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      final controller = MapController();
+      final provider = EverywhereProvider(labelledTile());
+      await tester.pumpWidget(labelApp(controller, provider, showLabels: true));
+      // Not `settle`: it waits for the land colour at the centre, and
+      // the tile's label sits exactly there.
+      expect(
+          await pumpUntil(tester, () => hasColor(tester, labelColor)), isTrue,
+          reason: 'labels are on screen before the round trip');
+      await sampleDuring(tester, frames: 20); // finished tiles reach the cache
+
+      controller.move(const LatLng(48.1725, 11.7375), 13);
+      expect(await pumpUntil(tester, () => fullyPainted(tester)), isTrue);
+      await sampleDuring(tester, frames: 20);
+
+      // Back to a level whose finished tiles are in the result cache.
+      final laidOut = SymbolLayouter.debugLayoutCount;
+      controller.move(const LatLng(48.1725, 11.7375), 14);
+      expect(
+          await pumpUntil(tester, () => hasColor(tester, labelColor)), isTrue,
+          reason: 'deferring the shaping to the pump must not drop the labels');
+      expect(SymbolLayouter.debugLayoutCount, laidOut,
+          reason: 'the labels came from the cache, not a fresh layout');
     });
   });
 }
