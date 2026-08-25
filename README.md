@@ -23,7 +23,7 @@ your other layers; this package only draws the map.
 | 📦 **One package** | MVT decoding, style engine and renderer in a single dependency — no renderer/cache/executor satellites |
 | 🚀 **Smooth interaction** | Geometry is rasterized **once** per tile into GPU-resident images (`Picture.toImageSync`); pan, zoom and rotate are just textured quads |
 | 🔍 **Crisp labels** | Text & icons are drawn per-frame in screen space: upright under rotation, sharp at fractional zoom, with **one global collision pass** — no duplicated or clipped labels at tile seams |
-| 🌫️ **No white flashes** | New tiles fade in while ancestor imagery is kept underneath; fast zoom-ins render instantly from already-decoded parent tiles |
+| 🌫️ **No white flashes** | New tiles fade in while ancestor imagery is kept underneath; fast zoom-ins render instantly from already-decoded parent tiles, and zoom-outs compose the already-decoded child tiles until the new level arrives |
 | 🎚️ **Correct MapLibre zoom semantics** | The default `TileOffset.maplibre` renders 512px-convention styles *exactly* as their authors designed them |
 | 🧵 **Isolate pipeline** | Tiles are decoded & trimmed on a worker-isolate pool (a yielding event-loop queue on web), viewport-centre first; cancellation is a state, **never an exception** in your crash reporting |
 | 💾 **Deterministic caching** | LRU memory caches with byte budgets + a size-capped disk cache with no index files to corrupt; every `ui.Image` is disposed on eviction |
@@ -444,7 +444,7 @@ documented in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md). 📖
 |---|---|---|
 | Packages | 3 ([`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles), [`vector_tile_renderer`](https://pub.dev/packages/vector_tile_renderer), [`executor_lib`](https://pub.dev/packages/executor_lib)) + [`stash`](https://pub.dev/packages/stash) caching | 1 |
 | Labels | baked into tile rasters / per-tile collision | screen-space pass, global collision, upright text |
-| Zoom flicker | white flash on fast zoom ([#147](https://github.com/greensopinion/flutter-vector-map-tiles/issues/147)) | ancestor retention + provisional rendering |
+| Zoom flicker | white flash on fast zoom ([#147](https://github.com/greensopinion/flutter-vector-map-tiles/issues/147)) | retained level + ancestor/descendant substitution |
 | Cancellation | `CancellationException` reaches crash reporting ([#205](https://github.com/greensopinion/flutter-vector-map-tiles/issues/205)) | a state, never an exception |
 | Style zoom | evaluated at flutter_map zoom (1 off vs. MapLibre) | `TileOffset.maplibre` default |
 | Rasters | async image encode | `Picture.toImageSync` (stays on GPU) |

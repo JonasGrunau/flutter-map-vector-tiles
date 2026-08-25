@@ -18,11 +18,29 @@ class DisplayTileData {
   /// with the caller.
   final Map<String, RasterTile> rasters;
 
+  /// Source id → cached descendant data tiles composing a (possibly
+  /// partial) provisional cover for a source whose own tile has not
+  /// arrived — the zoom-out counterpart of ancestor substitution. Only
+  /// provisional renders carry any, and only for sources absent from
+  /// [sources]. Geometry only: symbols are never laid out from
+  /// descendants.
+  final Map<String, List<PreparedTile>> descendantSources;
+
+  /// Raster source id → descendant image tiles, under the same contract
+  /// as [descendantSources]. Borrowed like [rasters].
+  final Map<String, List<RasterTile>> descendantRasters;
+
   const DisplayTileData({
     required this.displayKey,
     required this.sources,
     this.rasters = const {},
+    this.descendantSources = const {},
+    this.descendantRasters = const {},
   });
 
-  bool get isEmpty => sources.isEmpty && rasters.isEmpty;
+  bool get isEmpty =>
+      sources.isEmpty &&
+      rasters.isEmpty &&
+      descendantSources.isEmpty &&
+      descendantRasters.isEmpty;
 }

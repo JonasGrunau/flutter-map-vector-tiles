@@ -7,6 +7,7 @@ import 'package:meta/meta.dart';
 
 import '../core/tile_key.dart';
 import '../core/tile_zoom.dart';
+import '../grid/raster_tile_store.dart';
 import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
@@ -142,7 +143,34 @@ class TileRasterizer {
     final sourceLayerName = layer.sourceLayer;
     if (source == null || sourceLayerName == null) return;
     final tile = data.sources[source];
-    if (tile == null) return;
+    if (tile != null) {
+      _eachFeatureIn(
+          layer, data, tile, sourceLayerName, styleZoom, typeFilter, visit);
+      return;
+    }
+    // Zoom-out substitution: no tile of its own, but cached descendants
+    // composing a (possibly partial) provisional cover. Iterating them
+    // here — inside the theme-layer loop — keeps layer ordering intact
+    // across the whole display tile.
+    final descendants = data.descendantSources[source];
+    if (descendants == null) return;
+    for (final descendant in descendants) {
+      _eachFeatureIn(layer, data, descendant, sourceLayerName, styleZoom,
+          typeFilter, visit);
+    }
+  }
+
+  static void _eachFeatureIn(
+    ThemeLayer layer,
+    DisplayTileData data,
+    PreparedTile tile,
+    String sourceLayerName,
+    double styleZoom,
+    PreparedGeomType? typeFilter,
+    void Function(PreparedFeature feature, EvalContext ctx,
+            _TileTransform transform, ClipRect? clip)
+        visit,
+  ) {
     final sourceLayer = tile.layers[sourceLayerName];
     if (sourceLayer == null) return;
 
@@ -162,9 +190,17 @@ class TileRasterizer {
         (logicalTileSize + cullBufferPx - transform.offsetY) / transform.scale;
 
     final shift = data.displayKey.z - tile.key.z;
-    final clip = cull && shift >= _clipMinShift
-        ? ClipRect(cullMinX, cullMinY, cullMaxX, cullMaxY)
-        : null;
+    // At deep overzoom, clip to the display window (see [_clipMinShift]).
+    // A descendant (shift < 0) is clipped to its own extent instead: its
+    // buffer geometry must not spill into the sub-square a neighbouring
+    // — possibly missing — descendant owns. That clip is semantic, not
+    // an optimisation, so [debugDisableCulling] leaves it on.
+    final clip = shift < 0
+        ? ClipRect(
+            0, 0, sourceLayer.extent.toDouble(), sourceLayer.extent.toDouble())
+        : cull && shift >= _clipMinShift
+            ? ClipRect(cullMinX, cullMinY, cullMaxX, cullMaxY)
+            : null;
 
     for (final feature in sourceLayer.features) {
       if (typeFilter != null && feature.type != typeFilter) continue;
@@ -482,27 +518,51 @@ class TileRasterizer {
     DisplayTileData data,
     EvalContext zoomCtx,
   ) {
-    final raster = data.rasters[layer.source];
-    if (raster == null) return false;
+    final primary = data.rasters[layer.source];
+    // Zoom-out substitution mirrors the vector path: with no tile of
+    // its own, cached descendants compose a (possibly partial) cover.
+    final tiles = primary != null
+        ? [primary]
+        : data.descendantRasters[layer.source] ?? const <RasterTile>[];
+    if (tiles.isEmpty) return false;
     final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
     if (opacity <= 0) return false;
-    final image = raster.image;
-    // The data tile may be an ancestor (overzoom / 512px convention):
-    // draw the sub-region covering this display tile.
-    final frac = data.displayKey.fractionOf(raster.key);
-    final src = Rect.fromLTWH(
-      frac.dx * image.width,
-      frac.dy * image.height,
-      frac.scale * image.width,
-      frac.scale * image.height,
-    );
     final paint = Paint()
       ..filterQuality = FilterQuality.medium
       ..isAntiAlias = false
       ..color = Color.fromRGBO(255, 255, 255, opacity)
       ..colorFilter = _rasterColorFilter(layer, zoomCtx);
-    canvas.drawImageRect(image, src,
-        const Rect.fromLTWH(0, 0, logicalTileSize, logicalTileSize), paint);
+    for (final raster in tiles) {
+      final image = raster.image;
+      if (raster.key.z <= data.displayKey.z) {
+        // The data tile may be an ancestor (overzoom / 512px
+        // convention): draw the sub-region covering this display tile.
+        final frac = data.displayKey.fractionOf(raster.key);
+        final src = Rect.fromLTWH(
+          frac.dx * image.width,
+          frac.dy * image.height,
+          frac.scale * image.width,
+          frac.scale * image.height,
+        );
+        canvas.drawImageRect(image, src,
+            const Rect.fromLTWH(0, 0, logicalTileSize, logicalTileSize), paint);
+      } else {
+        // A descendant standing in on zoom-out: draw it whole into its
+        // sub-square of the display tile.
+        final frac = raster.key.fractionOf(data.displayKey);
+        canvas.drawImageRect(
+          image,
+          Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+          Rect.fromLTWH(
+            frac.dx * logicalTileSize,
+            frac.dy * logicalTileSize,
+            frac.scale * logicalTileSize,
+            frac.scale * logicalTileSize,
+          ),
+          paint,
+        );
+      }
+    }
     return true;
   }
 
@@ -803,7 +863,8 @@ class _LineStyle {
 }
 
 /// Maps tile-extent coordinates of a data tile to logical pixels of a
-/// display tile (which may be a descendant of the data tile).
+/// display tile — a descendant of the data tile at overzoom, or an
+/// ancestor of it under zoom-out substitution.
 class _TileTransform {
   final double scale;
   final double offsetX;
@@ -812,6 +873,16 @@ class _TileTransform {
   _TileTransform(this.scale, this.offsetX, this.offsetY);
 
   factory _TileTransform.forDisplay(TileKey display, TileKey data, int extent) {
+    if (data.z > display.z) {
+      // Descendant substitution: [data] covers a sub-square of the
+      // display tile — shrink its geometry into place.
+      final frac = data.fractionOf(display);
+      return _TileTransform(
+        TileRasterizer.logicalTileSize * frac.scale / extent,
+        frac.dx * TileRasterizer.logicalTileSize,
+        frac.dy * TileRasterizer.logicalTileSize,
+      );
+    }
     final frac = display.fractionOf(data);
     // logical = ((coord/extent) - dx) / fracScale * tileSize
     final scale = TileRasterizer.logicalTileSize / (extent * frac.scale);

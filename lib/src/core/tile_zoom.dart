@@ -50,3 +50,33 @@ T? findWithAncestors<T>(
   }
   return null;
 }
+
+/// Collects [dataKey]'s cached descendants, walking at most two levels
+/// down — the zoom-out counterpart of [findWithAncestors]. A found
+/// child stands in whole; a missing one is searched a level deeper, so
+/// the cover may be partial. A partial cover of sharp pixels still
+/// beats the background a cold zoom-out would otherwise show.
+List<T> findDescendants<T>(
+  TileKey dataKey,
+  int maximumZoom,
+  T? Function(TileKey key) lookup,
+) {
+  final found = <T>[];
+  void collect(TileKey key, int levelsLeft) {
+    if (levelsLeft == 0 || key.z >= maximumZoom) return;
+    for (var dy = 0; dy <= 1; dy++) {
+      for (var dx = 0; dx <= 1; dx++) {
+        final child = TileKey(key.z + 1, key.x * 2 + dx, key.y * 2 + dy);
+        final entry = lookup(child);
+        if (entry != null) {
+          found.add(entry);
+        } else {
+          collect(child, levelsLeft - 1);
+        }
+      }
+    }
+  }
+
+  collect(dataKey, 2);
+  return found;
+}

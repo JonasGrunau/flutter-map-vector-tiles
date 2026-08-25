@@ -120,15 +120,16 @@ Widget app(
   // pass a real duration and pump through `pumpUntil`, whose real
   // async delays move the wall clock.
   Duration tileFadeDuration = Duration.zero,
+  double initialZoom = 14,
 }) =>
     MaterialApp(
       home: RepaintBoundary(
         key: boundaryKey,
         child: FlutterMap(
           mapController: controller,
-          options: const MapOptions(
-            initialCenter: LatLng(48.1725, 11.7375),
-            initialZoom: 14,
+          options: MapOptions(
+            initialCenter: const LatLng(48.1725, 11.7375),
+            initialZoom: initialZoom,
           ),
           children: [
             VectorTileLayer(

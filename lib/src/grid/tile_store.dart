@@ -125,6 +125,12 @@ class TileStore {
   PreparedTile? peekWithAncestors(TileKey dataKey) =>
       findWithAncestors(dataKey, provider.minimumZoom, _memory.get);
 
+  /// Returns [dataKey]'s in-memory descendants — up to two levels down,
+  /// possibly a partial cover — used to compose provisional imagery on
+  /// zoom-out the way [peekWithAncestors] serves zoom-in.
+  List<PreparedTile> peekDescendants(TileKey dataKey) =>
+      findDescendants(dataKey, provider.maximumZoom, _memory.get);
+
   /// Loads and prepares a data tile. Returns null on cancellation or
   /// (transient) failure — failures are throttled, never thrown.
   Future<PreparedTile?> obtain(

@@ -1140,9 +1140,37 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           (s) => s.dataKeyFor(tile.key, offset),
           (s, k) => s.peekWithAncestors(k),
           provisionalRasters);
-      if (provisionalSources.isNotEmpty || provisionalRasters.isNotEmpty) {
+      // A zoom-out has no ancestors to borrow — the level just left lies
+      // *below* the pending key. Compose its cached descendants instead:
+      // a partial cover of sharp pixels beats the background.
+      final descendantSources = <String, List<PreparedTile>>{};
+      for (final id in pending.keys) {
+        if (provisionalSources.containsKey(id)) continue;
+        final store = _stores[id]!;
+        final dataKey = store.dataKeyFor(tile.key, offset);
+        if (dataKey == null) continue;
+        final children = store.peekDescendants(dataKey);
+        if (children.isNotEmpty) descendantSources[id] = children;
+      }
+      final descendantRasters = <String, List<RasterTile>>{};
+      for (final id in pendingRasters.keys) {
+        if (provisionalRasters.containsKey(id)) continue;
+        final store = _rasterStores[id]!;
+        final dataKey = store.dataKeyFor(tile.key, offset);
+        if (dataKey == null) continue;
+        final children = store.peekDescendants(dataKey);
+        if (children.isNotEmpty) descendantRasters[id] = children;
+      }
+      if (provisionalSources.isNotEmpty ||
+          provisionalRasters.isNotEmpty ||
+          descendantSources.isNotEmpty ||
+          descendantRasters.isNotEmpty) {
         _enqueueRaster(tile, provisionalSources,
-            rasters: provisionalRasters, provisional: true, priority: priority);
+            rasters: provisionalRasters,
+            descendantSources: descendantSources,
+            descendantRasters: descendantRasters,
+            provisional: true,
+            priority: priority);
       }
       for (final entry in pending.entries) {
         final prepared = await entry.value;
@@ -1226,6 +1254,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _DisplayTile tile,
     Map<String, PreparedTile> sources, {
     Map<String, RasterTile> rasters = const {},
+    Map<String, List<PreparedTile>> descendantSources = const {},
+    Map<String, List<RasterTile>> descendantRasters = const {},
     required bool provisional,
     required int priority,
     bool fadeIn = true,
@@ -1234,6 +1264,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     final job = _RenderJob(
         sources: sources,
         rasters: rasters,
+        descendantSources: descendantSources,
+        descendantRasters: descendantRasters,
         provisional: provisional,
         priority: priority,
         fadeIn: fadeIn,
@@ -1322,7 +1354,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
               // tile — or a newer one for this tile, which supersedes
               // it — take its turn first.
               assert(
-                  job.rasters.isEmpty,
+                  job.rasters.isEmpty && job.descendantRasters.isEmpty,
                   'a requeued symbols job must own no raster handles: the '
                   'pump skips dispose() for it');
               _renderQueue.enqueueSymbols(tile, job.priority, job);
@@ -1342,7 +1374,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     developer.Timeline.startSync('VT rasterize');
     final styleZoom = _styleZoomOf(tile.key.z.toDouble());
     final data = DisplayTileData(
-        displayKey: tile.key, sources: job.sources, rasters: job.rasters);
+        displayKey: tile.key,
+        sources: job.sources,
+        rasters: job.rasters,
+        descendantSources: job.descendantSources,
+        descendantRasters: job.descendantRasters);
     final image = TileRasterizer.rasterize(
       theme: widget.theme,
       data: data,
@@ -1544,6 +1580,15 @@ class _RenderJob {
   /// Owned raster tile handles; disposed with the job. Only the raster
   /// phase carries any — the symbol phase never needs them.
   final Map<String, RasterTile> rasters;
+
+  /// Source id → cached descendant tiles composing a (possibly partial)
+  /// provisional cover on zoom-out. Geometry only — the symbol phase
+  /// never lays out from descendants. Only provisional jobs carry any.
+  final Map<String, List<PreparedTile>> descendantSources;
+
+  /// Owned descendant raster handles, disposed with the job — the
+  /// zoom-out counterpart of the ancestors in [rasters].
+  final Map<String, List<RasterTile>> descendantRasters;
   final bool provisional;
   final int priority;
 
@@ -1584,6 +1629,8 @@ class _RenderJob {
     required this.fadeIn,
     required this.complete,
     required this.generation,
+    this.descendantSources = const {},
+    this.descendantRasters = const {},
     this.fromCache = false,
     this.symbols,
   });
@@ -1591,6 +1638,11 @@ class _RenderJob {
   void dispose() {
     for (final raster in rasters.values) {
       raster.dispose();
+    }
+    for (final rasters in descendantRasters.values) {
+      for (final raster in rasters) {
+        raster.dispose();
+      }
     }
   }
 }

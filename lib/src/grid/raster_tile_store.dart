@@ -116,6 +116,12 @@ class RasterTileStore {
   RasterTile? peekWithAncestors(TileKey dataKey) =>
       findWithAncestors(dataKey, source.provider.minimumZoom, peek);
 
+  /// Returns owned handles to [dataKey]'s in-memory descendants — up to
+  /// two levels down, possibly a partial cover — the zoom-out
+  /// counterpart of [peekWithAncestors].
+  List<RasterTile> peekDescendants(TileKey dataKey) =>
+      findDescendants(dataKey, source.provider.maximumZoom, peek);
+
   /// Loads and decodes a data tile. Returns null on cancellation,
   /// absence, or (throttled) transient failure — never throws.
   Future<RasterTile?> obtain(

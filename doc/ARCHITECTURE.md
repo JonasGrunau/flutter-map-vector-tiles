@@ -60,6 +60,21 @@ over the bare background and reads as a background-coloured shimmer on
 every crossing. Freshly rasterized tiles always fade; their fade is
 what masks staggered pop-in.
 
+A display tile whose data has not arrived does not wait blank. While
+the load is pending, the layer renders a *provisional* image from
+whatever the decoded-tile cache can offer: the nearest in-memory
+ancestor (up to five levels up — a fast zoom-in instantly shows a
+window of the parent it just left), or, when there is no cached
+ancestor because the camera zoomed *out* — the level just left lies
+below the pending key — its cached descendants, up to two levels down,
+each shrunk into its sub-square of the display tile and clipped to its
+own extent so buffer geometry cannot spill into a sub-square whose
+descendant is missing. The descendant cover may be partial; partially
+sharp pixels still beat the background. Descendants contribute
+geometry only — symbols are never laid out from them, so labels arrive
+with the tile's real data. Provisional results never enter the result
+cache, and a provisional tile still counts as loading for retention.
+
 At overzoom — display zoom past the source's maxzoom — each display tile
 shows only a small window of its data tile. Features are rejected
 against that window (expanded by a 64-logical-px buffer) using bounds

@@ -5,8 +5,19 @@
 Zoom-crossing artefacts: labels flashed, street names jumped along
 their roads, zoom-outs shimmered background colour at the edges, and
 the outgoing level outstayed its welcome. The arrival waves 2.7.0
-introduced are gone; every label that holds a spot paints again.
+introduced are gone; every label that holds a spot paints again, and a
+cold zoom-out now paints from the tiles it just showed instead of the
+background.
 
+- ✨ **Zoom-outs substitute cached child tiles**: a display tile whose
+  data had not arrived could only borrow a cached *ancestor* — good for
+  zoom-ins, useless for zoom-outs, where the level just left lies below
+  the pending tile, so a network-cold zoom-out (or a map reopened at a
+  lower zoom than it last showed) sat on the bare background until the
+  network answered. With no cached ancestor, the layer now composes the
+  already-decoded descendant tiles — up to two levels down, possibly a
+  partial cover — into a provisional image, each shrunk into its
+  sub-square, until the tile's own data arrives.
 - 🐛 **Labels no longer flash or pulse during a zoom gesture**: 2.7.0
   grouped arriving labels into waves that shared one opacity, so a label
   arriving while a fade was in flight waited, painting nothing, until

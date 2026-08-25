@@ -24,6 +24,7 @@ lifecycle or painting is covered by widget tests that pump a real
 | `curved_text_test.dart` | Text along lines and the sharp-bend fallback |
 | `sdf_icon_test.dart` | SDF sprite tinting |
 | `tile_retention_test.dart` | The pure retention predicates (17 cases) |
+| `descendant_substitution_test.dart` | Zoom-out substitution: the `findDescendants` walk (partial cover, depth and maxzoom bounds), descendant rasterization into sub-squares with buffer-spill clipping (vector and raster sources), and widget-level: a reopened map below the cached level paints from descendants while its own tiles never arrive |
 | `theme_reader_test.dart` | Layer parsing and MapLibre spec defaults |
 | `line_pattern_test.dart`, `fill_pattern_test.dart` | Pattern paints |
 | `disk_cache_test.dart`, `lru_cache_test.dart` | Cache eviction, TTL, size sweep |
