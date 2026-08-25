@@ -4,7 +4,11 @@
 # the repo lints) and a default widget_test.dart (which does not compile
 # against this app) — delete both if you regenerate.
 analysis_options.yaml
-test/
+# test/* rather than test/: an ignored *directory* cannot have files
+# re-included from inside it, and the anchor-jump evidence test below
+# is ours, not scaffold droppings.
+test/*
+!test/anchor_continuity_test.dart
 
 android/
 ios/

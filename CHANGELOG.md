@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.8.0
 
 Zoom-crossing artefacts: labels flashed, street names jumped along
 their roads, zoom-outs shimmered background colour at the edges, and
