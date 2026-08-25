@@ -149,7 +149,7 @@ vt.VectorTileLayer(
 | `cachePath` | app support dir | supply your own directory path to control/clear it (ignored on web) |
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source (the caches are shared process-wide; the most recently mounted layer's value wins) |
 | `rasterCacheMaxBytes` | sized for the device | finished-tile budget: zooming back to a recent level (or reopening the same style) paints instantly instead of re-rendering. GPU texture bytes — ~1 MB per tile at devicePixelRatio 2, ~2.25 MB at 3, and one phone screenful is ~25–35 tiles, so a *single* level costs ~80 MB on a large dpr-3 phone. The default now measures your actual viewport and dpr and budgets 2.5 screenfuls (clamped to 64–256 MB), so a zoom round trip keeps the level it returns to; pass a byte count to pin it, or `0` to disable |
-| `tileFadeDuration` | 150 ms | `Duration.zero` disables fade-in |
+| `tileFadeDuration` | 150 ms | fade-in of newly rendered tiles. Tiles served from the finished-tile cache fade only when retained imagery lies beneath them to cross-fade over; with nothing beneath (a reopened map, the ring a zoom-out exposes) ready imagery appears at once instead of fading over the background. `Duration.zero` disables |
 | `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels/icons — one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided (capped at 300 ms; new labels always place at once). `Duration.zero` restores instant pops and per-frame collision |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 
@@ -395,6 +395,11 @@ into the tile rasters. That is what the behaviour below is built on:
   introduces ones that were not already visible, so a label that had been
   crowded out (a street name under a POI, say) cannot flash up just as the
   level departs.
+- **Street names cross-fade between their per-level positions** —
+  along-line labels are re-spaced per zoom level, so the same name can
+  genuinely sit somewhere else on its road after a crossing. Each sitting
+  fades on its own clock: the old position eases out where it was while
+  the new one fades in, instead of the name teleporting at full opacity.
 - **Placement is remembered, not re-derived** — a label that can be drawn
   from more than one feature (a street name on both carriageways, or the
   same name from two zoom levels) stays on the one it is already on, a

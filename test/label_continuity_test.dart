@@ -29,18 +29,19 @@ SymbolInstance _symbol(
   String? iconName,
   int layerIndex = 0,
   Offset anchor = Offset.zero,
+  bool alongLine = false,
 }) =>
     SymbolInstance(
       layer: layer,
       layerIndex: layerIndex,
       anchor: anchor,
       angle: 0,
-      alongLine: false,
+      alongLine: alongLine,
       text: text,
       iconName: iconName,
       sortKey: 0,
       properties: const {},
-      geometryType: 'Point',
+      geometryType: alongLine ? 'LineString' : 'Point',
       featureId: null,
     );
 
@@ -183,7 +184,7 @@ void main() {
 
       tracker.beginFrame(_at(100), _fadeDuration);
       expect(tracker.show('k'), 1);
-      tracker.sweep((_, __) => fail('nothing is fading out'));
+      tracker.sweep((_, __, ___) => fail('nothing is fading out'));
       expect(tracker.anyActive, isFalse, reason: 'the fade has finished');
     });
 
@@ -206,15 +207,21 @@ void main() {
 
       final fading = <double>[];
       tracker.beginFrame(_at(125), _fadeDuration);
-      tracker.sweep((key, opacity) => fading.add(opacity));
+      tracker.sweep((key, position, opacity) {
+        fading.add(opacity);
+        return null;
+      });
       tracker.beginFrame(_at(150), _fadeDuration);
-      tracker.sweep((key, opacity) => fading.add(opacity));
+      tracker.sweep((key, position, opacity) {
+        fading.add(opacity);
+        return null;
+      });
       expect(fading, [0.75, 0.5]);
       expect(tracker.isTracked('k'), isTrue);
       expect(tracker.anyActive, isTrue);
 
       tracker.beginFrame(_at(250), _fadeDuration);
-      tracker.sweep((_, __) => fail('the fade has completed'));
+      tracker.sweep((_, __, ___) => fail('the fade has completed'));
       expect(tracker.isTracked('k'), isFalse, reason: 'self-pruning');
       expect(tracker.anyActive, isFalse);
     });
@@ -229,7 +236,7 @@ void main() {
       tracker.beginFrame(_at(100), _fadeDuration);
       tracker.show('k');
       tracker.beginFrame(_at(150), _fadeDuration);
-      tracker.sweep((_, __) {}); // down to 0.5
+      tracker.sweep((_, __, ___) => null); // down to 0.5
       tracker.beginFrame(_at(175), _fadeDuration);
       expect(tracker.show('k'), 0.75, reason: 'rising again from 0.5');
     });
@@ -254,7 +261,7 @@ void main() {
       tracker.beginFrame(_at(1), Duration.zero);
       expect(tracker.show('k'), 1);
       tracker.beginFrame(_at(2), Duration.zero);
-      tracker.sweep((_, __) => fail('a zero duration never draws ghosts'));
+      tracker.sweep((_, __, ___) => fail('a zero duration never draws ghosts'));
       expect(tracker.isTracked('k'), isFalse);
     });
 
@@ -359,7 +366,7 @@ void main() {
         for (var i = 0; i <= frame; i++) {
           if (tracker.show('k$i') > 0) firstVisible.add(i);
         }
-        tracker.sweep((_, __) {});
+        tracker.sweep((_, __, ___) => null);
       }
       // Every label that arrived with a frame left to rise in became
       // visible, rather than the handful a burst schedule admits.
@@ -378,7 +385,10 @@ void main() {
       tracker.beginFrame(_at(75), _fadeDuration);
       tracker.show('a');
       final ghosts = <Object, double>{};
-      tracker.sweep((key, opacity) => ghosts[key] = opacity);
+      tracker.sweep((key, position, opacity) {
+        ghosts[key] = opacity;
+        return null;
+      });
       expect(ghosts.keys, ['b']);
       expect(ghosts['b'], closeTo(0.25, 1e-9));
 
@@ -388,6 +398,195 @@ void main() {
       final resumed = tracker.show('b');
       expect(resumed, greaterThan(0.25));
       expect(resumed, lessThan(1));
+    });
+  });
+
+  group('LabelFadeTracker along-line sittings', () {
+    // Along-line anchors are re-derived from `symbol-spacing` per
+    // display layout, so a zoom crossing genuinely moves them — half
+    // the spacing for a straight street. One opacity per key would
+    // hand the new position the old one's full opacity: the name
+    // teleports. Each sitting fades on its own instead, matched by
+    // position within [LabelFadeTracker.matchRadius].
+    const here = Offset(100, 100);
+    const nearby = Offset(110, 105); // within the match radius
+    const there = Offset(225, 100); // a re-spaced anchor, far outside it
+
+    test('a moved sitting fades in at the new position', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.showAt('k', here);
+      tracker.beginFrame(_at(100), _fadeDuration);
+      expect(tracker.showAt('k', here), 1);
+
+      // The crossing: the same key arrives at the re-spaced position.
+      tracker.beginFrame(_at(150), _fadeDuration);
+      expect(tracker.showAt('k', there), 0,
+          reason: 'a new sitting, not the old one at full opacity');
+      final ghosts = <Offset?, double>{};
+      tracker.sweep((key, position, opacity) {
+        ghosts[position] = opacity;
+        return null;
+      });
+      expect(ghosts, {here: 0.5},
+          reason: 'the old sitting fades out where it was');
+    });
+
+    test('a sitting that only drifted resumes its fade', () {
+      // Simplification noise, a provisional→final swap, the camera
+      // between two frames: all move an anchor a few pixels. Those must
+      // keep their state, or every republish would re-fade the street.
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.showAt('k', here);
+      tracker.beginFrame(_at(50), _fadeDuration);
+      expect(tracker.showAt('k', nearby), 0.5, reason: 'the same sitting');
+      expect(tracker.opacityNear('k', here), 0.5);
+    });
+
+    test('seam twins share one sitting within a frame', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.showAt('k', here);
+      tracker.beginFrame(_at(50), _fadeDuration);
+      expect(tracker.showAt('k', here), 0.5);
+      expect(tracker.showAt('k', nearby), 0.5,
+          reason: 'idempotent: the twin reads, it does not advance');
+    });
+
+    test('the repeats of one street fade independently', () {
+      // Two sittings of the same name, spacing apart: a newly appearing
+      // repeat fades in even while the established one sits at 1.
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.showAt('k', here);
+      tracker.beginFrame(_at(100), _fadeDuration);
+      expect(tracker.showAt('k', here), 1);
+      expect(tracker.showAt('k', there), 0, reason: 'its own fade');
+      tracker.beginFrame(_at(150), _fadeDuration);
+      expect(tracker.showAt('k', here), 1);
+      expect(tracker.showAt('k', there), 0.5);
+      expect(tracker.anyActive, isTrue);
+    });
+
+    test('a fading sitting follows where its ghost is drawn', () {
+      // The sweep hands back where the ghost actually painted; the
+      // sitting adopts it, so a fade-out tracks the camera and a
+      // re-appearance still matches the sitting.
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.showAt('k', here);
+      tracker.beginFrame(_at(100), _fadeDuration);
+      tracker.showAt('k', here);
+
+      // Two ghost frames, the camera dragging the label 20px per frame.
+      tracker.beginFrame(_at(125), _fadeDuration);
+      tracker.sweep((key, position, opacity) {
+        expect(position, here);
+        return here + const Offset(20, 0);
+      });
+      tracker.beginFrame(_at(150), _fadeDuration);
+      tracker.sweep((key, position, opacity) {
+        expect(position, here + const Offset(20, 0));
+        return here + const Offset(40, 0);
+      });
+
+      // Re-placed where the camera has taken it: still the same
+      // sitting, resuming from 0.5 rather than restarting.
+      tracker.beginFrame(_at(175), _fadeDuration);
+      expect(tracker.showAt('k', here + const Offset(45, 2)), 0.75);
+    });
+
+    test('sittings prune like point keys do', () {
+      final tracker = LabelFadeTracker();
+      tracker.beginFrame(_at(0), _fadeDuration);
+      tracker.showAt('k', here);
+      expect(tracker.isTracked('k'), isTrue);
+      tracker.beginFrame(_at(500), _fadeDuration);
+      tracker.sweep((_, __, ___) => null);
+      expect(tracker.isTracked('k'), isFalse, reason: 'self-pruning');
+      expect(tracker.anyActive, isFalse);
+    });
+  });
+
+  group('along-line fades through the painter', () {
+    test('a re-spaced street name cross-fades instead of teleporting', () {
+      // The zoom-crossing story: the arriving level lays the same
+      // street's label out somewhere else along the road. The old
+      // instance is only on offer as a fallback (its tile has been
+      // covered); the new one fades in at its position while the old
+      // position draws a fading ghost — never a full-opacity jump.
+      final painter = LabelPainter();
+      final outgoing = _symbol(layer, text: 'Hauptstraße', alongLine: true);
+      final arriving = _symbol(layer, text: 'Hauptstraße', alongLine: true);
+      const oldSpot = Offset(120, 200);
+      const newSpot = Offset(290, 200);
+
+      _frame(painter, [_placedAt(outgoing, anchor: oldSpot)], now: _at(0));
+      _frame(painter, [_placedAt(outgoing, anchor: oldSpot)], now: _at(100));
+      expect(
+          painter.debugFades.opacityNear(outgoing.continuityKey, oldSpot), 1);
+
+      final crossing = _frame(
+        painter,
+        [
+          _placedAt(arriving, anchor: newSpot),
+          _placedAt(outgoing, anchor: oldSpot, order: 1, ghostOnly: true),
+        ],
+        now: _at(150),
+      );
+      expect(crossing.map((p) => p.instance).toSet(), {arriving, outgoing},
+          reason: 'the new position fades in while the old ghosts out');
+      final key = arriving.continuityKey;
+      expect(painter.debugFades.opacityNear(key, newSpot), lessThan(1),
+          reason: 'fading in at the new position, not inheriting 1');
+      expect(painter.debugFades.opacityNear(key, oldSpot), lessThan(1),
+          reason: 'fading out at the old one');
+
+      // Settled: one sitting at the new position, at full opacity.
+      _frame(painter, [_placedAt(arriving, anchor: newSpot)], now: _at(400));
+      final settled = _frame(painter, [_placedAt(arriving, anchor: newSpot)],
+          now: _at(700));
+      expect(settled.map((p) => p.instance), [arriving]);
+      expect(painter.debugFades.opacityNear(key, newSpot), 1);
+      expect(painter.debugFades.opacityNear(key, oldSpot), isNull,
+          reason: 'the old sitting has been swept out');
+      painter.dispose();
+    });
+
+    test('a ghost is not drawn from a repeat far from the fading sitting', () {
+      // With every candidate of a key on offer, the fading sitting must
+      // take the one where it was — not the priority-first repeat at
+      // the other end of the street.
+      final painter = LabelPainter();
+      final northRepeat = _symbol(layer, text: 'Ring', alongLine: true);
+      final southRepeat = _symbol(layer, text: 'Ring', alongLine: true);
+      const north = Offset(200, 60);
+      const south = Offset(200, 340);
+
+      List<PlacedSymbol> both() => [
+            _placedAt(northRepeat, anchor: north),
+            _placedAt(southRepeat, anchor: south, order: 1),
+          ];
+      _frame(painter, both(), now: _at(0));
+      _frame(painter, both(), now: _at(100));
+
+      // The south repeat loses its spot; both remain on offer (the
+      // north one live, the south one as a fallback candidate).
+      final drawn = _frame(
+        painter,
+        [
+          _placedAt(northRepeat, anchor: north),
+          _placedAt(southRepeat, anchor: south, order: 1, ghostOnly: true),
+        ],
+        now: _at(150),
+      );
+      final ghost = drawn.singleWhere((p) => identical(p.instance, southRepeat),
+          orElse: () => fail('the south sitting should ghost out'));
+      expect(ghost.screenAnchor, south,
+          reason: 'the ghost draws where the sitting was, not at the '
+              'north repeat');
+      painter.dispose();
     });
   });
 

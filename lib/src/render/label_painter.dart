@@ -176,6 +176,20 @@ class LabelPainter {
   /// frames so steady-state paints allocate nothing here.
   final _fallbacks = <Object, PlacedSymbol>{};
 
+  /// Along-line fade-outs are matched by position (see
+  /// [LabelFadeTracker.showAt]), so their fallbacks keep *every*
+  /// candidate of a tracked key: the sweep draws each fading sitting
+  /// from the candidate nearest it, instead of the priority-first one —
+  /// which for a street with several repeats could be a different
+  /// repeat entirely, teleporting the ghost.
+  final _lineFallbacks = <Object, List<PlacedSymbol>>{};
+
+  /// How far from a fading sitting its ghost's stand-in candidate may
+  /// be. Beyond this, drawing the "nearest" candidate would move the
+  /// label — the artefact the positional fades remove — so the sitting
+  /// finishes its fade undrawn instead.
+  static const double _ghostRadius = LabelFadeTracker.matchRadius * 2;
+
   /// When the collision pass re-runs; between passes its decision is
   /// replayed. See [PlacementThrottle].
   final _placement = PlacementThrottle();
@@ -217,6 +231,7 @@ class LabelPainter {
   void reset() {
     _fades.clear();
     _fallbacks.clear();
+    _lineFallbacks.clear();
     _winners.clear();
     _memory.clear();
     _placement.reset();
@@ -363,7 +378,15 @@ class LabelPainter {
       final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
       var fade = 1.0;
       if (fades) {
-        fade = _fades.show(candidate.instance.continuityKey);
+        // Along-line labels fade per sitting position: their anchors
+        // are re-spaced per display layout, so the arriving level's
+        // copy is somewhere else on its street and must fade in there
+        // while the old position fades out — not inherit its opacity
+        // and teleport. Point labels share one opacity per key.
+        fade = candidate.instance.alongLine
+            ? _fades.showAt(
+                candidate.instance.continuityKey, candidate.screenAnchor)
+            : _fades.show(candidate.instance.continuityKey);
         // A key on its first frame has no elapsed fade time yet; one
         // step keeps it from starting invisible. Every placed label
         // paints something, on every frame it is placed: a label held
@@ -384,25 +407,36 @@ class LabelPainter {
       // fades in over the ghost instead of waiting for it to expire and
       // popping.
       _CollisionIndex? permissive;
-      _fades.sweep((key, opacity) {
-        final fallback = _fallbacks[key];
-        if (fallback == null) return;
+      _fades.sweep((key, position, opacity) {
+        // Point states take the recorded fallback as-is; an along-line
+        // sitting takes the candidate nearest its position, and only
+        // within [_ghostRadius] — a farther stand-in would move the
+        // fading label, which is the artefact the positional fades
+        // exist to remove.
+        final fallback = position == null
+            ? _fallbacks[key]
+            : _nearestCandidate(_lineFallbacks[key], position);
+        if (fallback == null) return null;
         final ramp = zoomRangeOpacity(fallback.instance.layer, styleZoom);
-        if (ramp <= 0) return;
+        if (ramp <= 0) return null;
         // Floored, mirroring the fade-in's implicit ceil: a departing
         // label reaches zero instead of lingering one step above it.
         final ghostOpacity =
             (opacity * ramp * _opacitySteps).floor() / _opacitySteps;
-        if (ghostOpacity <= 0) return;
+        if (ghostOpacity <= 0) return null;
         final drawable = _prepare(fallback, zoom, styleZoom,
             permissive ??= _CollisionIndex.permissive(), sprites, screenSize,
             gateZoom: false);
-        if (drawable == null) return;
+        if (drawable == null) return null;
         drawable.opacity = ghostOpacity;
         toDraw.add(drawable);
         anyFading = true;
+        // The tracker moves the sitting to where its ghost was drawn,
+        // so the fade keeps tracking the camera.
+        return fallback.screenAnchor;
       });
       _fallbacks.clear();
+      _lineFallbacks.clear();
     }
     // Draw bottom style layers first so upper layers paint on top; the
     // insertion-order tiebreaker keeps draw order stable across frames.
@@ -501,15 +535,38 @@ class LabelPainter {
     }
   }
 
-  /// Remembers [candidate] as the drawable to fade its key out with,
-  /// should the sweep find that key unplaced this frame. Only tracked
-  /// keys can fade, and the first candidate per key wins — candidates
-  /// are visited in placement-priority order, so it is the best proxy
-  /// for the instance that was on screen.
+  /// Remembers [candidate] as a drawable to fade its key out with,
+  /// should the sweep find that key (or one of its sittings) unplaced
+  /// this frame. Only tracked keys can fade. For point labels the first
+  /// candidate per key wins — candidates are visited in
+  /// placement-priority order, so it is the best proxy for the instance
+  /// that was on screen. Along-line keys keep every candidate: the
+  /// sweep picks the one nearest each fading sitting.
   void _recordFallback(PlacedSymbol candidate) {
     final key = candidate.instance.continuityKey;
     if (!_fades.isTracked(key)) return;
-    _fallbacks[key] ??= candidate;
+    if (candidate.instance.alongLine) {
+      (_lineFallbacks[key] ??= []).add(candidate);
+    } else {
+      _fallbacks[key] ??= candidate;
+    }
+  }
+
+  /// The candidate in [candidates] nearest [position], within
+  /// [_ghostRadius]; null when none is (or the list is).
+  static PlacedSymbol? _nearestCandidate(
+      List<PlacedSymbol>? candidates, Offset position) {
+    if (candidates == null) return null;
+    PlacedSymbol? best;
+    var bestDistance = _ghostRadius * _ghostRadius;
+    for (final candidate in candidates) {
+      final distance = (candidate.screenAnchor - position).distanceSquared;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = candidate;
+      }
+    }
+    return best;
   }
 
   /// Opacity [layer]'s zoom range gives a symbol at [styleZoom]: 1

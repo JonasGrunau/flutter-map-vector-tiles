@@ -115,6 +115,11 @@ Widget app(
   MapController controller,
   VectorTileProvider provider, {
   Future<String> Function()? cachePath,
+  // Instant fades by default: fade progress is driven by the wall
+  // clock, which `pump` does not advance. Tests about the fade itself
+  // pass a real duration and pump through `pumpUntil`, whose real
+  // async delays move the wall clock.
+  Duration tileFadeDuration = Duration.zero,
 }) =>
     MaterialApp(
       home: RepaintBoundary(
@@ -131,9 +136,7 @@ Widget app(
               tileProviders: TileProviders({'s': provider}),
               // Style zoom == display zoom keeps the test arithmetic plain.
               tileOffset: TileOffset.none,
-              // Instant fades: fade progress is driven by the wall clock,
-              // which `pump` does not advance.
-              tileFadeDuration: Duration.zero,
+              tileFadeDuration: tileFadeDuration,
               concurrency: 1,
               cachePath: cachePath,
               diskCacheMaximumSizeInBytes: cachePath == null ? 0 : 1024 * 1024,

@@ -16,6 +16,17 @@ import 'symbol_layouter.dart';
 /// duplicate skip its fade-out because the same text survives elsewhere
 /// on the arriving level. So the key errs loose on purpose.
 ///
+/// That reasoning holds for *point* anchors, whose world position is a
+/// property of the feature. Along-line anchors are different: they are
+/// re-derived from `symbol-spacing` over each display layout, so the
+/// same street's label genuinely sits somewhere else at the next zoom
+/// level — half the spacing away for a plain straight street. For those
+/// the position must take part or a crossing teleports the name along
+/// its street at full opacity; [LabelFadeTracker] therefore matches
+/// along-line fades by screen position *within* this loose key (see
+/// [LabelFadeTracker.showAt]) rather than sharpening the key itself,
+/// which would reintroduce the blink for every near-match.
+///
 /// A record, not an `Object.hash` value: set membership must compare the
 /// actual triple, or a hash collision between unrelated labels would
 /// silently conflate them. Memoized on the instance — the label pass
@@ -49,10 +60,11 @@ List<SymbolInstance> drawnLabels(
 /// Per-label fade state, keyed by [labelContinuityKey]: one opacity per
 /// label *identity*, whatever instance happens to draw it.
 ///
-/// Every frame the label pass marks the keys it placed ([show]); the
-/// [sweep] then walks every other tracked key downward. Opacity moves
-/// toward "placed ? 1 : 0" by the fraction of a fade one frame spans,
-/// so any appearance eases in and any disappearance eases out — a tile
+/// Every frame the label pass marks the keys it placed ([show] for
+/// point anchors, [showAt] for along-line ones); the [sweep] then walks
+/// every other tracked state downward. Opacity moves toward
+/// "placed ? 1 : 0" by the fraction of a fade one frame spans, so any
+/// appearance eases in and any disappearance eases out — a tile
 /// arriving, a level handing over, a collision won or lost, a zoom cut
 /// — all through the same mechanism, with no per-cause bookkeeping.
 ///
@@ -68,12 +80,38 @@ List<SymbolInstance> drawnLabels(
 ///   unplaced — a tile republish, a lost frame of collision — dips at
 ///   most a step instead of blinking to zero.
 ///
-/// The tracker is self-pruning: a key that stays unplaced fades to zero
-/// and is dropped, so the map holds roughly the set of recently visible
-/// labels. Pure Dart and clock-agnostic — the caller supplies `now` —
-/// which is what makes it unit-testable.
+/// Along-line labels refine the first property rather than share it
+/// wholesale: their anchors are re-derived from `symbol-spacing` per
+/// display layout, so the arriving level's copy genuinely sits at a
+/// *different place on the street* — up to half the spacing away for a
+/// straight road. One opacity for all of them would hand the new
+/// position the old one's full opacity, which on screen is the name
+/// teleporting along its street at every crossing. [showAt] therefore
+/// keeps one fade per *sitting* — states matched by screen position
+/// within [matchRadius], the same radius [PlacementMemory] uses — so a
+/// moved sitting cross-fades (old position out, new position in) while
+/// a sitting that merely shifted a few pixels (simplification noise, a
+/// provisional→final swap, seam twins) resumes its state. Point labels
+/// keep the single shared opacity: their anchors are world-stable, and
+/// splitting them would re-fade on every near-match.
+///
+/// The tracker is self-pruning: a state that stays unplaced fades to
+/// zero and is dropped, so the map holds roughly the set of recently
+/// visible labels. Pure Dart and clock-agnostic — the caller supplies
+/// `now` — which is what makes it unit-testable.
 class LabelFadeTracker {
+  /// How far an along-line label's anchor may move between sightings
+  /// and still be the same sitting, in screen pixels. Deliberately the
+  /// same value as `PlacementMemory._radius`, for the same reason: well
+  /// inside the default `symbol-spacing`, so the repeats of one name
+  /// along a street keep their own fades, and comfortably above the
+  /// per-frame camera drift plus simplification noise.
+  static const double matchRadius = 32.0;
+
   final _states = <Object, _KeyFade>{};
+
+  /// Along-line fade states: per key, one entry per sitting position.
+  final _lineStates = <Object, List<_LineFade>>{};
   var _frame = 0;
   DateTime? _lastFrameAt;
 
@@ -86,10 +124,19 @@ class LabelFadeTracker {
   bool get anyActive => _anyActive;
 
   /// Whether [key] currently holds fade state (visible or fading out).
-  bool isTracked(Object key) => _states.containsKey(key);
+  bool isTracked(Object key) =>
+      _states.containsKey(key) || _lineStates.containsKey(key);
 
-  /// The tracked opacity of [key], or null when untracked.
+  /// The tracked opacity of [key], or null when untracked. Point-label
+  /// states only; along-line sittings are read via [opacityNear].
   double? opacityOf(Object key) => _states[key]?.opacity;
+
+  /// The tracked opacity of the along-line sitting of [key] nearest
+  /// [position] (within [matchRadius]), or null when none is.
+  double? opacityNear(Object key, Offset position) {
+    final entries = _lineStates[key];
+    return entries == null ? null : _nearestLine(entries, position)?.opacity;
+  }
 
   /// Starts a frame at [now]. The step is derived from the elapsed
   /// wall-clock time, so fades are frame-rate independent; a long gap
@@ -109,7 +156,8 @@ class LabelFadeTracker {
   /// this frame's step. A key new to the tracker starts at 0 — the
   /// caller's quantization keeps its first frame one step above
   /// invisible. Idempotent within a frame: seam twins and the retained
-  /// copy of a carried-over label share one state.
+  /// copy of a carried-over label share one state. Point anchors only;
+  /// along-line labels go through [showAt].
   double show(Object key) {
     final state = _states[key];
     if (state == null) {
@@ -126,18 +174,68 @@ class LabelFadeTracker {
     return state.opacity;
   }
 
-  /// Advances every key *not* shown this frame toward zero, reporting
+  /// [show] for an along-line label: marks the sitting of [key] at
+  /// [position] as placed this frame and returns its opacity.
+  ///
+  /// The sitting is the state nearest [position] within [matchRadius],
+  /// created at 0 when none is — so a label whose anchor genuinely
+  /// moved (the next zoom level re-spaced its street) fades in at the
+  /// new position while the old one sweeps out, and a label that only
+  /// drifted a few pixels resumes. The matched entry's position is
+  /// refreshed on every sighting, which is what lets it follow the
+  /// camera: between two painted frames a label moves only as far as
+  /// the gesture does, always well inside the radius.
+  double showAt(Object key, Offset position) {
+    final entries = _lineStates[key] ??= <_LineFade>[];
+    final match = _nearestLine(entries, position);
+    if (match == null) {
+      entries.add(_LineFade(position)..stamp = _frame);
+      _anyActive = true;
+      return 0;
+    }
+    if (match.stamp == _frame) return match.opacity;
+    match.stamp = _frame;
+    match.position = position;
+    if (match.opacity < 1) {
+      match.opacity = math.min(1, match.opacity + _step);
+      if (match.opacity < 1) _anyActive = true;
+    }
+    return match.opacity;
+  }
+
+  /// Advances every state *not* shown this frame toward zero, reporting
   /// the ones still visible to [fadingOut] so the caller can draw their
-  /// ghosts; keys that reached zero are dropped. Call once per frame,
-  /// after all [show] calls. [fadingOut] must not touch the tracker.
-  void sweep(void Function(Object key, double opacity) fadingOut) {
+  /// ghosts; states that reached zero are dropped. Call once per frame,
+  /// after all [show]/[showAt] calls.
+  ///
+  /// [fadingOut] receives the sitting's screen position for along-line
+  /// states and null for point ones, and returns where it actually drew
+  /// the ghost (or null when it drew nothing) — the sitting's position
+  /// is refreshed to that, so a ghost keeps tracking the camera through
+  /// its fade-out and a re-appearance still matches it. [fadingOut]
+  /// must not touch the tracker beyond that return value.
+  void sweep(
+      Offset? Function(Object key, Offset? position, double opacity)
+          fadingOut) {
     _states.removeWhere((key, state) {
       if (state.stamp == _frame) return false;
       state.opacity -= _step;
       if (state.opacity <= 0) return true;
       _anyActive = true;
-      fadingOut(key, state.opacity);
+      fadingOut(key, null, state.opacity);
       return false;
+    });
+    _lineStates.removeWhere((key, entries) {
+      entries.removeWhere((entry) {
+        if (entry.stamp == _frame) return false;
+        entry.opacity -= _step;
+        if (entry.opacity <= 0) return true;
+        _anyActive = true;
+        final drawnAt = fadingOut(key, entry.position, entry.opacity);
+        if (drawnAt != null) entry.position = drawnAt;
+        return false;
+      });
+      return entries.isEmpty;
     });
   }
 
@@ -145,8 +243,22 @@ class LabelFadeTracker {
   /// instance is replaced and layer indices change meaning.
   void clear() {
     _states.clear();
+    _lineStates.clear();
     _lastFrameAt = null;
     _anyActive = false;
+  }
+
+  static _LineFade? _nearestLine(List<_LineFade> entries, Offset position) {
+    _LineFade? best;
+    var bestDistance = matchRadius * matchRadius;
+    for (final entry in entries) {
+      final distance = (entry.position - position).distanceSquared;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = entry;
+      }
+    }
+    return best;
   }
 }
 
@@ -156,6 +268,16 @@ class _KeyFade {
   /// The frame this key was last shown in — [LabelFadeTracker.sweep]
   /// fades everything whose stamp is stale.
   var stamp = 0;
+}
+
+/// One along-line sitting's fade: a [_KeyFade] that knows where on
+/// screen it is, so [LabelFadeTracker.showAt] can match it by position.
+class _LineFade {
+  Offset position;
+  var opacity = 0.0;
+  var stamp = 0;
+
+  _LineFade(this.position);
 }
 
 /// Decides which frames re-run the label collision pass.

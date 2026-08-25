@@ -47,6 +47,18 @@ Between integer zooms the images scale (max 2×) exactly as raster maps
 do; on crossing a zoom level, new display tiles are rasterized from the
 already-decoded data tile, while the previous zoom's images are retained
 and drawn underneath until replacements are ready (no white flicker).
+The retained level is released the moment every current tile is
+rendered and faded in — checked from the publish jobs and the fade
+ticker, not only from rebuilds, because a crossing whose gesture has
+ended produces no further builds and would otherwise keep the outgoing
+level in memory (and painted beneath the map) until the next one. A
+tile's fade-in itself runs only where it can cross-fade: a tile served
+from the finished-result cache with retained imagery beneath it fades
+over that imagery, while one with nothing beneath — the ring a zoom-out
+exposes — appears at full opacity at once, because a fade there runs
+over the bare background and reads as a background-coloured shimmer on
+every crossing. Freshly rasterized tiles always fade; their fade is
+what masks staggered pop-in.
 
 At overzoom — display zoom past the source's maxzoom — each display tile
 shows only a small window of its data tile. Features are rejected
@@ -135,6 +147,23 @@ restart: a key re-placed mid-fade-out rises from where it is, so a
 label briefly unplaced (a republish, a lost frame of collision) dips at
 most one opacity step instead of blinking to zero.
 
+The position-free key is right for *point* anchors, whose world
+position belongs to the feature. Along-line anchors are re-derived from
+`symbol-spacing` per display layout, so the same street's label
+genuinely sits somewhere else at the next zoom level — half the spacing
+away on a plain straight road — and one shared opacity would hand the
+new position the old one's full opacity: the name teleports along its
+street at every crossing (and its provisional ancestor-data layout adds
+a third position on the way). Along-line fades are therefore tracked
+per **sitting**: within the loose key, states are matched by screen
+position (`LabelFadeTracker.showAt`, the same 32 px radius the
+placement memory uses, refreshed on every sighting so a sitting follows
+the camera). A moved sitting cross-fades — the old position ghosts out
+while the new one fades in — while simplification noise, seam twins and
+provisional→final swaps land inside the radius and resume their state.
+This is the fade half of MapLibre's `CrossTileSymbolIndex`, expressed
+in the screen space the label pass already works in.
+
 Every label fades on **its own clock**, from the frame it is placed. The
 invariant that makes this safe is that a placed label always paints
 something: a key on its first frame has no elapsed fade time, so the
@@ -179,10 +208,14 @@ drawn for the length of its fade — from whatever instance of it is
 still on offer, laid out past the zoom gate that may just have cut its
 layer — but claims no collision space. Whatever replaces the label
 therefore places (and fades in) immediately, over the ghost, instead of
-waiting for the fade to end and popping into the freed space. When a
-retained tile is disposed while keys from it may still be fading, its
-symbols are parked for one fade duration as ghost-only fallbacks
-(plain Dart objects — no tile texture is pinned by a fade).
+waiting for the fade to end and popping into the freed space. An
+along-line sitting's ghost takes the candidate nearest the sitting
+(bounded at twice the match radius, else it draws nothing) — never the
+priority-first candidate, which for a street with several repeats could
+be a different repeat entirely, teleporting the ghost. When a retained
+tile is disposed while keys from it may still be fading, its symbols
+are parked for one fade duration as ghost-only fallbacks (plain Dart
+objects — no tile texture is pinned by a fade).
 
 Retention feeds the tracker; it no longer decides fades. Retained
 previous-level tiles keep offering their labels as ordinary candidates

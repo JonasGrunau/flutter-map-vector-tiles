@@ -160,6 +160,13 @@ class VectorTileLayer extends StatefulWidget {
   /// the documented `0` still means *disabled*.
   static const int autoRasterCacheBytes = -1;
 
+  /// Tiles currently retained from a previous zoom level, as last
+  /// written by whichever layer most recently changed its retained set
+  /// — test instrumentation for the release-without-a-rebuild path,
+  /// meaningless when several layers are mounted.
+  @visibleForTesting
+  static int debugRetainedTileCount = 0;
+
   /// How many screenfuls of finished tiles [autoRasterCacheBytes] aims
   /// to hold. Two would be the bare minimum for a zoom round trip — one
   /// level each side of a threshold — and the half is headroom for the
@@ -554,6 +561,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       tile.dispose();
     }
     _retained.clear();
+    VectorTileLayer.debugRetainedTileCount = 0;
     _labelCandidatesChanged();
     _ghostLabels.clear();
     // A theme or provider swap replaces every symbol instance and
@@ -829,6 +837,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
       _tiles.clear();
       _currentZoom = layout.displayZoom;
+      VectorTileLayer.debugRetainedTileCount = _retained.length;
     }
 
     // Drop tiles that left the viewport.
@@ -905,13 +914,49 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         toRemove.add(key);
       }
     });
-    for (final key in toRemove) {
+    _dropRetained(toRemove);
+  }
+
+  /// Releases the whole retained level the moment the current one no
+  /// longer needs it. [_pruneRetained] applies the same rule but only
+  /// runs on rebuilds, and a rebuild needs a camera change: a crossing
+  /// whose gesture has ended finishes its fades on the ticker alone, so
+  /// without this the outgoing level — its tile objects, pinned symbol
+  /// lists and image handles — would sit in [_retained] (and be painted
+  /// under the map every frame) until the *next* gesture. Called from
+  /// the publish jobs and the fade tick, the two places readiness can
+  /// change outside a rebuild; never from mid-[_updateGrid] paths,
+  /// where the arriving grid is still incomplete and "every current
+  /// tile is ready" would be answered over a partial level.
+  void _releaseRetainedIfReady(DateTime now) {
+    if (_retained.isEmpty) return;
+    if (!currentLevelReady(_currentStatuses(now))) return;
+    _dropRetained(_retained.keys.toList());
+  }
+
+  /// Removes [keys] from [_retained], parking their labels as fade-out
+  /// fallbacks and disposing the tiles.
+  void _dropRetained(List<TileKey> keys) {
+    if (keys.isEmpty) return;
+    for (final key in keys) {
       final tile = _retained.remove(key);
       if (tile == null) continue;
       _parkGhostLabels(tile);
       _disposeTile(tile);
     }
-    if (toRemove.isNotEmpty) _labelCandidatesChanged();
+    VectorTileLayer.debugRetainedTileCount = _retained.length;
+    _labelCandidatesChanged();
+  }
+
+  /// Whether any retained tile's imagery lies beneath [key] — what
+  /// decides if a cache-served tile has anything to cross-fade over.
+  bool _coveredByRetained(TileKey key) {
+    for (final entry in _retained.entries) {
+      if (entry.value.image != null && tilesOverlap(entry.key, key)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// Parks a disposed retained tile's labels as fade-out fallbacks for
@@ -961,7 +1006,17 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         tile.setImage(
           image: cached.image?.clone(),
           provisional: false,
-          fadeIn: fadeIn && widget.tileFadeDuration > Duration.zero,
+          // A cached result fades in only when retained imagery lies
+          // beneath it to cross-fade over. With nothing beneath, the
+          // fade runs over the bare background — on a zoom-out the
+          // newly exposed ring did exactly that, a background-coloured
+          // shimmer on every crossing even though the pixels were ready
+          // — so ready imagery with nothing to blend against simply
+          // pops. Fresh renders keep their fade: they arrive staggered,
+          // and the fade is what masks that pop-in.
+          fadeIn: fadeIn &&
+              widget.tileFadeDuration > Duration.zero &&
+              _coveredByRetained(tile.key),
           symbolsPending: owesShaping,
         );
         if (owesShaping) {
@@ -1331,6 +1386,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _labelCandidatesChanged();
     _repaint.trigger();
     _ensureFadeTicker();
+    // A publish can be what completes the current level (with fades
+    // disabled nothing else would notice), and the pump runs outside
+    // the grid update, so the level is complete enough to judge.
+    _releaseRetainedIfReady(DateTime.now());
   }
 
   /// One slice of a tile's symbol phase: extract the candidates (once),
@@ -1370,6 +1429,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _labelCandidatesChanged();
     _repaint.trigger();
     _ensureFadeTicker();
+    // Same as [_rasterizeJob]: a symbol publish can be the last thing
+    // the current level was waiting on.
+    _releaseRetainedIfReady(DateTime.now());
     return true;
   }
 
@@ -1411,6 +1473,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   void _onFadeTick(Duration _) {
     final now = DateTime.now();
+    // Readiness can complete on a fade tick (the last tile's fade-in
+    // finishing is exactly such a tick), and after the gesture there is
+    // no rebuild left to prune on. Before the ghost expiry: releasing
+    // parks ghost labels, which must count as still fading below.
+    _releaseRetainedIfReady(now);
     var anyFading = _expireGhostLabels(now);
     for (final tile in _tiles.values) {
       if (tile.fadeProgress(now, widget.tileFadeDuration) < 1) {

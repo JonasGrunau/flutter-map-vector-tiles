@@ -2,8 +2,10 @@
 
 ## Unreleased
 
-Labels flashed while zooming. The arrival waves 2.7.0 introduced are
-gone; every label that holds a spot paints again.
+Zoom-crossing artefacts: labels flashed, street names jumped along
+their roads, zoom-outs shimmered background colour at the edges, and
+the outgoing level outstayed its welcome. The arrival waves 2.7.0
+introduced are gone; every label that holds a spot paints again.
 
 - 🐛 **Labels no longer flash or pulse during a zoom gesture**: 2.7.0
   grouped arriving labels into waves that shared one opacity, so a label
@@ -23,6 +25,40 @@ gone; every label that holds a spot paints again.
   again, as they did before 2.7.0, and a label paints on every frame it
   is placed on. `labelFadeDuration` goes back to meaning only how long a
   fade takes — it is no longer also a delay before one starts.
+- 🐛 **Street names no longer jump along their road at a zoom
+  crossing**: along-line labels are re-spaced per zoom level, so the
+  arriving level's copy of a street name genuinely sits somewhere else —
+  up to half the `symbol-spacing` away on a straight road — and because
+  the label fade tracked one opacity per name, the new position
+  inherited the old one's full opacity: the name teleported (or showed
+  a momentary duplicate that then hard-cut away) on every crossing,
+  with the provisional ancestor-data layout adding a third position on
+  the way. Along-line fades are now tracked per sitting position: a
+  moved label cross-fades — the old position eases out where it was
+  while the new one fades in — and a label that only drifted a few
+  pixels (simplification noise, a provisional→final swap, seam twins)
+  still resumes its fade state exactly as before. A fading street
+  name's ghost also now draws at the position that is fading rather
+  than at the name's topmost repeat on screen. Point labels — places,
+  POIs — are unchanged: their anchors are world-stable, and their
+  position-free fade identity is what keeps a crossing blink-free.
+- 🐛 **Zooming out no longer shimmers the background colour at the
+  edges**: the ring of tiles a zoom-out exposes was served instantly
+  from the finished-tile cache and then faded in anyway — over the bare
+  background, since nothing lies beneath newly exposed ground — a
+  rhythmic 150 ms dip on every crossing of a zoom threshold. A cached
+  tile now fades only when retained imagery beneath it gives the fade
+  something to cross-fade over; with nothing beneath, ready imagery
+  simply appears. Freshly rendered tiles keep their fade-in, and a
+  reopened map now shows its cached screenful at full opacity
+  immediately.
+- 🐛 **The outgoing zoom level is released as soon as the new one is
+  ready**: the check that drops it used to run only on rebuilds, and a
+  rebuild needs a camera change — so ending a pinch left the whole
+  previous level (its tile objects, pinned label lists and image
+  handles) in memory, painted invisibly beneath the map on every frame,
+  until the next gesture. Readiness is now also checked when a tile
+  publishes and on the fade tick that completes the last fade-in.
 - 🧹 The wave bookkeeping is deleted rather than tuned, and removing it
   costs nothing measurable. Benchmarked back to back on a dpr-3 phone
   oscillating across a POI threshold ~7 times a second, UI-thread frame
