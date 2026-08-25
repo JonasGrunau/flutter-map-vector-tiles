@@ -363,15 +363,14 @@ class LabelPainter {
       final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
       var fade = 1.0;
       if (fades) {
-        final key = candidate.instance.continuityKey;
-        fade = _fades.show(key);
+        fade = _fades.show(candidate.instance.continuityKey);
         // A key on its first frame has no elapsed fade time yet; one
-        // step keeps it from starting invisible. A key queued behind an
-        // arrival wave still in flight reports zero for the opposite
-        // reason, and must keep it: it is laid out and holds the
-        // collision space it won — the spot is reserved — but paints
-        // nothing until its own wave starts.
-        if (fade <= 0 && !_fades.isWaiting(key)) fade = 1 / _opacitySteps;
+        // step keeps it from starting invisible. Every placed label
+        // paints something, on every frame it is placed: a label held
+        // at zero while still winning collision space is a hole in the
+        // map that nothing else may fill, and one frame of missed
+        // placement sweeps it back out of the tracker entirely.
+        if (fade <= 0) fade = 1 / _opacitySteps;
       }
       drawable.opacity = ramp <= 0 ? 0 : _quantizeOpacity(fade * ramp);
       toDraw.add(drawable);

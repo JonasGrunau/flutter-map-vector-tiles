@@ -135,33 +135,44 @@ restart: a key re-placed mid-fade-out rises from where it is, so a
 label briefly unplaced (a republish, a lost frame of collision) dips at
 most one opacity step instead of blinking to zero.
 
-Labels fade **in** in waves, not individually. The render pump publishes
+Every label fades on **its own clock**, from the frame it is placed. The
+invariant that makes this safe is that a placed label always paints
+something: a key on its first frame has no elapsed fade time, so the
+painter floors it at one opacity step rather than letting it draw at
+zero.
+
+That is worth stating as an invariant because 2.7.0 broke it and had to
+be reverted in 2.7.1. The reasoning then was that the pump publishes
 roughly one tile per frame, so a crossing hands the painter a screen's
-labels over tens of frames; giving each key its own fade clock puts them
-at as many different opacities, and each distinct opacity costs a
-`saveLayer` whose bounds are the union of its members' — which, for
-screen-scattered POI labels, is the whole screen. A crossing could
-therefore be drawing through seven effectively full-screen `saveLayer`s
-at once, on every frame of the crossing — and none of it is visible to
-Dart-side timing, since `saveLayer` merely records an op and the cost
-lands on the raster thread. (On the dpr-3 phone this was measured on,
-that raster cost turned out to be small — under 2.5 ms at the 99th
-percentile, no frame over budget — so the cohorts below are a reduction
-in render passes and a steadier fade, not a measured frame-time win.
+labels over tens of frames at as many different opacities — and each
+distinct opacity costs a `saveLayer` whose bounds are the union of its
+members', which for screen-scattered POI labels is the whole screen.
+Grouping arrivals into waves that shared one opacity took the peak from
+seven such passes per frame to two. But the raster thread it was meant
+to relieve had already measured clear on the device in question. A
+back-to-back A/B settled it: removing the waves *improved* UI-thread
+frame time (p99 6.67 ms → 4.93 ms) and moved the raster thread from
+1.63 ms to 1.93 ms at p99, against an 8.3 ms budget neither arm ever
+exceeded. There was nothing on the other side of the trade, while the
+cost was severe:
+
+* A label queued behind a wave sat at exactly zero, where one frame of
+  lost placement took `opacity -= step` below zero and dropped the key
+  entirely. It then re-arrived as brand new and queued again — during a
+  gesture, potentially forever. Measured over 120 frames, a label placed
+  on 80 of them painted on 2.
+* Because a label could only become visible when a wave *started*, a
+  steady stream of arrivals appeared in bursts one fade duration apart
+  rather than fading in continuously. That is what a zoom sweep
+  produces, and it read as flashing.
+* A queued label kept the collision space it had won while painting
+  nothing, so for up to a fade duration there was a hole in the map that
+  nothing else was permitted to fill.
+
 The frame-time win at a crossing came from the pump slicing and the
-cache sizing.) So arrivals join a *cohort* instead: at most one
-cohort is ever rising, later arrivals accumulate in the next one at zero,
-and each wave starts only once the one ahead has landed. Every label
-fading in therefore shares a single opacity — one bucket — and the peak
-drops to two passes over about 1× the screen. A label appearing on a
-quiet map is never held back: with nothing in flight its wave starts on
-the frame it arrives, so a map that paints one frame still shows its
-labels. Joining at zero rather than at the wave's current opacity is what
-keeps a late arrival from popping in half-visible; the cost is that it
-waits, invisible but already holding the collision space it won, for at
-most one fade duration. Fade-*outs* keep their own per-key clocks — a
-departure starts from wherever that label had got to, which is not a
-value a cohort can share.
+cache sizing, both of which stand. The lesson to keep: a label that
+holds a spot must paint, and zero is not a safe resting opacity in a
+tracker whose sweep drops anything at or below zero.
 
 Fade-outs draw as **ghosts**. A key that stops being placed keeps being
 drawn for the length of its fade — from whatever instance of it is

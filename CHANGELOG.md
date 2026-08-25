@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+Labels flashed while zooming. The arrival waves 2.7.0 introduced are
+gone; every label that holds a spot paints again.
+
+- 🐛 **Labels no longer flash or pulse during a zoom gesture**: 2.7.0
+  grouped arriving labels into waves that shared one opacity, so a label
+  arriving while a fade was in flight waited, painting nothing, until
+  that fade landed. Three things went wrong with that. A queued label
+  sat at exactly zero opacity, where a single frame of lost placement
+  took it below zero and dropped it — so it came back as a brand-new
+  label and queued all over again, which during a gesture (tiles
+  republish constantly) could repeat indefinitely: measured over 120
+  frames, a label placed on 80 of them painted on 2. A steady stream of
+  arrivals, which is exactly what a zoom sweep produces, could therefore
+  only ever become visible when a wave started — one burst every
+  `labelFadeDuration`, instead of a continuous fade-in. And a queued
+  label kept the collision space it had won while painting nothing, so
+  for up to a full fade duration there was a hole in the map that
+  nothing else was allowed to fill. Arrivals fade in on their own clocks
+  again, as they did before 2.7.0, and a label paints on every frame it
+  is placed on. `labelFadeDuration` goes back to meaning only how long a
+  fade takes — it is no longer also a delay before one starts.
+- 🧹 The wave bookkeeping is deleted rather than tuned, and removing it
+  costs nothing measurable. Benchmarked back to back on a dpr-3 phone
+  oscillating across a POI threshold ~7 times a second, UI-thread frame
+  time is *better* without it (99th percentile 6.67 ms → 4.93 ms, max
+  7.84 → 5.97) and the raster thread it was meant to relieve moves from
+  1.63 ms to 1.93 ms at the 99th percentile — against an 8.3 ms budget
+  that neither arm ever exceeded. The frame-time win in 2.7.0 came from
+  the cache sizing and the pump slicing, both of which are untouched and
+  still measure 0 re-layouts and 0 re-rasterizations across a crossing.
+
 ## 2.7.0
 
 Zoom crossings on label-dense maps: the finished-tile cache now sizes

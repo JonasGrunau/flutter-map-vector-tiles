@@ -81,13 +81,6 @@ class LabelFadeTracker {
   var _step = 0.0;
   var _anyActive = false;
 
-  /// The cohort currently fading in, and the one new keys are joining.
-  /// At most one cohort rises at a time, which is the whole point — see
-  /// [_Cohort]. They are the same object while a wave starts on the
-  /// frame it opened.
-  _Cohort? _rising;
-  _Cohort? _arriving;
-
   /// Whether the last frame left any fade mid-flight — the caller keeps
   /// scheduling frames while true.
   bool get anyActive => _anyActive;
@@ -97,19 +90,6 @@ class LabelFadeTracker {
 
   /// The tracked opacity of [key], or null when untracked.
   double? opacityOf(Object key) => _states[key]?.opacity;
-
-  /// Whether [key] is queued behind an arrival wave still in flight.
-  ///
-  /// Such a label is placed and holds the collision space it won, but
-  /// must paint nothing until its own wave starts — the caller's
-  /// first-frame opacity floor has to stand aside for it, or every
-  /// queued label would show at one step instead of waiting. Distinct
-  /// from an opacity of zero, which a rising key also reports on the
-  /// frame it appears.
-  bool isWaiting(Object key) {
-    final cohort = _states[key]?.cohort;
-    return cohort != null && !cohort.rising;
-  }
 
   /// Starts a frame at [now]. The step is derived from the elapsed
   /// wall-clock time, so fades are frame-rate independent; a long gap
@@ -123,29 +103,6 @@ class LabelFadeTracker {
         ? 1.0
         : (now.difference(last).inMicroseconds / span).clamp(0.0, 1.0);
     _anyActive = false;
-
-    // A wave that has started closes to new members: labels arriving
-    // now are a later wave. One still waiting keeps accumulating, so
-    // everything that shows up while a wave is in flight fades in
-    // together when its turn comes.
-    if (_arriving?.rising ?? false) _arriving = null;
-    // The wave in flight lands before the next one starts, so exactly
-    // one cohort is ever rising and every label fading in shares its
-    // opacity. Promote first, so a cohort's first frame as the rising
-    // one already carries a step.
-    if (_rising == null) {
-      _rising = _arriving;
-      _arriving = null;
-      _rising?.rising = true;
-    }
-    final rising = _rising;
-    if (rising != null) {
-      rising.opacity = math.min(1, rising.opacity + _step);
-      // Landed: cleared here rather than on the next frame's check, so
-      // a key arriving later this frame opens its wave immediately
-      // instead of waiting out a cohort that is already done.
-      if (rising.opacity >= 1) _rising = null;
-    }
   }
 
   /// Marks [key] as placed this frame and returns its opacity, risen by
@@ -156,40 +113,12 @@ class LabelFadeTracker {
   double show(Object key) {
     final state = _states[key];
     if (state == null) {
-      // Joins the cohort that has not started rising yet, at its
-      // opacity — which is always 0, so joining never pops a label
-      // partway into a fade already in progress.
-      final cohort = _arriving ??= _Cohort();
-      if (_rising == null) {
-        // Nothing in flight to queue behind: this wave starts now, so a
-        // label appearing on a quiet map is never held back, and a map
-        // that paints a single frame still shows its labels. [_arriving]
-        // deliberately keeps pointing at it, so the rest of this frame's
-        // arrivals join the same wave instead of opening their own.
-        _rising = cohort;
-        cohort.rising = true;
-      }
-      _states[key] = _KeyFade()
-        ..stamp = _frame
-        ..cohort = cohort;
+      _states[key] = _KeyFade()..stamp = _frame;
       _anyActive = true;
-      return cohort.opacity;
+      return 0;
     }
     if (state.stamp == _frame) return state.opacity;
     state.stamp = _frame;
-    final cohort = state.cohort;
-    if (cohort != null) {
-      state.opacity = cohort.opacity;
-      // Graduated: a key at full opacity has nothing left to share, and
-      // holding the reference would drag it back down if it ever needs
-      // to fade out on its own.
-      if (state.opacity >= 1) {
-        state.cohort = null;
-      } else {
-        _anyActive = true;
-      }
-      return state.opacity;
-    }
     if (state.opacity < 1) {
       state.opacity = math.min(1, state.opacity + _step);
       if (state.opacity < 1) _anyActive = true;
@@ -204,9 +133,6 @@ class LabelFadeTracker {
   void sweep(void Function(Object key, double opacity) fadingOut) {
     _states.removeWhere((key, state) {
       if (state.stamp == _frame) return false;
-      // A key that stopped being placed decays on its own clock: it is
-      // no longer arriving, so it has no business in an arrival cohort.
-      state.cohort = null;
       state.opacity -= _step;
       if (state.opacity <= 0) return true;
       _anyActive = true;
@@ -219,41 +145,9 @@ class LabelFadeTracker {
   /// instance is replaced and layer indices change meaning.
   void clear() {
     _states.clear();
-    _rising = null;
-    _arriving = null;
     _lastFrameAt = null;
     _anyActive = false;
   }
-}
-
-/// One arrival wave: every label that first appears while this cohort is
-/// the waiting one shares its single opacity, and they fade in together.
-///
-/// Labels do not arrive all at once. The render pump publishes roughly
-/// one tile per frame, so a zoom crossing dribbles a screen's labels in
-/// over tens of frames. Fading each key from its own arrival moment puts
-/// them at as many different opacities, and the painter draws each
-/// distinct opacity through its own `saveLayer` — whose bounds are the
-/// union of its members', which for screen-scattered POI labels is the
-/// whole screen. Measured on a real crossing that peaked at seven
-/// near-full-screen offscreen passes *per frame*, for the whole
-/// crossing: invisible to any Dart-side timing (a `saveLayer` only
-/// records an op) and squarely a raster-thread stall on a tiled mobile
-/// GPU, where each one flushes the tile buffer.
-///
-/// Sharing one opacity per wave collapses that to a single bucket. The
-/// cost is that a label arriving mid-wave waits, invisible, for the
-/// current wave to land before starting its own — bounded by one fade
-/// duration, and it reads as labels appearing in deliberate waves rather
-/// than dribbling in. Waiting at 0 rather than joining the wave in
-/// progress is what keeps it from popping.
-class _Cohort {
-  var opacity = 0.0;
-
-  /// Whether this wave has started fading in. A cohort accumulates
-  /// members at zero while `false`, and every member paints nothing
-  /// until it flips.
-  var rising = false;
 }
 
 class _KeyFade {
@@ -262,10 +156,6 @@ class _KeyFade {
   /// The frame this key was last shown in — [LabelFadeTracker.sweep]
   /// fades everything whose stamp is stale.
   var stamp = 0;
-
-  /// The arrival wave this key is fading in with, or null once it has
-  /// reached full opacity (or started fading out) and owns its clock.
-  _Cohort? cohort;
 }
 
 /// Decides which frames re-run the label collision pass.

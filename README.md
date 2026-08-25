@@ -150,7 +150,7 @@ vt.VectorTileLayer(
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source (the caches are shared process-wide; the most recently mounted layer's value wins) |
 | `rasterCacheMaxBytes` | sized for the device | finished-tile budget: zooming back to a recent level (or reopening the same style) paints instantly instead of re-rendering. GPU texture bytes — ~1 MB per tile at devicePixelRatio 2, ~2.25 MB at 3, and one phone screenful is ~25–35 tiles, so a *single* level costs ~80 MB on a large dpr-3 phone. The default now measures your actual viewport and dpr and budgets 2.5 screenfuls (clamped to 64–256 MB), so a zoom round trip keeps the level it returns to; pass a byte count to pin it, or `0` to disable |
 | `tileFadeDuration` | 150 ms | `Duration.zero` disables fade-in |
-| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels/icons — one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Labels arriving while a fade is in flight join the next wave rather than starting their own, so a label can wait up to this long before it begins fading in. Also how often collision is re-decided (capped at 300 ms; new labels always place at once). `Duration.zero` restores instant pops and per-frame collision |
+| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels/icons — one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided (capped at 300 ms; new labels always place at once). `Duration.zero` restores instant pops and per-frame collision |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 
 The memory caches are shared process-wide and outlive the layer — that's
@@ -383,17 +383,11 @@ into the tile rasters. That is what the behaviour below is built on:
   its `minzoom` eases out over `labelFadeDuration` instead of vanishing in
   one frame. A departing label frees its space immediately, so its
   replacement fades in over it: a crossfade, not a pop at the fade's end.
-- **Labels appear in waves** — a zoom crossing does not deliver a
-  screen's labels at once; tiles finish one at a time, over tens of
-  frames. Rather than start a separate fade the moment each tile lands,
-  labels arriving while a fade is in flight wait for it and then fade in
-  together. That is a rendering decision as much as a visual one: every
-  distinct opacity on screen costs one translucent layer, and on a
-  label-dense screen those layers are effectively full-screen, so
-  per-label fade clocks leave a crossing drawing through a handful of
-  them on every frame. A label appearing on a quiet
-  map is never held back — with no fade in flight, its wave starts at
-  once.
+- **A placed label always paints** — a label that has won its spot is
+  never held invisible waiting on anything, so it fades in from the
+  frame it arrives. A zoom crossing delivers a screen's labels over tens
+  of frames (tiles finish one at a time), and each one starts its fade
+  as it lands rather than at some shared moment.
 - **No blink when a zoom level hands over** — a label that survives the
   change keeps its opacity, because the two levels' copies share one fade
   state; a crossing can neither blink a label nor fade it into itself. The

@@ -23,7 +23,13 @@ Excluded from the published package (`.pubignore`), so it costs pub.dev nothing.
 | `pubspec.yaml` | Depends on the parent package by path, so it measures the working tree |
 
 Platform scaffolds are **not** checked in — `run.sh` runs
-`flutter create --platforms=ios .` on first use.
+`flutter create --platforms=ios .` on first use, then deletes the two
+files that generation also drops: an `analysis_options.yaml` that would
+override the repo lints, and a default `test/widget_test.dart` that
+references a `MyApp` this harness has no such class for. Both are
+gitignored, but `flutter analyze` at the repo root still reads them, so
+leaving them behind reports 18 errors that have nothing to do with the
+package. Delete them by hand if you ever run `flutter create` yourself.
 
 ## For AI Agents
 

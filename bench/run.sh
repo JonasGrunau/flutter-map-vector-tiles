@@ -14,7 +14,16 @@ HI="${4:-177}"
 OUT="/tmp/bench-$LABEL.log"
 
 cd "$(dirname "$0")"
-[[ -d ios ]] || flutter create --platforms=ios .
+if [[ ! -d ios ]]; then
+  flutter create --platforms=ios .
+  # `flutter create` also drops two files that break the repo's analyzer:
+  # an analysis_options.yaml that overrides the root lints, and a default
+  # widget_test.dart that references a `MyApp` this harness does not have.
+  # Both are gitignored, but `flutter analyze` at the repo root still reads
+  # them — so a first run would leave 18 errors behind.
+  rm -f analysis_options.yaml test/widget_test.dart
+  rmdir test 2>/dev/null || true
+fi
 
 flutter run --profile -d "$DEVICE" \
   --dart-define=BENCH_LABEL="$LABEL" \
