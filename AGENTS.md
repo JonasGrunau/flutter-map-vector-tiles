@@ -35,6 +35,7 @@ collision pass; cancellation is a **state**, never an exception; every
 |-----------|---------|
 | `lib/` | Package source — the entire library (see `lib/AGENTS.md`) |
 | `test/` | Unit and widget tests, no mocking framework (see `test/AGENTS.md`) |
+| `bench/` | On-device frame-timing harness for zoom crossings — profile-mode app that sweeps a zoom band and reports UI/raster frame-time distributions and cache-hit counters. Not published (see `bench/AGENTS.md`) |
 | `example/` | Runnable example app driven by `--dart-define` (see `example/AGENTS.md`) |
 | `doc/` | `ARCHITECTURE.md` — the prose companion to this file; update it when the data flow, rendering model, concurrency model or cache layers change |
 | `screenshots/` | pub.dev gallery images (WebP, framed in an iPhone bezel), wired up via `screenshots:` in `pubspec.yaml` — these ship in the package; regeneration recipe in `screenshots/AGENTS.md` |
@@ -55,6 +56,13 @@ collision pass; cancellation is a **state**, never an exception; every
   excluded from the repo still ships to pub.dev. Verify with
   `dart pub publish --dry-run`, which prints the exact file list.
 - **There is no CI.** Every gate is local and must be run by hand.
+- **Frame-time claims need `bench/`, not reasoning.** Rendering costs here
+  split across two threads — rasterization, symbol layout and text shaping on
+  the UI thread, `saveLayer` on the raster thread — and a `saveLayer` only
+  records an op during picture recording, so no Dart-side stopwatch can see
+  what it costs. Before attributing a stutter to either, measure it on a real
+  device in profile mode, across a zoom band where the style actually opens its
+  label gates.
 - **The public API is what `lib/flutter_map_vector_tiles.dart` exports.**
   Anything else under `lib/src/` is private and may be changed freely; adding
   an export is a semver-relevant decision.

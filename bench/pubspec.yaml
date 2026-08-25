@@ -1,0 +1,23 @@
+name: flutter_map_vector_tiles_bench
+description: >-
+  Frame-timing harness for flutter_map_vector_tiles. Drives scripted zoom
+  crossings on a real device and reports UI- and raster-thread frame times.
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_map: ^8.2.0
+  flutter_map_vector_tiles:
+    path: ../
+  latlong2: ">=0.9.1 <0.11.0"
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

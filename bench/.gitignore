@@ -1,0 +1,24 @@
+# Generated platform scaffolds — recreate with
+# `flutter create --platforms=ios .` (see README.md).
+# `flutter create` also drops an analysis_options.yaml (which would override
+# the repo lints) and a default widget_test.dart (which does not compile
+# against this app) — delete both if you regenerate.
+analysis_options.yaml
+test/
+
+android/
+ios/
+linux/
+macos/
+web/
+windows/
+.metadata
+
+.DS_Store
+.dart_tool/
+build/
+pubspec.lock
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+.idea/

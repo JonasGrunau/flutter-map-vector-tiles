@@ -20,3 +20,6 @@ coverage/
 # --- agent-facing documentation (useful in the repo, noise in the tarball) ---
 AGENTS.md
 CLAUDE.md
+
+# --- development-only harness (tracked in git, no business in the tarball) ---
+bench/
