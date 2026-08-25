@@ -96,11 +96,16 @@ class _BenchPageState extends State<BenchPage>
   /// shipped default. The labels-off arm is the control: if the label pipeline
   /// is what costs, turning it off at the same speed has to flatten the
   /// profile, and if it does not, the cost is somewhere else entirely.
-  static const _phases = <({int ms, bool labels, int cacheMiB})>[
-    (ms: 150, labels: true, cacheMiB: -1),
-    (ms: 150, labels: true, cacheMiB: 64),
-    (ms: 150, labels: false, cacheMiB: -1),
-    (ms: 400, labels: true, cacheMiB: -1),
+  /// [cold] arms measure the *first* sweeps after the caches are
+  /// cleared — network/decode/rasterize/shaping all land inside the
+  /// recording window. That is the crossing a user feels first, and the
+  /// warmed arms deliberately exclude it.
+  static const _phases = <({int ms, bool labels, int cacheMiB, bool cold})>[
+    (ms: 1200, labels: true, cacheMiB: -1, cold: true),
+    (ms: 150, labels: true, cacheMiB: -1, cold: false),
+    (ms: 150, labels: true, cacheMiB: 64, cold: false),
+    (ms: 150, labels: false, cacheMiB: -1, cold: false),
+    (ms: 400, labels: true, cacheMiB: -1, cold: false),
   ];
 
   /// Long enough for ~1000 frames at 120 Hz — percentiles over a few hundred
@@ -192,7 +197,8 @@ class _BenchPageState extends State<BenchPage>
     _say('all phases done');
   }
 
-  Future<void> _runPhase(({int ms, bool labels, int cacheMiB}) phase) async {
+  Future<void> _runPhase(
+      ({int ms, bool labels, int cacheMiB, bool cold}) phase) async {
     final cache = phase.cacheMiB < 0 ? 'AUTO' : '${phase.cacheMiB}MiB';
     if (phase.labels != _showLabels || phase.cacheMiB != _cacheMiB) {
       setState(() {
@@ -206,16 +212,19 @@ class _BenchPageState extends State<BenchPage>
     vt.VectorTileLayer.clearMemoryCache();
     await Future<void>.delayed(const Duration(seconds: 2));
 
-    _say('${phase.ms}ms · labels=${phase.labels} · cache=$cache (warming)');
-    _zoom.duration = const Duration(milliseconds: 1200);
-    for (var i = 0; i < 2; i++) {
-      await _zoom.forward(from: 0);
-      await Future<void>.delayed(const Duration(seconds: 3));
-      await _zoom.reverse(from: 1);
-      await Future<void>.delayed(const Duration(seconds: 3));
+    if (!phase.cold) {
+      _say('${phase.ms}ms · labels=${phase.labels} · cache=$cache (warming)');
+      _zoom.duration = const Duration(milliseconds: 1200);
+      for (var i = 0; i < 2; i++) {
+        await _zoom.forward(from: 0);
+        await Future<void>.delayed(const Duration(seconds: 3));
+        await _zoom.reverse(from: 1);
+        await Future<void>.delayed(const Duration(seconds: 3));
+      }
     }
 
-    _say('${phase.ms}ms · labels=${phase.labels} · cache=$cache (measuring)');
+    final kind = phase.cold ? 'COLD measuring' : 'measuring';
+    _say('${phase.ms}ms · labels=${phase.labels} · cache=$cache ($kind)');
     _build = <int>[];
     _raster = <int>[];
     _allFrames = 0;
@@ -231,7 +240,9 @@ class _BenchPageState extends State<BenchPage>
     _recording = false;
     _zoom.stop();
 
-    _report('${phase.ms}ms labels=${phase.labels} cache=$cache',
+    _report(
+        '${phase.ms}ms labels=${phase.labels} cache=$cache'
+        '${phase.cold ? ' COLD' : ''}',
         layouts: SymbolLayouter.debugLayoutCount - layouts0,
         rasters: TileRasterizer.debugRasterizeCount - rasters0);
     await Future<void>.delayed(const Duration(seconds: 3));

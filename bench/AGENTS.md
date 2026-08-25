@@ -17,7 +17,8 @@ Excluded from the published package (`.pubignore`), so it costs pub.dev nothing.
 
 | File | Description |
 |------|-------------|
-| `lib/main.dart` | The whole harness: an `AnimationController`-driven zoom sweep across a configurable band, `SchedulerBinding.addTimingsCallback` recording per-frame build and raster durations, and a phase matrix of (sweep speed × `showLabels` × `rasterCacheMaxBytes`). Each phase clears the caches and re-warms, so no arm inherits another's warm tiles |
+| `lib/main.dart` | The whole harness: an `AnimationController`-driven zoom sweep across a configurable band, `SchedulerBinding.addTimingsCallback` recording per-frame build and raster durations, and a phase matrix of (sweep speed × `showLabels` × `rasterCacheMaxBytes` × cold/warm). Each phase clears the caches; warm arms then re-warm with two slow sweeps, while the `cold` arm measures the first sweeps directly — the decode/rasterize/shaping costs the warm arms exclude |
+| `test/anchor_continuity_test.dart` | Investigation evidence, not a regression gate: quantifies how far along-line anchors move across a zoom crossing (same continuity key, ~half the `symbol-spacing` for a straight street) — the mechanism behind the pre-fix street-name jumps, kept runnable so the numbers stay reproducible. In this gitignored `test/` dir on purpose; run with `flutter test` from `bench/` |
 | `README.md` | How to run it, how to read the output, and how to aim it at the right zoom band |
 | `run.sh` | Generates the iOS scaffold if absent, launches in profile mode, waits for the run, prints the `BENCH[…]` lines, kills the app |
 | `pubspec.yaml` | Depends on the parent package by path, so it measures the working tree |

@@ -105,11 +105,16 @@ All via `--dart-define`. Zooms and coordinates are integers because
 | `BENCH_MODE` | `bench` | `idle` parks the map at `BENCH_ZOOM10` for inspection |
 | `BENCH_ZOOM10` | `170` | idle-mode zoom, in tenths |
 
-The phase matrix (speed × labels on/off × cache budget) is the `_phases` list in
-`lib/main.dart`. The labels-off arm is a control, not filler: if the label
-pipeline is what costs, turning it off at the same speed has to flatten the
-profile — and if it does not, the cost is somewhere else and the rest of the run
-is a distraction.
+The phase matrix (speed × labels on/off × cache budget × cold/warm) is the
+`_phases` list in `lib/main.dart`. The labels-off arm is a control, not filler:
+if the label pipeline is what costs, turning it off at the same speed has to
+flatten the profile — and if it does not, the cost is somewhere else and the
+rest of the run is a distraction. The `cold` arm skips the warm-up sweeps and
+records the *first* crossings after the caches are cleared, so decode,
+rasterization and text shaping all land inside the measurement window — that is
+the crossing a user feels first, and the warmed arms deliberately exclude it
+(its `layouts`/`rasterizes` counters are expected to be non-zero; the disk
+cache still serves the bytes, so it measures compute, not the network).
 
 ## A/B'ing a change
 
