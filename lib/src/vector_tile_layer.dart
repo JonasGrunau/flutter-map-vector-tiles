@@ -109,6 +109,11 @@ class VectorTileLayer extends StatefulWidget {
   /// Duration of the fade-in of newly appearing labels/icons, masking
   /// the pop when a zoom level first shows symbol layers. Zero disables
   /// the fade (labels appear instantly, as before 2.3.0).
+  ///
+  /// This also paces the label collision pass (capped at 300ms): a
+  /// freshly published tile's labels are placed at the pass after their
+  /// publish, so they appear at most one such interval later — the same
+  /// window their fade-in spans anyway.
   final Duration labelFadeDuration;
 
   /// Byte budget for finished display tiles (rasterized geometry plus
@@ -256,19 +261,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// re-derive it every frame of a zoom transition. Null = recompute.
   Set<TileKey>? _retainedSymbolKeys;
 
-  /// Bumped whenever the set of label candidates changes. The label
-  /// painter freezes its collision decision between passes, and a
-  /// changed generation is what tells it that the frozen decision was
-  /// taken over a set of labels that no longer exists — so tiles that
-  /// just landed place on the next frame instead of waiting out the
-  /// throttle.
-  var _labelGeneration = 0;
-
-  /// Invalidates everything derived from the current label candidates:
-  /// the memoized retained-key set, and the painter's frozen placement.
+  /// Invalidates what is memoized over the current label candidates:
+  /// the retained-key set. The painter's frozen placement is *not*
+  /// poked — it re-places on its own cadence and picks the new set up
+  /// at the next due pass (see [PlacementThrottle.shouldPlace]).
   void _labelCandidatesChanged() {
     _retainedSymbolKeys = null;
-    _labelGeneration++;
   }
 
   /// Fade-out fallbacks for labels whose tile is gone: when a retained
@@ -1960,7 +1958,6 @@ class _VectorMapPainter extends CustomPainter {
       sprites: state.widget.sprites,
       devicePixelRatio: devicePixelRatio,
       labelFadeDuration: state.widget.labelFadeDuration,
-      placementGeneration: state._labelGeneration,
       now: now,
     );
     // Recorded so the retention pin keeps what was actually on screen,

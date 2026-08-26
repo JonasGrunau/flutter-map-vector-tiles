@@ -63,7 +63,20 @@ class PlacedSymbol {
   /// level's copy wins deterministically (`List.sort` is not stable).
   final int order;
 
-  const PlacedSymbol({
+  /// Whether this candidate's label is steadily visible on screen right
+  /// now — set by the painter on placing frames, and sorted ahead of
+  /// newcomers *within its style layer* so a label that is on screen is
+  /// never evicted by a same-layer arrival competing for its space; the
+  /// newcomer waits until the space is genuinely free. A higher style
+  /// layer still wins, so the style author's hierarchy holds. MapLibre
+  /// has no such rule — its labels do drop out and return while zooming,
+  /// smoothed only by fades — and this is a deliberate divergence:
+  /// during a crossing the arriving level's data re-ranks neighbouring
+  /// symbols constantly, and re-electing winners from scratch each pass
+  /// turns every rank flip into a visible blink.
+  bool incumbent = false;
+
+  PlacedSymbol({
     required this.instance,
     required this.screenAnchor,
     required this.screenAngle,
@@ -72,6 +85,18 @@ class PlacedSymbol {
     this.order = 0,
   });
 }
+
+/// One label a paint actually drew, as reported to
+/// [LabelPainter.debugDrawnProbe]: its continuity key, its screen
+/// anchor, the opacity it drew at, whether it was a fade-out ghost,
+/// and whether it is an along-line label.
+typedef DrawnLabelRecord = ({
+  Object key,
+  Offset position,
+  double opacity,
+  bool ghost,
+  bool alongLine,
+});
 
 /// Draws all visible labels/icons in one screen-space pass per frame,
 /// with global collision detection across tile borders. Text stays
@@ -141,6 +166,49 @@ class LabelPainter {
   @visibleForTesting
   int debugShapedTextCount = 0;
 
+  /// UI-thread microseconds spent inside [paint], summed across all
+  /// painters — static so the bench can diff it per frame without a
+  /// reference to the layer's painter instance.
+  @visibleForTesting
+  static int debugPaintMicros = 0;
+
+  /// [debugPaintMicros] split further, for attributing label-pass
+  /// spikes: the candidate loop of frames that ran a full placement
+  /// pass, the loop of frames that replayed the frozen decision, the
+  /// candidate sort every frame pays, and the paragraph shaping done on
+  /// text-cache misses (a subset of the loop time). Static like
+  /// [debugPaintMicros]; the bench diffs them per frame.
+  @visibleForTesting
+  static int debugPlaceMicros = 0;
+  @visibleForTesting
+  static int debugReplayMicros = 0;
+  @visibleForTesting
+  static int debugSortMicros = 0;
+  @visibleForTesting
+  static int debugShapeMicros = 0;
+
+  /// Frames that ran a full placement pass, for spike-rate arithmetic.
+  @visibleForTesting
+  static int debugPlacingFrames = 0;
+
+  /// Bench-only observer: when set, every [paint] reports what it drew
+  /// — ghosts included, zoom-retired invisible symbols excluded — after
+  /// collision and fades. This is the observable the label-stability
+  /// metrics in `bench/` (pop-ins, pop-outs, blinks) are computed from.
+  /// Static like the timing counters; null in production, where the
+  /// cost is one null check per frame.
+  @visibleForTesting
+  static void Function(double styleZoom, List<DrawnLabelRecord> drawn)?
+      debugDrawnProbe;
+
+  /// The fade sweep (ghost lookup + prepare per fading key) and the
+  /// final drawing of the placed symbols — the two [paint] phases after
+  /// the candidate loop, completing the [debugPaintMicros] breakdown.
+  @visibleForTesting
+  static int debugSweepMicros = 0;
+  @visibleForTesting
+  static int debugDrawMicros = 0;
+
   @visibleForTesting
   int get debugTextCacheLength => _textCache.length;
 
@@ -171,18 +239,13 @@ class LabelPainter {
   @visibleForTesting
   LabelFadeTracker get debugFades => _fades;
 
-  /// Fallback drawables for the fade-out: the first candidate seen this
-  /// frame, per tracked key, that did not get placed. Reused across
-  /// frames so steady-state paints allocate nothing here.
-  final _fallbacks = <Object, PlacedSymbol>{};
-
-  /// Along-line fade-outs are matched by position (see
-  /// [LabelFadeTracker.showAt]), so their fallbacks keep *every*
-  /// candidate of a tracked key: the sweep draws each fading sitting
+  /// Fallback drawables for the fade-out, keeping *every* unplaced
+  /// candidate of a tracked key: fades are matched by position (see
+  /// [LabelFadeTracker.showAt]), so the sweep draws each fading sitting
   /// from the candidate nearest it, instead of the priority-first one —
-  /// which for a street with several repeats could be a different
-  /// repeat entirely, teleporting the ghost.
-  final _lineFallbacks = <Object, List<PlacedSymbol>>{};
+  /// which for a street with several repeats, or a key several POIs
+  /// share, could be a different label entirely, teleporting the ghost.
+  final _sittingFallbacks = <Object, List<PlacedSymbol>>{};
 
   /// How far from a fading sitting its ghost's stand-in candidate may
   /// be. Beyond this, drawing the "nearest" candidate would move the
@@ -230,8 +293,7 @@ class LabelPainter {
   /// meaning.
   void reset() {
     _fades.clear();
-    _fallbacks.clear();
-    _lineFallbacks.clear();
+    _sittingFallbacks.clear();
     _winners.clear();
     _memory.clear();
     _placement.reset();
@@ -259,12 +321,11 @@ class LabelPainter {
   /// 1), and keys that stopped being placed draw one more ghost per
   /// frame — no collision claim — while they ramp to zero. It also sets
   /// how often the collision pass re-runs (see [placementInterval]);
-  /// frames in between replay the last decision. [now] feeds both
+  /// frames in between replay the last decision — a changed candidate
+  /// set (tiles published or expired) is picked up by the next due
+  /// pass, at most one interval away, never sooner (see
+  /// [PlacementThrottle.shouldPlace] for why). [now] feeds both
   /// clocks and defaults to the wall clock.
-  ///
-  /// [placementGeneration] identifies the candidate set: change it
-  /// whenever symbols are added, removed or re-published and the next
-  /// frame places instead of replaying.
   List<PlacedSymbol> paint({
     required Canvas canvas,
     required Size screenSize,
@@ -273,22 +334,15 @@ class LabelPainter {
     SpriteAtlas? sprites,
     double devicePixelRatio = 1,
     Duration labelFadeDuration = Duration.zero,
-    int placementGeneration = 0,
     DateTime? now,
   }) {
     developer.Timeline.startSync('VT labels');
+    final stopwatch = Stopwatch()..start();
     try {
-      return _paint(
-          canvas,
-          screenSize,
-          styleZoom,
-          symbols,
-          sprites,
-          devicePixelRatio,
-          labelFadeDuration,
-          placementGeneration,
-          now ?? DateTime.now());
+      return _paint(canvas, screenSize, styleZoom, symbols, sprites,
+          devicePixelRatio, labelFadeDuration, now ?? DateTime.now());
     } finally {
+      debugPaintMicros += stopwatch.elapsedMicroseconds;
       developer.Timeline.finishSync();
     }
   }
@@ -301,7 +355,6 @@ class LabelPainter {
     SpriteAtlas? sprites,
     double devicePixelRatio,
     Duration labelFadeDuration,
-    int placementGeneration,
     DateTime now,
   ) {
     _disposeRetired();
@@ -313,7 +366,6 @@ class LabelPainter {
     final placing = _placement.shouldPlace(
       now: now,
       interval: placementInterval(labelFadeDuration),
-      generation: placementGeneration,
       screenSize: screenSize,
     );
     _memory.beginFrame(prune: placing);
@@ -332,24 +384,35 @@ class LabelPainter {
     final collision =
         placing ? _CollisionIndex(screenSize) : _CollisionIndex.permissive();
     // Placement priority: topmost style layers first (they win space),
-    // then by symbol-sort-key, then by y, then by insertion order — the
-    // last term keeps the non-stable sort deterministic and lets
-    // current-level tiles beat retained ones on exact ties.
+    // then incumbents — labels on screen right now, which a same-layer
+    // newcomer must not evict (see [PlacedSymbol.incumbent]) — then by
+    // symbol-sort-key, then by y, then by insertion order — the last
+    // term keeps the non-stable sort deterministic and lets
+    // current-level tiles beat retained ones on exact ties. The
+    // incumbent term only matters on placing frames: the flags are
+    // freshly set there and default-false on every rebuilt candidate
+    // list in between.
+    final sortStopwatch = Stopwatch()..start();
+    if (placing) _flagIncumbents(symbols, fades);
     final candidates = symbols
       ..sort((a, b) {
         final byLayer = b.instance.layerIndex - a.instance.layerIndex;
         if (byLayer != 0) return byLayer;
+        if (a.incumbent != b.incumbent) return a.incumbent ? -1 : 1;
         final bySortKey = a.instance.sortKey.compareTo(b.instance.sortKey);
         if (bySortKey != 0) return bySortKey;
         final byY = a.screenAnchor.dy.compareTo(b.screenAnchor.dy);
         if (byY != 0) return byY;
         return a.order - b.order;
       });
+    debugSortMicros += sortStopwatch.elapsedMicroseconds;
+    if (placing) debugPlacingFrames++;
     if (placing && _winners.isNotEmpty) _promoteIncumbents(candidates);
 
     final toDraw = <_DrawableSymbol>[];
     var anyFading = false;
     if (placing) _winners.clear();
+    final loopStopwatch = Stopwatch()..start();
     for (final candidate in candidates) {
       if (candidate.ghostOnly) {
         // Never competes for placement — only remembered, in case its
@@ -378,15 +441,14 @@ class LabelPainter {
       final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
       var fade = 1.0;
       if (fades) {
-        // Along-line labels fade per sitting position: their anchors
-        // are re-spaced per display layout, so the arriving level's
-        // copy is somewhere else on its street and must fade in there
-        // while the old position fades out — not inherit its opacity
-        // and teleport. Point labels share one opacity per key.
-        fade = candidate.instance.alongLine
-            ? _fades.showAt(
-                candidate.instance.continuityKey, candidate.screenAnchor)
-            : _fades.show(candidate.instance.continuityKey);
+        // Fades are per sitting — one state per (key, position). Two
+        // POIs sharing a name or an icon fade independently instead of
+        // popping while the other holds their key's opacity; an
+        // along-line label whose anchors are re-spaced per display
+        // layout fades in at the new position while the old one fades
+        // out, instead of inheriting its opacity and teleporting.
+        fade = _fades.showAt(
+            candidate.instance.continuityKey, candidate.screenAnchor);
         // A key on its first frame has no elapsed fade time yet; one
         // step keeps it from starting invisible. Every placed label
         // paints something, on every frame it is placed: a label held
@@ -399,6 +461,12 @@ class LabelPainter {
       toDraw.add(drawable);
       anyFading |= drawable.opacity < 1;
     }
+    if (placing) {
+      debugPlaceMicros += loopStopwatch.elapsedMicroseconds;
+    } else {
+      debugReplayMicros += loopStopwatch.elapsedMicroseconds;
+    }
+    final sweepStopwatch = Stopwatch()..start();
     if (fades) {
       // Keys placed until recently but not this frame fade out, drawing
       // one ghost each: laid out (the zoom gate bypassed — a departing
@@ -408,14 +476,11 @@ class LabelPainter {
       // popping.
       _CollisionIndex? permissive;
       _fades.sweep((key, position, opacity) {
-        // Point states take the recorded fallback as-is; an along-line
-        // sitting takes the candidate nearest its position, and only
-        // within [_ghostRadius] — a farther stand-in would move the
-        // fading label, which is the artefact the positional fades
-        // exist to remove.
-        final fallback = position == null
-            ? _fallbacks[key]
-            : _nearestCandidate(_lineFallbacks[key], position);
+        // Each fading sitting takes the candidate nearest its position,
+        // and only within [_ghostRadius] — a farther stand-in would
+        // move the fading label, which is the artefact the positional
+        // fades exist to remove.
+        final fallback = _nearestCandidate(_sittingFallbacks[key], position);
         if (fallback == null) return null;
         final ramp = zoomRangeOpacity(fallback.instance.layer, styleZoom);
         if (ramp <= 0) return null;
@@ -429,15 +494,39 @@ class LabelPainter {
             gateZoom: false);
         if (drawable == null) return null;
         drawable.opacity = ghostOpacity;
+        drawable.isGhost = true;
         toDraw.add(drawable);
         anyFading = true;
         // The tracker moves the sitting to where its ghost was drawn,
         // so the fade keeps tracking the camera.
         return fallback.screenAnchor;
-      });
-      _fallbacks.clear();
-      _lineFallbacks.clear();
+      },
+          // Replay frames hold: an un-shown key mid-interval usually
+          // means its instance was replaced (republish, level swap), and
+          // the successor is only picked up at the next due pass —
+          // decaying through that window fades a label into itself.
+          // Only a pass may start a fade-out.
+          hold: !placing);
+      _sittingFallbacks.clear();
     }
+    debugSweepMicros += sweepStopwatch.elapsedMicroseconds;
+    final probe = debugDrawnProbe;
+    if (probe != null) {
+      // Before the draw stopwatch, so the probe's own cost never lands
+      // in the draw split it exists to help interpret.
+      probe(styleZoom, [
+        for (final drawable in toDraw)
+          if (drawable.opacity > 0)
+            (
+              key: drawable.symbol.instance.continuityKey,
+              position: drawable.symbol.screenAnchor,
+              opacity: drawable.opacity,
+              ghost: drawable.isGhost,
+              alongLine: drawable.symbol.instance.alongLine,
+            )
+      ]);
+    }
+    final drawStopwatch = Stopwatch()..start();
     // Draw bottom style layers first so upper layers paint on top; the
     // insertion-order tiebreaker keeps draw order stable across frames.
     toDraw.sort((a, b) {
@@ -452,6 +541,7 @@ class LabelPainter {
         drawable.draw(canvas, devicePixelRatio);
         drawn.add(drawable.symbol);
       }
+      debugDrawMicros += drawStopwatch.elapsedMicroseconds;
       return drawn;
     }
 
@@ -499,7 +589,29 @@ class LabelPainter {
       }
       canvas.restore();
     }
+    debugDrawMicros += drawStopwatch.elapsedMicroseconds;
     return drawn;
+  }
+
+  /// Marks the candidates whose label is steadily visible on screen, so
+  /// the priority sort tries them ahead of same-layer newcomers — see
+  /// [PlacedSymbol.incumbent]. Placing frames only; the flag defaults
+  /// to false on every rebuilt candidate list in between.
+  ///
+  /// Two recognisers, because each covers the other's blind spot. The
+  /// winner set matches by instance identity — exact, but instances are
+  /// replaced wholesale by every republish and level swap, precisely
+  /// when incumbency matters most. The fade tracker matches by key and
+  /// position at full opacity — which survives instance replacement,
+  /// but exists only while fades are enabled.
+  void _flagIncumbents(List<PlacedSymbol> candidates, bool fades) {
+    for (final candidate in candidates) {
+      candidate.incumbent = !candidate.ghostOnly &&
+          (_winners.contains(candidate.instance) ||
+              (fades &&
+                  _fades.isVisibleAt(candidate.instance.continuityKey,
+                      candidate.screenAnchor)));
+    }
   }
 
   /// Moves each label's sitting tenant ahead of its rivals *within its
@@ -536,20 +648,13 @@ class LabelPainter {
   }
 
   /// Remembers [candidate] as a drawable to fade its key out with,
-  /// should the sweep find that key (or one of its sittings) unplaced
-  /// this frame. Only tracked keys can fade. For point labels the first
-  /// candidate per key wins — candidates are visited in
-  /// placement-priority order, so it is the best proxy for the instance
-  /// that was on screen. Along-line keys keep every candidate: the
+  /// should the sweep find one of that key's sittings unplaced this
+  /// frame. Only tracked keys can fade. Every candidate is kept: the
   /// sweep picks the one nearest each fading sitting.
   void _recordFallback(PlacedSymbol candidate) {
     final key = candidate.instance.continuityKey;
     if (!_fades.isTracked(key)) return;
-    if (candidate.instance.alongLine) {
-      (_lineFallbacks[key] ??= []).add(candidate);
-    } else {
-      _fallbacks[key] ??= candidate;
-    }
+    (_sittingFallbacks[key] ??= []).add(candidate);
   }
 
   /// The candidate in [candidates] nearest [position], within
@@ -1168,6 +1273,15 @@ class LabelPainter {
   /// it in the text cache.
   _LaidOutText _shape(SymbolInstance instance, TextStyleMemo memo) {
     debugShapedTextCount++;
+    final shapeStopwatch = Stopwatch()..start();
+    try {
+      return _shapeTimed(instance, memo);
+    } finally {
+      debugShapeMicros += shapeStopwatch.elapsedMicroseconds;
+    }
+  }
+
+  _LaidOutText _shapeTimed(SymbolInstance instance, TextStyleMemo memo) {
     final singleLine = instance.alongLine;
     final maxLines = singleLine ? 1 : 4;
     final maxWidth = singleLine
@@ -1542,6 +1656,11 @@ class _DrawableSymbol {
   /// once the symbol has survived collision — every construction site
   /// would otherwise have to thread a value none of them computes.
   double opacity = 1;
+
+  /// Whether this drawable is a fade-out ghost drawn by the sweep — it
+  /// claimed no collision space, and [LabelPainter.debugDrawnProbe]
+  /// reports it as a continuation of a departing label, not a new one.
+  bool isGhost = false;
 
   _DrawableSymbol(
     this.symbol, {

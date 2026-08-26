@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+Zoom crossings stop stuttering and labels stop twitching: dashed-line
+rasterization and the label collision pass were each spending whole
+frame budgets in single frames, and city labels flickered, popped and
+swapped while zooming.
+
+- 🎨 **Labels hold steady while zooming**, two mechanisms at once.
+  Fades are now tracked per label *sitting* (key + screen position)
+  instead of one state per key, so labels sharing a key — every parking
+  icon on a layer, every housenumber "12", same-named chain stores —
+  fade in and out individually; before, whenever any copy was on
+  screen, the others appeared and vanished as instant pops with no fade
+  at all. And placement passes now prefer incumbents: a label on screen
+  is never evicted by a same-layer newcomer (higher style layers still
+  win), where previously each zoom crossing let the arriving level's
+  re-ranked candidates push visible labels out and hand the space back
+  half a level later — the visible→hidden→visible twitch. Measured on
+  a city-centre zoom sweep of a symbol-heavy production style (the
+  bench's new stability mode counts all three artefact classes):
+  labels appearing at full opacity with no fade fell from ~125 to ~7
+  per sweep, full-opacity labels vanishing with no fade from ~155 to
+  ~13, blinks by a third to a half — at unchanged frame times, 120 Hz
+  pinned.
+- ⚡ **Dashed lines rasterize ~5× faster**: dash segments are now
+  computed by walking the polyline coordinates directly instead of
+  `PathMetrics.extractPath` per dash — which on a footpath-dense tile
+  was thousands of engine calls and a `Path` allocation each. A single
+  dense z15–16 tile could cost up to 20 ms of UI-thread time to record,
+  felt as a hitch when zooming across the band where a style admits its
+  path layers; the worst tiles now stay well inside a 120 Hz frame
+  budget. Output is pixel-equivalent, dash phase still survives clip
+  boundaries and display-tile seams.
+- ⚡ **Label placement no longer storms during tile churn**: a tile
+  publish forced a full collision pass on the next frame, so zooming
+  across a symbol-heavy style's label gates re-ran the whole
+  O(candidates) pass every few frames — a 10 ms+ UI-thread spike
+  several times a second. Publishes now wait for the throttle's next
+  due pass, at most one `labelFadeDuration` away (the window a new
+  label's fade-in spans anyway), which on a 235-layer style cut
+  over-budget frames during a z15 crossing from 6 % to 0.4 %. Newly
+  published labels appear at the next pass instead of the next frame,
+  and fade-outs start only at a pass: between passes a label whose
+  instance was merely replaced (a republish, a level hand-over) keeps
+  drawing at its held opacity instead of dipping and re-fading into
+  itself.
+
 ## 2.8.0
 
 Zoom-crossing artefacts: labels flashed, street names jumped along

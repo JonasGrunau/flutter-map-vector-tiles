@@ -31,12 +31,13 @@ SymbolThemeLayer _symbolLayer({List<String>? variableAnchor}) {
 PlacedSymbol _symbolAt(
   SymbolThemeLayer layer,
   Offset screenAnchor,
-  String text,
-) =>
+  String text, {
+  int layerIndex = 0,
+}) =>
     PlacedSymbol(
       instance: SymbolInstance(
         layer: layer,
-        layerIndex: 0,
+        layerIndex: layerIndex,
         anchor: Offset.zero, // tile-space anchor unused by the painter
         angle: 0,
         alongLine: false,
@@ -118,11 +119,11 @@ void main() {
     expect(placed, hasLength(1));
   });
 
-  test('a label stays at the anchor it was placed at', () {
-    // Anchors are tried in style order, so a neighbour that crowds a
-    // label off its first choice for one pass would send it back the
-    // moment it leaves — a label hopping around its own point. The
-    // anchor it is sitting at is tried ahead of the style's order.
+  test('a label keeps its anchor against a same-layer arrival', () {
+    // The arrival sorts higher on screen y and historically shoved the
+    // sitting label to its second anchor. Incumbency reverses that: a
+    // label already on screen is tried first within its layer and keeps
+    // its anchor; the arrival takes what is still free.
     final layer = _symbolLayer(variableAnchor: ['top', 'bottom']);
     final alpha = _symbolAt(layer, const Offset(200, 200), 'Alpha');
     final beta = _symbolAt(layer, const Offset(200, 190), 'Beta');
@@ -133,8 +134,31 @@ void main() {
     expect(_anchorOf(painter, alpha), 'top', reason: 'the style order');
 
     _paint(layer, [beta, alpha], painter: painter);
+    expect(_anchorOf(painter, alpha), 'top',
+        reason: 'the incumbent keeps its anchor');
+    expect(_anchorOf(painter, beta), 'bottom',
+        reason: 'the arrival takes the anchor that is still free');
+  });
+
+  test('a label stays at the anchor it was placed at', () {
+    // A *higher-layer* neighbour still outranks an incumbent — the
+    // style hierarchy holds — and crowds the label off its first
+    // choice. The anchor it lands on is then remembered: deciding cold
+    // once the neighbour leaves would hop the label straight back, so
+    // the anchor it is sitting at is tried ahead of the style's order.
+    final layer = _symbolLayer(variableAnchor: ['top', 'bottom']);
+    final alpha = _symbolAt(layer, const Offset(200, 200), 'Alpha');
+    final beta =
+        _symbolAt(layer, const Offset(200, 190), 'Beta', layerIndex: 1);
+    final painter = LabelPainter();
+    addTearDown(painter.dispose);
+
+    expect(_paint(layer, [alpha], painter: painter), hasLength(1));
+    expect(_anchorOf(painter, alpha), 'top', reason: 'the style order');
+
+    _paint(layer, [beta, alpha], painter: painter);
     expect(_anchorOf(painter, alpha), 'bottom',
-        reason: 'the neighbour sorts first and takes the top anchor');
+        reason: 'the higher layer sorts first and takes the top anchor');
 
     _paint(layer, [alpha], painter: painter);
     expect(_anchorOf(painter, alpha), 'bottom',

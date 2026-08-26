@@ -141,43 +141,55 @@ bucket paints) while reserving full-size collision space.
 
 Which labels fade — in *and* out — is decided per frame, per label, by
 `render/label_continuity.dart`. Every label carries a position-free
-continuity key, `(layer, text, icon)`: position plays no part because
-two zoom levels simplify geometry differently, and a missed match would
-re-fade a label that never left the screen. A `LabelFadeTracker` inside
-the label painter holds one opacity per key and integrates it toward
-"placed this frame ? 1 : 0", a wall-clock fraction of the fade per
-frame. Anything that appears eases in and anything that disappears
-eases out, whatever the cause: a tile arriving, a zoom crossing handing
-over to new tiles, a collision won or lost mid-gesture, a layer cut at
-its zoom threshold. There is no per-cause bookkeeping, no publish-time
-diff, and no moment at which the tile grid must be complete — the
-one-shot hand-over whose evaluation order used to be subtle is gone.
+continuity key, `(layer, text, icon)`, and a `LabelFadeTracker` inside
+the label painter holds one opacity per **sitting** — the key at a
+screen position, matched to the nearest tracked state within 32 px
+(`LabelFadeTracker.showAt`, the same radius the placement memory uses,
+refreshed on every sighting so a sitting follows the camera) — and
+integrates it toward "placed this frame ? 1 : 0", a wall-clock fraction
+of the fade per frame. Anything that appears eases in and anything that
+disappears eases out, whatever the cause: a tile arriving, a zoom
+crossing handing over to new tiles, a collision won or lost
+mid-gesture, a layer cut at its zoom threshold. There is no per-cause
+bookkeeping, no publish-time diff, and no moment at which the tile grid
+must be complete.
 
-Two properties of the tracker carry the anti-blink guarantees. One
-opacity per key: the outgoing level's copy of a label and the arriving
-level's share their fade state, so whichever copy wins collision draws
-at the same opacity and the swap is invisible — a label can never
-cross-fade against itself. And direction changes resume rather than
-restart: a key re-placed mid-fade-out rises from where it is, so a
-label briefly unplaced (a republish, a lost frame of collision) dips at
-most one opacity step instead of blinking to zero.
+The loose-key-plus-position-match shape carries the anti-blink
+guarantees. The *key* stays position-free because two zoom levels
+simplify geometry differently: the arriving level's copy of a label
+lands a fraction of a pixel from the outgoing one's, inside the match
+radius, so both resolve to one sitting, whichever copy wins collision
+draws at its opacity, and the swap is invisible — a label can never
+cross-fade against itself; an exact positional key would miss on that
+same noise and re-fade a label that never left. The *position match*
+splits what position genuinely separates: two POIs sharing a name, the
+housenumber "12" down a whole street, every parking icon on a layer,
+and the re-spaced repeats of an along-line name (whose anchors are
+re-derived from `symbol-spacing` per display layout — half the spacing
+away at the next level on a straight road) each fade on their own.
+With one state per key, a key still placed *anywhere* held every other
+copy at its opacity — so those copies appeared and vanished as hard
+pops, never fading at all, and a re-spaced street name teleported at
+full opacity instead of cross-fading. And direction changes resume
+rather than restart: a sitting re-placed mid-fade-out rises from where
+it is, so a label briefly unplaced (a republish, a lost frame of
+collision) dips at most one opacity step instead of blinking to zero.
+This is the fade half of MapLibre's `CrossTileSymbolIndex` — identity
+as text plus tolerance-matched anchor — expressed in the screen space
+the label pass already works in.
 
-The position-free key is right for *point* anchors, whose world
-position belongs to the feature. Along-line anchors are re-derived from
-`symbol-spacing` per display layout, so the same street's label
-genuinely sits somewhere else at the next zoom level — half the spacing
-away on a plain straight road — and one shared opacity would hand the
-new position the old one's full opacity: the name teleports along its
-street at every crossing (and its provisional ancestor-data layout adds
-a third position on the way). Along-line fades are therefore tracked
-per **sitting**: within the loose key, states are matched by screen
-position (`LabelFadeTracker.showAt`, the same 32 px radius the
-placement memory uses, refreshed on every sighting so a sitting follows
-the camera). A moved sitting cross-fades — the old position ghosts out
-while the new one fades in — while simplification noise, seam twins and
-provisional→final swaps land inside the radius and resume their state.
-This is the fade half of MapLibre's `CrossTileSymbolIndex`, expressed
-in the screen space the label pass already works in.
+A third property joined them when placement became purely
+interval-paced: **only a placement pass may start a fade-out**. Between
+passes the winner set is frozen by instance identity, and a tile
+republish or level hand-over replaces every instance — so an un-shown
+sitting on a replay frame usually means succession, not departure. Its
+ghost holds at its current opacity, drawn from whichever equivalent
+candidate is on offer, until the next due pass either adopts the
+successor (seamlessly, through the shared sitting) or confirms the loss
+and starts the fade. Decaying through that window instead made every
+label dim and re-brighten at every crossing — fading into itself, the
+artefact the shared sitting exists to prevent. A fade a pass has
+started advances every frame, held or not.
 
 Every label fades on **its own clock**, from the frame it is placed. The
 invariant that makes this safe is that a placed label always paints
@@ -218,16 +230,17 @@ cache sizing, both of which stand. The lesson to keep: a label that
 holds a spot must paint, and zero is not a safe resting opacity in a
 tracker whose sweep drops anything at or below zero.
 
-Fade-outs draw as **ghosts**. A key that stops being placed keeps being
-drawn for the length of its fade — from whatever instance of it is
-still on offer, laid out past the zoom gate that may just have cut its
-layer — but claims no collision space. Whatever replaces the label
-therefore places (and fades in) immediately, over the ghost, instead of
-waiting for the fade to end and popping into the freed space. An
-along-line sitting's ghost takes the candidate nearest the sitting
-(bounded at twice the match radius, else it draws nothing) — never the
-priority-first candidate, which for a street with several repeats could
-be a different repeat entirely, teleporting the ghost. When a retained
+Fade-outs draw as **ghosts**. A sitting that stops being placed keeps
+being drawn for the length of its fade — from whatever instance of its
+key is still on offer, laid out past the zoom gate that may just have
+cut its layer — but claims no collision space. Whatever replaces the
+label therefore places (and fades in) immediately, over the ghost,
+instead of waiting for the fade to end and popping into the freed
+space. A sitting's ghost takes the candidate nearest it (bounded at
+twice the match radius, else it draws nothing) — never the
+priority-first candidate, which for a street with several repeats or a
+key several POIs share could be a different label entirely,
+teleporting the ghost. When a retained
 tile is disposed while keys from it may still be fading, its symbols
 are parked for one fade duration as ghost-only fallbacks (plain Dart
 objects — no tile texture is pinned by a fade).
@@ -258,13 +271,32 @@ its spot for three frames disappears and comes straight back. Fading
 those changes makes them smoother but not fewer — the fix is to observe
 the decision less often than the camera changes it, which is what
 MapLibre does, at the price of a little transient overlap between
-passes. A pass also runs immediately whenever the candidate set itself
-changes (the widget bumps a placement generation whenever symbols are
-published, tiles come and go, or a retained cohort changes role) or the
-viewport is resized, so labels from a tile that just landed never wait
-on the clock. Because a frozen decision would otherwise outlive the
-gesture that produced it, the painter reports the pass it owes and the
-fade ticker keeps painting until it runs.
+passes. The interval is the *only* cadence: a changed candidate set
+(tiles published or expired) waits for the next due pass — at most one
+fade duration, the time its fade-in takes anyway — because during a
+crossing the set churns every few frames, and placing on each churn is
+a 10 ms+ collision pass several times a second on a symbol-heavy
+style. Only a viewport resize places at once; replaying a decision
+taken for another screen misplaces everything. Because a frozen
+decision would otherwise outlive the gesture that produced it, the
+painter reports the pass it owes and the fade ticker keeps painting
+until it runs.
+
+**Placement passes prefer incumbents.** Candidate priority is topmost
+style layer, then incumbency, then `symbol-sort-key`, then screen y,
+then insertion order — where an incumbent is a candidate whose label is
+steadily visible right now (last pass's winners by instance identity,
+plus any candidate matching a full-opacity fade sitting, which is what
+carries incumbency across the instance replacement every republish and
+level swap performs). A same-layer arrival therefore never evicts a
+visible label — it waits for space to be genuinely free — while a
+higher style layer still wins, keeping the style author's hierarchy.
+Without this, every crossing let the arriving level's re-ranked
+candidates evict visible labels and hand the space back half a level
+later: the visible→hidden→visible twitch. MapLibre has no equivalent —
+its passes re-elect winners from scratch in deterministic order, and
+fades only smooth the churn — so this is a deliberate divergence, and
+`bench/`'s stability mode exists to measure it (`blink` counts).
 
 Three placement choices are remembered so that a pass reproduces the
 last one rather than re-deriving it from scratch — each is a spot where
@@ -274,8 +306,9 @@ an arbitrary tie-break used to move a label that had no reason to move:
   than once (the two carriageways of one road; the outgoing and arriving
   copy at a zoom crossing), and which one sorts first depends on their
   screen y — so a slow pan walked the name across the street. The
-  copy already drawn is tried ahead of the others *of its own label*,
-  never ahead of another label, so priority between labels is untouched.
+  copy already drawn is tried ahead of the others *of its own label*
+  (`_promoteIncumbents`, distinct from the cross-label incumbency term
+  above: this one only reorders candidates within one continuity key).
 * **Which `text-variable-anchor` it sits at.** Anchors are tried in
   style order, except the one the label is already at, which is tried
   first: a neighbour brushing past no longer pushes a label to its
