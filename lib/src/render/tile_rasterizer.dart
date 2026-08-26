@@ -43,6 +43,18 @@ class TileRasterizer {
   @visibleForTesting
   static int debugRasterizeCount = 0;
 
+  /// UI-thread microseconds spent inside [rasterize] — picture recording
+  /// plus `toImageSync`. Accumulates forever; the bench diffs it per
+  /// frame to attribute build-time spikes to their phase.
+  @visibleForTesting
+  static int debugRasterizeMicros = 0;
+
+  /// UI-thread microseconds spent painting each theme layer, keyed by
+  /// layer id. Accumulates forever; the bench diffs and ranks it to name
+  /// the layers an expensive tile spends its recording time in.
+  @visibleForTesting
+  static final Map<String, int> debugLayerMicros = <String, int>{};
+
   /// Overzoom depth from which geometry is clipped to the display
   /// window. Below it a full-extent path is at most ~2 tiles long and
   /// clipping would be pure overhead; from shift 2 path length doubles
@@ -59,29 +71,34 @@ class TileRasterizer {
     PatternResolver? patterns,
   }) {
     debugRasterizeCount++;
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder);
-    final pixelSize = (logicalTileSize * devicePixelRatio).ceil();
-    canvas.clipRect(
-        Rect.fromLTWH(0, 0, pixelSize.toDouble(), pixelSize.toDouble()));
-    canvas.scale(pixelSize / logicalTileSize);
+    final stopwatch = Stopwatch()..start();
+    try {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      final pixelSize = (logicalTileSize * devicePixelRatio).ceil();
+      canvas.clipRect(
+          Rect.fromLTWH(0, 0, pixelSize.toDouble(), pixelSize.toDouble()));
+      canvas.scale(pixelSize / logicalTileSize);
 
-    final painted = paint(
-      canvas: canvas,
-      theme: theme,
-      data: data,
-      styleZoom: styleZoom,
-      patterns: patterns,
-    );
+      final painted = paint(
+        canvas: canvas,
+        theme: theme,
+        data: data,
+        styleZoom: styleZoom,
+        patterns: patterns,
+      );
 
-    final picture = recorder.endRecording();
-    if (!painted) {
+      final picture = recorder.endRecording();
+      if (!painted) {
+        picture.dispose();
+        return null;
+      }
+      final image = picture.toImageSync(pixelSize, pixelSize);
       picture.dispose();
-      return null;
+      return image;
+    } finally {
+      debugRasterizeMicros += stopwatch.elapsedMicroseconds;
     }
-    final image = picture.toImageSync(pixelSize, pixelSize);
-    picture.dispose();
-    return image;
   }
 
   /// Paints geometry layers onto [canvas] in logical tile coordinates
@@ -96,8 +113,12 @@ class TileRasterizer {
     var painted = false;
     final zoomCtx = EvalContext(zoom: styleZoom);
 
+    final layerStopwatch = Stopwatch();
     for (final layer in theme.layers) {
       if (!layer.coversZoom(styleZoom)) continue;
+      layerStopwatch
+        ..reset()
+        ..start();
       switch (layer) {
         case BackgroundThemeLayer():
           final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
@@ -120,6 +141,8 @@ class TileRasterizer {
         case SymbolThemeLayer():
           break; // screen-space label pass
       }
+      debugLayerMicros[layer.id] = (debugLayerMicros[layer.id] ?? 0) +
+          layerStopwatch.elapsedMicroseconds;
     }
     return painted;
   }
@@ -364,25 +387,29 @@ class TileRasterizer {
       final dashArray = style.dash;
       final dash =
           dashArray != null && dashArray.length >= 2 ? dashArray : null;
+      // Dash lengths are specified in multiples of line width.
+      final dashes = dash
+          ?.map((d) => (d * style.width).clamp(0.01, 4096.0))
+          .toList(growable: false);
       Path path;
       if (clip == null) {
-        path = _linePath(feature, transform);
-        if (dash != null) path = _dashPath(path, dash, style.width);
+        if (dashes != null) {
+          path = Path();
+          for (final part in feature.parts) {
+            _dashRun(path, part, transform, dashes, close: closeRuns);
+          }
+        } else {
+          path = _linePath(feature, transform);
+        }
       } else {
         path = Path();
         for (final part in feature.parts) {
           final clipped = clipPolyline(part, clip, close: closeRuns);
           for (var r = 0; r < clipped.runs.length; r++) {
-            if (dash != null) {
-              final sub = Path();
-              _addRun(sub, clipped.runs[r], transform,
-                  close: clipped.closed[r]);
-              path.addPath(
-                _dashPath(sub, dash, style.width,
-                    phaseLogicalPx:
-                        clipped.startDistances[r] * transform.scale),
-                Offset.zero,
-              );
+            if (dashes != null) {
+              _dashRun(path, clipped.runs[r], transform, dashes,
+                  close: clipped.closed[r],
+                  phaseLogicalPx: clipped.startDistances[r] * transform.scale);
             } else {
               _addRun(path, clipped.runs[r], transform,
                   close: clipped.closed[r]);
@@ -755,54 +782,88 @@ class TileRasterizer {
     if (close) path.close();
   }
 
-  /// Extracts the drawn dash segments of [source].
+  /// Appends the drawn dash segments of one polyline [run] to [result],
+  /// walking the coordinates directly. Tile geometry is pure polylines,
+  /// so `PathMetrics.extractPath` — a generic curve-capable engine call
+  /// that allocates a `Path` per dash — is pure overhead here, and for
+  /// the ~1px dashes of a footpath layer it was thousands of engine
+  /// calls per tile: the z15–16 zoom-crossing jank (see `bench/`).
   ///
+  /// [dashes] are the pattern lengths already scaled to logical px.
   /// [phaseLogicalPx] is how far along the *original* (un-clipped)
-  /// geometry this path starts: the dash walk resumes mid-pattern there,
+  /// geometry this run starts: the dash walk resumes mid-pattern there,
   /// so clipped sub-runs render exactly the dashes the full path would —
   /// keeping the pattern aligned across clip boundaries and
-  /// display-tile seams.
-  static Path _dashPath(Path source, List<double> pattern, double width,
-      {double phaseLogicalPx = 0}) {
-    // Dash lengths are specified in multiples of line width.
-    final dashes = pattern.map((d) => (d * width).clamp(0.01, 4096.0)).toList();
-    final result = Path();
-    for (final metric in source.computeMetrics()) {
-      var draw = true;
-      var i = 0;
-      var remaining = dashes[0];
-      if (phaseLogicalPx > 0) {
-        // With an odd dash count the draw/gap roles swap every cycle
-        // (the draw flag flips per dash, not per cycle), so the visual
-        // period is twice the pattern sum.
-        var sum = 0.0;
-        for (final d in dashes) {
-          sum += d;
-        }
-        var p = phaseLogicalPx % (dashes.length.isEven ? sum : sum * 2);
-        while (p >= remaining) {
-          p -= remaining;
-          i++;
-          draw = !draw;
-          remaining = dashes[i % dashes.length];
-        }
-        remaining -= p;
+  /// display-tile seams. A dash spanning a vertex continues as one
+  /// contiguous sub-path, so stroke joins inside a dash render exactly
+  /// as they did under `extractPath`.
+  static void _dashRun(
+    Path result,
+    Float32List run,
+    _TileTransform t,
+    List<double> dashes, {
+    required bool close,
+    double phaseLogicalPx = 0,
+  }) {
+    if (run.length < 4) return;
+    var draw = true;
+    var i = 0;
+    var remaining = dashes[0];
+    if (phaseLogicalPx > 0) {
+      // With an odd dash count the draw/gap roles swap every cycle
+      // (the draw flag flips per dash, not per cycle), so the visual
+      // period is twice the pattern sum.
+      var sum = 0.0;
+      for (final d in dashes) {
+        sum += d;
       }
-      var distance = 0.0;
-      while (distance < metric.length) {
-        if (draw) {
-          result.addPath(
-            metric.extractPath(distance, distance + remaining),
-            Offset.zero,
-          );
-        }
-        distance += remaining;
+      var p = phaseLogicalPx % (dashes.length.isEven ? sum : sum * 2);
+      while (p >= remaining) {
+        p -= remaining;
         i++;
         draw = !draw;
         remaining = dashes[i % dashes.length];
       }
+      remaining -= p;
     }
-    return result;
+
+    final points = run.length ~/ 2;
+    final segments = close ? points : points - 1;
+    var penDown = false;
+    var ax = t.mapX(run[0]);
+    var ay = t.mapY(run[1]);
+    for (var s = 0; s < segments; s++) {
+      final j = ((s + 1) % points) * 2;
+      final bx = t.mapX(run[j]);
+      final by = t.mapY(run[j + 1]);
+      final dx = bx - ax;
+      final dy = by - ay;
+      final length = math.sqrt(dx * dx + dy * dy);
+      var pos = 0.0;
+      while (pos < length) {
+        final take = math.min(remaining, length - pos);
+        if (draw) {
+          if (!penDown) {
+            final f = pos / length;
+            result.moveTo(ax + dx * f, ay + dy * f);
+            penDown = true;
+          }
+          final f = (pos + take) / length;
+          result.lineTo(ax + dx * f, ay + dy * f);
+        }
+        pos += take;
+        remaining -= take;
+        if (remaining <= 0) {
+          i++;
+          draw = !draw;
+          remaining = dashes[i % dashes.length];
+          // A gap starts: the next dash opens its own sub-path.
+          if (!draw) penDown = false;
+        }
+      }
+      ax = bx;
+      ay = by;
+    }
   }
 
   /// A paint that tiles [image] as a repeating pattern, anchored to the
