@@ -35,7 +35,7 @@ collision pass; cancellation is a **state**, never an exception; every
 |-----------|---------|
 | `lib/` | Package source — the entire library (see `lib/AGENTS.md`) |
 | `test/` | Unit and widget tests, no mocking framework (see `test/AGENTS.md`) |
-| `bench/` | On-device frame-timing harness for zoom crossings — profile-mode app that sweeps a zoom band and reports UI/raster frame-time distributions and cache-hit counters. Not published (see `bench/AGENTS.md`) |
+| `bench/` | On-device frame-timing and label-stability harness for zoom crossings — profile-mode app that sweeps a zoom band (or records while you zoom by hand in `manual` mode) and reports UI/raster frame-time distributions, cache-hit counters and, in `stability` mode, label pop/blink counts. Not published (see `bench/AGENTS.md`) |
 | `example/` | Runnable example app driven by `--dart-define` (see `example/AGENTS.md`) |
 | `doc/` | `ARCHITECTURE.md` — the prose companion to this file; update it when the data flow, rendering model, concurrency model or cache layers change |
 | `screenshots/` | pub.dev gallery images (WebP, framed in an iPhone bezel), wired up via `screenshots:` in `pubspec.yaml` — these ship in the package; regeneration recipe in `screenshots/AGENTS.md` |

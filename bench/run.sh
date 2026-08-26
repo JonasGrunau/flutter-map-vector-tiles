@@ -25,10 +25,17 @@ if [[ ! -d ios ]]; then
   rmdir test 2>/dev/null || true
 fi
 
+# STYLE_URL / MAPTILER_KEY / BENCH_SETUP pass through from the environment
+# when set, so app-specific styles and keys are given per invocation and
+# never land in this repo.
 flutter run --profile -d "$DEVICE" \
   --dart-define=BENCH_LABEL="$LABEL" \
   --dart-define=BENCH_LO="$LO" \
-  --dart-define=BENCH_HI="$HI" > "$OUT" 2>&1 &
+  --dart-define=BENCH_HI="$HI" \
+  ${STYLE_URL:+--dart-define=STYLE_URL=$STYLE_URL} \
+  ${MAPTILER_KEY:+--dart-define=MAPTILER_KEY=$MAPTILER_KEY} \
+  ${BENCH_SETUP:+--dart-define=BENCH_SETUP=$BENCH_SETUP} \
+  ${BENCH_MODE:+--dart-define=BENCH_MODE=$BENCH_MODE} > "$OUT" 2>&1 &
 PID=$!
 
 for _ in $(seq 1 180); do

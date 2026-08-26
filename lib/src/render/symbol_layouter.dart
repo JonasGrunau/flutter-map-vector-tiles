@@ -222,6 +222,12 @@ class SymbolLayouter {
   @visibleForTesting
   static int debugLayoutCount = 0;
 
+  /// UI-thread microseconds spent inside [layout]. Accumulates forever;
+  /// the bench diffs it per frame to attribute build-time spikes to
+  /// their phase.
+  @visibleForTesting
+  static int debugLayoutMicros = 0;
+
   /// Whether any symbol layer of [theme] is visible somewhere in the
   /// zoom band [styleZoom, styleZoom + 1) — the render pump skips the
   /// symbol phase entirely below the first symbol minzoom, so
@@ -241,6 +247,7 @@ class SymbolLayouter {
     required double styleZoom,
   }) {
     debugLayoutCount++;
+    final stopwatch = Stopwatch()..start();
     final instances = <SymbolInstance>[];
     for (var i = 0; i < theme.layers.length; i++) {
       final layer = theme.layers[i];
@@ -372,6 +379,7 @@ class SymbolLayouter {
         }
       }
     }
+    debugLayoutMicros += stopwatch.elapsedMicroseconds;
     return instances;
   }
 
