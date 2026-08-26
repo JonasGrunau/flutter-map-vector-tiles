@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.8.1
 
 Zoom crossings stop stuttering and labels stop twitching: dashed-line
 rasterization and the label collision pass were each spending whole
