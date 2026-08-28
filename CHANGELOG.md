@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+A shorter README.
+
+- 📚 The README says the same things in fewer words: sales-flavoured
+  phrasing, filler and duplicated explanations are gone, and every
+  section is tightened without dropping a single documented behaviour,
+  option or caveat.
+
 ## 2.8.1
 
 Zoom crossings stop stuttering and labels stop twitching: dashed-line
