@@ -107,6 +107,11 @@ clips at tile seams.
   *has* started advances every frame, held or not; one step per pass
   would stretch a 150ms fade across minutes.
 
+- **Disabling label fades clears the tracker.** A no-fade paint must
+  discard every tracked sitting, including an in-progress one. Otherwise
+  `LabelFadeTracker.anyActive` stays true without any future `beginFrame`
+  call to advance it, and the widget's fade ticker repaints forever.
+
 - **A visible label is never evicted by a same-layer arrival.** On
   placing frames `_flagIncumbents` marks candidates whose label is
   steadily on screen (last pass's winners by instance identity, plus
@@ -219,7 +224,8 @@ clips at tile seams.
   collision tiebreak
 - `test/label_continuity_test.dart` — the per-label fade model: key
   identity, `LabelFadeTracker` semantics (rise/fall, resume mid-fade,
-  per-frame idempotence, self-pruning), the guarantee that a placed
+  per-frame idempotence, self-pruning), clearing in-progress state when
+  fades are disabled at runtime, the guarantee that a placed
   label is never held invisible (a key arriving mid-fade rising at
   once, a label drawn on every frame it is placed on through 60 frames
   of churn, a continuous stream of arrivals fading in continuously —

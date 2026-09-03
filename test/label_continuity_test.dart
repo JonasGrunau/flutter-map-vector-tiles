@@ -80,6 +80,7 @@ List<PlacedSymbol> _frame(
   List<PlacedSymbol> symbols, {
   double styleZoom = 14,
   DateTime? now,
+  Duration? labelFadeDuration,
 }) {
   final recorder = ui.PictureRecorder();
   final drawn = painter.paint(
@@ -87,7 +88,8 @@ List<PlacedSymbol> _frame(
     screenSize: const Size(400, 400),
     styleZoom: styleZoom,
     symbols: symbols,
-    labelFadeDuration: now == null ? Duration.zero : _fadeDuration,
+    labelFadeDuration:
+        labelFadeDuration ?? (now == null ? Duration.zero : _fadeDuration),
     now: now,
   );
   recorder.endRecording().dispose();
@@ -730,6 +732,30 @@ void main() {
       expect(drawn.map((p) => p.instance), [a],
           reason: 'one opacity step from the start, never invisible');
       expect(painter.hasActiveFades, isTrue);
+      painter.dispose();
+    });
+
+    test('disabling fades clears an in-progress fade', () {
+      final painter = LabelPainter();
+      final label = _symbol(layer);
+      final key = label.continuityKey;
+
+      _frame(painter, [_placedAt(label)], now: _at(0));
+      expect(painter.hasActiveFades, isTrue);
+      expect(painter.debugFades.isTracked(key), isTrue);
+
+      final drawn = _frame(
+        painter,
+        [_placedAt(label)],
+        now: _at(10),
+        labelFadeDuration: Duration.zero,
+      );
+      expect(drawn.map((placed) => placed.instance), [label],
+          reason: 'disabling fades makes placed labels fully opaque');
+      expect(painter.hasActiveFades, isFalse,
+          reason: 'the widget fade ticker must be allowed to settle');
+      expect(painter.debugFades.isTracked(key), isFalse,
+          reason: 'reenabling fades must not resume stale opacity state');
       painter.dispose();
     });
 

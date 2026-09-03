@@ -195,7 +195,9 @@ Every label fades on **its own clock**, from the frame it is placed. The
 invariant that makes this safe is that a placed label always paints
 something: a key on its first frame has no elapsed fade time, so the
 painter floors it at one opacity step rather than letting it draw at
-zero.
+zero. A no-fade paint clears the tracker immediately: when
+`labelFadeDuration` changes to zero during a fade, no stale active state
+remains to keep the widget's fade ticker scheduling frames indefinitely.
 
 That is worth stating as an invariant because 2.7.0 broke it and had to
 be reverted in 2.7.1. The reasoning then was that the pump publishes

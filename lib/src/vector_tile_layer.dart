@@ -108,7 +108,8 @@ class VectorTileLayer extends StatefulWidget {
 
   /// Duration of the fade-in of newly appearing labels/icons, masking
   /// the pop when a zoom level first shows symbol layers. Zero disables
-  /// the fade (labels appear instantly, as before 2.3.0).
+  /// the fade and immediately finishes any fade already in progress
+  /// (labels appear instantly, as before 2.3.0).
   ///
   /// This also paces the label collision pass (capped at 300ms): a
   /// freshly published tile's labels are placed at the pass after their

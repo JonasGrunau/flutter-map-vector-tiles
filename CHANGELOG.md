@@ -2,8 +2,11 @@
 
 ## Unreleased
 
-A shorter README.
+A shorter README and a label-fade lifecycle fix.
 
+- 🐛 Disabling `labelFadeDuration` at runtime now clears any in-progress
+  label fade state, allowing the animation ticker to stop instead of
+  repainting an otherwise idle map indefinitely.
 - 📚 The README says the same things in fewer words: sales-flavoured
   phrasing, filler and duplicated explanations are gone, and every
   section is tightened without dropping a single documented behaviour,

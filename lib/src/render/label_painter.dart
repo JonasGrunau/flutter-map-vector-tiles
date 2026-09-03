@@ -325,7 +325,9 @@ class LabelPainter {
   /// set (tiles published or expired) is picked up by the next due
   /// pass, at most one interval away, never sooner (see
   /// [PlacementThrottle.shouldPlace] for why). [now] feeds both
-  /// clocks and defaults to the wall clock.
+  /// clocks and defaults to the wall clock. Disabling fades with
+  /// [Duration.zero] clears any tracked fade state immediately, so an
+  /// in-flight fade cannot keep its caller scheduling animation frames.
   List<PlacedSymbol> paint({
     required Canvas canvas,
     required Size screenSize,
@@ -359,7 +361,15 @@ class LabelPainter {
   ) {
     _disposeRetired();
     final fades = labelFadeDuration > Duration.zero;
-    if (fades) _fades.beginFrame(now, labelFadeDuration);
+    if (fades) {
+      _fades.beginFrame(now, labelFadeDuration);
+    } else {
+      // A fade may have been disabled at runtime while its tracker was
+      // active. Leaving that state untouched keeps [hasActiveFades]
+      // true forever: no-fade frames never advance it, and the widget's
+      // fade ticker therefore never settles.
+      _fades.clear();
+    }
     // Whether this frame decides placement afresh or replays the last
     // decision. Layout happens either way — only the winners move on a
     // replay frame, not the choice of who they are.
