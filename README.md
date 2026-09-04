@@ -146,7 +146,7 @@ vt.VectorTileLayer(
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source. The caches are shared process-wide, so the most recently mounted layer's value wins |
 | `rasterCacheMaxBytes` | sized for the device | finished-tile budget: zooming back to a recent level, or reopening the same style, paints instantly instead of re-rendering. These are GPU texture bytes, roughly 1 MB per tile at devicePixelRatio 2 and 2.25 MB at 3, and a phone screenful is 25 to 35 tiles, so a *single* level costs about 80 MB on a large dpr-3 phone. The default measures your viewport and dpr and budgets 2.5 screenfuls, clamped to 64 to 256 MB, so a zoom round trip keeps the level it returns to. Pass a byte count to pin it, or `0` to disable |
 | `tileFadeDuration` | 150 ms | fade-in of newly rendered tiles. Tiles from the finished-tile cache fade only when retained imagery lies beneath to cross-fade over; with nothing beneath, as on a reopened map or in the ring a zoom-out exposes, ready imagery appears at once rather than fading over the background. `Duration.zero` disables |
-| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms; new labels always place at once. `Duration.zero` restores instant pops and per-frame collision |
+| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 
 The memory caches are shared process-wide and outlive the layer, which is
@@ -398,13 +398,15 @@ the tile rasters, which is what the behaviour below rests on:
   remembered per label and position rather than per tile, so they survive
   a level handing over or a tile re-rendering underneath a label that
   never left the screen.
-- **Collision is decided on a timer.** Once per `labelFadeDuration`, at
-  most every 300 ms, held in between, and immediately whenever new labels
-  arrive. Zooming and rotating drag labels through each other constantly,
-  and re-deciding every frame turns each of those brushes past into a
-  label that disappears and comes straight back. Between decisions
-  neighbours are simply allowed to overlap for a moment, as they are in
-  MapLibre.
+- **Collision is decided on a timer.** Camera motion and changed label
+  candidates are picked up at the next `labelFadeDuration` interval, at
+  most 300 ms away, and the previous decision is held in between. Zooming
+  and rotating drag labels through each other constantly, and re-deciding
+  every frame turns each of those brushes past into a label that disappears
+  and comes straight back. Between decisions neighbours are simply allowed
+  to overlap for a moment, as they are in MapLibre. An unchanged repaint
+  creates no new placement work, so the animation ticker settles when the
+  last real change has been placed.
 
 ## 🏗️ Architecture
 

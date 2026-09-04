@@ -324,8 +324,13 @@ class LabelPainter {
   /// frames in between replay the last decision — a changed candidate
   /// set (tiles published or expired) is picked up by the next due
   /// pass, at most one interval away, never sooner (see
-  /// [PlacementThrottle.shouldPlace] for why). [now] feeds both
-  /// clocks and defaults to the wall clock.
+  /// [PlacementThrottle.shouldPlace] for why). [placementGeneration]
+  /// must change whenever the camera or candidate set changes; an
+  /// unchanged generation replays without creating another pending
+  /// pass. [now] feeds both clocks and defaults to the wall clock.
+  /// Disabling fades with [Duration.zero] clears any tracked fade state
+  /// immediately, so an in-flight fade cannot keep its caller scheduling
+  /// animation frames.
   List<PlacedSymbol> paint({
     required Canvas canvas,
     required Size screenSize,
@@ -334,13 +339,22 @@ class LabelPainter {
     SpriteAtlas? sprites,
     double devicePixelRatio = 1,
     Duration labelFadeDuration = Duration.zero,
+    int placementGeneration = 0,
     DateTime? now,
   }) {
     developer.Timeline.startSync('VT labels');
     final stopwatch = Stopwatch()..start();
     try {
-      return _paint(canvas, screenSize, styleZoom, symbols, sprites,
-          devicePixelRatio, labelFadeDuration, now ?? DateTime.now());
+      return _paint(
+          canvas,
+          screenSize,
+          styleZoom,
+          symbols,
+          sprites,
+          devicePixelRatio,
+          labelFadeDuration,
+          placementGeneration,
+          now ?? DateTime.now());
     } finally {
       debugPaintMicros += stopwatch.elapsedMicroseconds;
       developer.Timeline.finishSync();
@@ -355,17 +369,27 @@ class LabelPainter {
     SpriteAtlas? sprites,
     double devicePixelRatio,
     Duration labelFadeDuration,
+    int placementGeneration,
     DateTime now,
   ) {
     _disposeRetired();
     final fades = labelFadeDuration > Duration.zero;
-    if (fades) _fades.beginFrame(now, labelFadeDuration);
+    if (fades) {
+      _fades.beginFrame(now, labelFadeDuration);
+    } else {
+      // A fade may have been disabled at runtime while its tracker was
+      // active. Leaving that state untouched keeps [hasActiveFades]
+      // true forever: no-fade frames never advance it, and the widget's
+      // fade ticker therefore never settles.
+      _fades.clear();
+    }
     // Whether this frame decides placement afresh or replays the last
     // decision. Layout happens either way — only the winners move on a
     // replay frame, not the choice of who they are.
     final placing = _placement.shouldPlace(
       now: now,
       interval: placementInterval(labelFadeDuration),
+      generation: placementGeneration,
       screenSize: screenSize,
     );
     _memory.beginFrame(prune: placing);

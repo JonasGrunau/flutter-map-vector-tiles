@@ -42,6 +42,8 @@ lifecycle or painting is covered by widget tests that pump a real
 | `executor_test.dart` | Executor contract: priority ordering, silent cancellation, disposal |
 | `tile_key_test.dart` | Tile coordinate arithmetic and equality |
 | `fade_test.dart` | Tile/label fade progress arithmetic, including sub-millisecond durations |
+| `label_continuity_test.dart` | Per-label fade and placement continuity, including idle repaints not creating placement debt and clearing an in-progress fade when `labelFadeDuration` is disabled at runtime |
+| `show_labels_test.dart` | End-to-end label enable/disable, sub-millisecond fades and fade-ticker settlement on an unchanged map |
 | `sprite_atlas_signature_test.dart` | `SpriteAtlas.signature` — equal sheets agree, different ones do not (the render-signature cache key) |
 
 ## Subdirectories

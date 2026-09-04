@@ -274,11 +274,13 @@ class _SittingFade {
 ///
 /// Between passes the caller replays the last decision: layout still
 /// follows the camera every frame, only *who is shown* is frozen. A
-/// pass also runs the moment the candidate set itself changes
-/// ([generation]) or the viewport is resized, so labels from a tile
-/// that just landed never wait on the clock.
+/// changed camera or candidate set marks that decision dirty and is
+/// picked up when the interval next permits a pass; a viewport resize
+/// still places immediately. Repainting unchanged input never creates
+/// a placement debt of its own.
 class PlacementThrottle {
   DateTime? _lastPass;
+  int? _placedGeneration;
   Size _screenSize = Size.zero;
   var _deferred = false;
 
@@ -297,9 +299,11 @@ class PlacementThrottle {
   bool shouldPlace({
     required DateTime now,
     required Duration interval,
+    required int generation,
     required Size screenSize,
   }) {
     final last = _lastPass;
+    final changed = generation != _placedGeneration;
     // A changed candidate set (tiles published or expired) does not jump
     // the queue: during a zoom crossing the set churns every few frames,
     // and placing on each churn is a full O(candidates) collision pass
@@ -311,16 +315,21 @@ class PlacementThrottle {
     // frames coming until the owed pass runs. A resize still places at
     // once — replaying decisions taken for another screen misplaces
     // everything at each frame in between.
+    // Time alone is not a reason to place. In particular, the repaint
+    // requested by the tick that settles a pass sees unchanged input and
+    // must not create a fresh debt, or the ticker restarts forever on an
+    // otherwise idle map.
     final due = last == null ||
         interval <= Duration.zero ||
         screenSize != _screenSize ||
-        !now.isBefore(last.add(interval)) ||
+        (changed && !now.isBefore(last.add(interval))) ||
         // A clock stepped backwards (manual change, NTP) would otherwise
         // freeze placement until it caught up again.
         now.isBefore(last);
-    _deferred = !due;
+    _deferred = changed && !due;
     if (!due) return false;
     _lastPass = now;
+    _placedGeneration = generation;
     _screenSize = screenSize;
     return true;
   }
@@ -328,6 +337,7 @@ class PlacementThrottle {
   /// Forgets the last pass, so the next frame places again.
   void reset() {
     _lastPass = null;
+    _placedGeneration = null;
     _deferred = false;
   }
 }
