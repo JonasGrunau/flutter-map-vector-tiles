@@ -262,12 +262,38 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// re-derive it every frame of a zoom transition. Null = recompute.
   Set<TileKey>? _retainedSymbolKeys;
 
-  /// Invalidates what is memoized over the current label candidates:
-  /// the retained-key set. The painter's frozen placement is *not*
-  /// poked — it re-places on its own cadence and picks the new set up
-  /// at the next due pass (see [PlacementThrottle.shouldPlace]).
+  /// Generation of the inputs to label placement. Candidate churn and
+  /// camera motion mark the frozen decision dirty; the throttle picks the
+  /// latest generation up at its next due pass rather than on every
+  /// publish or gesture frame.
+  var _labelGeneration = 0;
+
+  /// Last camera state that fed label placement. Ticker-only repaints keep
+  /// this unchanged, which is how the throttle distinguishes animation
+  /// frames from a camera move that really requires another collision pass.
+  ({
+    double latitude,
+    double longitude,
+    double zoom,
+    double rotation
+  })? _labelCamera;
+
+  /// Invalidates everything memoized over the current label candidates.
   void _labelCandidatesChanged() {
     _retainedSymbolKeys = null;
+    _labelGeneration++;
+  }
+
+  void _updateLabelCamera(MapCamera camera) {
+    final current = (
+      latitude: camera.center.latitude,
+      longitude: camera.center.longitude,
+      zoom: camera.zoom,
+      rotation: camera.rotation,
+    );
+    if (current == _labelCamera) return;
+    _labelCamera = current;
+    _labelGeneration++;
   }
 
   /// Fade-out fallbacks for labels whose tile is gone: when a retained
@@ -1552,6 +1578,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
+    _updateLabelCamera(camera);
     // Sized before the grid update: that is what triggers the loads
     // that consult the result cache.
     _viewportSize = camera.nonRotatedSize;
@@ -1959,6 +1986,7 @@ class _VectorMapPainter extends CustomPainter {
       sprites: state.widget.sprites,
       devicePixelRatio: devicePixelRatio,
       labelFadeDuration: state.widget.labelFadeDuration,
+      placementGeneration: state._labelGeneration,
       now: now,
     );
     // Recorded so the retention pin keeps what was actually on screen,

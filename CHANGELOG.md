@@ -2,11 +2,13 @@
 
 ## Unreleased
 
-A shorter README and a label-fade lifecycle fix.
+A shorter README and label-fade lifecycle fixes.
 
-- 🐛 Disabling `labelFadeDuration` at runtime now clears any in-progress
-  label fade state, allowing the animation ticker to stop instead of
-  repainting an otherwise idle map indefinitely.
+- 🐛 The label fade ticker now settles after its last placement pass.
+  Placement debt is created only when the camera or label candidates
+  change; the settling repaint no longer creates fresh debt and restarts
+  the ticker on an otherwise idle map. Disabling `labelFadeDuration` at
+  runtime also clears any in-progress label fade state.
 - 📚 The README says the same things in fewer words: sales-flavoured
   phrasing, filler and duplicated explanations are gone, and every
   section is tightened without dropping a single documented behaviour,
