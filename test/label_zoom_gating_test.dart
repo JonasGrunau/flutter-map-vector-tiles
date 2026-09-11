@@ -68,6 +68,7 @@ List<PlacedSymbol> _paint(
     screenSize: const Size(400, 400),
     styleZoom: styleZoom,
     symbols: symbols,
+    placementGeneration: 0,
   );
   recorder.endRecording().dispose();
   painter.dispose();

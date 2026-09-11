@@ -1549,9 +1549,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
     // Label fades advance inside the label pass; the painter reports
     // whether the last painted frame left any mid-flight. A frame that
-    // replayed a frozen placement also owes a pass — without one more
-    // frame, a decision taken mid-gesture would stand for good once the
-    // gesture stops producing frames.
+    // replayed a frozen placement over changed input (a camera move or
+    // candidate churn the throttle has not placed yet) also owes a pass
+    // — without one more frame, a decision taken mid-gesture would stand
+    // for good once the gesture stops producing frames. An unchanged
+    // replay owes nothing, which is what lets the ticker stop.
     anyFading |= _labelPainter.hasActiveFades || _labelPainter.placementPending;
     _repaint.trigger();
     if (!anyFading) {

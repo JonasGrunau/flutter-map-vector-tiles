@@ -339,7 +339,7 @@ class LabelPainter {
     SpriteAtlas? sprites,
     double devicePixelRatio = 1,
     Duration labelFadeDuration = Duration.zero,
-    int placementGeneration = 0,
+    required int placementGeneration,
     DateTime? now,
   }) {
     developer.Timeline.startSync('VT labels');

@@ -107,6 +107,7 @@ Future<ByteData> _render(SymbolThemeLayer layer, SpriteAtlas atlas) async {
     styleZoom: 16,
     symbols: [_iconSymbol(layer)],
     sprites: atlas,
+    placementGeneration: 0,
   );
   final picture = recorder.endRecording();
   final image = await picture.toImage(_canvasSize, _canvasSize);
