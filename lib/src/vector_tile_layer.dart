@@ -108,7 +108,8 @@ class VectorTileLayer extends StatefulWidget {
 
   /// Duration of the fade-in of newly appearing labels/icons, masking
   /// the pop when a zoom level first shows symbol layers. Zero disables
-  /// the fade (labels appear instantly, as before 2.3.0).
+  /// the fade and immediately finishes any fade already in progress
+  /// (labels appear instantly, as before 2.3.0).
   ///
   /// This also paces the label collision pass (capped at 300ms): a
   /// freshly published tile's labels are placed at the pass after their
@@ -261,12 +262,38 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// re-derive it every frame of a zoom transition. Null = recompute.
   Set<TileKey>? _retainedSymbolKeys;
 
-  /// Invalidates what is memoized over the current label candidates:
-  /// the retained-key set. The painter's frozen placement is *not*
-  /// poked — it re-places on its own cadence and picks the new set up
-  /// at the next due pass (see [PlacementThrottle.shouldPlace]).
+  /// Generation of the inputs to label placement. Candidate churn and
+  /// camera motion mark the frozen decision dirty; the throttle picks the
+  /// latest generation up at its next due pass rather than on every
+  /// publish or gesture frame.
+  var _labelGeneration = 0;
+
+  /// Last camera state that fed label placement. Ticker-only repaints keep
+  /// this unchanged, which is how the throttle distinguishes animation
+  /// frames from a camera move that really requires another collision pass.
+  ({
+    double latitude,
+    double longitude,
+    double zoom,
+    double rotation
+  })? _labelCamera;
+
+  /// Invalidates everything memoized over the current label candidates.
   void _labelCandidatesChanged() {
     _retainedSymbolKeys = null;
+    _labelGeneration++;
+  }
+
+  void _updateLabelCamera(MapCamera camera) {
+    final current = (
+      latitude: camera.center.latitude,
+      longitude: camera.center.longitude,
+      zoom: camera.zoom,
+      rotation: camera.rotation,
+    );
+    if (current == _labelCamera) return;
+    _labelCamera = current;
+    _labelGeneration++;
   }
 
   /// Fade-out fallbacks for labels whose tile is gone: when a retained
@@ -1522,9 +1549,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
     // Label fades advance inside the label pass; the painter reports
     // whether the last painted frame left any mid-flight. A frame that
-    // replayed a frozen placement also owes a pass — without one more
-    // frame, a decision taken mid-gesture would stand for good once the
-    // gesture stops producing frames.
+    // replayed a frozen placement over changed input (a camera move or
+    // candidate churn the throttle has not placed yet) also owes a pass
+    // — without one more frame, a decision taken mid-gesture would stand
+    // for good once the gesture stops producing frames. An unchanged
+    // replay owes nothing, which is what lets the ticker stop.
     anyFading |= _labelPainter.hasActiveFades || _labelPainter.placementPending;
     _repaint.trigger();
     if (!anyFading) {
@@ -1551,6 +1580,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
+    _updateLabelCamera(camera);
     // Sized before the grid update: that is what triggers the loads
     // that consult the result cache.
     _viewportSize = camera.nonRotatedSize;
@@ -1958,6 +1988,7 @@ class _VectorMapPainter extends CustomPainter {
       sprites: state.widget.sprites,
       devicePixelRatio: devicePixelRatio,
       labelFadeDuration: state.widget.labelFadeDuration,
+      placementGeneration: state._labelGeneration,
       now: now,
     );
     // Recorded so the retention pin keeps what was actually on screen,

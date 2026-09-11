@@ -74,12 +74,16 @@ List<PlacedSymbol> _paint(List<PlacedSymbol> symbols, {double styleZoom = 14}) {
 /// fades at [_fadeDuration], and with them the throttled placement:
 /// frames closer together than that replay the last decision — a
 /// swapped candidate set included, which is only picked up by the next
-/// due pass (a publish no longer forces an immediate one).
+/// due pass (a publish no longer forces an immediate one). Each call
+/// models changed placement input by default; pass the same explicit
+/// [placementGeneration] to model ticker-only repaints of an idle map.
 List<PlacedSymbol> _frame(
   LabelPainter painter,
   List<PlacedSymbol> symbols, {
   double styleZoom = 14,
   DateTime? now,
+  Duration? labelFadeDuration,
+  int? placementGeneration,
 }) {
   final recorder = ui.PictureRecorder();
   final drawn = painter.paint(
@@ -87,12 +91,16 @@ List<PlacedSymbol> _frame(
     screenSize: const Size(400, 400),
     styleZoom: styleZoom,
     symbols: symbols,
-    labelFadeDuration: now == null ? Duration.zero : _fadeDuration,
+    labelFadeDuration:
+        labelFadeDuration ?? (now == null ? Duration.zero : _fadeDuration),
+    placementGeneration: placementGeneration ?? _nextPlacementGeneration++,
     now: now,
   );
   recorder.endRecording().dispose();
   return drawn;
 }
+
+var _nextPlacementGeneration = 0;
 
 const _fadeDuration = Duration(milliseconds: 100);
 final _t0 = DateTime(2026, 1, 1);
@@ -599,25 +607,27 @@ void main() {
     bool place(
       PlacementThrottle throttle,
       int ms, {
+      int generation = 0,
       Size screenSize = screen,
       Duration interval = _fadeDuration,
     }) =>
         throttle.shouldPlace(
           now: _at(ms),
           interval: interval,
+          generation: generation,
           screenSize: screenSize,
         );
 
     test('places once, then holds the decision for an interval', () {
       final throttle = PlacementThrottle();
       expect(place(throttle, 0), isTrue, reason: 'nothing to replay yet');
-      expect(place(throttle, 50), isFalse);
+      expect(place(throttle, 50, generation: 1), isFalse);
       expect(throttle.deferred, isTrue, reason: 'a pass is owed');
-      expect(place(throttle, 100), isTrue);
+      expect(place(throttle, 100, generation: 1), isTrue);
       expect(throttle.deferred, isFalse);
       // The interval runs from the last pass, not from fixed multiples.
-      expect(place(throttle, 150), isFalse);
-      expect(place(throttle, 200), isTrue);
+      expect(place(throttle, 150, generation: 2), isFalse);
+      expect(place(throttle, 200, generation: 2), isTrue);
     });
 
     test('a publish mid-interval stays a replay, with a pass owed', () {
@@ -630,10 +640,26 @@ void main() {
       // owed pass runs.
       final throttle = PlacementThrottle();
       expect(place(throttle, 0), isTrue);
-      expect(place(throttle, 10), isFalse,
+      expect(place(throttle, 10, generation: 1), isFalse,
           reason: 'a publish alone must not buy a collision pass');
       expect(throttle.deferred, isTrue, reason: 'a pass is owed');
-      expect(place(throttle, 100), isTrue);
+      expect(place(throttle, 100, generation: 1), isTrue);
+    });
+
+    test('a settling repaint does not create another placement debt', () {
+      final throttle = PlacementThrottle();
+      expect(place(throttle, 0), isTrue);
+      expect(place(throttle, 10, generation: 1), isFalse);
+      expect(throttle.deferred, isTrue);
+
+      expect(place(throttle, 100, generation: 1), isTrue,
+          reason: 'the changed input is placed when its interval is due');
+      expect(throttle.deferred, isFalse);
+
+      expect(place(throttle, 101, generation: 1), isFalse,
+          reason: 'an animation-only repaint has no new input to place');
+      expect(throttle.deferred, isFalse,
+          reason: 'the fade ticker must be allowed to stop');
     });
 
     test('a resize places without waiting', () {
@@ -659,9 +685,9 @@ void main() {
     test('reset places on the next frame', () {
       final throttle = PlacementThrottle();
       expect(place(throttle, 0), isTrue);
-      expect(place(throttle, 10), isFalse);
+      expect(place(throttle, 10, generation: 1), isFalse);
       throttle.reset();
-      expect(place(throttle, 20), isTrue);
+      expect(place(throttle, 20, generation: 1), isTrue);
       expect(throttle.deferred, isFalse);
     });
   });
@@ -730,6 +756,52 @@ void main() {
       expect(drawn.map((p) => p.instance), [a],
           reason: 'one opacity step from the start, never invisible');
       expect(painter.hasActiveFades, isTrue);
+      painter.dispose();
+    });
+
+    test('an idle repaint after a due pass leaves no work pending', () {
+      final painter = LabelPainter();
+      final label = _symbol(layer);
+
+      _frame(painter, [_placedAt(label)], now: _at(0), placementGeneration: 0);
+      _frame(painter, [_placedAt(label)], now: _at(10), placementGeneration: 1);
+      expect(painter.placementPending, isTrue,
+          reason: 'camera motion inside the interval owes one pass');
+
+      _frame(painter, [_placedAt(label)],
+          now: _at(100), placementGeneration: 1);
+      expect(painter.placementPending, isFalse,
+          reason: 'the changed input has now been placed');
+
+      _frame(painter, [_placedAt(label)],
+          now: _at(101), placementGeneration: 1);
+      expect(painter.hasActiveFades, isFalse);
+      expect(painter.placementPending, isFalse,
+          reason: 'the settling repaint must not restart the fade ticker');
+      painter.dispose();
+    });
+
+    test('disabling fades clears an in-progress fade', () {
+      final painter = LabelPainter();
+      final label = _symbol(layer);
+      final key = label.continuityKey;
+
+      _frame(painter, [_placedAt(label)], now: _at(0));
+      expect(painter.hasActiveFades, isTrue);
+      expect(painter.debugFades.isTracked(key), isTrue);
+
+      final drawn = _frame(
+        painter,
+        [_placedAt(label)],
+        now: _at(10),
+        labelFadeDuration: Duration.zero,
+      );
+      expect(drawn.map((placed) => placed.instance), [label],
+          reason: 'disabling fades makes placed labels fully opaque');
+      expect(painter.hasActiveFades, isFalse,
+          reason: 'the widget fade ticker must be allowed to settle');
+      expect(painter.debugFades.isTracked(key), isFalse,
+          reason: 'reenabling fades must not resume stale opacity state');
       painter.dispose();
     });
 

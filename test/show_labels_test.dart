@@ -170,6 +170,33 @@ void main() {
     await tester.pump();
   });
 
+  testWidgets('the default label fade ticker settles on an unchanged map',
+      (tester) async {
+    tester.view.physicalSize = const Size(600, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final provider = EverywhereProvider(labelledTile());
+    await tester.pumpWidget(
+      labelApp(MapController(), provider, showLabels: true),
+    );
+    await pumpUntil(tester, () => hasColor(tester, labelColor));
+    await settleLoads(tester, provider, painted: false);
+
+    // The last tick that settles a placement pass triggers one final
+    // repaint. That unchanged repaint must not create a fresh placement
+    // debt and restart the ticker forever.
+    await tester.pumpAndSettle(
+      const Duration(milliseconds: 16),
+      EnginePhase.sendSemanticsUpdate,
+      const Duration(seconds: 2),
+    );
+    expect(tester.binding.hasScheduledFrame, isFalse);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
   testWidgets('a sub-millisecond label fade still paints', (tester) async {
     // End-to-end cover for durations shorter than the millisecond the
     // fade arithmetic was once measured in. `fade_test.dart` pins that

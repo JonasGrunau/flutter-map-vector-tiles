@@ -195,7 +195,9 @@ Every label fades on **its own clock**, from the frame it is placed. The
 invariant that makes this safe is that a placed label always paints
 something: a key on its first frame has no elapsed fade time, so the
 painter floors it at one opacity step rather than letting it draw at
-zero.
+zero. A no-fade paint clears the tracker immediately: when
+`labelFadeDuration` changes to zero during a fade, no stale active state
+remains to keep the widget's fade ticker scheduling frames indefinitely.
 
 That is worth stating as an invariant because 2.7.0 broke it and had to
 be reverted in 2.7.1. The reasoning then was that the pump publishes
@@ -271,16 +273,18 @@ its spot for three frames disappears and comes straight back. Fading
 those changes makes them smoother but not fewer — the fix is to observe
 the decision less often than the camera changes it, which is what
 MapLibre does, at the price of a little transient overlap between
-passes. The interval is the *only* cadence: a changed candidate set
-(tiles published or expired) waits for the next due pass — at most one
-fade duration, the time its fade-in takes anyway — because during a
-crossing the set churns every few frames, and placing on each churn is
-a 10 ms+ collision pass several times a second on a symbol-heavy
-style. Only a viewport resize places at once; replaying a decision
-taken for another screen misplaces everything. Because a frozen
-decision would otherwise outlive the gesture that produced it, the
-painter reports the pass it owes and the fade ticker keeps painting
-until it runs.
+passes. Camera motion and changed candidates (tiles published or
+expired) advance a placement generation; if the interval has not
+elapsed, that generation waits for the next due pass — at most one fade
+duration, the time a new label's fade-in takes anyway. A crossing churns
+the candidate set every few frames, so placing on each churn would be a
+10 ms+ collision pass several times a second on a symbol-heavy style.
+Only a viewport resize places at once; replaying a decision taken for
+another screen misplaces everything. The painter reports a pending pass
+only while the latest generation differs from the one it placed, and the
+fade ticker paints until that pass runs. The final settling repaint sees
+the same generation and creates no new debt, allowing the ticker to stop
+on an unchanged map.
 
 **Placement passes prefer incumbents.** Candidate priority is topmost
 style layer, then incumbency, then `symbol-sort-key`, then screen y,

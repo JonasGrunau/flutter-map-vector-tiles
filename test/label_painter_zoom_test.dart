@@ -7,6 +7,10 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+/// Each paint models changed placement input; a constant would replay
+/// the first pass forever once fades are on.
+var _nextPlacementGeneration = 0;
+
 SymbolThemeLayer _symbolLayer({Object? textSize = 14, Object? textOpacity}) {
   final theme = const ThemeReader().read({
     'layers': [
@@ -49,6 +53,7 @@ void _paintFrame(
     screenSize: const Size(400, 400),
     styleZoom: styleZoom,
     symbols: symbols,
+    placementGeneration: _nextPlacementGeneration++,
   );
   recorder.endRecording().dispose();
 }
@@ -166,6 +171,7 @@ void main() {
         screenSize: const Size(400, 400),
         styleZoom: 16,
         symbols: [a, b],
+        placementGeneration: _nextPlacementGeneration++,
       );
       recorder.endRecording().dispose();
       painter.dispose();

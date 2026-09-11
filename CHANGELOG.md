@@ -2,8 +2,13 @@
 
 ## Unreleased
 
-A shorter README.
+A shorter README and label-fade lifecycle fixes.
 
+- 🐛 An idle map with labels kept repainting every frame and re-running
+  label collision every 150 ms, draining battery. The fade ticker now
+  stops once the last owed placement pass has run. Setting
+  `labelFadeDuration` to zero at runtime also clears any fade still in
+  progress, so the ticker settles there too.
 - 📚 The README says the same things in fewer words: sales-flavoured
   phrasing, filler and duplicated explanations are gone, and every
   section is tightened without dropping a single documented behaviour,

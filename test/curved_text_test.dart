@@ -10,6 +10,10 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+/// Each paint models changed placement input; a constant would replay
+/// the first pass forever once fades are on.
+var _nextPlacementGeneration = 0;
+
 SymbolThemeLayer _lineLayer({Map<String, Object?> layout = const {}}) {
   final theme = const ThemeReader().read({
     'layers': [
@@ -88,6 +92,7 @@ List<PlacedSymbol> _paint(List<PlacedSymbol> symbols, {LabelPainter? painter}) {
     screenSize: const Size(400, 400),
     styleZoom: 12,
     symbols: symbols,
+    placementGeneration: _nextPlacementGeneration++,
   );
   recorder.endRecording().dispose();
   if (painter == null) own.dispose();
