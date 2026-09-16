@@ -507,6 +507,66 @@ void main() {
     });
   });
 
+  group('point geometry under line placement', () {
+    // `transportation_name` carries single-vertex POINT features for
+    // motorway-junction destinations (subclass=junction). MapLibre gives
+    // symbol-placement: line/line-center no anchors for them — there is
+    // no line to walk — so they must not fall back to point placement
+    // just because the geometry happens to be a point.
+    test('a point feature under symbol-placement: line gets no anchor', () {
+      final instances = _layout(
+        _theme(layout: {'symbol-placement': 'line'}),
+        _data(
+          displayKey: const TileKey(14, 100, 100),
+          dataKey: const TileKey(14, 100, 100),
+          features: [_point(_extent / 2, _extent / 2, 'Lazdynai')],
+        ),
+      );
+      expect(instances, isEmpty);
+    });
+
+    test('a point feature under symbol-placement: line-center gets no anchor',
+        () {
+      final instances = _layout(
+        _theme(layout: {'symbol-placement': 'line-center'}),
+        _data(
+          displayKey: const TileKey(14, 100, 100),
+          dataKey: const TileKey(14, 100, 100),
+          features: [_point(_extent / 2, _extent / 2, 'Lazdynai')],
+        ),
+      );
+      expect(instances, isEmpty);
+    });
+
+    test('a point feature under the default (point) placement is unaffected',
+        () {
+      final instances = _layout(
+        _theme(),
+        _data(
+          displayKey: const TileKey(14, 100, 100),
+          dataKey: const TileKey(14, 100, 100),
+          features: [_point(_extent / 2, _extent / 2, 'Centre')],
+        ),
+      );
+      expect(instances, hasLength(1));
+    });
+
+    test('nearby point features with the same text both get anchors', () {
+      final instances = _layout(
+        _theme(),
+        _data(
+          displayKey: const TileKey(14, 100, 100),
+          dataKey: const TileKey(14, 100, 100),
+          features: [
+            _point(1800, 2048, 'Parking'),
+            _point(2200, 2048, 'Parking'),
+          ],
+        ),
+      );
+      expect(instances, hasLength(2));
+    });
+  });
+
   group('feature culling', () {
     test('a line whose bounds miss the display window is skipped', () {
       final instances = _layout(

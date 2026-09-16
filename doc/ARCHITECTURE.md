@@ -122,6 +122,21 @@ tile's zoom band),
 and the tile's label text is shaped into the caches before the first
 frame that can draw it, never during paint.
 
+Repeated line text is intentionally retained through tile layout and
+prewarming. The final screen-space placement pass, which already visits
+topmost layers first, applies the `symbol-spacing / 2` exclusion zone across
+style layers reading the same source layer. Deferring this decision until
+placement means an exact-zoom-gated, transparent or collision-rejected
+candidate cannot erase a lower-priority fallback, and the screen-space index
+also spans tile boundaries. Point and `line-center` placement bypass the
+repeat index.
+
+Icons are likewise resolved in that screen-space pass. Map-aligned point
+icons include camera bearing; line-aligned icons add the projected line
+bearing. Rotation is about the symbol anchor, so `icon-anchor` and
+`icon-offset` rotate with the sprite, and the rotated extent is used for both
+collision and bounded fade layers.
+
 That shaping is the expensive half — several times a frame's whole
 render budget on a dense city tile, against sub-millisecond extraction —
 so the symbol phase is **resumable**: it extracts the candidates once,

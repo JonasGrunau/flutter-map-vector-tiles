@@ -42,7 +42,8 @@ class PlacedSymbol {
   final SymbolInstance instance;
   final Offset screenAnchor;
 
-  /// Screen-space baseline angle for along-line labels (radians).
+  /// Screen-space map angle for point symbols, or map plus local line
+  /// bearing for along-line symbols (radians).
   final double screenAngle;
 
   /// Tile→screen transform, present for along-line symbols so curved
@@ -407,6 +408,12 @@ class LabelPainter {
     // MapLibre makes for the same reason.
     final collision =
         placing ? _CollisionIndex(screenSize) : _CollisionIndex.permissive();
+    // Repeat suppression belongs to the final placement pass, not the
+    // per-tile layouter: only a candidate that survives exact zoom,
+    // opacity and collision may suppress a lower-priority fallback.
+    // Screen-space positions also make the exclusion zone continuous
+    // across tile boundaries.
+    final repeatAnchors = <Object, List<Offset>>{};
     // Placement priority: topmost style layers first (they win space),
     // then incumbents — labels on screen right now, which a same-layer
     // newcomer must not evict (see [PlacedSymbol.incumbent]) — then by
@@ -451,6 +458,14 @@ class LabelPainter {
         if (fades) _recordFallback(candidate);
         continue;
       }
+      final repeat =
+          placing ? _repeatCandidate(candidate, zoom, styleZoom) : null;
+      if (repeat != null &&
+          _repeatIsTooClose(repeatAnchors[repeat.key], candidate.screenAnchor,
+              repeat.radius)) {
+        if (fades) _recordFallback(candidate);
+        continue;
+      }
       final drawable =
           _prepare(candidate, zoom, styleZoom, collision, sprites, screenSize);
       if (drawable == null) {
@@ -459,7 +474,12 @@ class LabelPainter {
         if (fades) _recordFallback(candidate);
         continue;
       }
-      if (placing) _winners.add(candidate.instance);
+      if (placing) {
+        _winners.add(candidate.instance);
+        if (repeat != null && drawable.drawsText) {
+          (repeatAnchors[repeat.key] ??= []).add(candidate.screenAnchor);
+        }
+      }
       // The label's fade and its layer's zoom-range ramp compound: a
       // label appearing near its layer's maxzoom is subject to both.
       final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
@@ -615,6 +635,47 @@ class LabelPainter {
     }
     debugDrawMicros += drawStopwatch.elapsedMicroseconds;
     return drawn;
+  }
+
+  ({Object key, double radius})? _repeatCandidate(
+    PlacedSymbol placed,
+    double evalZoom,
+    double styleZoom,
+  ) {
+    final instance = placed.instance;
+    if (instance.text.isEmpty) return null;
+    final layer = instance.layer;
+    if (!layer.coversZoom(styleZoom) ||
+        zoomRangeOpacity(layer, styleZoom) <= 0) {
+      return null;
+    }
+    final source = layer.source;
+    final sourceLayer = layer.sourceLayer;
+    if (source == null || sourceLayer == null) return null;
+    final ctx = EvalContext(
+      zoom: evalZoom,
+      properties: instance.properties,
+      geometryType: instance.geometryType,
+      featureId: instance.featureId,
+    );
+    if (layer.placement.eval(ctx) != 'line' ||
+        layer.textOpacity.eval(ctx) <= 0 ||
+        !(layer.textSize.eval(ctx) >= _minVisibleTextSize)) {
+      return null;
+    }
+    return (
+      key: (source, sourceLayer, instance.text),
+      radius: layer.spacing.eval(ctx) / 2,
+    );
+  }
+
+  static bool _repeatIsTooClose(
+      List<Offset>? anchors, Offset anchor, double radius) {
+    if (anchors == null || radius <= 0 || radius.isNaN) return false;
+    for (final other in anchors) {
+      if ((anchor - other).distance < radius) return true;
+    }
+    return false;
   }
 
   /// Marks the candidates whose label is steadily visible on screen, so
@@ -887,6 +948,15 @@ class LabelPainter {
           final dy = offset.length > 1 ? offset[1] * iconSize : 0.0;
           final rect = _anchoredRect(
               layer.iconAnchor.eval(ctx), anchor + Offset(dx, dy), w, h);
+          // `auto` follows the line when the symbol sits on one, else the
+          // viewport — matching `text-rotation-alignment`'s default.
+          // Explicit `map` alignment always includes the map bearing;
+          // for an along-line symbol [screenAngle] also includes the
+          // line's local bearing.
+          final alignment = layer.iconRotationAlignment.eval(ctx);
+          final followsMap =
+              alignment == 'map' || (alignment == 'auto' && instance.alongLine);
+          final rotateRad = layer.iconRotate.eval(ctx) * math.pi / 180;
           icon = _DrawableIcon(
             atlas: sprites,
             sprite: sprite,
@@ -898,6 +968,8 @@ class LabelPainter {
             haloColor: sprite.sdf ? layer.iconHaloColor.eval(ctx) : null,
             haloWidth: sprite.sdf ? layer.iconHaloWidth.eval(ctx) : 0,
             iconSize: iconSize,
+            pivot: anchor,
+            rotation: followsMap ? placed.screenAngle + rotateRad : rotateRad,
           );
         }
       }
@@ -959,7 +1031,7 @@ class LabelPainter {
       }
     }
     if (icon != null) {
-      boxes.add(icon.rect.inflate(2));
+      boxes.add(icon.bounds.inflate(2));
     }
 
     final allowOverlap = text != null
@@ -970,7 +1042,7 @@ class LabelPainter {
       if (icon != null &&
           text != null &&
           layer.textOptional.eval(ctx) &&
-          collision.tryPlaceAll([icon.rect.inflate(2)])) {
+          collision.tryPlaceAll([icon.bounds.inflate(2)])) {
         sitting.textDropped = true;
         return _DrawableSymbol(placed, icon: icon);
       }
@@ -1028,7 +1100,7 @@ class LabelPainter {
       final textRect = _anchoredRect(anchorName, shifted, width, height);
       final boxes = [
         textRect.inflate(padding),
-        if (icon != null) icon.rect.inflate(2),
+        if (icon != null) icon.bounds.inflate(2),
       ];
       if (allowOverlap || collision.tryPlaceAll(boxes)) {
         sitting.anchor = anchorName;
@@ -1038,7 +1110,7 @@ class LabelPainter {
     }
     if (icon != null &&
         layer.textOptional.eval(ctx) &&
-        collision.tryPlaceAll([icon.rect.inflate(2)])) {
+        collision.tryPlaceAll([icon.bounds.inflate(2)])) {
       sitting.textDropped = true;
       return _DrawableSymbol(placed, icon: icon);
     }
@@ -1087,7 +1159,7 @@ class LabelPainter {
     _DrawableSymbol? iconFallback() {
       if (icon != null &&
           layer.textOptional.eval(ctx) &&
-          collision.tryPlaceAll([icon.rect.inflate(2)])) {
+          collision.tryPlaceAll([icon.bounds.inflate(2)])) {
         sitting.textDropped = true;
         return _DrawableSymbol(placed, icon: icon);
       }
@@ -1165,7 +1237,7 @@ class LabelPainter {
           height: text.size.height * textScale);
       final boxes = [
         _rotatedBounds(textRect, placed.screenAnchor, angle).inflate(padding),
-        if (icon != null) icon.rect.inflate(2),
+        if (icon != null) icon.bounds.inflate(2),
       ];
       if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
         return iconFallback();
@@ -1188,7 +1260,7 @@ class LabelPainter {
                 p.pos,
                 p.angle)
             .inflate(padding),
-      if (icon != null) icon.rect.inflate(2),
+      if (icon != null) icon.bounds.inflate(2),
     ];
     if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
       return iconFallback();
@@ -1468,11 +1540,19 @@ class LabelPainter {
       opacity >= 1 ? color : color.withValues(alpha: color.a * opacity);
 
   static Rect _rotatedBounds(Rect rect, Offset pivot, double angle) {
-    final cosA = math.cos(angle).abs();
-    final sinA = math.sin(angle).abs();
-    final w = rect.width * cosA + rect.height * sinA;
-    final h = rect.width * sinA + rect.height * cosA;
-    return Rect.fromCenter(center: rect.center, width: w, height: h);
+    final cosA = math.cos(angle);
+    final sinA = math.sin(angle);
+    final delta = rect.center - pivot;
+    final center = pivot +
+        Offset(
+          delta.dx * cosA - delta.dy * sinA,
+          delta.dx * sinA + delta.dy * cosA,
+        );
+    final absCos = cosA.abs();
+    final absSin = sinA.abs();
+    final w = rect.width * absCos + rect.height * absSin;
+    final h = rect.width * absSin + rect.height * absCos;
+    return Rect.fromCenter(center: center, width: w, height: h);
   }
 
   void dispose() {
@@ -1596,6 +1676,15 @@ class _DrawableIcon {
   /// `icon-size`, which `icon-halo-width` is measured relative to.
   final double iconSize;
 
+  /// Screen-space symbol anchor. Rotation includes [rect]'s anchor and
+  /// offset, so both move around this point with the icon.
+  final Offset pivot;
+
+  /// Radians, clockwise: `icon-rotate` plus the line/map angle
+  /// `icon-rotation-alignment` resolved to. Rotates about [pivot], so
+  /// `icon-anchor` and `icon-offset` turn with the sprite.
+  final double rotation;
+
   const _DrawableIcon({
     required this.atlas,
     required this.sprite,
@@ -1605,9 +1694,27 @@ class _DrawableIcon {
     this.haloColor,
     this.haloWidth = 0,
     this.iconSize = 1,
+    required this.pivot,
+    this.rotation = 0,
   });
 
+  Rect get bounds =>
+      rotation == 0 ? rect : LabelPainter._rotatedBounds(rect, pivot, rotation);
+
   void draw(Canvas canvas, double devicePixelRatio) {
+    if (rotation == 0) {
+      _paint(canvas, devicePixelRatio);
+      return;
+    }
+    canvas.save();
+    canvas.translate(pivot.dx, pivot.dy);
+    canvas.rotate(rotation);
+    canvas.translate(-pivot.dx, -pivot.dy);
+    _paint(canvas, devicePixelRatio);
+    canvas.restore();
+  }
+
+  void _paint(Canvas canvas, double devicePixelRatio) {
     final color = tint;
     if (color == null) {
       canvas.drawImageRect(
@@ -1686,6 +1793,8 @@ class _DrawableSymbol {
   /// reports it as a continuation of a departing label, not a new one.
   bool isGhost = false;
 
+  bool get drawsText => text != null || curvedGlyphs != null;
+
   _DrawableSymbol(
     this.symbol, {
     this.icon,
@@ -1710,7 +1819,7 @@ class _DrawableSymbol {
     }
 
     final icon = this.icon;
-    if (icon != null) add(icon.rect);
+    if (icon != null) add(icon.bounds);
     final glyphs = curvedGlyphs;
     final text = this.text;
     if (glyphs != null) {

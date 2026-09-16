@@ -77,6 +77,55 @@ void main() {
     expect(theme.layers.map((l) => l.id), ['bg', 'water', 'roads', 'labels']);
   });
 
+  test('legacy SymbolThemeLayer construction keeps icon rotation defaults', () {
+    final parsed =
+        const ThemeReader().read(style).layers[3] as SymbolThemeLayer;
+    final layer = SymbolThemeLayer(
+      id: parsed.id,
+      source: parsed.source,
+      sourceLayer: parsed.sourceLayer,
+      minzoom: parsed.minzoom,
+      maxzoom: parsed.maxzoom,
+      filter: parsed.filter,
+      placement: parsed.placement,
+      sortKey: parsed.sortKey,
+      spacing: parsed.spacing,
+      textField: parsed.textField,
+      textSize: parsed.textSize,
+      textFont: parsed.textFont,
+      textMaxWidth: parsed.textMaxWidth,
+      textLetterSpacing: parsed.textLetterSpacing,
+      textTransform: parsed.textTransform,
+      textAnchor: parsed.textAnchor,
+      textVariableAnchor: parsed.textVariableAnchor,
+      textRadialOffset: parsed.textRadialOffset,
+      textOffset: parsed.textOffset,
+      textPadding: parsed.textPadding,
+      textAllowOverlap: parsed.textAllowOverlap,
+      textOptional: parsed.textOptional,
+      textMaxAngle: parsed.textMaxAngle,
+      textKeepUpright: parsed.textKeepUpright,
+      textRotationAlignment: parsed.textRotationAlignment,
+      iconImage: parsed.iconImage,
+      iconSize: parsed.iconSize,
+      iconAnchor: parsed.iconAnchor,
+      iconOffset: parsed.iconOffset,
+      iconAllowOverlap: parsed.iconAllowOverlap,
+      textColor: parsed.textColor,
+      textHaloColor: parsed.textHaloColor,
+      textHaloWidth: parsed.textHaloWidth,
+      textOpacity: parsed.textOpacity,
+      iconOpacity: parsed.iconOpacity,
+      iconColor: parsed.iconColor,
+      iconHaloColor: parsed.iconHaloColor,
+      iconHaloWidth: parsed.iconHaloWidth,
+    );
+
+    const ctx = EvalContext(zoom: 10);
+    expect(layer.iconRotate.eval(ctx), 0);
+    expect(layer.iconRotationAlignment.eval(ctx), 'auto');
+  });
+
   test('background color evaluation', () {
     final theme = const ThemeReader().read(style);
     expect(theme.backgroundColor(10), const Color(0xff112233));

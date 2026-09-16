@@ -341,7 +341,13 @@ class SymbolLayouter {
           ));
         }
 
-        if (placement == 'point' || feature.type == PreparedGeomType.point) {
+        // A layer declaring `line`/`line-center` placement only labels
+        // LineString/Polygon geometry, matching MapLibre: a Point feature
+        // (e.g. a motorway-junction destination) falls through to the
+        // `else` branch below and `_placeAlongLine` drops it (its single
+        // part is too short to walk), rather than being placed as if the
+        // layer said `point`.
+        if (placement == 'point') {
           for (final part in feature.parts) {
             if (feature.type == PreparedGeomType.polygon) {
               // Label polygons at their centroid (first exterior ring).

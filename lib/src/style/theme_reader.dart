@@ -159,6 +159,9 @@ class ThemeReader {
           iconAnchor: _string(parser, layout['icon-anchor'], 'center'),
           iconOffset: _numList(parser, layout['icon-offset'], const [0, 0]),
           iconAllowOverlap: _bool(parser, layout['icon-allow-overlap'], false),
+          iconRotate: _double(parser, layout['icon-rotate'], 0),
+          iconRotationAlignment:
+              _string(parser, layout['icon-rotation-alignment'], 'auto'),
           textColor:
               _color(parser, paint['text-color'], const Color(0xff000000)),
           textHaloColor:

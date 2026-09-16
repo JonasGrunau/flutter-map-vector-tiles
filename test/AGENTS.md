@@ -22,6 +22,8 @@ lifecycle or painting is covered by widget tests that pump a real
 | `raster_source_test.dart` | Raster sources declared inside vector styles, image ref-counting |
 | `tile_store_test.dart` | Memory/disk cache keying, miss paths, disposal, stale-while-revalidate (expired entries served instantly, `onRefreshed` on changed content only, corrupt expired entries refetched, `revalidateIfStale` for results served without the stores) |
 | `curved_text_test.dart` | Text along lines and the sharp-bend fallback |
+| `icon_rotation_test.dart` | `icon-rotate`/`icon-rotation-alignment`, anchor/offset pivot semantics, and rotated collision bounds |
+| `label_repeat_test.dart` | Screen-space line-repeat suppression, layer priority, and invisible/gated fallback candidates |
 | `sdf_icon_test.dart` | SDF sprite tinting |
 | `tile_retention_test.dart` | The pure retention predicates (17 cases) |
 | `descendant_substitution_test.dart` | Zoom-out substitution: the `findDescendants` walk (partial cover, depth and maxzoom bounds), descendant rasterization into sub-squares with buffer-spill clipping (vector and raster sources), and widget-level: a reopened map below the cached level paints from descendants while its own tiles never arrive |

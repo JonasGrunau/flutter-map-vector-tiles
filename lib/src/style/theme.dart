@@ -239,6 +239,14 @@ class SymbolThemeLayer extends ThemeLayer {
   final StringProp iconAnchor;
   final NumListProp iconOffset; // px
   final BoolProp iconAllowOverlap;
+
+  /// `icon-rotate`: clockwise degrees, on top of whatever
+  /// [iconRotationAlignment] resolves to.
+  final DoubleProp iconRotate;
+
+  /// `icon-rotation-alignment`: auto | map | viewport. `auto` resolves to
+  /// `map` for a line-placed icon and `viewport` otherwise, per spec.
+  final StringProp iconRotationAlignment;
   // Paint
   final ColorProp textColor;
   final ColorProp textHaloColor;
@@ -283,6 +291,8 @@ class SymbolThemeLayer extends ThemeLayer {
     required this.iconAnchor,
     required this.iconOffset,
     required this.iconAllowOverlap,
+    DoubleProp? iconRotate,
+    StringProp? iconRotationAlignment,
     required this.textColor,
     required this.textHaloColor,
     required this.textHaloWidth,
@@ -291,5 +301,7 @@ class SymbolThemeLayer extends ThemeLayer {
     required this.iconColor,
     required this.iconHaloColor,
     required this.iconHaloWidth,
-  });
+  })  : iconRotate = iconRotate ?? DoubleProp.constant(0),
+        iconRotationAlignment =
+            iconRotationAlignment ?? StringProp.constant('auto');
 }

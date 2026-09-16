@@ -1939,7 +1939,9 @@ class _VectorMapPainter extends CustomPainter {
         placed.add(PlacedSymbol(
           instance: symbol,
           screenAnchor: transform.apply(symbol.anchor),
-          screenAngle: symbol.alongLine ? symbol.angle + rotation : 0,
+          // Point symbols use the map angle for explicit `map` icon
+          // alignment; along-line symbols add their local bearing.
+          screenAngle: symbol.angle + rotation,
           transform: symbol.alongLine ? transform : null,
           ghostOnly: ghostOnly,
           order: placed.length,
