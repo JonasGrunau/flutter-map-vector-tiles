@@ -361,11 +361,15 @@ the tile rasters, which is what the behaviour below rests on:
   rotated string for speed; scripts with contextual shaping (Arabic,
   Indic, …) fall back to straight placement so glyphs are never
   mis-joined.
-- **Repeated road names stay spaced.** For `symbol-placement: line`, a
-  visible label suppresses another copy of the same text from the same
-  source layer within half of `symbol-spacing`, including copies emitted by
-  neighbouring road-class style layers. The topmost candidate that fits
-  wins; `point` and `line-center` labels are not affected.
+- **Repeated road names stay spaced.** A street arrives as many features
+  (one per OSM way, sometimes one per road-class style layer), each spaced
+  on its own. For `symbol-placement: line`, a visible label therefore
+  suppresses another copy of the same text from the same source layer
+  within half of `symbol-spacing` *along the same road* — the two
+  carriageways of a motorway, neighbouring switchbacks and parallel
+  same-named roads sit beside each other and keep their labels, as in
+  MapLibre. The topmost candidate that fits wins; `point` and
+  `line-center` labels are not affected.
 - **Zoom ranges, with a ramp at the top.** Nothing claims label space
   outside a symbol layer's `[minzoom, maxzoom)`, but labels ramp out over
   the last quarter zoom level before a declared `maxzoom` instead of

@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
@@ -54,14 +55,18 @@ PlacedSymbol _symbol(
   Offset anchor, {
   String text = 'A',
   double opacity = 1,
+  double angle = 0,
+  SymbolPath? path,
+  bool retained = false,
 }) =>
     PlacedSymbol(
       instance: SymbolInstance(
         layer: layer,
         layerIndex: layerIndex,
         anchor: Offset.zero,
-        angle: 0,
+        angle: angle,
         alongLine: layer.placement.fallback != 'point',
+        path: path,
         text: text,
         iconName: null,
         sortKey: 0,
@@ -70,7 +75,14 @@ PlacedSymbol _symbol(
         featureId: null,
       ),
       screenAnchor: anchor,
-      screenAngle: 0,
+      screenAngle: angle,
+      retained: retained,
+    );
+
+/// A straight 100 px path; only its identity matters to these tests.
+SymbolPath _path() => SymbolPath(
+      Float32List.fromList([0, 0, 100, 0]),
+      Float32List.fromList([0, 100]),
     );
 
 List<PlacedSymbol> _paint(
@@ -101,6 +113,59 @@ void main() {
       _symbol(layer, 0, const Offset(90, 50)),
     ]);
     expect(drawn, hasLength(1));
+  });
+
+  test('anchors beside each other are different roads and both stay', () {
+    // Two carriageways of one motorway, a street's neighbouring
+    // switchbacks, parallel same-named roads: the displacement between
+    // the anchors runs *across* the line direction, not along it.
+    final layer = _theme().layers.single as SymbolThemeLayer;
+    final drawn = _paint([
+      _symbol(layer, 0, const Offset(50, 40)),
+      _symbol(layer, 0, const Offset(50, 80)),
+    ]);
+    expect(drawn, hasLength(2));
+  });
+
+  test(
+      'a candidate along the visible label\'s line is suppressed even '
+      'when its own line bends away', () {
+    final layer = _theme().layers.single as SymbolThemeLayer;
+    final drawn = _paint([
+      _symbol(layer, 0, const Offset(50, 50)),
+      _symbol(layer, 0, const Offset(90, 50), angle: 1.2),
+    ]);
+    expect(drawn, hasLength(1));
+  });
+
+  test('anchors of one feature never suppress each other', () {
+    // The layouter spaced them along the path already; a hairpin can
+    // bring two of them within symbol-spacing / 2 as the crow flies.
+    final layer = _theme().layers.single as SymbolThemeLayer;
+    final path = _path();
+    final drawn = _paint([
+      _symbol(layer, 0, const Offset(50, 50), path: path),
+      _symbol(layer, 0, const Offset(90, 50), path: path),
+    ]);
+    expect(drawn, hasLength(2));
+  });
+
+  test('a retained-level candidate neither suppresses nor is suppressed', () {
+    final layer = _theme().layers.single as SymbolThemeLayer;
+    expect(
+      _paint([
+        _symbol(layer, 0, const Offset(50, 50), retained: true),
+        _symbol(layer, 0, const Offset(90, 50)),
+      ]),
+      hasLength(2),
+    );
+    expect(
+      _paint([
+        _symbol(layer, 0, const Offset(50, 50)),
+        _symbol(layer, 0, const Offset(90, 50), retained: true),
+      ]),
+      hasLength(2),
+    );
   });
 
   for (final placement in ['point', 'line-center']) {

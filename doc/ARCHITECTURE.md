@@ -123,13 +123,25 @@ and the tile's label text is shaped into the caches before the first
 frame that can draw it, never during paint.
 
 Repeated line text is intentionally retained through tile layout and
-prewarming. The final screen-space placement pass, which already visits
-topmost layers first, applies the `symbol-spacing / 2` exclusion zone across
-style layers reading the same source layer. Deferring this decision until
-placement means an exact-zoom-gated, transparent or collision-rejected
-candidate cannot erase a lower-priority fallback, and the screen-space index
-also spans tile boundaries. Point and `line-center` placement bypass the
-repeat index.
+prewarming. MapLibre joins same-text lines end to end inside a tile before
+spacing them; doing that here would re-parametrize every street per data
+level and move its anchors at each crossing, so the duplicates are removed
+in the final screen-space placement pass instead. That pass, which already
+visits topmost layers first, applies a `symbol-spacing / 2` exclusion zone
+across style layers reading the same source layer — but only between
+anchors on the *same road*: the displacement between them must run along
+either one's line direction (its across-line component within one text
+height), so the split ways of one street suppress each other while a
+motorway's two carriageways, a street's neighbouring switchbacks and
+parallel same-named roads keep their labels. Anchors of one feature never
+suppress each other (the layouter already spaced them along the path), and
+retained previous-level candidates take no part in it — their spacing is the
+old level's, and suppressing the arriving level's copies would only hand
+them back as pop-ins when the level is released. Deferring the decision
+until placement means an exact-zoom-gated, transparent or
+collision-rejected candidate cannot erase a lower-priority fallback, and the
+screen-space index also spans tile boundaries. Point and `line-center`
+placement bypass the repeat index.
 
 Icons are likewise resolved in that screen-space pass. Map-aligned point
 icons include camera bearing; line-aligned icons add the projected line

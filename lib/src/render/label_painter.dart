@@ -58,6 +58,14 @@ class PlacedSymbol {
   /// tile's parked cohort) this way.
   final bool ghostOnly;
 
+  /// Whether this candidate comes from a previous-level tile kept
+  /// across a zoom crossing. It still competes for space, but takes no
+  /// part in repeat suppression (see [LabelPainter._repeatSuppressed]):
+  /// its anchors are spaced for the level it was laid out at, so they
+  /// would suppress the arriving level's copies at the wrong interval
+  /// and hand them back — as pop-ins — the moment the level is released.
+  final bool retained;
+
   /// Insertion index within the frame's symbol list, the final
   /// placement tiebreaker: the caller adds current-level tiles before
   /// retained previous-level ones, so on an exact tie the current
@@ -83,6 +91,7 @@ class PlacedSymbol {
     required this.screenAngle,
     this.transform,
     this.ghostOnly = false,
+    this.retained = false,
     this.order = 0,
   });
 }
@@ -408,12 +417,6 @@ class LabelPainter {
     // MapLibre makes for the same reason.
     final collision =
         placing ? _CollisionIndex(screenSize) : _CollisionIndex.permissive();
-    // Repeat suppression belongs to the final placement pass, not the
-    // per-tile layouter: only a candidate that survives exact zoom,
-    // opacity and collision may suppress a lower-priority fallback.
-    // Screen-space positions also make the exclusion zone continuous
-    // across tile boundaries.
-    final repeatAnchors = <Object, List<Offset>>{};
     // Placement priority: topmost style layers first (they win space),
     // then incumbents — labels on screen right now, which a same-layer
     // newcomer must not evict (see [PlacedSymbol.incumbent]) — then by
@@ -442,7 +445,10 @@ class LabelPainter {
 
     final toDraw = <_DrawableSymbol>[];
     var anyFading = false;
-    if (placing) _winners.clear();
+    if (placing) {
+      _winners.clear();
+      _repeatAnchors.clear();
+    }
     final loopStopwatch = Stopwatch()..start();
     for (final candidate in candidates) {
       if (candidate.ghostOnly) {
@@ -458,14 +464,6 @@ class LabelPainter {
         if (fades) _recordFallback(candidate);
         continue;
       }
-      final repeat =
-          placing ? _repeatCandidate(candidate, zoom, styleZoom) : null;
-      if (repeat != null &&
-          _repeatIsTooClose(repeatAnchors[repeat.key], candidate.screenAnchor,
-              repeat.radius)) {
-        if (fades) _recordFallback(candidate);
-        continue;
-      }
       final drawable =
           _prepare(candidate, zoom, styleZoom, collision, sprites, screenSize);
       if (drawable == null) {
@@ -474,15 +472,18 @@ class LabelPainter {
         if (fades) _recordFallback(candidate);
         continue;
       }
-      if (placing) {
-        _winners.add(candidate.instance);
-        if (repeat != null && drawable.drawsText) {
-          (repeatAnchors[repeat.key] ??= []).add(candidate.screenAnchor);
-        }
-      }
       // The label's fade and its layer's zoom-range ramp compound: a
       // label appearing near its layer's maxzoom is subject to both.
       final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
+      if (placing) {
+        _winners.add(candidate.instance);
+        final repeatKey = drawable.repeatKey;
+        // Only text that actually shows may suppress a repeat: a
+        // rejected or ramped-out candidate never hides a fallback.
+        if (repeatKey != null && drawable.drawsText && ramp > 0) {
+          (_repeatAnchors[repeatKey] ??= []).add(_RepeatAnchor(candidate));
+        }
+      }
       var fade = 1.0;
       if (fades) {
         // Fades are per sitting — one state per (key, position). Two
@@ -637,43 +638,54 @@ class LabelPainter {
     return drawn;
   }
 
-  ({Object key, double radius})? _repeatCandidate(
-    PlacedSymbol placed,
-    double evalZoom,
-    double styleZoom,
-  ) {
-    final instance = placed.instance;
-    if (instance.text.isEmpty) return null;
-    final layer = instance.layer;
-    if (!layer.coversZoom(styleZoom) ||
-        zoomRangeOpacity(layer, styleZoom) <= 0) {
-      return null;
-    }
-    final source = layer.source;
-    final sourceLayer = layer.sourceLayer;
-    if (source == null || sourceLayer == null) return null;
-    final ctx = EvalContext(
-      zoom: evalZoom,
-      properties: instance.properties,
-      geometryType: instance.geometryType,
-      featureId: instance.featureId,
-    );
-    if (layer.placement.eval(ctx) != 'line' ||
-        layer.textOpacity.eval(ctx) <= 0 ||
-        !(layer.textSize.eval(ctx) >= _minVisibleTextSize)) {
-      return null;
-    }
-    return (
-      key: (source, sourceLayer, instance.text),
-      radius: layer.spacing.eval(ctx) / 2,
-    );
-  }
+  /// Repeat suppression for `symbol-placement: line` text, rebuilt on
+  /// every placing pass: per `(source, source-layer, text)`, the anchors
+  /// whose text is on screen so far this pass.
+  ///
+  /// A street arrives as many features — one per OSM way, sometimes one
+  /// per road-class style layer — and the layouter spaces anchors per
+  /// feature, so the same name lands every few dozen pixels where the
+  /// collision pass, which only rejects *overlapping* boxes, lets every
+  /// copy through. MapLibre avoids this by joining same-text lines end
+  /// to end inside a tile before spacing them; that would re-parametrize
+  /// every street per data level and move its anchors at each crossing
+  /// (see `SymbolLayouter._placeAlongLine` on why anchors keep their
+  /// per-feature parametrization), so the duplicates are removed here
+  /// instead, in the final screen-space pass — only a candidate that
+  /// survived the exact zoom gate, opacity and collision may suppress a
+  /// lower-priority fallback, and screen positions make the zone
+  /// continuous across tile seams.
+  final _repeatAnchors = <Object, List<_RepeatAnchor>>{};
 
-  static bool _repeatIsTooClose(
-      List<Offset>? anchors, Offset anchor, double radius) {
-    if (anchors == null || radius <= 0 || radius.isNaN) return false;
+  /// Whether [placed] repeats text already on screen within [radius]
+  /// (half of `symbol-spacing`) *on the same road*. Two anchors count as
+  /// the same road when the displacement between them runs along
+  /// either one's line direction — its across-line component is within
+  /// [tolerance], one text height — so the split ways of one street
+  /// suppress each other, while the two carriageways of a motorway, a
+  /// street's neighbouring switchbacks, or parallel same-named roads,
+  /// which sit *beside* each other, keep their labels as MapLibre
+  /// keeps them. Anchors of one feature never suppress each other: the
+  /// layouter already spaced them along the path.
+  bool _repeatSuppressed(
+    Object key,
+    PlacedSymbol placed,
+    double radius,
+    double tolerance,
+  ) {
+    final anchors = _repeatAnchors[key];
+    if (anchors == null || !(radius > 0) || !radius.isFinite) return false;
+    final anchor = placed.screenAnchor;
+    final path = placed.instance.path;
+    final cosA = math.cos(placed.screenAngle);
+    final sinA = math.sin(placed.screenAngle);
     for (final other in anchors) {
-      if ((anchor - other).distance < radius) return true;
+      if (path != null && identical(other.path, path)) continue;
+      final d = anchor - other.anchor;
+      if (d.distance >= radius) continue;
+      final acrossOther = (d.dx * other.sin - d.dy * other.cos).abs();
+      final acrossOwn = (d.dx * sinA - d.dy * cosA).abs();
+      if (math.min(acrossOther, acrossOwn) <= tolerance) return true;
     }
     return false;
   }
@@ -977,6 +989,27 @@ class LabelPainter {
 
     if (text == null && icon == null) return null;
 
+    // Repeat suppression, decided here rather than before layout so the
+    // exact opacity, size and placement evaluations above are not paid
+    // twice. Placing frames only — a replay reproduces the last
+    // decision — and never for retained-level or ghost candidates.
+    Object? repeatKey;
+    if (text != null &&
+        instance.alongLine &&
+        !replaying &&
+        !placed.retained &&
+        layer.placement.eval(ctx) == 'line') {
+      final source = layer.source;
+      final sourceLayer = layer.sourceLayer;
+      if (source != null && sourceLayer != null) {
+        repeatKey = (source, sourceLayer, instance.text);
+        if (_repeatSuppressed(repeatKey, placed, layer.spacing.eval(ctx) / 2,
+            text.size.height * textScale)) {
+          return null;
+        }
+      }
+    }
+
     // Variable anchors: try each candidate until one fits.
     final variableAnchors = text != null && !instance.alongLine
         ? layer.textVariableAnchor?.eval(ctx)
@@ -996,7 +1029,8 @@ class LabelPainter {
             placed.transform != null &&
             instance.curveSafe) {
           return _prepareCurved(placed, layer, ctx, text, fontSize, textScale,
-              icon, collision, sitting);
+              icon, collision, sitting)
+            ?..repeatKey = repeatKey;
         }
         lineTextAngle = _uprightAngle(sitting, placed.screenAngle);
       }
@@ -1056,7 +1090,7 @@ class LabelPainter {
       textRect: textRect,
       textAngle: angle,
       textScale: textScale,
-    );
+    )..repeatKey = repeatKey;
   }
 
   /// `text-variable-anchor` placement: anchors are tried in style order
@@ -1685,7 +1719,7 @@ class _DrawableIcon {
   /// `icon-anchor` and `icon-offset` turn with the sprite.
   final double rotation;
 
-  const _DrawableIcon({
+  _DrawableIcon({
     required this.atlas,
     required this.sprite,
     required this.rect,
@@ -1698,7 +1732,10 @@ class _DrawableIcon {
     this.rotation = 0,
   });
 
-  Rect get bounds =>
+  /// Screen extent of the (rotated) sprite. Read once per collision
+  /// box, fallback attempt, variable anchor tried and fade layer, so
+  /// the rotation maths runs once rather than per read.
+  late final Rect bounds =
       rotation == 0 ? rect : LabelPainter._rotatedBounds(rect, pivot, rotation);
 
   void draw(Canvas canvas, double devicePixelRatio) {
@@ -1768,6 +1805,22 @@ class _DrawableIcon {
   }
 }
 
+/// One along-line label on screen this pass, as [LabelPainter._repeatSuppressed]
+/// compares later candidates against it: where it sits, the unit
+/// tangent of its line there, and the path it was laid out on.
+class _RepeatAnchor {
+  final Offset anchor;
+  final double cos;
+  final double sin;
+  final SymbolPath? path;
+
+  _RepeatAnchor(PlacedSymbol placed)
+      : anchor = placed.screenAnchor,
+        cos = math.cos(placed.screenAngle),
+        sin = math.sin(placed.screenAngle),
+        path = placed.instance.path;
+}
+
 class _DrawableSymbol {
   final PlacedSymbol symbol;
   final _DrawableIcon? icon;
@@ -1792,6 +1845,11 @@ class _DrawableSymbol {
   /// claimed no collision space, and [LabelPainter.debugDrawnProbe]
   /// reports it as a continuation of a departing label, not a new one.
   bool isGhost = false;
+
+  /// The [LabelPainter._repeatAnchors] key this symbol's text registers
+  /// under once it is drawn, or null when repeat suppression does not
+  /// apply to it. Assigned by [LabelPainter._prepare] like [opacity].
+  Object? repeatKey;
 
   bool get drawsText => text != null || curvedGlyphs != null;
 

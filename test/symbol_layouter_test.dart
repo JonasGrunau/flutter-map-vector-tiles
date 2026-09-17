@@ -525,6 +525,30 @@ void main() {
       expect(instances, isEmpty);
     });
 
+    test('a multi-point feature under symbol-placement: line gets no anchor',
+        () {
+      // One part, several vertices: without an explicit skip the line
+      // placer would walk it as a polyline between unrelated points.
+      final instances = _layout(
+        _theme(layout: {'symbol-placement': 'line'}),
+        _data(
+          displayKey: const TileKey(14, 100, 100),
+          dataKey: const TileKey(14, 100, 100),
+          features: [
+            PreparedFeature(
+              id: null,
+              type: PreparedGeomType.point,
+              parts: [
+                Float32List.fromList([1000, 2048, 3000, 2048])
+              ],
+              properties: {'name': 'Lazdynai'},
+            ),
+          ],
+        ),
+      );
+      expect(instances, isEmpty);
+    });
+
     test('a point feature under symbol-placement: line-center gets no anchor',
         () {
       final instances = _layout(

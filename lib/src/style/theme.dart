@@ -291,8 +291,8 @@ class SymbolThemeLayer extends ThemeLayer {
     required this.iconAnchor,
     required this.iconOffset,
     required this.iconAllowOverlap,
-    DoubleProp? iconRotate,
-    StringProp? iconRotationAlignment,
+    required this.iconRotate,
+    required this.iconRotationAlignment,
     required this.textColor,
     required this.textHaloColor,
     required this.textHaloWidth,
@@ -301,7 +301,5 @@ class SymbolThemeLayer extends ThemeLayer {
     required this.iconColor,
     required this.iconHaloColor,
     required this.iconHaloWidth,
-  })  : iconRotate = iconRotate ?? DoubleProp.constant(0),
-        iconRotationAlignment =
-            iconRotationAlignment ?? StringProp.constant('auto');
+  });
 }

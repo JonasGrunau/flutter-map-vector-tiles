@@ -5,11 +5,11 @@
 A shorter README, label-fade lifecycle fixes, and three label/icon rendering
 defects.
 
-- 🐛 `icon-rotate` and `icon-rotation-alignment` were parsed nowhere and
-  applied nowhere, so every icon drew axis-aligned regardless of style or
-  line direction — most visibly `road_oneway`/`road_oneway_opposite`,
-  whose arrows always pointed to the top of the screen instead of the
-  street's actual direction. Both properties are now read, and a
+- 🎨 **`icon-rotate` and `icon-rotation-alignment`** are now read;
+  before, neither was parsed or applied, so every icon drew axis-aligned
+  regardless of style or line direction — most visibly
+  `road_oneway`/`road_oneway_opposite`, whose arrows always pointed to
+  the top of the screen instead of the street's actual direction. A
   line-placed, map-aligned icon rotates to the line's on-screen angle
   plus `icon-rotate`; point icons with explicit map alignment follow the
   camera bearing. Rotation also carries `icon-anchor`/`icon-offset` and
@@ -25,10 +25,13 @@ defects.
   anchor per feature, and the collision pass only rejects *overlapping*
   boxes, so 2-5 copies of the same name a few dozen pixels apart all
   survived. Placement now drops a new anchor whose text already has one
-  within `symbol-spacing / 2`. The final screen-space placement shares
-  that exclusion zone between line symbol layers reading the same source
-  layer, so the topmost candidate that is actually visible and fits wins;
-  point and `line-center` placement remain unaffected.
+  within `symbol-spacing / 2` along the same road — the two carriageways
+  of a motorway, neighbouring switchbacks and parallel same-named roads
+  sit beside each other and keep their labels. The final screen-space
+  placement shares that exclusion zone between line symbol layers
+  reading the same source layer, so the topmost candidate that is
+  actually visible and fits wins; point and `line-center` placement
+  remain unaffected.
 - 🐛 An idle map with labels kept repainting every frame and re-running
   label collision every 150 ms, draining battery. The fade ticker now
   stops once the last owed placement pass has run. Setting

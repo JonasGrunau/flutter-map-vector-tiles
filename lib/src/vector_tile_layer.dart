@@ -1922,6 +1922,7 @@ class _VectorMapPainter extends CustomPainter {
       TileKey key,
       List<SymbolInstance> symbols, {
       bool ghostOnly = false,
+      bool retained = false,
     }) {
       if (symbols.isEmpty) return;
       final rect = displayTileRect(key, camera.zoom);
@@ -1944,6 +1945,7 @@ class _VectorMapPainter extends CustomPainter {
           screenAngle: symbol.angle + rotation,
           transform: symbol.alongLine ? transform : null,
           ghostOnly: ghostOnly,
+          retained: retained,
           order: placed.length,
         ));
       }
@@ -1964,7 +1966,7 @@ class _VectorMapPainter extends CustomPainter {
           state._retainedSymbolKeys ??= state._retainedKeysWithSymbols();
       for (final retained in state._retained.values) {
         addSymbols(retained.key, retained.symbols,
-            ghostOnly: !needed.contains(retained.key));
+            ghostOnly: !needed.contains(retained.key), retained: true);
       }
     }
     // Parked labels of disposed retained tiles — fallbacks for fades
