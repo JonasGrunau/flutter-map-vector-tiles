@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 2.9.0
 
-A shorter README, label-fade lifecycle fixes, and three label/icon rendering
-defects.
+Icons finally rotate with their roads, street names stop doubling up and
+floating off junctions, an idle map stops draining the battery, and the
+README got shorter.
 
 - 🎨 **`icon-rotate` and `icon-rotation-alignment`** are now read;
   before, neither was parsed or applied, so every icon drew axis-aligned
