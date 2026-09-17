@@ -341,7 +341,17 @@ class SymbolLayouter {
           ));
         }
 
-        if (placement == 'point' || feature.type == PreparedGeomType.point) {
+        // A layer declaring `line`/`line-center` placement only labels
+        // LineString/Polygon geometry, matching MapLibre: a Point feature
+        // (e.g. a motorway-junction destination) gets no anchor rather
+        // than being placed as if the layer said `point`. Skipped
+        // explicitly: a MultiPoint part holds several vertices, which
+        // `_placeAlongLine` would otherwise walk as a polyline between
+        // unrelated points.
+        if (placement != 'point' && feature.type == PreparedGeomType.point) {
+          continue;
+        }
+        if (placement == 'point') {
           for (final part in feature.parts) {
             if (feature.type == PreparedGeomType.polygon) {
               // Label polygons at their centroid (first exterior ring).

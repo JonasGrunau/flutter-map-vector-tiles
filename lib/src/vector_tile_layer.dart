@@ -1922,6 +1922,7 @@ class _VectorMapPainter extends CustomPainter {
       TileKey key,
       List<SymbolInstance> symbols, {
       bool ghostOnly = false,
+      bool retained = false,
     }) {
       if (symbols.isEmpty) return;
       final rect = displayTileRect(key, camera.zoom);
@@ -1939,9 +1940,12 @@ class _VectorMapPainter extends CustomPainter {
         placed.add(PlacedSymbol(
           instance: symbol,
           screenAnchor: transform.apply(symbol.anchor),
-          screenAngle: symbol.alongLine ? symbol.angle + rotation : 0,
+          // Point symbols use the map angle for explicit `map` icon
+          // alignment; along-line symbols add their local bearing.
+          screenAngle: symbol.angle + rotation,
           transform: symbol.alongLine ? transform : null,
           ghostOnly: ghostOnly,
+          retained: retained,
           order: placed.length,
         ));
       }
@@ -1962,7 +1966,7 @@ class _VectorMapPainter extends CustomPainter {
           state._retainedSymbolKeys ??= state._retainedKeysWithSymbols();
       for (final retained in state._retained.values) {
         addSymbols(retained.key, retained.symbols,
-            ghostOnly: !needed.contains(retained.key));
+            ghostOnly: !needed.contains(retained.key), retained: true);
       }
     }
     // Parked labels of disposed retained tiles — fallbacks for fades

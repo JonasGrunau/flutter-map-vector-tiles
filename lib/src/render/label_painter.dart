@@ -42,7 +42,8 @@ class PlacedSymbol {
   final SymbolInstance instance;
   final Offset screenAnchor;
 
-  /// Screen-space baseline angle for along-line labels (radians).
+  /// Screen-space map angle for point symbols, or map plus local line
+  /// bearing for along-line symbols (radians).
   final double screenAngle;
 
   /// Tile→screen transform, present for along-line symbols so curved
@@ -56,6 +57,14 @@ class PlacedSymbol {
   /// labels (a retained level the new one already covers, or a disposed
   /// tile's parked cohort) this way.
   final bool ghostOnly;
+
+  /// Whether this candidate comes from a previous-level tile kept
+  /// across a zoom crossing. It still competes for space, but takes no
+  /// part in repeat suppression (see [LabelPainter._repeatSuppressed]):
+  /// its anchors are spaced for the level it was laid out at, so they
+  /// would suppress the arriving level's copies at the wrong interval
+  /// and hand them back — as pop-ins — the moment the level is released.
+  final bool retained;
 
   /// Insertion index within the frame's symbol list, the final
   /// placement tiebreaker: the caller adds current-level tiles before
@@ -82,6 +91,7 @@ class PlacedSymbol {
     required this.screenAngle,
     this.transform,
     this.ghostOnly = false,
+    this.retained = false,
     this.order = 0,
   });
 }
@@ -435,7 +445,10 @@ class LabelPainter {
 
     final toDraw = <_DrawableSymbol>[];
     var anyFading = false;
-    if (placing) _winners.clear();
+    if (placing) {
+      _winners.clear();
+      _repeatAnchors.clear();
+    }
     final loopStopwatch = Stopwatch()..start();
     for (final candidate in candidates) {
       if (candidate.ghostOnly) {
@@ -459,10 +472,18 @@ class LabelPainter {
         if (fades) _recordFallback(candidate);
         continue;
       }
-      if (placing) _winners.add(candidate.instance);
       // The label's fade and its layer's zoom-range ramp compound: a
       // label appearing near its layer's maxzoom is subject to both.
       final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
+      if (placing) {
+        _winners.add(candidate.instance);
+        final repeatKey = drawable.repeatKey;
+        // Only text that actually shows may suppress a repeat: a
+        // rejected or ramped-out candidate never hides a fallback.
+        if (repeatKey != null && drawable.drawsText && ramp > 0) {
+          (_repeatAnchors[repeatKey] ??= []).add(_RepeatAnchor(candidate));
+        }
+      }
       var fade = 1.0;
       if (fades) {
         // Fades are per sitting — one state per (key, position). Two
@@ -615,6 +636,58 @@ class LabelPainter {
     }
     debugDrawMicros += drawStopwatch.elapsedMicroseconds;
     return drawn;
+  }
+
+  /// Repeat suppression for `symbol-placement: line` text, rebuilt on
+  /// every placing pass: per `(source, source-layer, text)`, the anchors
+  /// whose text is on screen so far this pass.
+  ///
+  /// A street arrives as many features — one per OSM way, sometimes one
+  /// per road-class style layer — and the layouter spaces anchors per
+  /// feature, so the same name lands every few dozen pixels where the
+  /// collision pass, which only rejects *overlapping* boxes, lets every
+  /// copy through. MapLibre avoids this by joining same-text lines end
+  /// to end inside a tile before spacing them; that would re-parametrize
+  /// every street per data level and move its anchors at each crossing
+  /// (see `SymbolLayouter._placeAlongLine` on why anchors keep their
+  /// per-feature parametrization), so the duplicates are removed here
+  /// instead, in the final screen-space pass — only a candidate that
+  /// survived the exact zoom gate, opacity and collision may suppress a
+  /// lower-priority fallback, and screen positions make the zone
+  /// continuous across tile seams.
+  final _repeatAnchors = <Object, List<_RepeatAnchor>>{};
+
+  /// Whether [placed] repeats text already on screen within [radius]
+  /// (half of `symbol-spacing`) *on the same road*. Two anchors count as
+  /// the same road when the displacement between them runs along
+  /// either one's line direction — its across-line component is within
+  /// [tolerance], one text height — so the split ways of one street
+  /// suppress each other, while the two carriageways of a motorway, a
+  /// street's neighbouring switchbacks, or parallel same-named roads,
+  /// which sit *beside* each other, keep their labels as MapLibre
+  /// keeps them. Anchors of one feature never suppress each other: the
+  /// layouter already spaced them along the path.
+  bool _repeatSuppressed(
+    Object key,
+    PlacedSymbol placed,
+    double radius,
+    double tolerance,
+  ) {
+    final anchors = _repeatAnchors[key];
+    if (anchors == null || !(radius > 0) || !radius.isFinite) return false;
+    final anchor = placed.screenAnchor;
+    final path = placed.instance.path;
+    final cosA = math.cos(placed.screenAngle);
+    final sinA = math.sin(placed.screenAngle);
+    for (final other in anchors) {
+      if (path != null && identical(other.path, path)) continue;
+      final d = anchor - other.anchor;
+      if (d.distance >= radius) continue;
+      final acrossOther = (d.dx * other.sin - d.dy * other.cos).abs();
+      final acrossOwn = (d.dx * sinA - d.dy * cosA).abs();
+      if (math.min(acrossOther, acrossOwn) <= tolerance) return true;
+    }
+    return false;
   }
 
   /// Marks the candidates whose label is steadily visible on screen, so
@@ -887,6 +960,15 @@ class LabelPainter {
           final dy = offset.length > 1 ? offset[1] * iconSize : 0.0;
           final rect = _anchoredRect(
               layer.iconAnchor.eval(ctx), anchor + Offset(dx, dy), w, h);
+          // `auto` follows the line when the symbol sits on one, else the
+          // viewport — matching `text-rotation-alignment`'s default.
+          // Explicit `map` alignment always includes the map bearing;
+          // for an along-line symbol [screenAngle] also includes the
+          // line's local bearing.
+          final alignment = layer.iconRotationAlignment.eval(ctx);
+          final followsMap =
+              alignment == 'map' || (alignment == 'auto' && instance.alongLine);
+          final rotateRad = layer.iconRotate.eval(ctx) * math.pi / 180;
           icon = _DrawableIcon(
             atlas: sprites,
             sprite: sprite,
@@ -898,12 +980,35 @@ class LabelPainter {
             haloColor: sprite.sdf ? layer.iconHaloColor.eval(ctx) : null,
             haloWidth: sprite.sdf ? layer.iconHaloWidth.eval(ctx) : 0,
             iconSize: iconSize,
+            pivot: anchor,
+            rotation: followsMap ? placed.screenAngle + rotateRad : rotateRad,
           );
         }
       }
     }
 
     if (text == null && icon == null) return null;
+
+    // Repeat suppression, decided here rather than before layout so the
+    // exact opacity, size and placement evaluations above are not paid
+    // twice. Placing frames only — a replay reproduces the last
+    // decision — and never for retained-level or ghost candidates.
+    Object? repeatKey;
+    if (text != null &&
+        instance.alongLine &&
+        !replaying &&
+        !placed.retained &&
+        layer.placement.eval(ctx) == 'line') {
+      final source = layer.source;
+      final sourceLayer = layer.sourceLayer;
+      if (source != null && sourceLayer != null) {
+        repeatKey = (source, sourceLayer, instance.text);
+        if (_repeatSuppressed(repeatKey, placed, layer.spacing.eval(ctx) / 2,
+            text.size.height * textScale)) {
+          return null;
+        }
+      }
+    }
 
     // Variable anchors: try each candidate until one fits.
     final variableAnchors = text != null && !instance.alongLine
@@ -924,7 +1029,8 @@ class LabelPainter {
             placed.transform != null &&
             instance.curveSafe) {
           return _prepareCurved(placed, layer, ctx, text, fontSize, textScale,
-              icon, collision, sitting);
+              icon, collision, sitting)
+            ?..repeatKey = repeatKey;
         }
         lineTextAngle = _uprightAngle(sitting, placed.screenAngle);
       }
@@ -959,7 +1065,7 @@ class LabelPainter {
       }
     }
     if (icon != null) {
-      boxes.add(icon.rect.inflate(2));
+      boxes.add(icon.bounds.inflate(2));
     }
 
     final allowOverlap = text != null
@@ -970,7 +1076,7 @@ class LabelPainter {
       if (icon != null &&
           text != null &&
           layer.textOptional.eval(ctx) &&
-          collision.tryPlaceAll([icon.rect.inflate(2)])) {
+          collision.tryPlaceAll([icon.bounds.inflate(2)])) {
         sitting.textDropped = true;
         return _DrawableSymbol(placed, icon: icon);
       }
@@ -984,7 +1090,7 @@ class LabelPainter {
       textRect: textRect,
       textAngle: angle,
       textScale: textScale,
-    );
+    )..repeatKey = repeatKey;
   }
 
   /// `text-variable-anchor` placement: anchors are tried in style order
@@ -1028,7 +1134,7 @@ class LabelPainter {
       final textRect = _anchoredRect(anchorName, shifted, width, height);
       final boxes = [
         textRect.inflate(padding),
-        if (icon != null) icon.rect.inflate(2),
+        if (icon != null) icon.bounds.inflate(2),
       ];
       if (allowOverlap || collision.tryPlaceAll(boxes)) {
         sitting.anchor = anchorName;
@@ -1038,7 +1144,7 @@ class LabelPainter {
     }
     if (icon != null &&
         layer.textOptional.eval(ctx) &&
-        collision.tryPlaceAll([icon.rect.inflate(2)])) {
+        collision.tryPlaceAll([icon.bounds.inflate(2)])) {
       sitting.textDropped = true;
       return _DrawableSymbol(placed, icon: icon);
     }
@@ -1087,7 +1193,7 @@ class LabelPainter {
     _DrawableSymbol? iconFallback() {
       if (icon != null &&
           layer.textOptional.eval(ctx) &&
-          collision.tryPlaceAll([icon.rect.inflate(2)])) {
+          collision.tryPlaceAll([icon.bounds.inflate(2)])) {
         sitting.textDropped = true;
         return _DrawableSymbol(placed, icon: icon);
       }
@@ -1165,7 +1271,7 @@ class LabelPainter {
           height: text.size.height * textScale);
       final boxes = [
         _rotatedBounds(textRect, placed.screenAnchor, angle).inflate(padding),
-        if (icon != null) icon.rect.inflate(2),
+        if (icon != null) icon.bounds.inflate(2),
       ];
       if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
         return iconFallback();
@@ -1188,7 +1294,7 @@ class LabelPainter {
                 p.pos,
                 p.angle)
             .inflate(padding),
-      if (icon != null) icon.rect.inflate(2),
+      if (icon != null) icon.bounds.inflate(2),
     ];
     if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
       return iconFallback();
@@ -1468,11 +1574,19 @@ class LabelPainter {
       opacity >= 1 ? color : color.withValues(alpha: color.a * opacity);
 
   static Rect _rotatedBounds(Rect rect, Offset pivot, double angle) {
-    final cosA = math.cos(angle).abs();
-    final sinA = math.sin(angle).abs();
-    final w = rect.width * cosA + rect.height * sinA;
-    final h = rect.width * sinA + rect.height * cosA;
-    return Rect.fromCenter(center: rect.center, width: w, height: h);
+    final cosA = math.cos(angle);
+    final sinA = math.sin(angle);
+    final delta = rect.center - pivot;
+    final center = pivot +
+        Offset(
+          delta.dx * cosA - delta.dy * sinA,
+          delta.dx * sinA + delta.dy * cosA,
+        );
+    final absCos = cosA.abs();
+    final absSin = sinA.abs();
+    final w = rect.width * absCos + rect.height * absSin;
+    final h = rect.width * absSin + rect.height * absCos;
+    return Rect.fromCenter(center: center, width: w, height: h);
   }
 
   void dispose() {
@@ -1596,7 +1710,16 @@ class _DrawableIcon {
   /// `icon-size`, which `icon-halo-width` is measured relative to.
   final double iconSize;
 
-  const _DrawableIcon({
+  /// Screen-space symbol anchor. Rotation includes [rect]'s anchor and
+  /// offset, so both move around this point with the icon.
+  final Offset pivot;
+
+  /// Radians, clockwise: `icon-rotate` plus the line/map angle
+  /// `icon-rotation-alignment` resolved to. Rotates about [pivot], so
+  /// `icon-anchor` and `icon-offset` turn with the sprite.
+  final double rotation;
+
+  _DrawableIcon({
     required this.atlas,
     required this.sprite,
     required this.rect,
@@ -1605,9 +1728,30 @@ class _DrawableIcon {
     this.haloColor,
     this.haloWidth = 0,
     this.iconSize = 1,
+    required this.pivot,
+    this.rotation = 0,
   });
 
+  /// Screen extent of the (rotated) sprite. Read once per collision
+  /// box, fallback attempt, variable anchor tried and fade layer, so
+  /// the rotation maths runs once rather than per read.
+  late final Rect bounds =
+      rotation == 0 ? rect : LabelPainter._rotatedBounds(rect, pivot, rotation);
+
   void draw(Canvas canvas, double devicePixelRatio) {
+    if (rotation == 0) {
+      _paint(canvas, devicePixelRatio);
+      return;
+    }
+    canvas.save();
+    canvas.translate(pivot.dx, pivot.dy);
+    canvas.rotate(rotation);
+    canvas.translate(-pivot.dx, -pivot.dy);
+    _paint(canvas, devicePixelRatio);
+    canvas.restore();
+  }
+
+  void _paint(Canvas canvas, double devicePixelRatio) {
     final color = tint;
     if (color == null) {
       canvas.drawImageRect(
@@ -1661,6 +1805,22 @@ class _DrawableIcon {
   }
 }
 
+/// One along-line label on screen this pass, as [LabelPainter._repeatSuppressed]
+/// compares later candidates against it: where it sits, the unit
+/// tangent of its line there, and the path it was laid out on.
+class _RepeatAnchor {
+  final Offset anchor;
+  final double cos;
+  final double sin;
+  final SymbolPath? path;
+
+  _RepeatAnchor(PlacedSymbol placed)
+      : anchor = placed.screenAnchor,
+        cos = math.cos(placed.screenAngle),
+        sin = math.sin(placed.screenAngle),
+        path = placed.instance.path;
+}
+
 class _DrawableSymbol {
   final PlacedSymbol symbol;
   final _DrawableIcon? icon;
@@ -1686,6 +1846,13 @@ class _DrawableSymbol {
   /// reports it as a continuation of a departing label, not a new one.
   bool isGhost = false;
 
+  /// The [LabelPainter._repeatAnchors] key this symbol's text registers
+  /// under once it is drawn, or null when repeat suppression does not
+  /// apply to it. Assigned by [LabelPainter._prepare] like [opacity].
+  Object? repeatKey;
+
+  bool get drawsText => text != null || curvedGlyphs != null;
+
   _DrawableSymbol(
     this.symbol, {
     this.icon,
@@ -1710,7 +1877,7 @@ class _DrawableSymbol {
     }
 
     final icon = this.icon;
-    if (icon != null) add(icon.rect);
+    if (icon != null) add(icon.bounds);
     final glyphs = curvedGlyphs;
     final text = this.text;
     if (glyphs != null) {
