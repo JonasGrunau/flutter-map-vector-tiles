@@ -116,7 +116,18 @@ Symbol layout applies the same decode-time bounds culling before
 evaluating any expressions, and along-line anchors keep their full-line
 spacing parametrization — an anchor lands at the same world position no
 matter which display tile lays it out — while being *enumerated* only
-inside the tile's window. It runs as its own budgeted job after the
+inside the tile's window. The parametrization is `mid + k·spacing` from
+the line's midpoint, for every integer k. `symbol-spacing` is in display
+pixels, so one level deeper it spans half the world distance and the
+anchor set contains every anchor of the level above: over the same data
+(overzoom, and the provisional layout while a level loads) a street name
+keeps its exact world position across a crossing. MapLibre's
+`spacing/2 + k·spacing` from the line start shares no anchor between two
+levels and moved every name by a quarter spacing at each crossing — the
+same nesting Google's "label crawling" patent (US8237745) reaches by
+bisecting from the midpoint. When the next level brings its own data
+tiles the clipped parts differ, the midpoint moves with them, and the
+fade tracker cross-fades the name as below. It runs as its own budgeted job after the
 tile's raster (skipped entirely when no symbol layer intersects the
 tile's zoom band),
 and the tile's label text is shaped into the caches before the first
@@ -191,9 +202,9 @@ cross-fade against itself; an exact positional key would miss on that
 same noise and re-fade a label that never left. The *position match*
 splits what position genuinely separates: two POIs sharing a name, the
 housenumber "12" down a whole street, every parking icon on a layer,
-and the re-spaced repeats of an along-line name (whose anchors are
-re-derived from `symbol-spacing` per display layout — half the spacing
-away at the next level on a straight road) each fade on their own.
+and the re-spaced repeats of an along-line name (whose anchors move
+when the next level brings differently clipped data, and which gain
+in-between repeats one level deeper) each fade on their own.
 With one state per key, a key still placed *anywhere* held every other
 copy at its opacity — so those copies appeared and vanished as hard
 pops, never fading at all, and a re-spaced street name teleported at
@@ -307,7 +318,21 @@ duration, the time a new label's fade-in takes anyway. A crossing churns
 the candidate set every few frames, so placing on each churn would be a
 10 ms+ collision pass several times a second on a symbol-heavy style.
 Only a viewport resize places at once; replaying a decision taken for
-another screen misplaces everything. The painter reports a pending pass
+another screen misplaces everything.
+
+A replay must not overturn the pass through the back door either.
+Curved text is rejected when the line bends past `text-max-angle` under
+it or when the text no longer fits along its line, and both depend on
+the zoom, which a replay frame and a fade-out ghost see changing every
+frame. So on the permissive index they never drop a label: the bend
+check is skipped, and text that outgrew its line is drawn straight at
+its anchor until the next pass decides. Re-judged per frame, a winner
+whose bend or length sat near the limit vanished for a frame or two —
+and its ghost with it, since the ghost runs the same check — and on
+every zoom-out, street names whose text outgrew their stretch of road
+popped out at full opacity. On a pass, a label already on screen keeps
+its seat up to a quarter more bend than a newcomer may take, so a
+sitting near the limit does not toggle as the zoom drifts across it. The painter reports a pending pass
 only while the latest generation differs from the one it placed, and the
 fade ticker paints until that pass runs. The final settling repaint sees
 the same generation and creates no new debt, allowing the ticker to stop

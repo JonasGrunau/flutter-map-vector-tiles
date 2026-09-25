@@ -96,9 +96,10 @@ PreparedFeature _line(List<double> coords, String name,
   if (total < spacing) {
     targets.add(total / 2);
   } else {
-    final half = spacing / 2;
-    for (var k = 0; half + k * spacing < total; k++) {
-      targets.add(half + k * spacing);
+    final mid = total / 2;
+    var k = (-mid / spacing).ceil();
+    for (; mid + k * spacing < total; k++) {
+      targets.add(mid + k * spacing);
     }
   }
   final distances = <double>[], xs = <double>[], ys = <double>[];
@@ -461,11 +462,12 @@ void main() {
     test(
         'sibling display tiles claim disjoint anchors that together '
         'cover the global target set', () {
-      // One horizontal line across the data tile; at shift 1 its total
-      // logical length is 512, so global targets sit at 125 and 375.
-      const part = <double>[0, 1024, 4096, 1024];
+      // A horizontal line over three quarters of the data tile; at
+      // shift 1 its total logical length is 384, so with spacing 100
+      // the global targets sit at mid 192 ± 100: 92, 192 and 292.
+      const part = <double>[0, 1024, 3072, 1024];
       final left = _layout(
-        lineTheme(),
+        lineTheme(spacing: 100),
         _data(
           displayKey: const TileKey(6, 20, 20),
           dataKey: const TileKey(5, 10, 10),
@@ -474,7 +476,7 @@ void main() {
         styleZoom: 6,
       );
       final right = _layout(
-        lineTheme(),
+        lineTheme(spacing: 100),
         _data(
           displayKey: const TileKey(6, 21, 20),
           dataKey: const TileKey(5, 10, 10),
@@ -482,11 +484,62 @@ void main() {
         ),
         styleZoom: 6,
       );
-      expect(left.single.pathDistance, 125);
-      expect(left.single.anchor.dx, closeTo(125, 1e-6));
-      expect(right.single.pathDistance, 375);
-      // 375 along a line starting at logical -256 in the right tile.
-      expect(right.single.anchor.dx, closeTo(119, 1e-6));
+      expect([for (final i in left) i.pathDistance], [92, 192]);
+      expect(left.last.anchor.dx, closeTo(192, 1e-6));
+      expect(right.single.pathDistance, 292);
+      // 292 along a line starting at logical -256 in the right tile.
+      expect(right.single.anchor.dx, closeTo(36, 1e-6));
+    });
+
+    test(
+        'anchors of the next zoom level contain every anchor of this one '
+        '(overzoom over the same data)', () {
+      // A street crossing the data tile off-axis. The display level one
+      // deeper doubles the logical length at constant spacing, so it
+      // must re-place every anchor of the shallower level at the same
+      // world position — a showing street name stays put across the
+      // crossing and new ones only appear between.
+      const part = <double>[0, 700, 1500, 1300, 2600, 1100, 4096, 2900];
+      const dataKey = TileKey(14, 8000, 5000);
+      List<Offset> worldAnchors(TileKey displayKey) {
+        final f = 1 << (17 - displayKey.z);
+        return [
+          for (final i in _layout(
+            lineTheme(),
+            _data(
+              displayKey: displayKey,
+              dataKey: dataKey,
+              features: [_line(part, 'Straße')],
+            ),
+            styleZoom: displayKey.z.toDouble(),
+          ))
+            Offset((displayKey.x * 256 + i.anchor.dx) * f,
+                (displayKey.y * 256 + i.anchor.dy) * f),
+        ];
+      }
+
+      List<Offset> level(int z) {
+        final shift = z - dataKey.z;
+        return [
+          for (var dx = 0; dx < 1 << shift; dx++)
+            for (var dy = 0; dy < 1 << shift; dy++)
+              ...worldAnchors(TileKey(
+                  z, (dataKey.x << shift) + dx, (dataKey.y << shift) + dy)),
+        ];
+      }
+
+      for (var z = 15; z < 17; z++) {
+        final shallow = level(z);
+        final deep = level(z + 1);
+        expect(shallow, isNotEmpty);
+        expect(deep.length, greaterThan(shallow.length));
+        for (final a in shallow) {
+          final nearest =
+              deep.map((b) => (a - b).distance).reduce((x, y) => x < y ? x : y);
+          // World pixels at z17 — screen pixels at the crossing.
+          expect(nearest, lessThan(0.5), reason: 'z$z anchor $a moved');
+        }
+      }
     });
 
     test('line-center places the single mid-line anchor', () {

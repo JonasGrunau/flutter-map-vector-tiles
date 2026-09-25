@@ -70,6 +70,15 @@ const _label = String.fromEnvironment('BENCH_LABEL', defaultValue: 'run');
 /// an oscillating sweep would re-cross its gates and drown the signal.
 const _mode = String.fromEnvironment('BENCH_MODE', defaultValue: 'bench');
 
+/// `BENCH_LOG_GONE=true` prints a `GONE` line for every on-screen label
+/// that stops drawing — for lining a burst of blinks up with its zoom.
+const _logGone = bool.fromEnvironment('BENCH_LOG_GONE');
+
+/// `BENCH_WATCH=<regexp>` prints every rejection, frame by frame, of the
+/// labels whose continuity key matches — for chasing one blink.
+const _watch = String.fromEnvironment('BENCH_WATCH');
+final _watchRe = _watch.isEmpty ? null : RegExp(_watch);
+
 /// Which app's layer wiring the harness mirrors. `default` is the bench's
 /// own setup. `safenow` reproduces the SafeNow app's `MapBaseLayer`/`SnMap`
 /// wiring exactly: no raster sources, 16 MiB decoded-tile memory cache,
@@ -195,6 +204,8 @@ class _BenchPageState extends State<BenchPage>
   // can be recognised across a whole sweep, not just across one frame.
   final _labelsPrev = <Object, List<_SeenLabel>>{};
   final _labelsGone = <_GoneLabel>[];
+  final _labelsAppeared = <_GoneLabel>[];
+  final _rejects = <String, int>{};
   var _stab = _StabilityCounters();
 
   @override
@@ -216,6 +227,15 @@ class _BenchPageState extends State<BenchPage>
     SchedulerBinding.instance.addPostFrameCallback(_onFrameEnd);
     if (_mode == 'stability' || _mode == 'manual') {
       LabelPainter.debugDrawnProbe = _onLabelsDrawn;
+      LabelPainter.debugRejectProbe = (key, reason, replay) {
+        if (!_recording) return;
+        final k = '$reason${replay ? '/replay' : ''} $key';
+        if (_watchRe?.hasMatch('$key') ?? false) {
+          debugPrint('BENCH[$_label] WATCH z=${_zoomNow()?.toStringAsFixed(3)} '
+              't=${DateTime.now().millisecondsSinceEpoch % 100000} $k');
+        }
+        _rejects[k] = (_rejects[k] ?? 0) + 1;
+      };
     }
     // A backgrounding mid-run parks the render pump (the layer stops
     // rasterizing from `inactive` onwards), so the numbers would be fiction.
@@ -229,6 +249,7 @@ class _BenchPageState extends State<BenchPage>
   @override
   void dispose() {
     LabelPainter.debugDrawnProbe = null;
+    LabelPainter.debugRejectProbe = null;
     SchedulerBinding.instance.removeTimingsCallback(_onTimings);
     _lifecycle?.dispose();
     _liveZoom.dispose();
@@ -280,6 +301,15 @@ class _BenchPageState extends State<BenchPage>
   static const _continuityRadiusPx = 48.0;
   static const _blinkRadiusPx = 64.0;
 
+  /// A jump: the same label leaves one sitting and takes up another
+  /// further away than a blink but still on screen, within
+  /// [_jumpWindow] — a street name re-anchored along its road at a
+  /// zoom crossing reads as this (cross-faded, so it is neither a pop
+  /// nor a blink). Either order counts: the new sitting often fades in
+  /// before the old one's ghost has finished.
+  static const _jumpRadiusPx = 600.0;
+  static const _jumpWindow = Duration(milliseconds: 1000);
+
   /// Seam twins draw one label twice at (near) the same anchor; merged
   /// before matching or every twin count change reads as an event.
   static const _twinRadiusPx = 4.0;
@@ -330,8 +360,25 @@ class _BenchPageState extends State<BenchPage>
       }
     }
 
+    // Events are only counted where a user could see them: labels are
+    // laid out up to 150px past the viewport, and a pop or blink out
+    // there — the cull line sweeping over a label as the zoom drifts —
+    // is invisible.
+    bool onScreen(Offset world) {
+      final level = world / scale - worldCenter;
+      return level.dx.abs() <= size.width / 2 &&
+          level.dy.abs() <= size.height / 2;
+    }
+
     final contR2 = math.pow(_continuityRadiusPx * scale, 2);
     final blinkR2 = math.pow(_blinkRadiusPx * scale, 2);
+    final jumpR2 = math.pow(_jumpRadiusPx * scale, 2);
+    bool isJump(Offset a, Offset b, DateTime at) {
+      if (now.difference(at) > _jumpWindow) return false;
+      final d = (a - b).distanceSquared;
+      return d >= blinkR2 && d < jumpR2;
+    }
+
     current.forEach((key, list) {
       final prev = _labelsPrev[key];
       for (final label in list) {
@@ -353,34 +400,82 @@ class _BenchPageState extends State<BenchPage>
         }
         // A ghost never starts a life: an unmatched one is the tail of a
         // fade whose start this tracker missed.
-        if (label.ghost || !_recording) continue;
+        if (label.ghost || !_recording || !onScreen(label.world)) continue;
         label.alongLine ? _stab.appearLn++ : _stab.appearPt++;
         if (label.opacity >= 1) {
           label.alongLine ? _stab.popInLn++ : _stab.popInPt++;
         }
+        var explained = false;
         for (var i = 0; i < _labelsGone.length; i++) {
           final gone = _labelsGone[i];
           if (gone.key == key &&
               (gone.world - label.world).distanceSquared < blinkR2) {
             label.alongLine ? _stab.blinkLn++ : _stab.blinkPt++;
+            debugPrint(
+                'BENCH[$_label] BLINK z=${camera.zoom.toStringAsFixed(2)} '
+                'off=${now.difference(gone.at).inMilliseconds}ms '
+                'from-centre=${(label.world / scale - worldCenter).distance.toStringAsFixed(0)}px '
+                'key=$key');
             _labelsGone.removeAt(i);
+            explained = true;
             break;
           }
+        }
+        if (!explained) {
+          for (var i = 0; i < _labelsGone.length; i++) {
+            final gone = _labelsGone[i];
+            if (gone.key == key && isJump(gone.world, label.world, gone.at)) {
+              label.alongLine ? _stab.jumpLn++ : _stab.jumpPt++;
+              _logJump(key, gone.world, label.world, scale, camera.zoom);
+              _labelsGone.removeAt(i);
+              explained = true;
+              break;
+            }
+          }
+        }
+        if (!explained) {
+          _labelsAppeared
+              .add(_GoneLabel(key, label.world, now, label.alongLine));
         }
       }
     });
     _labelsPrev.forEach((key, list) {
       for (final p in list) {
         if (p.matched) continue;
-        if (_recording) {
+        if (_recording && onScreen(p.world)) {
           p.alongLine ? _stab.goneLn++ : _stab.gonePt++;
+          if (_logGone) {
+            debugPrint(
+                'BENCH[$_label] GONE z=${camera.zoom.toStringAsFixed(3)} '
+                't=${now.millisecondsSinceEpoch % 100000} key=$key');
+          }
           if (!p.ghost && p.opacity >= 1) {
             p.alongLine ? _stab.popOutLn++ : _stab.popOutPt++;
+            debugPrint(
+                'BENCH[$_label] POPOUT z=${camera.zoom.toStringAsFixed(2)} '
+                'from-centre=${(p.world / scale - worldCenter).distance.toStringAsFixed(0)}px '
+                'key=$key');
           }
         }
-        _labelsGone.add(_GoneLabel(key, p.world, now, p.alongLine));
+        var jumped = false;
+        for (var i = 0; i < _labelsAppeared.length; i++) {
+          final a = _labelsAppeared[i];
+          if (a.key == key && isJump(a.world, p.world, a.at)) {
+            if (_recording && onScreen(p.world)) {
+              p.alongLine ? _stab.jumpLn++ : _stab.jumpPt++;
+              _logJump(key, a.world, p.world, scale, camera.zoom);
+            }
+            _labelsAppeared.removeAt(i);
+            jumped = true;
+            break;
+          }
+        }
+        if (!jumped) {
+          _labelsGone.add(_GoneLabel(key, p.world, now, p.alongLine));
+        }
       }
     });
+    _labelsAppeared.removeWhere((a) => now.difference(a.at) > _jumpWindow);
     _labelsGone.removeWhere((gone) => now.difference(gone.at) > _blinkWindow);
     _labelsPrev
       ..clear()
@@ -391,14 +486,34 @@ class _BenchPageState extends State<BenchPage>
     }
   }
 
+  /// One `JUMP` line per jump, so a count can be read back into the
+  /// labels behind it (a re-anchored street vs a same-key sibling).
+  void _logJump(Object key, Offset from, Offset to, double scale, double z) {
+    final d = (to - from).distance / scale;
+    debugPrint('BENCH[$_label] JUMP z=${z.toStringAsFixed(2)} '
+        'd=${d.toStringAsFixed(0)}px key=$key');
+  }
+
   void _reportStability(String phase) {
+    final top = _rejects.entries.toList()..sort((a, b) => b.value - a.value);
+    for (final e in top.take(15)) {
+      debugPrint('BENCH[$_label] REJECT ${e.value} ${e.key}');
+    }
+    for (final e in top.skip(15)) {
+      if (e.key.startsWith('ghost') || e.key.contains('/replay')) {
+        debugPrint('BENCH[$_label] REJECT ${e.value} ${e.key}');
+      }
+    }
+    _rejects.clear();
     final s = _stab;
     final frames = s.frames == 0 ? 1 : s.frames;
     debugPrint('BENCH[$_label] STABILITY $phase frames=${s.frames} '
         'seen/frame=${(s.seen / frames).toStringAsFixed(0)} · '
         'pt popIn=${s.popInPt} popOut=${s.popOutPt} blink=${s.blinkPt} '
+        'jump=${s.jumpPt} '
         'appear=${s.appearPt} gone=${s.gonePt} · '
         'ln popIn=${s.popInLn} popOut=${s.popOutLn} blink=${s.blinkLn} '
+        'jump=${s.jumpLn} '
         'appear=${s.appearLn} gone=${s.goneLn}');
   }
 
@@ -864,4 +979,5 @@ class _StabilityCounters {
   var seen = 0;
   var popInPt = 0, popOutPt = 0, blinkPt = 0, appearPt = 0, gonePt = 0;
   var popInLn = 0, popOutLn = 0, blinkLn = 0, appearLn = 0, goneLn = 0;
+  var jumpPt = 0, jumpLn = 0;
 }

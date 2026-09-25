@@ -845,7 +845,12 @@ class ExpressionParser {
       }
       return out;
     }
-    return t < 0.5 ? a : b;
+    // Not interpolatable (strings, booleans, mismatched arrays): hold the
+    // lower stop's value until the next stop, as MapLibre does — it
+    // converts a legacy function over such a property to `interval`.
+    // Snapping at the midpoint switched a zoom-staged `text-field` half
+    // a level early.
+    return a;
   }
 
   // -------------------------------------------------------------------------

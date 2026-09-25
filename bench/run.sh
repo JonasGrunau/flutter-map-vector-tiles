@@ -25,7 +25,8 @@ if [[ ! -d ios ]]; then
   rmdir test 2>/dev/null || true
 fi
 
-# STYLE_URL / MAPTILER_KEY / BENCH_SETUP pass through from the environment
+# STYLE_URL / MAPTILER_KEY / BENCH_SETUP / BENCH_MODE / BENCH_LAT_E5 /
+# BENCH_LON_E5 / BENCH_LOG_GONE / BENCH_WATCH pass through from the environment
 # when set, so app-specific styles and keys are given per invocation and
 # never land in this repo.
 flutter run --profile -d "$DEVICE" \
@@ -35,7 +36,11 @@ flutter run --profile -d "$DEVICE" \
   ${STYLE_URL:+--dart-define=STYLE_URL=$STYLE_URL} \
   ${MAPTILER_KEY:+--dart-define=MAPTILER_KEY=$MAPTILER_KEY} \
   ${BENCH_SETUP:+--dart-define=BENCH_SETUP=$BENCH_SETUP} \
-  ${BENCH_MODE:+--dart-define=BENCH_MODE=$BENCH_MODE} > "$OUT" 2>&1 &
+  ${BENCH_MODE:+--dart-define=BENCH_MODE=$BENCH_MODE} \
+  ${BENCH_LAT_E5:+--dart-define=BENCH_LAT_E5=$BENCH_LAT_E5} \
+  ${BENCH_LON_E5:+--dart-define=BENCH_LON_E5=$BENCH_LON_E5} \
+  ${BENCH_LOG_GONE:+--dart-define=BENCH_LOG_GONE=$BENCH_LOG_GONE} \
+  ${BENCH_WATCH:+--dart-define=BENCH_WATCH=$BENCH_WATCH} > "$OUT" 2>&1 &
 PID=$!
 
 for _ in $(seq 1 180); do

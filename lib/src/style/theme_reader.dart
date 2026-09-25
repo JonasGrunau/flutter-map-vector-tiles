@@ -132,7 +132,7 @@ class ThemeReader {
           placement: _string(parser, layout['symbol-placement'], 'point'),
           sortKey: _double(parser, layout['symbol-sort-key'], 0),
           spacing: _double(parser, layout['symbol-spacing'], 250),
-          textField: _string(parser, layout['text-field'], ''),
+          textField: _tokenString(parser, layout['text-field'], ''),
           textSize: _double(parser, layout['text-size'], 16),
           textFont: _stringList(
               parser, layout['text-font'], const ['Open Sans Regular']),
@@ -154,7 +154,7 @@ class ThemeReader {
               _string(parser, layout['text-rotation-alignment'], 'auto'),
           iconImage: layout['icon-image'] == null
               ? null
-              : _string(parser, layout['icon-image'], ''),
+              : _tokenString(parser, layout['icon-image'], ''),
           iconSize: _double(parser, layout['icon-size'], 1),
           iconAnchor: _string(parser, layout['icon-anchor'], 'center'),
           iconOffset: _numList(parser, layout['icon-offset'], const [0, 0]),
@@ -243,6 +243,38 @@ class ThemeReader {
     }
     final p = parser.parseForProperty(json);
     return StringProp(p.expr, fallback, zoomOnly: p.zoomOnly);
+  }
+
+  /// `text-field` / `icon-image` — the two properties whose spec
+  /// declares `tokens`. Beyond a bare template string, MapLibre also
+  /// expands `{token}`s in the string outputs of a legacy stop function
+  /// (`{"stops": [[14, "{name:latin}\n{name:nonlatin}"]]}`); without
+  /// that the template itself was drawn as the label text for the stops
+  /// that used one.
+  static StringProp _tokenString(
+      ExpressionParser parser, Object? json, String fallback) {
+    final stops = json is Map ? json['stops'] : null;
+    if (stops is! List) return _string(parser, json, fallback);
+    final templates = <String, Expr>{};
+    for (final stop in stops) {
+      if (stop is List &&
+          stop.length >= 2 &&
+          stop[1] is String &&
+          (stop[1] as String).contains('{')) {
+        final template = stop[1] as String;
+        templates[template] ??= _tokenExpr(parser, template);
+      }
+    }
+    final p = parser.parseForProperty(json);
+    if (templates.isEmpty) {
+      return StringProp(p.expr, fallback, zoomOnly: p.zoomOnly);
+    }
+    final select = p.expr;
+    return StringProp((ctx) {
+      final v = select(ctx);
+      final template = v is String ? templates[v] : null;
+      return template == null ? v : template(ctx);
+    }, fallback);
   }
 
   /// String-array layout properties (font stacks, anchor lists): a bare

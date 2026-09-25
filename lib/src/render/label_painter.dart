@@ -208,6 +208,13 @@ class LabelPainter {
   /// Static like the timing counters; null in production, where the
   /// cost is one null check per frame.
   @visibleForTesting
+
+  /// Debug hook: called with a candidate's continuity key and why it was
+  /// not drawn on a frame (`fit`, `angle`, `collision`, `repeat`), and
+  /// whether that frame was a replay. For the bench; null otherwise.
+  static void Function(Object key, String reason, bool replay)?
+      debugRejectProbe;
+
   static void Function(double styleZoom, List<DrawnLabelRecord> drawn)?
       debugDrawnProbe;
 
@@ -526,9 +533,15 @@ class LabelPainter {
         // move the fading label, which is the artefact the positional
         // fades exist to remove.
         final fallback = _nearestCandidate(_sittingFallbacks[key], position);
-        if (fallback == null) return null;
+        if (fallback == null) {
+          debugRejectProbe?.call(key, 'ghost:none', true);
+          return null;
+        }
         final ramp = zoomRangeOpacity(fallback.instance.layer, styleZoom);
-        if (ramp <= 0) return null;
+        if (ramp <= 0) {
+          debugRejectProbe?.call(key, 'ghost:ramp', true);
+          return null;
+        }
         // Floored, mirroring the fade-in's implicit ceil: a departing
         // label reaches zero instead of lingering one step above it.
         final ghostOpacity =
@@ -537,7 +550,10 @@ class LabelPainter {
         final drawable = _prepare(fallback, zoom, styleZoom,
             permissive ??= _CollisionIndex.permissive(), sprites, screenSize,
             gateZoom: false);
-        if (drawable == null) return null;
+        if (drawable == null) {
+          debugRejectProbe?.call(key, 'ghost:prepare', true);
+          return null;
+        }
         drawable.opacity = ghostOpacity;
         drawable.isGhost = true;
         toDraw.add(drawable);
@@ -1005,6 +1021,7 @@ class LabelPainter {
         repeatKey = (source, sourceLayer, instance.text);
         if (_repeatSuppressed(repeatKey, placed, layer.spacing.eval(ctx) / 2,
             text.size.height * textScale)) {
+          debugRejectProbe?.call(instance.continuityKey, 'repeat', false);
           return null;
         }
       }
@@ -1072,6 +1089,7 @@ class LabelPainter {
         ? layer.textAllowOverlap.eval(ctx)
         : layer.iconAllowOverlap.eval(ctx);
     if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
+      debugRejectProbe?.call(placed.instance.continuityKey, 'collision', false);
       // Icon may still be placed when text is optional.
       if (icon != null &&
           text != null &&
@@ -1148,6 +1166,7 @@ class LabelPainter {
       sitting.textDropped = true;
       return _DrawableSymbol(placed, icon: icon);
     }
+    debugRejectProbe?.call(placed.instance.continuityKey, 'collision', false);
     return null;
   }
 
@@ -1207,7 +1226,30 @@ class LabelPainter {
     final halfW = text.size.width * textScale / 2 / scale;
     final d0 = instance.pathDistance - halfW;
     final d1 = instance.pathDistance + halfW;
-    if (d0 < 0 || d1 > path.length) return iconFallback();
+    if (d0 < 0 || d1 > path.length) {
+      debugRejectProbe?.call(
+          instance.continuityKey, 'fit', collision.permissive);
+      if (collision.permissive) {
+        // Whether a label fits its line is a placement decision, like
+        // its bend. A replay reproduces a label the last pass accepted
+        // and a ghost draws one on its way out, and zooming out grows the
+        // text against its line every frame: dropping it here left the
+        // sitting with nothing drawable — a street name vanishing at
+        // full opacity, ghost and all. Drawn straight along its anchor's
+        // bearing instead, until the next pass decides.
+        final textRect = Rect.fromCenter(
+            center: placed.screenAnchor,
+            width: text.size.width * textScale,
+            height: text.size.height * textScale);
+        return _DrawableSymbol(placed,
+            icon: icon,
+            text: text,
+            textRect: textRect,
+            textAngle: _uprightAngle(sitting, placed.screenAngle),
+            textScale: textScale);
+      }
+      return iconFallback();
+    }
 
     // Reading direction: walk the path backwards when the label would
     // come out upside-down on screen. Measured over the label's own
@@ -1224,7 +1266,21 @@ class LabelPainter {
 
     final offset = layer.textOffset.eval(ctx);
     final perp = offset.length > 1 ? offset[1] * fontSize : 0.0;
-    final maxAngle = layer.textMaxAngle.eval(ctx) * math.pi / 180;
+    // `text-max-angle` is a placement decision, so only a placement pass
+    // takes it. A replay (or a ghost) reproduces a label the last pass
+    // accepted: re-judging the bend there at every frame's zoom dropped
+    // a winner — undrawn, and with no ghost either, since the ghost
+    // re-runs this same check — each time the scaled glyph spacing
+    // tipped the angle over the limit, then drew it again a frame
+    // later. On a pass, a label already on screen keeps its seat up to
+    // a quarter more bend than a newcomer may take, so one sitting near
+    // the limit does not toggle as the zoom drifts across it.
+    final maxAngle = collision.permissive
+        ? double.infinity
+        : layer.textMaxAngle.eval(ctx) *
+            math.pi /
+            180 *
+            (placed.incumbent ? 1.25 : 1.0);
 
     final placements =
         <({String grapheme, Offset pos, double angle, double width})>[];
@@ -1239,7 +1295,10 @@ class LabelPainter {
       angle = _foldAngle(angle);
       if (!previousAngle.isNaN &&
           _foldAngle(angle - previousAngle).abs() > maxAngle) {
-        return iconFallback(); // line bends too sharply for this label
+        // line bends too sharply for this label
+        debugRejectProbe?.call(
+            instance.continuityKey, 'angle', collision.permissive);
+        return iconFallback();
       }
       previousAngle = angle;
       firstAngle ??= angle;
@@ -1274,6 +1333,8 @@ class LabelPainter {
         if (icon != null) icon.bounds.inflate(2),
       ];
       if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
+        debugRejectProbe?.call(
+            placed.instance.continuityKey, 'collision', false);
         return iconFallback();
       }
       return _DrawableSymbol(placed,
@@ -1297,6 +1358,7 @@ class LabelPainter {
       if (icon != null) icon.bounds.inflate(2),
     ];
     if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
+      debugRejectProbe?.call(placed.instance.continuityKey, 'collision', false);
       return iconFallback();
     }
 

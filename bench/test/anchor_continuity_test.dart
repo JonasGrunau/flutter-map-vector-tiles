@@ -1,13 +1,17 @@
-/// Verifies the mechanism behind "street names jump at a zoom crossing":
-/// along-line anchors are parametrized per display-tile layout, so the
-/// same street's label anchors land at *different world positions* at
-/// zoom z and z+1 — while the label fade's continuity key is
-/// position-free, so the fade tracker hands the label over at full
-/// opacity. The result on screen is a hard jump (or a momentary
-/// duplicate followed by a hard cut), never a cross-fade.
+/// The mechanism behind "street names jump at a zoom crossing".
 ///
-/// This is investigation evidence, not a regression gate: the numbers
-/// quantify how far the anchors move for a plain straight street.
+/// Along-line anchors sit at `mid + k·spacing` over the data part, in
+/// display pixels, so one level deeper they are spaced half the world
+/// distance apart and contain every anchor of the shallower level. Over
+/// the SAME data — overzoom, and the provisional layout while the next
+/// level loads — a showing street name keeps its world position across
+/// the crossing. When the next level brings its own *data* tiles, the
+/// clipped parts differ and anchors still move; the fade tracker
+/// cross-fades those.
+///
+/// Before the midpoint origin (`spacing/2 + k·spacing`, MapLibre's
+/// scheme) the two levels shared no anchor at all and every street label
+/// moved by a quarter spacing at every crossing, even over one data tile.
 // ignore_for_file: implementation_imports
 library;
 
@@ -105,7 +109,7 @@ double _nearest(Offset p, Iterable<Offset> candidates) {
 }
 
 void main() {
-  test('along-line anchors move across a zoom crossing, same continuity key',
+  test('along-line anchors move when the next level brings its own data tiles',
       () {
     final theme = _theme({'symbol-placement': 'line', 'symbol-spacing': 250});
 
@@ -166,15 +170,15 @@ void main() {
     // ignore: avoid_print
     print('handoff jump per outgoing anchor: $jumps px');
 
-    // A straight street with default symbol-spacing: the handoff moves
-    // the label by a large fraction of the spacing — far beyond the
-    // sub-pixel noise a position-aware match would absorb.
+    // Distinct data tiles clip the street differently, so the midpoint
+    // origin moves with them: the handoff still moves the label by a
+    // large fraction of the spacing, and the fade tracker cross-fades.
     expect(jumps, anyElement(greaterThan(50)));
   });
 
   test(
-      'provisional overzoom layout of the SAME data also moves along-line '
-      'anchors', () {
+      'over the SAME data (overzoom / provisional layout) along-line '
+      'anchors are nested across the crossing', () {
     final theme = _theme({'symbol-placement': 'line', 'symbol-spacing': 250});
     final z16Data = _tile(
       const TileKey(16, 0, 0),
@@ -195,7 +199,7 @@ void main() {
     print('provisional anchors @z17 world px: $provisional');
     // ignore: avoid_print
     print('handoff jump per outgoing anchor: $jumps px');
-    expect(jumps, anyElement(greaterThan(50)));
+    expect(jumps, everyElement(lessThan(0.5)));
   });
 
   test('point-label anchors are world-stable across the same crossing', () {

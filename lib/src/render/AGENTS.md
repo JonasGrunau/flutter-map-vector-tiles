@@ -49,10 +49,14 @@ clips at tile seams.
   allocation each) on a dense footpath tile — the z15–16 zoom-crossing jank
   the bench caught. Tile geometry is polylines only, so the outputs are
   pixel-equivalent; keep it that way if geometry ever grows curves.
-- **Along-line anchor parametrization must stay global.** Anchors sit at
-  `spacing/2 + k·spacing` measured over the *full* line; windowing may skip
-  enumeration, never re-base the distances, or labels jump between display
-  tiles.
+- **Along-line anchor parametrization must stay global and nested.**
+  Anchors sit at `mid + k·spacing` (every integer k) measured over the
+  *full* line from its midpoint; windowing may skip enumeration, never
+  re-base the distances, or labels jump between display tiles. The
+  midpoint origin is what makes level z+1's anchors a superset of level
+  z's over the same data — do not "restore" MapLibre's `spacing/2 +
+  k·spacing`, which shares no anchor across a crossing and moves every
+  street name at each one (`bench/test/anchor_continuity_test.dart`).
 - **Shaping is the expensive half of the symbol phase**, by an order
   of magnitude (sub-millisecond extraction against 2-9 ms of
   `prewarm` on a real city tile). That is why `prewarm` is resumable
@@ -165,7 +169,17 @@ clips at tile seams.
   looks up (`anchor`, `flip`, `textDropped`) and replayed, because replay
   frames run against a permissive collision index. A new space-dependent
   choice added to `_prepare` without one shows up as that choice
-  flickering at the placement interval.
+  flickering at the placement interval. The converse holds for
+  *geometry-dependent rejections*: curved text's `text-max-angle` and
+  fit-on-its-line checks are placement decisions too, so on a permissive
+  index (replay frames and fade-out ghosts) a winner is never dropped by
+  them — the bend check is skipped and text that outgrew its line is drawn
+  straight at its anchor. Re-judging them per frame made a winner vanish
+  with no ghost (the ghost runs the same check): Schmuzerstraße blinked 24×
+  per stability run, and street names popped out at full opacity on every
+  zoom-out. On a pass, an incumbent gets 1.25× `text-max-angle`.
+  `LabelPainter.debugRejectProbe` reports every such rejection for the
+  bench.
 - **Placement state belongs in `PlacementMemory`, never on the
   `SymbolInstance`.** Instances are rebuilt per display-tile layout, so
   anything stored on one is lost at every zoom crossing and republish —
