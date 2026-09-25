@@ -121,7 +121,10 @@ the line's midpoint, for every integer k. `symbol-spacing` is in display
 pixels, so one level deeper it spans half the world distance and the
 anchor set contains every anchor of the level above: over the same data
 (overzoom, and the provisional layout while a level loads) a street name
-keeps its exact world position across a crossing. MapLibre's
+keeps its exact world position across a crossing — for a
+`symbol-spacing` that does not change between the two levels, which is
+how styles almost always declare it (a zoom-dependent spacing re-spaces
+the line, and its anchors move with it). MapLibre's
 `spacing/2 + k·spacing` from the line start shares no anchor between two
 levels and moved every name by a quarter spacing at each crossing — the
 same nesting Google's "label crawling" patent (US8237745) reaches by

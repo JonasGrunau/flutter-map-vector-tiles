@@ -366,8 +366,11 @@ class _BenchPageState extends State<BenchPage>
     // is invisible.
     bool onScreen(Offset world) {
       final level = world / scale - worldCenter;
-      return level.dx.abs() <= size.width / 2 &&
-          level.dy.abs() <= size.height / 2;
+      // Back into screen axes: the matching space above undid the
+      // camera rotation.
+      final dx = level.dx * cosR - level.dy * sinR;
+      final dy = level.dx * sinR + level.dy * cosR;
+      return dx.abs() <= size.width / 2 && dy.abs() <= size.height / 2;
     }
 
     final contR2 = math.pow(_continuityRadiusPx * scale, 2);
@@ -470,7 +473,9 @@ class _BenchPageState extends State<BenchPage>
             break;
           }
         }
-        if (!jumped) {
+        // Only a disappearance someone could see may later pair up as
+        // a blink or jump.
+        if (!jumped && onScreen(p.world)) {
           _labelsGone.add(_GoneLabel(key, p.world, now, p.alongLine));
         }
       }

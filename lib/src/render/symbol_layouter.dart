@@ -411,7 +411,10 @@ class SymbolLayouter {
   /// Over the same data (overzoom — every display level past the
   /// source's maxzoom) a street label that is showing keeps its exact
   /// world position across a zoom crossing, and the new level only adds
-  /// labels between the existing ones. The MapLibre-style
+  /// labels between the existing ones. This holds for a `symbol-spacing`
+  /// that is constant across the two levels, as styles almost always
+  /// declare it; a zoom-dependent spacing re-spaces the line and its
+  /// anchors move with it. The MapLibre-style
   /// `spacing/2 + k·spacing` shares no anchor between two levels, which
   /// moved every street name by a quarter spacing at every crossing.
   static void _placeAlongLine(

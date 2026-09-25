@@ -14,8 +14,9 @@ styles that stage their `text-field` by zoom stop showing raw
   jumping and flickering while zooming. They are now spaced out from the
   line's midpoint, so the deeper level keeps every position and only adds
   names in between. That holds wherever both levels draw from the same
-  data, i.e. every zoom past the source's maxzoom. Where a level brings
-  new data tiles, names can still move and cross-fade as before. On an
+  data, i.e. every zoom past the source's maxzoom, with a `symbol-spacing`
+  that doesn't change with the zoom. Where a level brings new data tiles,
+  names can still move and cross-fade as before. On an
   iPhone along the street from the original report, along-line jumps per
   z15.5–17.5 sweep dropped from 15–18 to 1–7.
 - 🐛 Curved street names blinked while zooming: between two placement
@@ -31,7 +32,8 @@ styles that stage their `text-field` by zoom stop showing raw
   straight at its anchor until the next placement pass, and fades out
   from there.
 - 🐛 A legacy `{"stops": …}` function in `text-field` or `icon-image`
-  returned its output verbatim, so a style staging labels by zoom
+  returned its outputs (and its `default`) verbatim, so a style staging
+  labels by zoom
   (`[[14, "{name:latin}\n{name:nonlatin}"]]`) drew the template itself
   as the label. Tokens in stop outputs are now expanded, as MapLibre
   does.

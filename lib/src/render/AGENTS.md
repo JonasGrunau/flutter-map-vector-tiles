@@ -54,7 +54,8 @@ clips at tile seams.
   *full* line from its midpoint; windowing may skip enumeration, never
   re-base the distances, or labels jump between display tiles. The
   midpoint origin is what makes level z+1's anchors a superset of level
-  z's over the same data — do not "restore" MapLibre's `spacing/2 +
+  z's over the same data (for a `symbol-spacing` constant across the two
+  levels; a zoom-dependent spacing moves them regardless) — do not "restore" MapLibre's `spacing/2 +
   k·spacing`, which shares no anchor across a crossing and moves every
   street name at each one (`bench/test/anchor_continuity_test.dart`).
 - **Shaping is the expensive half of the symbol phase**, by an order

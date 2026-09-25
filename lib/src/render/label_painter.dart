@@ -1227,8 +1227,6 @@ class LabelPainter {
     final d0 = instance.pathDistance - halfW;
     final d1 = instance.pathDistance + halfW;
     if (d0 < 0 || d1 > path.length) {
-      debugRejectProbe?.call(
-          instance.continuityKey, 'fit', collision.permissive);
       if (collision.permissive) {
         // Whether a label fits its line is a placement decision, like
         // its bend. A replay reproduces a label the last pass accepted
@@ -1245,9 +1243,12 @@ class LabelPainter {
             icon: icon,
             text: text,
             textRect: textRect,
-            textAngle: _uprightAngle(sitting, placed.screenAngle),
+            textAngle: layer.textKeepUpright.eval(ctx)
+                ? _uprightAngle(sitting, placed.screenAngle)
+                : placed.screenAngle,
             textScale: textScale);
       }
+      debugRejectProbe?.call(instance.continuityKey, 'fit', false);
       return iconFallback();
     }
 

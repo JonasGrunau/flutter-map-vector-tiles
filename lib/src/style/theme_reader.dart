@@ -248,9 +248,9 @@ class ThemeReader {
   /// `text-field` / `icon-image` — the two properties whose spec
   /// declares `tokens`. Beyond a bare template string, MapLibre also
   /// expands `{token}`s in the string outputs of a legacy stop function
-  /// (`{"stops": [[14, "{name:latin}\n{name:nonlatin}"]]}`); without
-  /// that the template itself was drawn as the label text for the stops
-  /// that used one.
+  /// (`{"stops": [[14, "{name:latin}\n{name:nonlatin}"]]}`) and in its
+  /// `default`; without that the template itself was drawn as the label
+  /// text for the stops that used one.
   static StringProp _tokenString(
       ExpressionParser parser, Object? json, String fallback) {
     final stops = json is Map ? json['stops'] : null;
@@ -264,6 +264,10 @@ class ThemeReader {
         final template = stop[1] as String;
         templates[template] ??= _tokenExpr(parser, template);
       }
+    }
+    final defaultValue = (json as Map)['default'];
+    if (defaultValue is String && defaultValue.contains('{')) {
+      templates[defaultValue] ??= _tokenExpr(parser, defaultValue);
     }
     final p = parser.parseForProperty(json);
     if (templates.isEmpty) {

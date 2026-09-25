@@ -403,7 +403,8 @@ the tile rasters, which is what the behaviour below rests on:
   between: over the same data (every level past the source's maxzoom) a
   street name you are looking at doesn't move when a level hands over.
   Where the next level brings its own data tiles, the clipped lines
-  differ and a name can genuinely sit elsewhere on its road; each sitting
+  differ, or where the style's `symbol-spacing` changes with the zoom, a
+  name can genuinely sit elsewhere on its road; each sitting
   then fades on its own clock, the old position easing out while the new
   one fades in, instead of the name teleporting at full opacity.
 - **Placement is remembered, not re-derived.** A label drawable from more
