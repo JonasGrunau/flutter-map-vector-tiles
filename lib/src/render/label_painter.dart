@@ -1959,6 +1959,7 @@ class _DrawableSymbol {
 
   void draw(Canvas canvas, double devicePixelRatio) {
     icon?.draw(canvas, devicePixelRatio);
+    final textScale = _snapTextScale(this.textScale, devicePixelRatio);
     final glyphs = curvedGlyphs;
     if (glyphs != null) {
       // All halos first: a glyph's halo must never cut into its
@@ -1990,16 +1991,33 @@ class _DrawableSymbol {
       t.fill.paint(canvas, topLeft);
       canvas.restore();
     } else if (textScale != 1) {
+      // Scaled about the centre: the snapped scale may differ from the
+      // one [textRect] was sized with by a fraction of a pixel, and
+      // that difference must not shift the label off its box.
       canvas.save();
-      canvas.translate(textRect.left, textRect.top);
+      canvas.translate(textRect.center.dx, textRect.center.dy);
       canvas.scale(textScale);
-      t.halo?.paint(canvas, Offset.zero);
-      t.fill.paint(canvas, Offset.zero);
+      final topLeft = Offset(-t.size.width / 2, -t.size.height / 2);
+      t.halo?.paint(canvas, topLeft);
+      t.fill.paint(canvas, topLeft);
       canvas.restore();
     } else {
       t.halo?.paint(canvas, textRect.topLeft);
       t.fill.paint(canvas, textRect.topLeft);
     }
+  }
+
+  /// [scale] snapped so the drawn font size lands on whole device
+  /// pixels. Impeller keys its glyph atlas by the device text scale
+  /// rounded to 1/200, so an unsnapped `text-size` ramp hands it a new
+  /// size at every eval-zoom step and every visible glyph, halo stroke
+  /// included, is rasterized again on the raster thread. Snapped, a
+  /// ramp only produces a new size once per device pixel of font
+  /// size, and sizes seen before stay cached.
+  static double _snapTextScale(double scale, double devicePixelRatio) {
+    if (scale == 1) return 1;
+    final unit = LabelPainter._shapeSize * devicePixelRatio;
+    return math.max(1, (scale * unit).round()) / unit;
   }
 }
 

@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-Street names stop jumping, blinking and popping out while zooming, and
+Street names stop jumping, blinking and popping out while zooming,
 styles that stage their `text-field` by zoom stop showing raw
-`{name:latin}` templates.
+`{name:latin}` templates, and labels cost far less GPU time mid-zoom.
 
 - 🎨 **Street names stay put across zoom levels.** Along-line labels were
   spaced `spacing/2 + k·spacing` from the start of their line, so the
@@ -19,6 +19,13 @@ styles that stage their `text-field` by zoom stop showing raw
   names can still move and cross-fade as before. On an
   iPhone along the street from the original report, along-line jumps per
   z15.5–17.5 sweep dropped from 15–18 to 1–7.
+- ⚡ Labels no longer re-rasterize every glyph while zooming. The drawn
+  text size followed the `text-size` ramp in tiny steps, and Impeller
+  caches glyphs per size, so each step rasterized every visible glyph
+  and halo again on the raster thread. Drawn sizes now snap to whole
+  device pixels. On a Snapdragon 778G+ phone the raster-thread p90 during
+  a slow zoom sweep fell from 34–40 ms to 18 ms and the sweep went from
+  44 to 55 fps.
 - 🐛 Curved street names blinked while zooming: between two placement
   passes (and while fading out) a label was re-checked against
   `text-max-angle` at every frame's zoom and dropped, with nothing drawn,
