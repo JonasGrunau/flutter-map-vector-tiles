@@ -229,6 +229,12 @@ class LabelPainter {
   @visibleForTesting
   int get debugTextCacheLength => _textCache.length;
 
+  /// The scale text drawn at [scale] actually uses on a
+  /// [devicePixelRatio] screen.
+  @visibleForTesting
+  static double debugSnapTextScale(double scale, double devicePixelRatio) =>
+      _DrawableSymbol._snapTextScale(scale, devicePixelRatio);
+
   late final _textCache = LruCache<String, _LaidOutText>(
       maxEntries: textCacheEntries,
       onEvict: (_, text) => _retired.add(text.dispose));
@@ -2014,10 +2020,15 @@ class _DrawableSymbol {
   /// included, is rasterized again on the raster thread. Snapped, a
   /// ramp only produces a new size once per device pixel of font
   /// size, and sizes seen before stay cached.
+  ///
+  /// Snapped down, never up: collision placed the text at the exact
+  /// scale, and a label drawn larger than its box could overlap a
+  /// neighbour that the box kept clear. The epsilon keeps a scale that
+  /// is already on the grid from losing a pixel to float error.
   static double _snapTextScale(double scale, double devicePixelRatio) {
     if (scale == 1) return 1;
     final unit = LabelPainter._shapeSize * devicePixelRatio;
-    return math.max(1, (scale * unit).round()) / unit;
+    return math.max(1, (scale * unit + 1e-6).floor()) / unit;
   }
 }
 

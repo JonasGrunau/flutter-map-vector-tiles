@@ -202,7 +202,8 @@ clips at tile seams.
   at each eval-zoom step. Snapped to whole device pixels of font size,
   the raster-thread p90 on a Snapdragon 778G+ dropped from ~34–40 ms to
   ~18 ms during zoom sweeps. Collision and layout keep the exact scale;
-  only drawing snaps, about its centre.
+  only drawing snaps, about its centre, and always down, so a label is
+  never drawn larger than the box that kept its neighbours clear.
 - **Collision boxes and cluster metrics are reference-size × scale.**
   Every use of a laid-out text's `size`/`clusters` must be multiplied by
   the symbol's `textScale`; a missed multiplication shows up as collision
