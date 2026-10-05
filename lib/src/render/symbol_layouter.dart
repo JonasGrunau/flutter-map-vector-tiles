@@ -396,13 +396,27 @@ class SymbolLayouter {
   /// Places anchors along a polyline every [spacing] logical pixels
   /// (or a single anchor at the middle when spacing is infinite).
   ///
-  /// Anchors keep their full-line parametrization — the k-th anchor sits
-  /// at `spacing/2 + k·spacing` measured over the *whole* line — so an
-  /// anchor lands at the same world position no matter which display
-  /// tile lays it out. Only the *enumeration* is windowed: segments that
-  /// cannot reach the tile (where `add` would reject every anchor) are
-  /// skipped, which at deep overzoom avoids walking targets across the
-  /// entire data tile.
+  /// Anchors keep their full-line parametrization — they sit at
+  /// `total/2 + k·spacing` for every integer k, measured over the *whole*
+  /// line — so an anchor lands at the same world position no matter
+  /// which display tile lays it out. Only the *enumeration* is windowed:
+  /// segments that cannot reach the tile (where `add` would reject every
+  /// anchor) are skipped, which at deep overzoom avoids walking targets
+  /// across the entire data tile.
+  ///
+  /// The origin is the line's midpoint, not its start, so the anchor
+  /// sets of consecutive zoom levels are *nested*: `spacing` is in
+  /// display pixels, so one level deeper it covers half the world
+  /// distance, and `mid + k·spacing/2` contains every `mid + k·spacing`.
+  /// Over the same data (overzoom — every display level past the
+  /// source's maxzoom) a street label that is showing keeps its exact
+  /// world position across a zoom crossing, and the new level only adds
+  /// labels between the existing ones. This holds for a `symbol-spacing`
+  /// that is constant across the two levels, as styles almost always
+  /// declare it; a zoom-dependent spacing re-spaces the line and its
+  /// anchors move with it. The MapLibre-style
+  /// `spacing/2 + k·spacing` shares no anchor between two levels, which
+  /// moved every street name by a quarter spacing at every crossing.
   static void _placeAlongLine(
     Float32List part,
     double scale,
@@ -448,18 +462,18 @@ class SymbolLayouter {
     if (maxX < lo || minX >= hi || maxY < lo || minY >= hi) return;
     final path = SymbolPath(points, cumulative);
 
+    final mid = total / 2;
     if (!spacing.isFinite || spacing <= 0 || total < spacing) {
-      final d = total / 2;
-      add(path.pointAt(d), path.angleAt(d), true, path: path, pathDistance: d);
+      add(path.pointAt(mid), path.angleAt(mid), true,
+          path: path, pathDistance: mid);
       return;
     }
 
     // Windowed enumeration: the half-open segment windows [c0, c1)
-    // partition [0, total), so each global target d = half + k·spacing
+    // partition [0, total), so each global target d = mid + k·spacing
     // is visited exactly once, by the segment `SymbolPath.segmentAt`
     // would assign it to; the interpolation mirrors `pointAt`/`angleAt`
     // for bit-identical anchors.
-    final half = spacing / 2;
     for (var i = 0; i + 1 < n; i++) {
       final c0 = cumulative[i];
       final c1 = cumulative[i + 1];
@@ -475,9 +489,8 @@ class SymbolLayouter {
           (y0 >= hi && y1 >= hi)) {
         continue;
       }
-      var k = ((c0 - half) / spacing).ceil();
-      if (k < 0) k = 0;
-      var d = half + k * spacing;
+      var k = ((c0 - mid) / spacing).ceil();
+      var d = mid + k * spacing;
       if (d >= c1) continue;
       final segment = c1 - c0;
       final angle = math.atan2(y1 - y0, x1 - x0);
@@ -486,7 +499,7 @@ class SymbolLayouter {
         add(Offset(x0 + (x1 - x0) * f, y0 + (y1 - y0) * f), angle, true,
             path: path, pathDistance: d);
         k++;
-        d = half + k * spacing;
+        d = mid + k * spacing;
       }
     }
   }

@@ -187,6 +187,98 @@ void main() {
     expect(placed, isEmpty);
   });
 
+  test(
+      'a replay frame does not re-judge text-max-angle (no one-frame '
+      'blink)', () {
+    // A road that turns 60° at distance 170. Zoomed in, the label spans
+    // [~140, ~160] and clears the turn; zoomed out, the same label spans
+    // the turn. Placement happens zoomed in; the next frame is a replay
+    // of that decision at the zoomed-out scale.
+    final layer = _lineLayer();
+    final turn =
+        Offset(170 + 100 * math.cos(math.pi / 3), 100 * math.sin(math.pi / 3));
+    final path = _path([Offset.zero, const Offset(170, 0), turn]);
+    final base = _lineSymbol(layer, path, 'Hauptstraße', pathDistance: 150);
+    PlacedSymbol at(double scale) {
+      final transform =
+          TileTransform(origin: Offset.zero, scale: scale, rotation: 0);
+      return PlacedSymbol(
+        instance: base.instance,
+        screenAnchor: transform.apply(base.instance.anchor),
+        screenAngle: base.instance.angle,
+        transform: transform,
+      );
+    }
+
+    final painter = LabelPainter();
+    addTearDown(painter.dispose);
+    final t0 = DateTime(2026);
+    List<PlacedSymbol> frame(double scale, Duration after) {
+      final recorder = ui.PictureRecorder();
+      final placed = painter.paint(
+        canvas: Canvas(recorder),
+        screenSize: const Size(2000, 2000),
+        styleZoom: 12,
+        symbols: [at(scale)],
+        labelFadeDuration: const Duration(milliseconds: 150),
+        placementGeneration: 1,
+        now: t0.add(after),
+      );
+      recorder.endRecording().dispose();
+      return placed;
+    }
+
+    expect(frame(4, Duration.zero), hasLength(1),
+        reason: 'placed while the turn lies outside the label');
+    expect(frame(1, const Duration(milliseconds: 16)), hasLength(1),
+        reason: 'the replay reproduces the winner, bend and all');
+  });
+
+  test(
+      'a replay frame keeps a winner that outgrew its line (no pop on '
+      'zoom-out)', () {
+    // A short straight road: zoomed in the label fits it with room to
+    // spare; zoomed out the same text is longer than the road. The
+    // placement pass happens zoomed in, the next frame replays it
+    // zoomed out — the winner must still draw.
+    final layer = _lineLayer();
+    final path = _path(const [Offset.zero, Offset(60, 0)]);
+    final base = _lineSymbol(layer, path, 'Hauptstraße');
+    PlacedSymbol at(double scale) {
+      final transform =
+          TileTransform(origin: Offset.zero, scale: scale, rotation: 0);
+      return PlacedSymbol(
+        instance: base.instance,
+        screenAnchor: transform.apply(base.instance.anchor),
+        screenAngle: base.instance.angle,
+        transform: transform,
+      );
+    }
+
+    final painter = LabelPainter();
+    addTearDown(painter.dispose);
+    final t0 = DateTime(2026);
+    List<PlacedSymbol> frame(double scale, Duration after) {
+      final recorder = ui.PictureRecorder();
+      final placed = painter.paint(
+        canvas: Canvas(recorder),
+        screenSize: const Size(2000, 2000),
+        styleZoom: 12,
+        symbols: [at(scale)],
+        labelFadeDuration: const Duration(milliseconds: 150),
+        placementGeneration: 1,
+        now: t0.add(after),
+      );
+      recorder.endRecording().dispose();
+      return placed;
+    }
+
+    expect(frame(4, Duration.zero), hasLength(1),
+        reason: 'fits its road zoomed in');
+    expect(frame(1, const Duration(milliseconds: 16)), hasLength(1),
+        reason: 'the replay reproduces the winner, drawn straight');
+  });
+
   test('right-to-left line keeps text placeable (keep-upright flip)', () {
     final layer = _lineLayer();
     // Line runs right-to-left on screen.

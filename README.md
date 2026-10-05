@@ -344,7 +344,8 @@ bounds.
 **Expressions.** The practical MapLibre set: `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,
 exponential, cubic-bezier), math, string and color operators, `let`/`var`,
-legacy filters, legacy `{stops}` functions and `{token}` templates.
+legacy filters, legacy `{stops}` functions (with `{token}` templates in
+their `text-field` / `icon-image` outputs) and `{token}` templates.
 
 Unsupported layer types, paint properties and expressions are skipped per
 layer with a warning, so one weird layer never kills the whole style.
@@ -396,11 +397,16 @@ the tile rasters, which is what the behaviour below rests on:
   introduces ones that weren't already visible, so a label that had been
   crowded out, a street name under a POI say, cannot flash up just as the
   level departs.
-- **Street names cross-fade between per-level positions.** Along-line
-  labels are re-spaced per zoom level, so the same name can genuinely sit
-  elsewhere on its road after a crossing. Each sitting fades on its own
-  clock: the old position eases out where it was while the new one fades
-  in, instead of the name teleporting at full opacity.
+- **Street names stay put across zoom levels.** Along-line labels are
+  spaced out from the middle of their line, so the next level deeper
+  keeps every position of the current one and only adds names in
+  between: over the same data (every level past the source's maxzoom) a
+  street name you are looking at doesn't move when a level hands over.
+  Where the next level brings its own data tiles, the clipped lines
+  differ, or where the style's `symbol-spacing` changes with the zoom, a
+  name can genuinely sit elsewhere on its road; each sitting
+  then fades on its own clock, the old position easing out while the new
+  one fades in, instead of the name teleporting at full opacity.
 - **Placement is remembered, not re-derived.** A label drawable from more
   than one feature, a street name on both carriageways or the same name
   from two zoom levels, stays on the one it is already on; a label at a
@@ -416,9 +422,12 @@ the tile rasters, which is what the behaviour below rests on:
   and rotating drag labels through each other constantly, and re-deciding
   every frame turns each of those brushes past into a label that disappears
   and comes straight back. Between decisions neighbours are simply allowed
-  to overlap for a moment, as they are in MapLibre. An unchanged repaint
-  creates no new placement work, so the animation ticker settles when the
-  last real change has been placed.
+  to overlap for a moment, as they are in MapLibre. A curved street name
+  accepted by a decision also keeps drawing until the next one, even if
+  zooming makes its road bend too sharply under it or its text outgrow its
+  stretch of road; it then fades out instead of vanishing. An unchanged
+  repaint creates no new placement work, so the animation ticker settles
+  when the last real change has been placed.
 
 ## 🏗️ Architecture
 

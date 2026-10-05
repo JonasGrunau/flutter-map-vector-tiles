@@ -144,4 +144,72 @@ void main() {
     expect(theme.referencedSourceLayers['openmaptiles'],
         containsAll(['water', 'transportation', 'place']));
   });
+
+  test('legacy stop outputs of text-field expand their {tokens}', () {
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'poi',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'poi',
+          'layout': {
+            'text-field': {
+              'stops': [
+                [12, '{name:latin}'],
+                [15, '{name:latin}\n{name:nonlatin}'],
+                [17, 'literal'],
+              ],
+            },
+          },
+        },
+      ],
+    });
+    final layer = theme.layers.single as SymbolThemeLayer;
+    const props = {'name:latin': 'Moskva', 'name:nonlatin': 'Москва'};
+    expect(layer.textField.eval(const EvalContext(zoom: 13, properties: props)),
+        'Moskva');
+    expect(layer.textField.eval(const EvalContext(zoom: 16, properties: props)),
+        'Moskva\nМосква');
+    expect(layer.textField.eval(const EvalContext(zoom: 18, properties: props)),
+        'literal');
+    // The token names are feature reads: the prep-side keep-filter
+    // must not strip them.
+    final referenced = layer.referencedProperties;
+    if (referenced != null) {
+      expect(referenced, containsAll(['name:latin', 'name:nonlatin']));
+    }
+  });
+
+  test('a legacy function\'s default expands its {tokens}', () {
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'poi',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'poi',
+          'layout': {
+            'text-field': {
+              'property': 'class',
+              'type': 'categorical',
+              'stops': [
+                ['shop', '{name} (shop)'],
+              ],
+              'default': '{name}',
+            },
+          },
+        },
+      ],
+    });
+    final layer = theme.layers.single as SymbolThemeLayer;
+    expect(
+        layer.textField.eval(const EvalContext(
+            zoom: 14, properties: {'class': 'shop', 'name': 'Rewe'})),
+        'Rewe (shop)');
+    expect(
+        layer.textField.eval(const EvalContext(
+            zoom: 14, properties: {'class': 'cafe', 'name': 'Tambosi'})),
+        'Tambosi');
+  });
 }

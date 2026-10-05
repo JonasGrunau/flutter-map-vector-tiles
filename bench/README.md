@@ -71,16 +71,24 @@ exactly that: four slow monotonic sweeps across the band (cold in/out, then
 warm in/out), ~16 s each, with a `STABILITY` line per sweep:
 
 ```
-BENCH[run] STABILITY cold-in z=15.0..17.5 frames=2158 seen/frame=79 · \
-  pt popIn=13 popOut=91 blink=36 appear=146 gone=177 · ln popIn=7 …
+BENCH[run] STABILITY cold-out z=15.5..17.5 frames=1944 seen/frame=86 · \
+  pt popIn=1 popOut=1 blink=5 jump=1 appear=… · ln popIn=0 popOut=0 …
 ```
 
 `pt`/`ln` split point labels from along-line ones. `popIn` counts labels
 appearing at full opacity (a skipped fade-in), `popOut` full-opacity labels
 vanishing with no ghost behind them, `blink` labels disappearing and
 returning at the same spot within a few seconds — the
-visible→hidden→visible twitch. `appear`/`gone` are all appearances and
-disappearances, for rates. Monotonic sweeps are the point: a zoom gate
+visible→hidden→visible twitch — and `jump` the same label leaving one
+sitting and taking another 64–600 px away within 1 s (a street name
+re-anchored at a crossing; the point column is inflated by same-key
+siblings such as housenumbers). `appear`/`gone` are all appearances and
+disappearances, for rates. Only events **on the visible screen** count:
+labels are laid out up to 150 px past the viewport, and events out there
+— the cull line sweeping over a label — used to dominate every counter
+while being invisible. Events right at the band ends (z at `BENCH_LO` /
+`BENCH_HI`) are the sweep turning round and the next phase starting, not
+map behaviour. Monotonic sweeps are the point: a zoom gate
 fires at most once per direction, so every blink is a genuine placement
 flip-flop rather than the style re-crossing its thresholds. Labels are
 matched frame-to-frame in zoom-20 world space (48 px continuation radius,
@@ -88,6 +96,15 @@ matched frame-to-frame in zoom-20 world space (48 px continuation radius,
 (`LabelPainter.debugDrawnProbe`) that costs one skipped null-check outside
 this mode and `manual` mode — which appends the same `STABILITY` line to
 each of its windows.
+
+Every blink, jump and pop-out also prints its own line (`BLINK z=… off=…ms
+from-centre=…px key=(layer, text, icon)`, `JUMP …`, `POPOUT …`), and each
+sweep ends with `REJECT <count> <reason> <key>` lines — why candidates were
+not drawn (`fit`, `angle`, `collision`, `repeat`, and for fade-out ghosts
+`ghost:none` / `ghost:ramp` / `ghost:prepare`; `/replay` marks frames
+between placement passes), from `LabelPainter.debugRejectProbe`. To chase
+one label, `BENCH_WATCH=<regexp>` prints its rejections frame by frame and
+`BENCH_LOG_GONE=true` prints every on-screen disappearance with its zoom.
 
 ## Reading the output
 
@@ -158,6 +175,8 @@ All via `--dart-define`. Zooms and coordinates are integers because
 | `BENCH_MODE` | `bench` | `idle` parks the map at `BENCH_ZOOM10` for inspection; `manual` enables gestures and reports windows + per-jank lines while you drive; `stability` runs four slow monotonic sweeps and counts label pop-ins/pop-outs/blinks (see below) |
 | `BENCH_SETUP` | `default` | `safenow` mirrors the SafeNow app's layer wiring: no raster sources, 16 MiB memory cache, 150 MiB disk cache, zoom 2–21, the app's gesture set in manual mode. Combine with that app's `STYLE_URL`/`MAPTILER_KEY` — keys are passed per invocation and never committed |
 | `BENCH_ZOOM10` | `170` | idle-mode zoom, in tenths |
+| `BENCH_WATCH` | — | stability/manual: regexp over continuity keys whose every rejection is printed as a `WATCH` line |
+| `BENCH_LOG_GONE` | `false` | stability/manual: print a `GONE` line for every on-screen label that stops drawing |
 
 The phase matrix (speed × labels on/off × cache budget × cold/warm) is the
 `_phases` list in `lib/main.dart`. The labels-off arm is a control, not filler:
