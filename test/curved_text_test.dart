@@ -390,4 +390,114 @@ void main() {
     final placed = _paint([_lineSymbol(layer, path, 'Shield')]);
     expect(placed, hasLength(1));
   });
+
+  group('glyph atlas', () {
+    SymbolThemeLayer haloLayer() {
+      final theme = const ThemeReader().read({
+        'layers': [
+          {
+            'id': 'road-label',
+            'type': 'symbol',
+            'source': 's',
+            'source-layer': 'transportation_name',
+            'layout': {
+              'symbol-placement': 'line',
+              'text-field': '{name}',
+              'text-size': 13,
+            },
+            'paint': {
+              'text-color': '#333333',
+              'text-halo-color': '#ffffff',
+              'text-halo-width': 1.5,
+            },
+          },
+        ],
+      });
+      return theme.layers.single as SymbolThemeLayer;
+    }
+
+    // A gentle arc, so the label is laid out glyph by glyph.
+    final arc = _path([
+      for (var i = 0; i <= 20; i++)
+        Offset(20 + i * 18.0, 150 + 30 * math.sin(i / 20 * math.pi)),
+    ]);
+
+    Future<(Uint8List, LabelPainter)> render(
+        {required bool atlas, double dpr = 2}) async {
+      final painter = LabelPainter()..rasterizeGlyphs = atlas;
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder)..scale(dpr);
+      // An opaque backdrop, so the halo's colour shows in the pixels.
+      canvas.drawColor(const Color(0xff808080), BlendMode.src);
+      final placed = painter.paint(
+        canvas: canvas,
+        screenSize: const Size(400, 300),
+        styleZoom: 12,
+        symbols: [_lineSymbol(haloLayer(), arc, 'Hauptstraße')],
+        devicePixelRatio: dpr,
+        placementGeneration: _nextPlacementGeneration++,
+      );
+      expect(placed, hasLength(1));
+      final picture = recorder.endRecording();
+      final image =
+          await picture.toImage((400 * dpr).round(), (300 * dpr).round());
+      picture.dispose();
+      final bytes = await image.toByteData();
+      image.dispose();
+      return (bytes!.buffer.asUint8List(), painter);
+    }
+
+    test('draws curved text like the paragraph path', () async {
+      final (viaAtlas, atlasPainter) = await render(atlas: true);
+      final (viaParagraphs, paragraphPainter) = await render(atlas: false);
+      addTearDown(atlasPainter.dispose);
+      addTearDown(paragraphPainter.dispose);
+      expect(atlasPainter.debugGlyphAtlas.debugCellCount, greaterThan(0),
+          reason: 'the atlas path was taken');
+      expect(paragraphPainter.debugGlyphAtlas.debugCellCount, 0,
+          reason: 'the paragraph path was taken');
+      var inked = 0;
+      var off = 0;
+      var sum = 0;
+      for (var i = 0; i < viaAtlas.length; i += 4) {
+        var pixel = 0;
+        for (var c = 0; c < 3; c++) {
+          pixel =
+              math.max(pixel, (viaAtlas[i + c] - viaParagraphs[i + c]).abs());
+        }
+        final ink = viaParagraphs[i] != 0x80 || viaAtlas[i] != 0x80;
+        if (ink) inked++;
+        if (pixel > 96) off++;
+        sum += pixel;
+      }
+      expect(inked, greaterThan(1000), reason: 'text was drawn');
+      // Bilinear resampling softens edges by a fraction of a pixel; a
+      // misplaced or mis-scaled glyph moves whole strokes.
+      expect(off / inked, lessThan(0.01),
+          reason: 'off=$off inked=$inked mean=${sum / inked}');
+    });
+
+    test('a second frame reuses the cells', () async {
+      final painter = LabelPainter();
+      addTearDown(painter.dispose);
+      void frame() {
+        final recorder = ui.PictureRecorder();
+        painter.paint(
+          canvas: Canvas(recorder),
+          screenSize: const Size(400, 300),
+          styleZoom: 12,
+          symbols: [_lineSymbol(haloLayer(), arc, 'Hauptstraße')],
+          devicePixelRatio: 2,
+          placementGeneration: _nextPlacementGeneration++,
+        );
+        recorder.endRecording().dispose();
+      }
+
+      frame();
+      final cells = painter.debugGlyphAtlas.debugCellCount;
+      expect(cells, greaterThan(0));
+      frame();
+      expect(painter.debugGlyphAtlas.debugCellCount, cells);
+    });
+  });
 }
