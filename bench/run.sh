@@ -55,4 +55,7 @@ sleep 2
 pkill -9 -f "flutter_tools.snapshot run" 2>/dev/null || true
 
 echo "--- $LABEL ---"
-grep -E "^flutter: BENCH\[" "$OUT" || echo "no results; see $OUT"
+# iOS logs as `flutter: …`, Android as `I/flutter (<pid>): …`.
+RESULTS=$(grep -E "^(flutter|I/flutter \( *[0-9]+\)): BENCH\[" "$OUT" \
+  | sed -E 's/^(flutter|I\/flutter \( *[0-9]+\)): //')
+echo "${RESULTS:-no results; see $OUT}"

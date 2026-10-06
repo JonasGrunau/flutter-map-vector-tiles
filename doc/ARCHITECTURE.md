@@ -103,7 +103,13 @@ each frame in screen space:
 Text is shaped **once per unique label at a 16 px reference size** and
 drawn through the canvas transform at the evaluated `text-size` — valid
 because every layout input is em-proportional, and crisp because glyphs
-rasterize at device scale under the transform. The shape-cache key
+rasterize at device scale under the transform. The drawn scale is
+snapped down so the device font size lands on a whole pixel (down, so
+drawn text never outgrows the box collision placed): Impeller keys
+its glyph atlas by the device text scale rounded to 1/200, so an
+unsnapped `text-size` ramp would hand it a new size at every eval-zoom
+step and re-rasterize every visible glyph and halo stroke on the raster
+thread. The shape-cache key
 therefore contains no font size; `text-opacity` (1/32 steps) and
 `text-halo-width` (1/128-em ratio steps) enter it quantized, so style
 ramps re-shape a label a bounded number of times ever rather than per
