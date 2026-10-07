@@ -341,7 +341,17 @@ and its ghost with it, since the ghost runs the same check — and on
 every zoom-out, street names whose text outgrew their stretch of road
 popped out at full opacity. On a pass, a label already on screen keeps
 its seat up to a quarter more bend than a newcomer may take, so a
-sitting near the limit does not toggle as the zoom drifts across it. The painter reports a pending pass
+sitting near the limit does not toggle as the zoom drifts across it.
+
+`text-max-angle` limits the turn between neighbouring glyphs, and the
+reading direction (`text-keep-upright`) is chosen once per label from
+the chord between its ends, as in MapLibre. A road that turns back on
+itself, such as Petersplatz in Munich looping round its church, can pass
+the first at every step and still leave the glyphs past the turn upside
+down. So a kept-upright curved label also has no glyph more than 30°
+past vertical on screen (`_uprightSlack`): a pass rejects one that
+would, and a replay or ghost draws it straight at its anchor, the same
+as text that outgrew its line. The painter reports a pending pass
 only while the latest generation differs from the one it placed, and the
 fade ticker paints until that pass runs. The final settling repaint sees
 the same generation and creates no new debt, allowing the ticker to stop

@@ -361,7 +361,10 @@ the tile rasters, which is what the behaviour below rests on:
   shield text horizontal. Nearly straight windows are drawn as a single
   rotated string for speed; scripts with contextual shaping (Arabic,
   Indic, …) fall back to straight placement so glyphs are never
-  mis-joined.
+  mis-joined. One deliberate difference: a kept-upright label whose road
+  turns back on itself (a hairpin) is dropped rather than drawn with
+  the letters past the turn upside down, which `text-max-angle` alone
+  lets through because each step of a smooth turn stays under it.
 - **Repeated road names stay spaced.** A street arrives as many features
   (one per OSM way, sometimes one per road-class style layer), each spaced
   on its own. For `symbol-placement: line`, a visible label therefore

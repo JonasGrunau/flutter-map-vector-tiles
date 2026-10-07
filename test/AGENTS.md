@@ -21,7 +21,7 @@ lifecycle or painting is covered by widget tests that pump a real
 | `symbol_layouter_test.dart` | Label placement candidates, tile-seam behaviour, overzoom |
 | `raster_source_test.dart` | Raster sources declared inside vector styles, image ref-counting |
 | `tile_store_test.dart` | Memory/disk cache keying, miss paths, disposal, stale-while-revalidate (expired entries served instantly, `onRefreshed` on changed content only, corrupt expired entries refetched, `revalidateIfStale` for results served without the stores) |
-| `curved_text_test.dart` | Text along lines and the sharp-bend fallback |
+| `curved_text_test.dart` | Text along lines and the sharp-bend fallback; the upright guard on a hairpin (dropped on a pass, drawn straight on a replay, kept without `text-keep-upright`, no false rejection near vertical) |
 | `icon_rotation_test.dart` | `icon-rotate`/`icon-rotation-alignment`, anchor/offset pivot semantics, and rotated collision bounds |
 | `label_repeat_test.dart` | Screen-space line-repeat suppression, layer priority, and invisible/gated fallback candidates |
 | `sdf_icon_test.dart` | SDF sprite tinting |

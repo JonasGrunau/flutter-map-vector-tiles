@@ -178,7 +178,12 @@ clips at tile seams.
   straight at its anchor. Re-judging them per frame made a winner vanish
   with no ghost (the ghost runs the same check): Schmuzerstraße blinked 24×
   per stability run, and street names popped out at full opacity on every
-  zoom-out. On a pass, an incumbent gets 1.25× `text-max-angle`.
+  zoom-out. On a pass, an incumbent gets 1.25× `text-max-angle`. The
+  upright guard (no glyph of a kept-upright curved label more than
+  `_uprightSlack`, 30°, past vertical) follows the same split: a pass
+  rejects (`upright`), a replay or ghost draws straight. It catches
+  hairpins, which pass `text-max-angle` at every step; never relax it
+  for incumbents.
   `LabelPainter.debugRejectProbe` reports every such rejection for the
   bench.
 - **Placement state belongs in `PlacementMemory`, never on the

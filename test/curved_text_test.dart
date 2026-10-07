@@ -99,6 +99,20 @@ List<PlacedSymbol> _paint(List<PlacedSymbol> symbols, {LabelPainter? painter}) {
   return placed;
 }
 
+/// A road that runs east for 300 px, turns back through a half circle
+/// of [radius] in [segments] steps and runs west again: a hairpin, the
+/// shape of Petersplatz in Munich around its church.
+SymbolPath _hairpin(double radius, {int segments = 18}) {
+  final points = [const Offset(0, 300), const Offset(300, 300)];
+  for (var i = 1; i <= segments; i++) {
+    final a = math.pi * i / segments;
+    points.add(Offset(
+        300 + radius * math.sin(a), 300 - radius + radius * math.cos(a)));
+  }
+  points.add(Offset(0, 300 - 2 * radius));
+  return _path(points);
+}
+
 /// The reading direction [painter] remembers for [symbol]'s label.
 bool? _flipOf(LabelPainter painter, PlacedSymbol symbol) =>
     painter.debugPlacement
@@ -185,6 +199,89 @@ void main() {
     final placed =
         _paint([_lineSymbol(layer, path, 'Corner Road', pathDistance: 100)]);
     expect(placed, isEmpty);
+  });
+
+  test(
+      'a label wrapped round a hairpin is dropped, not drawn half upside '
+      'down', () {
+    // Every step of the turn stays under text-max-angle; only the
+    // glyphs past the apex would read upside down.
+    final layer = _lineLayer();
+    final path = _hairpin(28);
+    final placed = _paint([
+      _lineSymbol(layer, path, 'Petersplatz', pathDistance: path.length / 2),
+    ]);
+    expect(placed, isEmpty);
+  });
+
+  test('without text-keep-upright the hairpin label stays', () {
+    // The control: the same label passes every other check, so the
+    // test above fails on the upright guard alone.
+    final layer = _lineLayer(layout: {'text-keep-upright': false});
+    final path = _hairpin(28);
+    final placed = _paint([
+      _lineSymbol(layer, path, 'Petersplatz', pathDistance: path.length / 2),
+    ]);
+    expect(placed, hasLength(1));
+  });
+
+  test('a road winding near vertical keeps its label', () {
+    // Swings up to ~21° either side of vertical: sideways at worst,
+    // never upside down.
+    final layer = _lineLayer();
+    final points = [
+      for (var y = 400.0; y >= 0; y -= 4)
+        Offset(200 + 15 * math.sin(y / 40), y),
+    ];
+    final placed = _paint([_lineSymbol(layer, _path(points), 'Ringstraße')]);
+    expect(placed, hasLength(1));
+  });
+
+  test(
+      'a replay draws a winner that now wraps a hairpin straight, and the '
+      'next pass drops it', () {
+    // Zoomed in, the label sits on the straight leg just before the
+    // turn; zoomed out, the same text reaches round onto the return leg.
+    final layer = _lineLayer();
+    // Each step of this turn passes text-max-angle even zoomed out, so
+    // only the upright guard can drop it.
+    final path = _hairpin(28);
+    final base = _lineSymbol(layer, path, 'Petersplatz', pathDistance: 295);
+    PlacedSymbol at(double scale) {
+      final transform =
+          TileTransform(origin: Offset.zero, scale: scale, rotation: 0);
+      return PlacedSymbol(
+        instance: base.instance,
+        screenAnchor: transform.apply(base.instance.anchor),
+        screenAngle: base.instance.angle,
+        transform: transform,
+      );
+    }
+
+    final painter = LabelPainter();
+    addTearDown(painter.dispose);
+    final t0 = DateTime(2026);
+    List<PlacedSymbol> frame(double scale, int generation, Duration after) {
+      final recorder = ui.PictureRecorder();
+      final placed = painter.paint(
+        canvas: Canvas(recorder),
+        screenSize: const Size(2000, 2000),
+        styleZoom: 12,
+        symbols: [at(scale)],
+        labelFadeDuration: const Duration(milliseconds: 150),
+        placementGeneration: generation,
+        now: t0.add(after),
+      );
+      recorder.endRecording().dispose();
+      return placed;
+    }
+
+    expect(frame(4, 1, Duration.zero), hasLength(1),
+        reason: 'placed on the straight leg');
+    expect(frame(1, 1, const Duration(milliseconds: 16)), hasLength(1),
+        reason: 'the replay still draws the winner, straight');
+    expect(frame(1, 2, const Duration(milliseconds: 600)), isEmpty,
+        reason: 'the next pass judges the wrap and drops it');
   });
 
   test(
