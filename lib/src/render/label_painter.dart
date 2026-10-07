@@ -1,5 +1,6 @@
 import 'dart:developer' as developer;
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:characters/characters.dart';
@@ -11,6 +12,7 @@ import '../style/expression.dart';
 import '../style/sprite_atlas.dart';
 import '../style/theme.dart';
 import 'fade.dart';
+import 'glyph_atlas.dart';
 import 'label_continuity.dart';
 import 'symbol_layouter.dart';
 
@@ -241,6 +243,22 @@ class LabelPainter {
   late final _glyphCache = LruCache<String, _GlyphText>(
       maxEntries: glyphCacheEntries,
       onEvict: (_, glyph) => _retired.add(glyph.dispose));
+
+  /// Curved-text glyphs rasterized once per style, grapheme and device
+  /// size, so a curved label draws in one call per pass.
+  final _glyphAtlas = GlyphAtlas();
+
+  /// Whether [paint] may rasterize new glyphs into the atlas. The layer
+  /// clears it while the app is away: atlas pages are `toImageSync`
+  /// rasters and share the tile rasters' revoked-context hazard. Labels
+  /// whose glyphs are missing then draw glyph by glyph.
+  bool rasterizeGlyphs = true;
+
+  /// Drops every atlas page, for the layer's resume recovery.
+  void discardGlyphAtlas() => _glyphAtlas.clear();
+
+  @visibleForTesting
+  GlyphAtlas get debugGlyphAtlas => _glyphAtlas;
 
   /// Evicted entries whose `TextPainter`s may still be referenced by
   /// symbols prepared earlier in the same frame — disposed at the start
@@ -602,6 +620,7 @@ class LabelPainter {
       if (byLayer != 0) return byLayer;
       return a.symbol.order - b.symbol.order;
     });
+    _prepareAtlasGlyphs(toDraw, devicePixelRatio);
     final drawn = <PlacedSymbol>[];
     if (!anyFading) {
       for (final drawable in toDraw) {
@@ -1527,6 +1546,111 @@ class LabelPainter {
     return laidOut;
   }
 
+  /// Resolves the atlas cells of every curved label in [toDraw],
+  /// rasterizing glyphs met for the first time, and hands each label its
+  /// sprite batches. A label with any glyph missing from the atlas keeps
+  /// none and draws glyph by glyph.
+  void _prepareAtlasGlyphs(
+      List<_DrawableSymbol> toDraw, double devicePixelRatio) {
+    _glyphAtlas.beginFrame();
+    final pending = <_DrawableSymbol>[];
+    for (final drawable in toDraw) {
+      final glyphs = drawable.curvedGlyphs;
+      if (glyphs == null) continue;
+      final deviceScale = devicePixelRatio *
+          _DrawableSymbol._snapTextScale(drawable.textScale, devicePixelRatio);
+      final sizeKey = (deviceScale * 64).round();
+      final halos = <(GlyphAtlasCell, _CurvedGlyph, Offset)>[];
+      final fills = <(GlyphAtlasCell, _CurvedGlyph, Offset)>[];
+      var complete = true;
+      for (final glyph in glyphs) {
+        final painters = glyph.painters;
+        for (final halo in const [true, false]) {
+          final painter = halo ? painters.halo : painters.fill;
+          if (painter == null) continue;
+          final pad = painters.pad;
+          final key = (painters.key, halo, sizeKey);
+          final cell = _glyphAtlas.lookup(key) ??
+              (rasterizeGlyphs
+                  ? _glyphAtlas.reserve(
+                      key,
+                      ((painter.width + 2 * pad) * deviceScale).ceil(),
+                      ((painter.height + 2 * pad) * deviceScale).ceil(),
+                      (canvas) {
+                        canvas.scale(deviceScale);
+                        painter.paint(canvas, Offset(pad, pad));
+                      },
+                    )
+                  : null);
+          if (cell == null) {
+            complete = false;
+            break;
+          }
+          final anchor = Offset((pad + painter.width / 2) * deviceScale,
+              (pad + painter.height / 2) * deviceScale);
+          (halo ? halos : fills).add((cell, glyph, anchor));
+        }
+        if (!complete) break;
+      }
+      drawable.atlasSprites = null;
+      if (!complete) continue;
+      drawable.atlasSprites = [
+        ..._spriteBatches(halos, devicePixelRatio),
+        ..._spriteBatches(fills, devicePixelRatio),
+      ];
+      pending.add(drawable);
+    }
+    _glyphAtlas.flush();
+    for (final drawable in pending) {
+      for (final batch in drawable.atlasSprites!) {
+        final image = _glyphAtlas.imageOf(batch.cell);
+        if (image == null) {
+          drawable.atlasSprites = null;
+          break;
+        }
+        batch.image = image;
+      }
+    }
+  }
+
+  /// One sprite batch per atlas page, in glyph order.
+  static List<_SpriteBatch> _spriteBatches(
+      List<(GlyphAtlasCell, _CurvedGlyph, Offset)> sprites,
+      double devicePixelRatio) {
+    final byPage = <int, List<(GlyphAtlasCell, _CurvedGlyph, Offset)>>{};
+    for (final sprite in sprites) {
+      (byPage[sprite.$1.page] ??= []).add(sprite);
+    }
+    return [
+      for (final page in byPage.values)
+        _SpriteBatch(page.first.$1, () {
+          final transforms = Float32List(page.length * 4);
+          final rects = Float32List(page.length * 4);
+          final scale = 1 / devicePixelRatio;
+          for (var i = 0; i < page.length; i++) {
+            final (cell, glyph, anchor) = page[i];
+            // The atlas holds device pixels; drawn at 1/dpr they come
+            // out at the snapped logical size, rotated about the
+            // glyph's centre like the paragraph path.
+            final scos = math.cos(glyph.angle) * scale;
+            final ssin = math.sin(glyph.angle) * scale;
+            transforms[i * 4] = scos;
+            transforms[i * 4 + 1] = ssin;
+            transforms[i * 4 + 2] =
+                glyph.position.dx - scos * anchor.dx + ssin * anchor.dy;
+            transforms[i * 4 + 3] =
+                glyph.position.dy - ssin * anchor.dx - scos * anchor.dy;
+            final rect = cell.rect;
+            rects[i * 4] = rect.left;
+            rects[i * 4 + 1] = rect.top;
+            rects[i * 4 + 2] = rect.right;
+            rects[i * 4 + 3] = rect.bottom;
+          }
+          return (transforms, rects);
+        }()),
+    ];
+  }
+
   /// Painters for a single glyph cluster, cached across labels — the
   /// same characters repeat constantly in map text.
   _GlyphText _glyphPainters(String grapheme, _LaidOutText text) {
@@ -1545,7 +1669,11 @@ class LabelPainter {
         textDirection: TextDirection.ltr,
       )..layout();
     }
-    final glyph = _GlyphText(fill: fill, halo: halo);
+    // Room for the halo stroke, which straddles the outline, and for
+    // glyph overhang past the advance box.
+    final stroke = text.haloStyle?.foreground?.strokeWidth ?? 0;
+    final glyph =
+        _GlyphText(key: key, fill: fill, halo: halo, pad: 2 + stroke / 2);
     _glyphCache.put(key, glyph);
     return glyph;
   }
@@ -1661,6 +1789,7 @@ class LabelPainter {
   void dispose() {
     _textCache.clear();
     _glyphCache.clear();
+    _glyphAtlas.clear();
     _disposeRetired();
   }
 }
@@ -1735,15 +1864,39 @@ class _Cluster {
 }
 
 class _GlyphText {
+  /// The glyph cache key: style and grapheme.
+  final String key;
   final TextPainter fill;
   final TextPainter? halo;
 
-  const _GlyphText({required this.fill, required this.halo});
+  /// Reference-size margin around the painters' boxes that the atlas
+  /// cell keeps, so halo strokes and overhangs are not clipped.
+  final double pad;
+
+  const _GlyphText({
+    required this.key,
+    required this.fill,
+    required this.halo,
+    required this.pad,
+  });
 
   void dispose() {
     fill.dispose();
     halo?.dispose();
   }
+}
+
+/// Curved-label glyphs that share one atlas page, as `drawRawAtlas`
+/// arguments. [image] is filled in once the atlas has been flushed.
+class _SpriteBatch {
+  final GlyphAtlasCell cell;
+  final Float32List transforms;
+  final Float32List rects;
+  ui.Image? image;
+
+  _SpriteBatch(this.cell, (Float32List, Float32List) data)
+      : transforms = data.$1,
+        rects = data.$2;
 }
 
 class _CurvedGlyph {
@@ -1920,6 +2073,13 @@ class _DrawableSymbol {
   /// apply to it. Assigned by [LabelPainter._prepare] like [opacity].
   Object? repeatKey;
 
+  /// Atlas sprite batches for [curvedGlyphs], halos first; null when the
+  /// glyphs draw as paragraphs. Assigned by
+  /// [LabelPainter._prepareAtlasGlyphs] before drawing.
+  List<_SpriteBatch>? atlasSprites;
+
+  static final _atlasPaint = Paint()..filterQuality = FilterQuality.low;
+
   bool get drawsText => text != null || curvedGlyphs != null;
 
   _DrawableSymbol(
@@ -1966,6 +2126,14 @@ class _DrawableSymbol {
   void draw(Canvas canvas, double devicePixelRatio) {
     icon?.draw(canvas, devicePixelRatio);
     final textScale = _snapTextScale(this.textScale, devicePixelRatio);
+    final sprites = atlasSprites;
+    if (sprites != null) {
+      for (final batch in sprites) {
+        canvas.drawRawAtlas(batch.image!, batch.transforms, batch.rects, null,
+            null, null, _atlasPaint);
+      }
+      return;
+    }
     final glyphs = curvedGlyphs;
     if (glyphs != null) {
       // All halos first: a glyph's halo must never cut into its

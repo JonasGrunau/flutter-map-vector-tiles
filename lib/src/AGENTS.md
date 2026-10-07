@@ -49,7 +49,8 @@ depended on by everything.
   way back (`_recoverIfSuspect`, `_discardSuspectRasters`). Two things
   to keep true while it lives: the "has been away" mark is `static` on
   purpose — the caches it condemns outlive any one layer — and anything
-  new that creates a `ui.Image` must be reachable from that recovery.
+  new that creates a `ui.Image` must be reachable from that recovery
+  (the label painter's glyph atlas is, via `discardGlyphAtlas`).
   The block comment above `_foregrounded` records the exact upstream gap
   and the condition for deleting the lot; it is tracked as
   [flutter#191255](https://github.com/flutter/flutter/issues/191255).

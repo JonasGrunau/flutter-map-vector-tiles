@@ -26,6 +26,14 @@ styles that stage their `text-field` by zoom stop showing raw
   device pixels. On a Snapdragon 778G+ phone the raster-thread p90 during
   a slow zoom sweep fell from 34–40 ms to 18 ms and the sweep went from
   44 to 55 fps.
+- ⚡ Curved street names draw from a glyph atlas. Each letter used to be
+  its own text draw with its own transform, twice over for halo and fill,
+  which made curved labels most of the label draw time on both threads.
+  Glyphs are now rasterized once per size and a curved label draws in
+  two calls. On a Snapdragon 778G+ phone, drawing labels takes 57–65%
+  less UI time while zooming. In a slow zoom sweep the raster-thread p90
+  fell by a third and the frame rate rose by 15%. Fast zooms keep their
+  frame rate, because tile rasterization limits them.
 - 🐛 Curved street names blinked while zooming: between two placement
   passes (and while fading out) a label was re-checked against
   `text-max-angle` at every frame's zoom and dropped, with nothing drawn,
