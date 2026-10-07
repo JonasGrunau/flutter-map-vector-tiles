@@ -329,6 +329,20 @@ the candidate set every few frames, so placing on each churn would be a
 Only a viewport resize places at once; replaying a decision taken for
 another screen misplaces everything.
 
+Curved text draws from a glyph atlas (`glyph_atlas.dart`). Each
+grapheme is rasterized once per style and snapped device size onto a
+1024² page, and a curved label then draws in one `drawRawAtlas` call for
+its halos and one for its fills. Drawn as paragraphs, every glyph cost a
+save, translate, rotate, scale, paint and restore, twice, which was most
+of the label draw time on the UI thread and one text entity per glyph
+on the raster thread. New glyphs are batched into one snapshot per page
+per frame. When all pages are full, the least recently used page that
+the current frame has not drawn from is emptied and reused. Atlas pages
+are `toImageSync` rasters, so the layer stops new glyphs from being
+rasterized while the app is away and clears the atlas in its resume
+recovery. A label with a glyph missing from the atlas draws glyph by
+glyph as before.
+
 A replay must not overturn the pass through the back door either.
 Curved text is rejected when the line bends past `text-max-angle` under
 it or when the text no longer fits along its line, and both depend on
@@ -665,6 +679,21 @@ document that declared them — sprite and source URLs against the style
 URL, tile templates against the TileJSON URL when they came from one
 (ArcGIS declares `"url": "../../"` and `tile/{z}/{y}/{x}.pbf`) — and
 the `{z}`/`{x}`/`{y}` braces survive resolution un-percent-encoded.
+
+The sprite sheet is repacked once after decoding (`padSpriteSheet` in
+`style/sprite_packer.dart`): every distinct sprite rectangle is copied
+byte for byte into a new sheet with a 2 px transparent gutter, and the
+index is rewritten to the new positions. Published sheets pack icons
+edge to edge, and an icon drawn magnified or at a fractional position
+is sampled bilinearly half a texel past its rectangle, so without the
+gutter it shows a hairline of its neighbour. Two pixels rather than one
+because ordinary icons draw with mipmaps. The copy reads the sheet back
+as premultiplied RGBA and decodes it again with `decodeImageFromPixels`,
+which keeps it web-safe and off `toImageSync`; the decode runs in a
+guarded zone because that API reports failure only as an uncaught
+error, never through its callback. If the readback or decode fails, or
+the packed sheet would exceed 4096 px on either side, the original
+sheet is kept.
 
 Sources whose `url` starts with `pmtiles://` bypass TileJSON entirely:
 `PmTilesVectorTileProvider` reads the single-file archive over HTTP

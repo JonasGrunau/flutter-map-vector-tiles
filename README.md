@@ -336,7 +336,9 @@ fetched one zoom deeper for the same visual scale.
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
 per `icon-color`, `icon-halo-color` and `icon-halo-width`; dark MapLibre
 styles ship their icons this way. Ordinary sprites are drawn with the
-colours baked into the sheet. `icon-rotate` and
+colours baked into the sheet. `StyleReader` repacks the sheet with a
+transparent gutter around every icon, as MapLibre does, so a scaled icon
+never picks up the edge of its neighbour in the sheet. `icon-rotate` and
 `icon-rotation-alignment` follow MapLibre's viewport/map/line semantics,
 including camera bearing, icon anchor/offset rotation and rotated collision
 bounds.

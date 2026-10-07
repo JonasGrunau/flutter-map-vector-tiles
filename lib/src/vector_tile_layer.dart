@@ -491,6 +491,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // below bakes them into every fill and line that uses one.
     _patterns?.dispose();
     _patterns = null;
+    // So are the curved-text glyph atlas pages.
+    _labelPainter.discardGlyphAtlas();
     _refreshTiles();
   }
 
@@ -1984,6 +1986,7 @@ class _VectorMapPainter extends CustomPainter {
       state._labelPainter.reset();
       return;
     }
+    state._labelPainter.rasterizeGlyphs = state._foregrounded;
     final drawn = state._labelPainter.paint(
       canvas: canvas,
       screenSize: size,
