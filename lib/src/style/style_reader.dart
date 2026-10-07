@@ -16,6 +16,7 @@ import '../provider/vector_tile_provider.dart';
 import '../tile_providers.dart';
 import 'attribution.dart';
 import 'sprite_atlas.dart';
+import 'sprite_packer.dart';
 import 'theme.dart';
 import 'theme_reader.dart';
 
@@ -344,12 +345,19 @@ class StyleReader {
         final codec = await ui.instantiateImageCodec(bytes);
         final frame = await codec.getNextFrame();
         codec.dispose();
-        return SpriteAtlas(
+        final atlas = SpriteAtlas(
           image: frame.image,
           sprites: SpriteAtlas.parseIndex(index),
           pixelRatio: ratio,
           cacheKey: imageUri,
         );
+        try {
+          return await padSpriteSheet(atlas);
+        } catch (e) {
+          // Unpadded still draws; icons may show their neighbours' edges.
+          logger.log('sprite sheet $imageUri not repacked: $e');
+          return atlas;
+        }
       } catch (e) {
         logger.log('sprite sheet $indexUri not usable: $e');
       }

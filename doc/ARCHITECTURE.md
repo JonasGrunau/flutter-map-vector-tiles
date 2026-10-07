@@ -656,6 +656,18 @@ URL, tile templates against the TileJSON URL when they came from one
 (ArcGIS declares `"url": "../../"` and `tile/{z}/{y}/{x}.pbf`) — and
 the `{z}`/`{x}`/`{y}` braces survive resolution un-percent-encoded.
 
+The sprite sheet is repacked once after decoding (`padSpriteSheet` in
+`style/sprite_packer.dart`): every distinct sprite rectangle is copied
+byte for byte into a new sheet with a 2 px transparent gutter, and the
+index is rewritten to the new positions. Published sheets pack icons
+edge to edge, and an icon drawn magnified or at a fractional position
+is sampled bilinearly half a texel past its rectangle, so without the
+gutter it shows a hairline of its neighbour. Two pixels rather than one
+because ordinary icons draw with mipmaps. The copy reads the sheet back
+as premultiplied RGBA and decodes it again with `decodeImageFromPixels`,
+which keeps it web-safe and off `toImageSync`. If the readback fails or
+the packed sheet would exceed 4096 px, the original sheet is kept.
+
 Sources whose `url` starts with `pmtiles://` bypass TileJSON entirely:
 `PmTilesVectorTileProvider` reads the single-file archive over HTTP
 range requests. Its `open()` fetches the 127-byte header plus root
