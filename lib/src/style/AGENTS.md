@@ -22,7 +22,7 @@ happens once at read time; nothing here re-parses JSON per frame.
 | `theme_reader.dart` | `ThemeReader` — turns style JSON layers into `ThemeLayer`s, mapping every paint/layout property to a typed prop with the spec's default as fallback; handles `{token}` templates in text fields |
 | `css_color.dart` | CSS colour parsing: hex, `rgb()`/`rgba()`, `hsl()`/`hsla()` and the full named-colour table |
 | `sprite_atlas.dart` | `SpriteAtlas` — one decoded sheet image plus named sub-rectangles parsed from the sprite index JSON, including `sdf` and `pixelRatio` per sprite |
-| `sprite_packer.dart` | `padSpriteSheet` — repacks a loaded sheet with a 2 px transparent gutter around every sprite (aliases share one cell) so bilinear and mipmapped sampling never reaches a neighbouring icon. Called by `StyleReader` right after decoding; private, not exported. Falls back to the original sheet if readback fails or the packed sheet would exceed 4096 px |
+| `sprite_packer.dart` | `padSpriteSheet` — repacks a loaded sheet with a 2 px transparent gutter around every sprite (aliases share one cell) so bilinear and mipmapped sampling never reaches a neighbouring icon. Called by `StyleReader` right after decoding; private, not exported. Falls back to the original sheet if readback fails or the packed sheet would exceed 4096 px on either side. Decodes through `decodeRgbaPixels`, which wraps `decodeImageFromPixels` in a guarded zone: that API only reports success, so a failed decode would otherwise leave the style load hanging. Not `ImageDescriptor.raw`, which goes through a straight-alpha BMP on web |
 
 ## For AI Agents
 

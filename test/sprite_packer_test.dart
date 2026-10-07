@@ -143,4 +143,62 @@ void main() {
     expect(await _redPixels(atlas, 'blue'), 0);
     atlas.dispose();
   });
+
+  test('a sprite hanging off the sheet keeps clear of the next cell', () async {
+    final source = await _atlas();
+    final atlas = await padSpriteSheet(SpriteAtlas(
+      image: source.image,
+      pixelRatio: 2,
+      sprites: {
+        ...source.sprites,
+        // Its right half lies past the sheet's edge; the narrow red
+        // sprite packs right after it.
+        'overhang':
+            const Sprite(x: 12, y: 0, width: 8, height: 8, pixelRatio: 2),
+        'red-strip':
+            const Sprite(x: 0, y: 0, width: 2, height: 8, pixelRatio: 2),
+      },
+    ));
+    expect(await _redPixels(atlas, 'overhang'), 0);
+    final overhang = atlas['overhang']!;
+    final width = atlas.image.width;
+    final pixels = await _rgba(atlas.image);
+    for (var x = 0; x < _side; x++) {
+      final i = (overhang.y.toInt() * width + overhang.x.toInt() + x) * 4;
+      // The half on the sheet is blue; the half past its edge is empty.
+      expect(pixels[i + 3], x < 4 ? 255 : 0, reason: 'column $x');
+    }
+    atlas.dispose();
+  });
+
+  test('a packed sheet wider than a texture may be keeps the original',
+      () async {
+    // 4096 wide fits; with its gutter the one sprite needs 4100.
+    final pixels = Uint8List(4096 * 4 * 4);
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+        pixels, 4096, 4, ui.PixelFormat.rgba8888, completer.complete);
+    final atlas = SpriteAtlas(
+      image: await completer.future,
+      pixelRatio: 1,
+      sprites: const {
+        'wide': Sprite(x: 0, y: 0, width: 4096, height: 4, pixelRatio: 1),
+      },
+    );
+    expect(identical(await padSpriteSheet(atlas), atlas), isTrue);
+    atlas.dispose();
+  });
+
+  test('a failed pixel decode fails the future instead of hanging', () async {
+    // Four bytes cannot hold 4x4 pixels; decodeImageFromPixels alone
+    // would never call back.
+    await expectLater(
+      decodeRgbaPixels(Uint8List(4), 4, 4).timeout(const Duration(seconds: 10)),
+      throwsA(isNot(isA<TimeoutException>())),
+    );
+  },
+      // CanvasKit drops a failed decode with a console warning and
+      // raises nothing a zone could catch; the packer only ever hands it
+      // well-formed buffers.
+      skip: kIsWeb ? 'CanvasKit reports no decode error' : false);
 }

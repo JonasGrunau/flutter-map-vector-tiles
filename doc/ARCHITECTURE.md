@@ -665,8 +665,11 @@ is sampled bilinearly half a texel past its rectangle, so without the
 gutter it shows a hairline of its neighbour. Two pixels rather than one
 because ordinary icons draw with mipmaps. The copy reads the sheet back
 as premultiplied RGBA and decodes it again with `decodeImageFromPixels`,
-which keeps it web-safe and off `toImageSync`. If the readback fails or
-the packed sheet would exceed 4096 px, the original sheet is kept.
+which keeps it web-safe and off `toImageSync`; the decode runs in a
+guarded zone because that API reports failure only as an uncaught
+error, never through its callback. If the readback or decode fails, or
+the packed sheet would exceed 4096 px on either side, the original
+sheet is kept.
 
 Sources whose `url` starts with `pmtiles://` bypass TileJSON entirely:
 `PmTilesVectorTileProvider` reads the single-file archive over HTTP

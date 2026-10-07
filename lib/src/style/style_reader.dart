@@ -355,11 +355,11 @@ class StyleReader {
           return await padSpriteSheet(atlas);
         } catch (e) {
           // Unpadded still draws; icons may show their neighbours' edges.
-          logger.log('sprite sheet $imageUri not repacked: $e');
+          logger.log('sprite sheet ${_redactKey(imageUri)} not repacked: $e');
           return atlas;
         }
       } catch (e) {
-        logger.log('sprite sheet $indexUri not usable: $e');
+        logger.log('sprite sheet ${_redactKey(indexUri)} not usable: $e');
       }
     }
     return null;
