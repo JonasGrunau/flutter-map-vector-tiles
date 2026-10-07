@@ -173,6 +173,11 @@ class LabelPainter {
   /// line angle (≈4.6°). See [_readsBackwards].
   static const double _flipHysteresis = 0.08;
 
+  /// How far past vertical a glyph of a kept-upright curved label may
+  /// turn on screen. Leaves room for a winding road near vertical, but
+  /// not for a glyph that reads upside down. See [_prepareCurved].
+  static const double _uprightSlack = math.pi / 6;
+
   /// Paragraph shapings performed (cache misses); for tests asserting
   /// that zoom motion does not re-shape text.
   @visibleForTesting
@@ -1244,6 +1249,26 @@ class LabelPainter {
       return null;
     }
 
+    // What a replay or a ghost draws for a label it cannot curve: the
+    // text straight along its anchor's bearing, until the next pass
+    // decides. Both reproduce a label a pass accepted, and dropping it
+    // instead left the sitting with nothing drawable — a street name
+    // vanishing at full opacity, ghost and all.
+    _DrawableSymbol straightAtAnchor() {
+      final textRect = Rect.fromCenter(
+          center: placed.screenAnchor,
+          width: text.size.width * textScale,
+          height: text.size.height * textScale);
+      return _DrawableSymbol(placed,
+          icon: icon,
+          text: text,
+          textRect: textRect,
+          textAngle: layer.textKeepUpright.eval(ctx)
+              ? _uprightAngle(sitting, placed.screenAngle)
+              : placed.screenAngle,
+          textScale: textScale);
+    }
+
     // The label occupies [d0, d1] along the path, in logical units.
     // Cluster metrics are at the reference size; [textScale] converts
     // them to screen pixels before [scale] converts those to logical.
@@ -1252,27 +1277,10 @@ class LabelPainter {
     final d0 = instance.pathDistance - halfW;
     final d1 = instance.pathDistance + halfW;
     if (d0 < 0 || d1 > path.length) {
-      if (collision.permissive) {
-        // Whether a label fits its line is a placement decision, like
-        // its bend. A replay reproduces a label the last pass accepted
-        // and a ghost draws one on its way out, and zooming out grows the
-        // text against its line every frame: dropping it here left the
-        // sitting with nothing drawable — a street name vanishing at
-        // full opacity, ghost and all. Drawn straight along its anchor's
-        // bearing instead, until the next pass decides.
-        final textRect = Rect.fromCenter(
-            center: placed.screenAnchor,
-            width: text.size.width * textScale,
-            height: text.size.height * textScale);
-        return _DrawableSymbol(placed,
-            icon: icon,
-            text: text,
-            textRect: textRect,
-            textAngle: layer.textKeepUpright.eval(ctx)
-                ? _uprightAngle(sitting, placed.screenAngle)
-                : placed.screenAngle,
-            textScale: textScale);
-      }
+      // Whether a label fits its line is a placement decision, like its
+      // bend, and zooming out grows the text against its line every
+      // frame.
+      if (collision.permissive) return straightAtAnchor();
       debugRejectProbe?.call(instance.continuityKey, 'fit', false);
       return iconFallback();
     }
@@ -1288,7 +1296,8 @@ class LabelPainter {
     final backwards = chordLength > 0
         ? _readsBackwards(sitting, chord.dx / chordLength)
         : sitting.flip ?? false;
-    final reversed = layer.textKeepUpright.eval(ctx) && backwards;
+    final keepUpright = layer.textKeepUpright.eval(ctx);
+    final reversed = keepUpright && backwards;
 
     final offset = layer.textOffset.eval(ctx);
     final perp = offset.length > 1 ? offset[1] * fontSize : 0.0;
@@ -1324,6 +1333,18 @@ class LabelPainter {
         // line bends too sharply for this label
         debugRejectProbe?.call(
             instance.continuityKey, 'angle', collision.permissive);
+        return iconFallback();
+      }
+      if (keepUpright && angle.abs() > math.pi / 2 + _uprightSlack) {
+        // The reading direction is chosen once per label, from its
+        // chord, so on a road that turns back on itself the glyphs past
+        // the turn come out upside down (Petersplatz in Munich, which
+        // loops around its church). `text-max-angle` cannot catch it:
+        // it limits the turn between neighbouring glyphs, and a smooth
+        // hairpin stays under the limit at every step. A pass rejects
+        // the label; a replay or a ghost draws it straight.
+        if (collision.permissive) return straightAtAnchor();
+        debugRejectProbe?.call(instance.continuityKey, 'upright', false);
         return iconFallback();
       }
       previousAngle = angle;

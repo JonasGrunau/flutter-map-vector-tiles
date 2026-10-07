@@ -52,6 +52,12 @@ styles that stage their `text-field` by zoom stop showing raw
   an icon drawn magnified or at a fractional position was sampled half
   a texel into its neighbour. `StyleReader` now repacks the sheet with
   a transparent gutter around every icon, as MapLibre does.
+- 🐛 A street name on a road that turns back on itself, such as
+  Petersplatz in Munich looping round its church, was drawn with the
+  letters past the turn upside down. `text-max-angle` only limits the
+  turn between neighbouring letters, which a smooth hairpin never
+  exceeds. A kept-upright label is now dropped when any letter would
+  turn more than 30° past vertical on screen.
 - 🐛 A legacy `{"stops": …}` function in `text-field` or `icon-image`
   returned its outputs (and its `default`) verbatim, so a style staging
   labels by zoom
