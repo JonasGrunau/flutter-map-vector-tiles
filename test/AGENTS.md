@@ -25,6 +25,7 @@ lifecycle or painting is covered by widget tests that pump a real
 | `icon_rotation_test.dart` | `icon-rotate`/`icon-rotation-alignment`, anchor/offset pivot semantics, and rotated collision bounds |
 | `label_repeat_test.dart` | Screen-space line-repeat suppression, layer priority, and invisible/gated fallback candidates |
 | `sdf_icon_test.dart` | SDF sprite tinting |
+| `sprite_packer_test.dart` | Sprite sheet repacking: a magnified icon from an edge-to-edge sheet picks up its neighbour (the control) and from the padded sheet does not; byte-exact copies inside a transparent gutter; aliases, flags and off-sheet sprites; a sprite hanging off the sheet keeps its whole cell; a packed sheet over 4096 px on either side keeps the original; a failed pixel decode errors instead of hanging |
 | `tile_retention_test.dart` | The pure retention predicates (17 cases) |
 | `descendant_substitution_test.dart` | Zoom-out substitution: the `findDescendants` walk (partial cover, depth and maxzoom bounds), descendant rasterization into sub-squares with buffer-spill clipping (vector and raster sources), and widget-level: a reopened map below the cached level paints from descendants while its own tiles never arrive |
 | `theme_reader_test.dart` | Layer parsing and MapLibre spec defaults |

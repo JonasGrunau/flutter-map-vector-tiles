@@ -46,6 +46,12 @@ styles that stage their `text-field` by zoom stop showing raw
   its fade-out ghost failed to lay out. Such a label is now drawn
   straight at its anchor until the next placement pass, and fades out
   from there.
+- 🐛 Icons showed hairlines along their edges in the colour of whichever
+  icon sat next to them in the sprite sheet, such as a blue line beside
+  the hotel bed on MapTiler styles. Sheets pack icons edge to edge, and
+  an icon drawn magnified or at a fractional position was sampled half
+  a texel into its neighbour. `StyleReader` now repacks the sheet with
+  a transparent gutter around every icon, as MapLibre does.
 - 🐛 A legacy `{"stops": …}` function in `text-field` or `icon-image`
   returned its outputs (and its `default`) verbatim, so a style staging
   labels by zoom
