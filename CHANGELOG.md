@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## 2.9.1
 
-Street names stop jumping, blinking and popping out while zooming,
-styles that stage their `text-field` by zoom stop showing raw
-`{name:latin}` templates, and labels cost far less GPU time mid-zoom.
+Steadier, cheaper labels while zooming, and fixes for raw
+`{name:latin}` templates, hairlines along icon edges and street names
+drawn half upside down on hairpin bends.
 
 - 🎨 **Street names stay put across zoom levels.** Along-line labels were
   spaced `spacing/2 + k·spacing` from the start of their line, so the
