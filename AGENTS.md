@@ -27,6 +27,8 @@ collision pass; cancellation is a **state**, never an exception; every
 | `analysis_options.yaml` | `flutter_lints` + strict casts/inference/raw-types, plus `prefer_final_locals`, `unawaited_futures`, `avoid_print`, `directives_ordering` |
 | `.gitignore` | Repo exclusions |
 | `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs |
+| `.tool-versions` | Pinned Flutter version — also the one the publish workflow installs |
+| `.github/workflows/publish.yml` | The only workflow: on a pushed `vX.Y.Z` tag, runs the release gate and publishes to pub.dev via OIDC (see `CLAUDE.md` → Release gate) |
 | `LICENSE` | BSD-3-Clause |
 
 ## Subdirectories
@@ -55,7 +57,9 @@ collision pass; cancellation is a **state**, never an exception; every
   `.gitignore` must be added to `.pubignore` as well, or the thing you just
   excluded from the repo still ships to pub.dev. Verify with
   `dart pub publish --dry-run`, which prints the exact file list.
-- **There is no CI.** Every gate is local and must be run by hand.
+- **No CI on pushes or PRs.** Every gate is local and must be run by hand.
+  The one workflow, `publish.yml`, runs the same gate only on a release tag,
+  so it catches a broken release, not a broken commit.
 - **Frame-time claims need `bench/`, not reasoning.** Rendering costs here
   split across two threads — rasterization, symbol layout and text shaping on
   the UI thread, `saveLayer` on the raster thread — and a `saveLayer` only
@@ -86,14 +90,15 @@ collision pass; cancellation is a **state**, never an exception; every
 ### Testing Requirements
 
 ```
-dart format .        # no CI — format drift silently costs pub points
+dart format .        # format drift costs pub points; publish.yml rejects it
 flutter analyze      # must be clean
 flutter test         # all green
 ```
 
-Before publishing, additionally run `dart pub publish --dry-run` and a `pana`
-run; the package holds full pub points and regressions there are treated as
-release blockers.
+Before tagging a release, additionally run `flutter test --platform chrome`,
+`dart pub publish --dry-run` and a `pana` run. The publish workflow repeats
+all of them and refuses to publish below full pub points, but a failure
+there costs a re-tag.
 
 ### Common Patterns
 

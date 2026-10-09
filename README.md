@@ -507,6 +507,19 @@ before submitting; the suite covers the MVT decoder, expression engine,
 caches, grid math and tile store. Run `flutter test --platform chrome` too
 when touching anything platform-sensitive (requires Chrome).
 
+## 🤖 Built with Claude
+
+This package is developed with
+[Claude Code](https://claude.com/claude-code), Anthropic's AI coding agent.
+Claude writes much of the code, tests and documentation, and most commits
+in the history carry a `Co-Authored-By: Claude` trailer. The maintainer
+directs the work and cuts every release. The instructions Claude works
+under (architecture notes, testing and release rules) are checked in as
+[`CLAUDE.md`](https://github.com/JonasGrunau/flutter-map-vector-tiles/blob/main/CLAUDE.md)
+and
+[`AGENTS.md`](https://github.com/JonasGrunau/flutter-map-vector-tiles/blob/main/AGENTS.md)
+files, which are left out of the published package.
+
 ## 📄 License
 
 [BSD 3-Clause](LICENSE) © 2026 Jonas Grunau

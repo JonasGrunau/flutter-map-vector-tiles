@@ -68,21 +68,42 @@ same change:
 
 ## Release gate
 
-Before publishing (see also `CHANGELOG.md`):
+Releases are published by GitHub Actions, not from a laptop.
+`.github/workflows/publish.yml` runs when a `vX.Y.Z` tag is pushed, and its
+`verify` job refuses to publish unless:
 
-1. `dart format .` — there is no CI; format drift silently costs pub points.
-2. `flutter analyze` — clean.
-3. `flutter test` — all green.
-4. `dart pub publish --dry-run` and a pana run; the package holds full pub points.
+1. the tagged commit is on `main`;
+2. the tag, `version:` in `pubspec.yaml`, the README install snippet (version
+   and `flutter_map` constraint) and the newest `CHANGELOG.md` heading agree,
+   and that section has its summary line;
+3. `dart format` changes nothing, `flutter analyze` is clean, and
+   `flutter test` is green on the VM and on Chrome;
+4. `dart pub publish --dry-run` has no warnings and pana grants full points.
 
-Shipping a version is: a `Release X.Y.Z` commit, a `vX.Y.Z` tag, and
-`dart pub publish`.
+Only then does the `publish` job upload, authenticated by OIDC — there is no
+pub.dev secret in the repo. CI uses the Flutter version pinned in
+`.tool-versions`.
+
+Shipping a version:
+
+1. Run the gate locally (`dart format .`, `flutter analyze`, `flutter test`,
+   `flutter test --platform chrome`, `dart pub publish --dry-run`, pana).
+   A red workflow costs a re-tag.
+2. Commit `Release X.Y.Z`: rename `## Unreleased` to `## X.Y.Z`, write its
+   summary line, bump `version:` and the README install snippet.
+3. `git tag vX.Y.Z && git push --atomic origin main vX.Y.Z`.
+
+If `verify` fails, nothing reached pub.dev: fix it on `main`, then move the
+tag (`git tag -f vX.Y.Z && git push -f origin vX.Y.Z`). A flaky test only
+needs "Re-run failed jobs".
 
 **No GitHub Releases.** The release notes would only repeat
 `CHANGELOG.md`, which ships in the package and is what pub.dev's
 changelog tab renders — a second copy on GitHub is one more place to
-forget. The tags stay: `dart pub publish` uploads the *working tree*
-rather than a commit, so `vX.Y.Z` is the only record of which source
-actually became a published version, and what makes
-`git diff v2.5.0..v2.6.0` or a checkout of the version a bug report
-names possible.
+forget. The tags stay, and they now do the publishing: the workflow
+uploads a clean checkout of `vX.Y.Z`, so the tag is exactly the source
+that became that version, and what makes `git diff v2.5.0..v2.6.0` or a
+checkout of the version a bug report names possible. A manual
+`dart pub publish` still works as a fallback, but it uploads the
+*working tree*, not a commit — only use it from a clean checkout of the
+tag.

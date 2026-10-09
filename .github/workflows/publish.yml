@@ -1,0 +1,125 @@
+# Publishes a release to pub.dev when its `vX.Y.Z` tag is pushed.
+#
+# `verify` runs the release gate from CLAUDE.md against the tagged commit;
+# `publish` only uploads. They are separate jobs so the OIDC token that can
+# publish to pub.dev never shares a runner with the test suite or pana, and
+# so the `pub.dev` environment's protection rules gate the upload alone.
+#
+# One-time setup on pub.dev (package admin → Automated publishing):
+# repository `JonasGrunau/flutter-map-vector-tiles`, tag pattern `v{{version}}`,
+# and "Require GitHub Actions environment" set to `pub.dev`.
+name: Publish to pub.dev
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+' # pub.dev tag pattern: v{{version}}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      flutter: ${{ steps.flutter.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the on-main check needs history
+          persist-credentials: false
+
+      - name: Tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main. Push main and the tag together: git push --atomic origin main $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+      - name: Tag, pubspec, README and CHANGELOG agree
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          fail() { echo "::error::$1"; exit 1; }
+
+          pubspec=$(sed -n 's/^version: *//p' pubspec.yaml)
+          [ "$pubspec" = "$version" ] ||
+            fail "Tag is $GITHUB_REF_NAME but pubspec.yaml says version: $pubspec"
+
+          grep -qF "flutter_map_vector_tiles: ^$version" README.md ||
+            fail "README install snippet does not say flutter_map_vector_tiles: ^$version"
+
+          flutter_map=$(sed -n 's/^  flutter_map: *//p' pubspec.yaml)
+          grep -qF "flutter_map: $flutter_map" README.md ||
+            fail "README install snippet does not say flutter_map: $flutter_map"
+
+          heading=$(grep -m1 '^## ' CHANGELOG.md)
+          [ "$heading" = "## $version" ] ||
+            fail "Newest CHANGELOG section is '$heading', expected '## $version'"
+
+          summary=$(awk -v h="## $version" '$0 == h { f = 1; next } f && NF { print; exit }' CHANGELOG.md)
+          case "$summary" in
+            '' | '- '* | '#'*) fail "CHANGELOG section $version has no summary line under its heading" ;;
+          esac
+
+      - name: Read Flutter version from .tool-versions
+        id: flutter
+        run: echo "version=$(awk '$1 == "flutter" { sub(/-stable$/, "", $2); print $2 }' .tool-versions)" >> "$GITHUB_OUTPUT"
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ steps.flutter.outputs.version }}
+          cache: true
+
+      - run: flutter pub get
+
+      - name: dart format
+        run: dart format --output=none --set-exit-if-changed .
+
+      - run: flutter analyze
+
+      - name: flutter test (VM)
+        run: flutter test
+
+      - name: flutter test (Chrome)
+        run: flutter test --platform chrome
+
+      - name: Publish dry run
+        run: dart pub publish --dry-run
+
+      - name: pana (full points)
+        run: |
+          dart pub global activate pana
+          dart pub global run pana --exit-code-threshold 0 .
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pub.dev
+    permissions:
+      contents: read
+      id-token: write # OIDC token for pub.dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Provisions the pub.dev OIDC token; Flutter's `dart` below shadows this
+      # one and reads the same token.
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+
+      # No SDK cache here: this job holds the publishing token.
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ needs.verify.outputs.flutter }}
+
+      - run: flutter pub get
+
+      - run: dart pub publish --force

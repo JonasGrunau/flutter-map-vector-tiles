@@ -79,8 +79,9 @@ flutter test                       # whole suite
 flutter test test/foo_test.dart    # one file
 ```
 
-The suite must be green and `flutter analyze` clean before any release; there
-is no CI to catch either.
+The suite must be green and `flutter analyze` clean before any release. Nothing
+checks either on a push or PR; the publish workflow runs both (plus the Chrome
+suite) only once a release tag is pushed.
 
 ### Common Patterns
 

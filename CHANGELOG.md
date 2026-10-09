@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- 📚 The README now says that the package is developed with Claude Code,
+  and links the agent instructions Claude works under.
+- 📦 Versions are now published from GitHub Actions. Pushing a `vX.Y.Z`
+  tag runs the release checks against that exact commit (format, analyze,
+  tests on the VM and on Chrome, a publish dry run, pana at full points)
+  and only then uploads it to pub.dev, authenticated by OIDC. pub.dev
+  lists GitHub Actions as the uploader.
+
 ## 2.9.1
 
 Steadier, cheaper labels while zooming, and fixes for raw
