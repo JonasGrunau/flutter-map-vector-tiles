@@ -1,6 +1,7 @@
 # 🗺️ flutter_map_vector_tiles
 
 [![pub package](https://img.shields.io/pub/v/flutter_map_vector_tiles.svg)](https://pub.dev/packages/flutter_map_vector_tiles)
+[![CI](https://github.com/JonasGrunau/flutter-map-vector-tiles/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/JonasGrunau/flutter-map-vector-tiles/actions/workflows/ci.yml)
 [![license: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 [![flutter_map](https://img.shields.io/badge/flutter__map-%E2%89%A5%208.2-green.svg)](https://pub.dev/packages/flutter_map)
 
