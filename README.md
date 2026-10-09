@@ -165,7 +165,9 @@ as that happens comes back solid magenta, indistinguishable from a real
 image. So it stops rasterizing on the way out and treats what it has as
 suspect on the way back in. Recovery costs no network and no decoding,
 since the decoded geometry never left memory, and on-screen imagery is
-replaced only once the new render is ready.
+replaced only once the new render is ready. A window that is merely
+unfocused (a desktop window behind another app, a browser window that
+lost focus, the other half of an Android split screen) keeps rendering.
 
 `StyleReader` also takes:
 

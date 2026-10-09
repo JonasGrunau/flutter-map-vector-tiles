@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 🐛 A map in an unfocused window kept painting only its background
+  colour for every tile it had not finished. The layer stops rasterizing
+  in `AppLifecycleState.inactive`, which guards against iOS revoking the
+  GPU on the way to the background, but on macOS, Windows, Linux, web
+  and an Android split screen `inactive` just means the window lost
+  focus. The gate now applies to `inactive` on iOS only.
 - 📚 The README now says that the package is developed with Claude Code,
   and links the agent instructions Claude works under.
 - 📦 Versions are now published from GitHub Actions. Pushing a `vX.Y.Z`

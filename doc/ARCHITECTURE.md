@@ -563,8 +563,14 @@ is `inactive`, not `paused`. The scheduler keeps frames enabled through
 `inactive` — that is what draws the app-switcher snapshot on the way out
 and the first frames on the way back in — while the context is revoked
 somewhere alongside it; from `hidden` onwards no frames are produced at
-all. So the render pump refuses to run below `resumed`, parking its
-queue rather than dropping it, and on the return the layer discards the
+all. So on iOS the render pump refuses to run below `resumed`, parking
+its queue rather than dropping it. Everywhere else it keeps running
+through `inactive`, which there means a window that is visible but not
+focused — a desktop window behind another app, a browser window that
+lost focus, the other half of an Android split screen — and gating it
+made such a window paint its background colour for every tile it had
+not finished; from `hidden` on, the gate is shut on every platform. On
+the return the layer discards the
 finished-tile cache, the raster-source images and the pattern stamps and
 re-rasterizes its live tiles. That recovery is cheap for the same reason
 the pipeline is split the way it is: only the last stage was affected,
@@ -578,7 +584,8 @@ brand-new layer that lived through no backgrounding of its own, and a
 per-layer flag would leave it reading suspect textures out of a cache no
 surviving observer was there to clear. A departure that only reaches
 `inactive` — a permission dialog, a control-centre swipe — gates
-rasterization but marks nothing, so the common case costs no re-render.
+rasterization on iOS but marks nothing, so the common case costs no
+re-render.
 
 Of the two halves, the recovery is the guarantee and the gate is only a
 mitigation: `toImageSync` hands back a *deferred* image, so the raster

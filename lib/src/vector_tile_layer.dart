@@ -362,16 +362,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   // tiles back into a process-wide cache.
   // ---------------------------------------------------------------
 
-  /// Whether the platform is in a state where rasterizing is safe.
-  ///
-  /// The window that matters is `inactive`, not `paused`: the scheduler
-  /// keeps frames enabled through `inactive` — that is what draws the
-  /// app-switcher snapshot on the way out and the first frames on the
-  /// way back in — while iOS revokes the context somewhere alongside
-  /// it. A frame-driven render pump left running there rasterizes into
-  /// a context it is losing or has not been given back. From `hidden`
-  /// onwards no frames are produced at all, so the gate costs nothing
-  /// and simply stays shut. Only `resumed` is safe.
+  /// Whether the platform is in a state where rasterizing is safe; see
+  /// [_canRasterizeIn].
   ///
   /// This narrows the window rather than closing it, which is why the
   /// recovery below is the actual guarantee: `toImageSync` returns a
@@ -385,6 +377,33 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// `flutter test` — and that has to read as foregrounded, or a layer
   /// waiting to be told it may paint would never paint at all.
   var _foregrounded = true;
+
+  /// Whether rasterizing is safe in lifecycle [state].
+  ///
+  /// On iOS the window that matters is `inactive`, not `paused`: the
+  /// scheduler keeps frames enabled through `inactive` — that is what
+  /// draws the app-switcher snapshot on the way out and the first frames
+  /// on the way back in — while iOS revokes the context somewhere
+  /// alongside it. A frame-driven render pump left running there
+  /// rasterizes into a context it is losing or has not been given back.
+  /// Only `resumed` is safe there.
+  ///
+  /// Everywhere else `inactive` means visible but not focused: a desktop
+  /// window behind another app, a browser window that lost focus, the
+  /// other half of an Android split screen. Nothing revokes the GPU
+  /// there, and gating `inactive` on those platforms made a map in an
+  /// unfocused window paint only its background colour for every tile
+  /// it had not finished before the focus moved.
+  ///
+  /// From `hidden` onwards no frames are produced on any platform, so
+  /// the gate costs nothing there and simply stays shut.
+  static bool _canRasterizeIn(AppLifecycleState? state) => switch (state) {
+        // Null until the first platform message, and under `flutter test`.
+        null || AppLifecycleState.resumed => true,
+        AppLifecycleState.inactive =>
+          kIsWeb || defaultTargetPlatform != TargetPlatform.iOS,
+        _ => false,
+      };
 
   /// How many times the app has left the foreground.
   ///
@@ -415,7 +434,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     final lifecycle = WidgetsBinding.instance.lifecycleState;
-    _foregrounded = lifecycle == null || lifecycle == AppLifecycleState.resumed;
+    _foregrounded = _canRasterizeIn(lifecycle);
     // A layer mounting while the app is away — or into a return that no
     // other layer was left mounted to notice — lived through no
     // departure of its own, but the caches it is about to read were
@@ -434,7 +453,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!mounted) return;
-    _foregrounded = state == AppLifecycleState.resumed;
+    _foregrounded = _canRasterizeIn(state);
     if (!_foregrounded) {
       if (state != AppLifecycleState.inactive && !_away) {
         _away = true;

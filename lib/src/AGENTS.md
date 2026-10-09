@@ -45,8 +45,10 @@ depended on by everything.
   as one.** iOS revokes GPU access for a backgrounded process and
   Impeller fills a rejected `toImageSync` texture with solid magenta
   rather than failing, so the layer refuses to rasterize below
-  `AppLifecycleState.resumed` and rebuilds its GPU-resident images on the
-  way back (`_recoverIfSuspect`, `_discardSuspectRasters`). Two things
+  `AppLifecycleState.resumed` on iOS (below `inactive` elsewhere, where
+  `inactive` only means an unfocused window — see `_canRasterizeIn`) and
+  rebuilds its GPU-resident images on the way back (`_recoverIfSuspect`,
+  `_discardSuspectRasters`). Two things
   to keep true while it lives: the "has been away" mark is `static` on
   purpose — the caches it condemns outlive any one layer — and anything
   new that creates a `ui.Image` must be reachable from that recovery
