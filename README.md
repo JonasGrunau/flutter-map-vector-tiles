@@ -505,7 +505,8 @@ The full rendering model, and the reasoning behind each departure from
 Issues and PRs are welcome! Please run `dart analyze && flutter test`
 before submitting; the suite covers the MVT decoder, expression engine,
 caches, grid math and tile store. Run `flutter test --platform chrome` too
-when touching anything platform-sensitive (requires Chrome).
+when touching anything platform-sensitive (requires Chrome). CI runs
+formatting, analysis and both test suites on every PR.
 
 ## 🤖 Built with Claude
 

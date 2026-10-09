@@ -1,7 +1,8 @@
 # Publishes a release to pub.dev when its `vX.Y.Z` tag is pushed.
 #
-# `verify` runs the release gate from CLAUDE.md against the tagged commit;
-# `publish` only uploads. They are separate jobs so the OIDC token that can
+# `release` checks the tag against main, pubspec, README and CHANGELOG;
+# `checks` runs checks.yml (the CI suite) with pana on. `publish` only
+# uploads, once both pass. It is its own job so the OIDC token that can
 # publish to pub.dev never shares a runner with the test suite or pana, and
 # so the `pub.dev` environment's protection rules gate the upload alone.
 #
@@ -23,11 +24,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
+  release:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    outputs:
-      flutter: ${{ steps.flutter.outputs.version }}
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,39 +65,13 @@ jobs:
             '' | '- '* | '#'*) fail "CHANGELOG section $version has no summary line under its heading" ;;
           esac
 
-      - name: Read Flutter version from .tool-versions
-        id: flutter
-        run: echo "version=$(awk '$1 == "flutter" { sub(/-stable$/, "", $2); print $2 }' .tool-versions)" >> "$GITHUB_OUTPUT"
-
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
-        with:
-          channel: stable
-          flutter-version: ${{ steps.flutter.outputs.version }}
-          cache: true
-
-      - run: flutter pub get
-
-      - name: dart format
-        run: dart format --output=none --set-exit-if-changed .
-
-      - run: flutter analyze
-
-      - name: flutter test (VM)
-        run: flutter test
-
-      - name: flutter test (Chrome)
-        run: flutter test --platform chrome
-
-      - name: Publish dry run
-        run: dart pub publish --dry-run
-
-      - name: pana (full points)
-        run: |
-          dart pub global activate pana
-          dart pub global run pana --exit-code-threshold 0 .
+  checks:
+    uses: ./.github/workflows/checks.yml
+    with:
+      pana: true
 
   publish:
-    needs: verify
+    needs: [release, checks]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: pub.dev
@@ -118,7 +91,7 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
-          flutter-version: ${{ needs.verify.outputs.flutter }}
+          flutter-version: ${{ needs.checks.outputs.flutter }}
 
       - run: flutter pub get
 

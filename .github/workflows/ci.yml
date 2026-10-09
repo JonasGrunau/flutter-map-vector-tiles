@@ -1,0 +1,21 @@
+# Runs the checks on every push to main and every pull request into it.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # A newer push to a PR supersedes the older run; every commit on main
+  # keeps its own result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml

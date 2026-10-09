@@ -68,34 +68,34 @@ same change:
 
 ## Release gate
 
-Releases are published by GitHub Actions, not from a laptop.
-`.github/workflows/publish.yml` runs when a `vX.Y.Z` tag is pushed, and its
-`verify` job refuses to publish unless:
+Three workflows, all in `.github/workflows/` and all on the Flutter version
+pinned in `.tool-versions`:
 
-1. the tagged commit is on `main`;
-2. the tag, `version:` in `pubspec.yaml`, the README install snippet (version
-   and `flutter_map` constraint) and the newest `CHANGELOG.md` heading agree,
-   and that section has its summary line;
-3. `dart format` changes nothing, `flutter analyze` is clean, and
-   `flutter test` is green on the VM and on Chrome;
-4. `dart pub publish --dry-run` has no warnings and pana grants full points.
-
-Only then does the `publish` job upload, authenticated by OIDC — there is no
-pub.dev secret in the repo. CI uses the Flutter version pinned in
-`.tool-versions`.
+- `checks.yml` — the shared suite: `dart format` changes nothing,
+  `flutter analyze` is clean, `flutter test` is green on the VM and on Chrome,
+  `dart pub publish --dry-run` has no warnings, and optionally pana at full
+  points. Never triggered on its own.
+- `ci.yml` — runs `checks.yml` (without pana) on every push to `main` and
+  every PR into it.
+- `publish.yml` — runs when a `vX.Y.Z` tag is pushed. It refuses to publish
+  unless the tagged commit is on `main`; the tag, `version:` in
+  `pubspec.yaml`, the README install snippet (version and `flutter_map`
+  constraint) and the newest `CHANGELOG.md` heading agree, and that section
+  has its summary line; and `checks.yml` passes **with pana**. Only then
+  does its `publish` job upload, authenticated by OIDC — there is no
+  pub.dev secret in the repo.
 
 Shipping a version:
 
-1. Run the gate locally (`dart format .`, `flutter analyze`, `flutter test`,
-   `flutter test --platform chrome`, `dart pub publish --dry-run`, pana).
-   A red workflow costs a re-tag.
+1. Make sure CI is green on `main`, and run pana locally — CI doesn't run
+   it, and a red release workflow costs a re-tag.
 2. Commit `Release X.Y.Z`: rename `## Unreleased` to `## X.Y.Z`, write its
    summary line, bump `version:` and the README install snippet.
 3. `git tag vX.Y.Z && git push --atomic origin main vX.Y.Z`.
 
-If `verify` fails, nothing reached pub.dev: fix it on `main`, then move the
-tag (`git tag -f vX.Y.Z && git push -f origin vX.Y.Z`). A flaky test only
-needs "Re-run failed jobs".
+If the release workflow fails before `publish`, nothing reached pub.dev: fix
+it on `main`, then move the tag (`git tag -f vX.Y.Z && git push -f origin
+vX.Y.Z`). A flaky test only needs "Re-run failed jobs".
 
 **No GitHub Releases.** The release notes would only repeat
 `CHANGELOG.md`, which ships in the package and is what pub.dev's

@@ -28,7 +28,9 @@ collision pass; cancellation is a **state**, never an exception; every
 | `.gitignore` | Repo exclusions |
 | `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs |
 | `.tool-versions` | Pinned Flutter version — also the one the publish workflow installs |
-| `.github/workflows/publish.yml` | The only workflow: on a pushed `vX.Y.Z` tag, runs the release gate and publishes to pub.dev via OIDC (see `CLAUDE.md` → Release gate) |
+| `.github/workflows/checks.yml` | Reusable check suite: format, analyze, VM + Chrome tests, publish dry run, optional pana. Called by the two below |
+| `.github/workflows/ci.yml` | Runs `checks.yml` on every push to `main` and every PR into it |
+| `.github/workflows/publish.yml` | On a pushed `vX.Y.Z` tag: checks tag/pubspec/README/CHANGELOG agree, runs `checks.yml` with pana, publishes to pub.dev via OIDC (see `CLAUDE.md` → Release gate) |
 | `LICENSE` | BSD-3-Clause |
 
 ## Subdirectories
@@ -57,9 +59,10 @@ collision pass; cancellation is a **state**, never an exception; every
   `.gitignore` must be added to `.pubignore` as well, or the thing you just
   excluded from the repo still ships to pub.dev. Verify with
   `dart pub publish --dry-run`, which prints the exact file list.
-- **No CI on pushes or PRs.** Every gate is local and must be run by hand.
-  The one workflow, `publish.yml`, runs the same gate only on a release tag,
-  so it catches a broken release, not a broken commit.
+- **CI runs on every push to `main` and every PR** (`ci.yml`): format,
+  analyze, VM and Chrome tests, publish dry run. It does not run pana or
+  anything in `bench/` — pana runs only in the release workflow, and frame
+  timing only on a real device.
 - **Frame-time claims need `bench/`, not reasoning.** Rendering costs here
   split across two threads — rasterization, symbol layout and text shaping on
   the UI thread, `saveLayer` on the raster thread — and a `saveLayer` only
@@ -90,15 +93,16 @@ collision pass; cancellation is a **state**, never an exception; every
 ### Testing Requirements
 
 ```
-dart format .        # format drift costs pub points; publish.yml rejects it
+dart format .        # format drift costs pub points; CI rejects it
 flutter analyze      # must be clean
 flutter test         # all green
 ```
 
-Before tagging a release, additionally run `flutter test --platform chrome`,
-`dart pub publish --dry-run` and a `pana` run. The publish workflow repeats
-all of them and refuses to publish below full pub points, but a failure
-there costs a re-tag.
+CI repeats these plus `flutter test --platform chrome` and
+`dart pub publish --dry-run`; run the Chrome suite locally when touching
+anything platform-sensitive. Before tagging a release, also run `pana`
+locally: only the publish workflow runs it, and it refuses to publish below
+full pub points, so a failure there costs a re-tag.
 
 ### Common Patterns
 

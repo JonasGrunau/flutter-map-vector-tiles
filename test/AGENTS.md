@@ -79,9 +79,10 @@ flutter test                       # whole suite
 flutter test test/foo_test.dart    # one file
 ```
 
-The suite must be green and `flutter analyze` clean before any release. Nothing
-checks either on a push or PR; the publish workflow runs both (plus the Chrome
-suite) only once a release tag is pushed.
+The suite must be green and `flutter analyze` clean before any release. CI
+(`.github/workflows/ci.yml`) runs both, plus the Chrome suite, on every push
+to `main` and every PR. A red run on the "reopened map paints from cache"
+case is the known flake above; re-run the job before chasing it.
 
 ### Common Patterns
 
