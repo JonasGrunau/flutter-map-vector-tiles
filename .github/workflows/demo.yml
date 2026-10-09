@@ -1,0 +1,88 @@
+# Builds the comparison demo (compare/) for the web on every PR that could
+# change it, and deploys it to GitHub Pages from main:
+# https://jonasgrunau.github.io/flutter-map-vector-tiles/
+#
+# It is the dart2js/CanvasKit build on purpose: GitHub Pages cannot send the
+# cross-origin isolation headers a multi-threaded Wasm renderer needs, and
+# this is the configuration the web numbers in compare/RESULTS.md measure.
+#
+# One-time setup: Settings → Pages → Source: "GitHub Actions".
+name: Demo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - lib/**
+      - compare/**
+      - pubspec.yaml
+      - .tool-versions
+      - .github/workflows/demo.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - lib/**
+      - compare/**
+      - pubspec.yaml
+      - .tool-versions
+      - .github/workflows/demo.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read versions
+        id: versions
+        run: |
+          echo "flutter=$(awk '$1 == "flutter" { sub(/-stable$/, "", $2); print $2 }' .tool-versions)" >> "$GITHUB_OUTPUT"
+          echo "package=$(sed -n 's/^version: *//p' pubspec.yaml)" >> "$GITHUB_OUTPUT"
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ steps.versions.outputs.flutter }}
+          cache: true
+
+      - name: Build the demo
+        working-directory: compare
+        env:
+          FMVT_VERSION: ${{ steps.versions.outputs.package }}
+        run: |
+          flutter pub get
+          flutter build web --release \
+            --base-href /flutter-map-vector-tiles/ \
+            --dart-define=FMVT_VERSION="$FMVT_VERSION" \
+            --dart-define=GIT_SHA="${GITHUB_SHA::7}"
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: github.event_name != 'pull_request'
+        with:
+          path: compare/build/web
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

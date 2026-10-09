@@ -1,0 +1,32 @@
+<!doctype html>
+<!--
+  MapLibre GL JS rendering of the same style and cameras, as the reference
+  for the fidelity screenshots. Driven by reference_shots.mjs.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <style>html, body, #map { margin: 0; width: 100%; height: 100%; }</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+  const q = new URLSearchParams(location.search);
+  window.map = new maplibregl.Map({
+    container: 'map',
+    style: q.get('style'),
+    center: [Number(q.get('lon')), Number(q.get('lat'))],
+    // MapLibre's 512 px tiles put its zoom one below flutter_map's for the
+    // same scale; bearing is the direction that is up, the opposite sense
+    // of flutter_map's clockwise map rotation.
+    zoom: Number(q.get('zoom')) - 1,
+    bearing: -Number(q.get('rotation') || 0),
+    attributionControl: false,
+    fadeDuration: 0,
+  });
+  window.map.once('idle', () => { document.title = 'idle'; });
+</script>
+</body>
+</html>

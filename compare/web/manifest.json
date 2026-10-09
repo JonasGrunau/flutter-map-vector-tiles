@@ -1,0 +1,35 @@
+{
+    "name": "flutter_map_vector_tiles vs vector_map_tiles",
+    "short_name": "Vector tiles compared",
+    "start_url": ".",
+    "display": "standalone",
+    "background_color": "#f8f4f0",
+    "theme_color": "#2E7D32",
+    "description": "flutter_map_vector_tiles and vector_map_tiles rendering the same OpenFreeMap style.",
+    "orientation": "any",
+    "prefer_related_applications": false,
+    "icons": [
+        {
+            "src": "icons/Icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-maskable-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "maskable"
+        },
+        {
+            "src": "icons/Icon-maskable-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable"
+        }
+    ]
+}

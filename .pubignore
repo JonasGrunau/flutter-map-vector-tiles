@@ -23,3 +23,4 @@ CLAUDE.md
 
 # --- development-only harness (tracked in git, no business in the tarball) ---
 bench/
+compare/

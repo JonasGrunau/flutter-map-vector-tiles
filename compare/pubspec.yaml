@@ -1,0 +1,28 @@
+name: flutter_map_vector_tiles_compare
+description: >-
+  Side-by-side benchmark and web demo of flutter_map_vector_tiles against
+  vector_map_tiles: the same style, camera paths and frame metrics for both.
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_map: ^8.2.0
+  flutter_map_vector_tiles:
+    path: ../
+  http: ^1.2.0
+  latlong2: ">=0.9.1 <0.11.0"
+  # Pinned exactly: the comparison is against this release, and a newer beta
+  # should be a deliberate re-run, not a silent drift between two runs.
+  vector_map_tiles: 9.0.0-beta.13
+  web: ^1.1.0
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
