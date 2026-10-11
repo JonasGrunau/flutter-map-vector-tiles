@@ -60,6 +60,15 @@ String _session(List<Map<String, dynamic>> rows) {
       orElse: () => const {})['version'];
 
   final viewport = first['viewport'] as Map<String, dynamic>;
+  // A phone turned mid-session changes the tile count per screen for every
+  // run after it; such a session compares unlike with unlike.
+  final viewports = {for (final r in rows) jsonEncode(r['viewport'])};
+  if (viewports.length > 1) {
+    out
+      ..writeln('> ⚠️ This session mixes viewports (${viewports.join(', ')}); '
+          'the device was rotated or resized between runs.')
+      ..writeln();
+  }
   out
     ..writeln('### ${first['device']} · ${first['platform']}')
     ..writeln()

@@ -21,10 +21,27 @@ cd "$COMPARE_DIR"
 flutter build apk --profile "${DEFINES[@]}"
 "${ADB[@]}" install -r build/app/outputs/flutter-apk/app-profile.apk >/dev/null
 "${ADB[@]}" reverse "tcp:$LAB_PORT" "tcp:$LAB_PORT" >/dev/null
-"${ADB[@]}" shell svc power stayon true
+
+# Keep the screen on and the orientation fixed for the whole session, and
+# put the owner's settings back afterwards. Portrait, because a phone
+# turned on its side mid-session changes the tiles per screen for every
+# run after it (summarize.dart warns about mixed viewports).
+setting() { "${ADB[@]}" shell settings get "$1" "$2" | tr -d '\r'; }
+STAY_ON="$(setting global stay_on_while_plugged_in)"
+AUTO_ROTATE="$(setting system accelerometer_rotation)"
+USER_ROTATION="$(setting system user_rotation)"
+restore() {
+  "${ADB[@]}" shell settings put global stay_on_while_plugged_in "$STAY_ON"
+  "${ADB[@]}" shell settings put system user_rotation "$USER_ROTATION"
+  "${ADB[@]}" shell settings put system accelerometer_rotation "$AUTO_ROTATE"
+  "${ADB[@]}" reverse --remove "tcp:$LAB_PORT" >/dev/null 2>&1 || true
+}
+"${ADB[@]}" shell settings put global stay_on_while_plugged_in 15
+"${ADB[@]}" shell settings put system accelerometer_rotation 0
+"${ADB[@]}" shell settings put system user_rotation 0
 
 start_lab android "$ROUNDS" "$@"
-trap 'stop_lab; "${ADB[@]}" shell svc power stayon false' EXIT
+trap 'stop_lab; restore' EXIT
 while lab_busy; do
   # The app takes the next queued run, measures it and exits; Android may
   # relaunch it on its own, in which case it simply takes the next run.
