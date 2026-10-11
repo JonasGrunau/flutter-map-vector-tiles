@@ -47,6 +47,8 @@ lifecycle or painting is covered by widget tests that pump a real
 | `fade_test.dart` | Tile/label fade progress arithmetic, including sub-millisecond durations |
 | `label_continuity_test.dart` | Per-label fade and placement continuity, including idle repaints not creating placement debt and clearing an in-progress fade when `labelFadeDuration` is disabled at runtime |
 | `show_labels_test.dart` | End-to-end label enable/disable, sub-millisecond fades and fade-ticker settlement on an unchanged map |
+| `label_mode_test.dart` | `LabelMode.tile`: `paintTile` edge drops (allow-overlap too), in-tile collision and untouched screen-pass state; widget-level, labels baked with no per-frame pass, rotating with the map (upright in screen mode), the result cache kept apart per mode, `showLabels` re-rendering, and image/picture leak counting that also holds on web (see below) |
+| `render_job_queue_test.dart` | Render pump queue: phase-major and tile-major pop order, replacement and supersede |
 | `sprite_atlas_signature_test.dart` | `SpriteAtlas.signature` — equal sheets agree, different ones do not (the render-signature cache key) |
 
 ## Subdirectories
@@ -70,7 +72,12 @@ lifecycle or painting is covered by widget tests that pump a real
   specific rendering bug shipped once (SDF blobs, duplicate seam labels, zoom
   jitter); name new ones after the behaviour, not the bug number.
 - Widget tests must dispose the map and assert no images leak — image ownership
-  bugs are the most common defect class in this package.
+  bugs are the most common defect class in this package. `label_mode_test.dart`
+  shows how: count `FlutterMemoryAllocations` creations against disposals of
+  `ui.Image`/`ui.Picture`. Count, don't match by identity — on web an image
+  reports one creation for all its clones and one disposal, through whichever
+  handle went last — and ignore the test's own `RepaintBoundary.toImageSync`
+  snapshots, of which the web engine keeps a picture.
 
 ### Testing Requirements
 

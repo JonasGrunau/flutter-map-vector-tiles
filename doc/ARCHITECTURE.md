@@ -27,15 +27,19 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │       tile's window of the data tile
      │
      └─ symbols: SymbolLayouter collects label/icon anchors per tile
-             └─ LabelPainter: per-frame screen-space pass, global collision
-                grid across all tiles, upright text under rotation
+             ├─ LabelPainter: per-frame screen-space pass, global collision
+             │  grid across all tiles, upright text under rotation
+             └─ or, LabelMode.tile: LabelPainter.paintTile places them once
+                per tile and draws them into the tile's own image
 
 Rasterization and symbol extraction are two separate jobs in a budgeted
 per-frame render pump (rasters for every pending tile first, symbols
-after), and a finished tile — image plus symbols — enters the shared
-result cache, so re-crossing a zoom level skips the pipeline entirely.
-The pump's stages emit DevTools timeline events (`VT render pump`,
-`VT rasterize`, `VT symbols`, `VT labels`).
+after — in `LabelMode.tile`, one tile at a time, since a tile shows only
+once both are done), and a finished tile — image plus symbols — enters
+the shared result cache, so re-crossing a zoom level skips the pipeline
+entirely. The pump's stages emit DevTools timeline events (`VT render
+pump`, `VT rasterize`, `VT symbols`, `VT labels`, and in `LabelMode.tile`
+`VT rasterize with labels` and `VT tile labels`).
 ```
 
 ## Rendering model
@@ -87,8 +91,8 @@ bounded by what is visible, not by the density of the data tile — the
 difference between ~1 ms and ~85 ms per tile for a dense city tile
 viewed at z20 over z14 data.
 
-Labels and icons are **not** baked into the tile images. They are drawn
-each frame in screen space:
+By default (`LabelMode.screen`) labels and icons are **not** baked into
+the tile images. They are drawn each frame in screen space:
 
 * text stays crisp at fractional zoom and upright under map rotation;
 * collision detection runs globally across tile borders, so labels never
@@ -457,6 +461,70 @@ repaint boundary. The painter applies the camera transform (translate ·
 rotate about the screen centre) itself; `MobileLayerTransformer` is not
 used.
 
+### Labels in the tile image (`LabelMode.tile`)
+
+Everything above about labels buys its quality with UI-thread time on
+every frame the map moves: one collision pass and every visible label
+drawn again. `LabelMode.tile` is the other trade, the one
+`vector_map_tiles` makes in its default raster mode. Labels and icons are
+placed and drawn once per display tile, into the same image as its
+geometry, and a moving map then costs exactly what a raster tile layer
+costs: no label work at all.
+
+It is the same pipeline with a different ending, not a second text
+stack. The raster phase *records* the tile's geometry
+(`TileRasterizer.record`) and, instead of taking its image, hands the
+`Picture` to the symbol phase. That phase lays out and shapes in budgeted
+slices exactly as before; once shaping completes,
+`LabelPainter.paintTile` places the candidates and draws the winners
+over the nested geometry picture, and a single `toImageSync` produces
+the tile's image — one snapshot per tile, as in the default mode, and
+the picture costs no texture while it waits. The tile is then published
+once, image only, with an empty candidate list, so the per-frame label
+pass, the fade tracker, the retained-label pinning and the ghost labels
+all have nothing to do and are skipped. Until that publish the tile
+counts as loading, so the previous level — with its own labels in its
+images — keeps covering it; and since a tile now shows only once both
+of its phases are done, the pump drops its phase-major order (all
+rasters first, which would hold every tile back until the last raster
+had run) for a tile-major one that finishes the most central tile
+first.
+
+`paintTile` is one placing pass of the screen pass's own `_prepare`, so
+curved text and the glyph atlas, variable anchors, halos, SDF icons and
+repeat suppression all come along unchanged. What it carries over from
+one call to the next is nothing: no fades, no throttle, no incumbents,
+and a placement memory and repeat-anchor map swapped in fresh for the
+call. A tile's image is therefore a pure function of its candidates —
+which the finished-tile cache depends on — and the screen pass's state
+is never disturbed. Its collision index is bounded by the tile, and
+every box must lie inside it, `*-allow-overlap` ones included: a label
+the layouter anchored in this tile but which runs over the edge would be
+cut off there, and the neighbour that would have to draw its other half
+never sees the candidate. Such labels are dropped, which leaves gaps
+along tile seams — the same behaviour as `vector_map_tiles`. MapLibre
+avoids it with cross-tile placement (labels placed once for the
+viewport, then assigned to the tiles they overlap); that is a possible
+follow-up, not something this mode attempts.
+
+The other limits follow from the image. Text is evaluated at the tile's
+integer style zoom and drawn at that size, then scales with the tile
+(1× up to 2× before the next level replaces it), and turns with the map
+under rotation. A symbol layer's zoom range is applied per tile zoom
+level rather than at the exact fractional zoom, and the `maxzoom` ramp
+is evaluated at that level too. Labels fade in with their tile over
+`tileFadeDuration`; `labelFadeDuration` does nothing.
+
+Being a `toImageSync` like any other tile raster, the labelled image is
+covered by the backgrounding workaround below without further work: it
+is only ever made inside the render pump, which the lifecycle gate
+parks, and the glyph-atlas pages it may add to are discarded with the
+rest on the way back in. Switching modes, or toggling `showLabels` in
+tile mode, changes what a tile image contains, so the live tiles are
+rendered again and the outgoing level's queued jobs are retired — a job
+decides at run time which kind of image to make, and would otherwise
+publish, and cache, the wrong one.
+
 ## Concurrency
 
 MVT decoding and per-layer feature filtering run on a small isolate pool
@@ -483,7 +551,7 @@ chunked event-loop execution.
 | --- | --- | --- |
 | memory: `PreparedTile` | data tile + theme id | entry count + bytes |
 | memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
-| memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprite *content*, labels) | GPU texture bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
+| memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprite *content*, labels, label mode) | GPU texture bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
 | disk: raw tile bytes | hash of `provider.cacheKey` + z/x/y | TTL + total size sweep |
 
 All caches are plain deterministic LRU implementations — no external
@@ -525,6 +593,14 @@ Those jobs are flagged so they are not written back into the
 cache they came from: a second `put` under the same key would mint a
 second master image and dispose the one the display tile's clone came
 from.
+
+In `LabelMode.tile` the cached result is the labelled image with an
+empty symbol list, so a hit owes no shaping and is complete the moment
+it is served. The label mode is part of the render signature because it
+decides whether an image has its labels in it: served across modes, a
+cached screen-mode tile would show no labels at all, and a tile-mode
+one would show every label twice. The image is the same size either
+way, so `rasterCacheMaxBytes` and its automatic sizing hold unchanged.
 
 The budget for that cache is sized from the device rather than fixed.
 One display tile costs `(256·dpr)²·4` GPU texture bytes and one phone

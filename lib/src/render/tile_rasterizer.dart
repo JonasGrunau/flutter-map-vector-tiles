@@ -20,8 +20,9 @@ import 'pattern_resolver.dart';
 ///
 /// Rasterization happens once per (display tile, integer zoom); the
 /// per-frame cost of the map is then just drawing textures. Symbol layers
-/// are *not* rasterized here — they are drawn per-frame in screen space
-/// by the label pass.
+/// are *not* painted here: in `LabelMode.screen` they are drawn per frame
+/// in screen space by the label pass, and in `LabelMode.tile` the layer
+/// draws them over a [record]ed picture before taking its [toImage].
 class TileRasterizer {
   /// Logical tile size in points — the one shared constant, see
   /// `core/tile_zoom.dart`.
@@ -44,8 +45,9 @@ class TileRasterizer {
   static int debugRasterizeCount = 0;
 
   /// UI-thread microseconds spent inside [rasterize] — picture recording
-  /// plus `toImageSync`. Accumulates forever; the bench diffs it per
-  /// frame to attribute build-time spikes to their phase.
+  /// ([record]) plus `toImageSync` ([toImage]). Accumulates forever; the
+  /// bench diffs it per frame to attribute build-time spikes to their
+  /// phase.
   @visibleForTesting
   static int debugRasterizeMicros = 0;
 
@@ -70,15 +72,50 @@ class TileRasterizer {
     required double devicePixelRatio,
     PatternResolver? patterns,
   }) {
+    final picture = record(
+      theme: theme,
+      data: data,
+      styleZoom: styleZoom,
+      devicePixelRatio: devicePixelRatio,
+      patterns: patterns,
+    );
+    return picture == null ? null : toImage(picture, devicePixelRatio);
+  }
+
+  /// The backing size in device pixels of a tile at [devicePixelRatio]:
+  /// its rasters are square, this many pixels on a side.
+  static int pixelSizeFor(double devicePixelRatio) =>
+      (logicalTileSize * devicePixelRatio).ceil();
+
+  /// The scale from logical tile units to the backing pixels: what a
+  /// canvas recording a tile is scaled by, and therefore its effective
+  /// device pixel ratio.
+  static double pixelScaleFor(double devicePixelRatio) =>
+      pixelSizeFor(devicePixelRatio) / logicalTileSize;
+
+  /// Records the tile's geometry without rasterizing it, in backing
+  /// pixels clipped to the tile — [rasterize] minus the `toImageSync`.
+  /// Returns null when there is nothing to draw.
+  ///
+  /// For a caller that draws more on top before taking the image, as
+  /// `LabelMode.tile` does with the tile's labels: nesting the picture
+  /// in that recording costs one snapshot per tile instead of two.
+  static ui.Picture? record({
+    required Theme theme,
+    required DisplayTileData data,
+    required double styleZoom,
+    required double devicePixelRatio,
+    PatternResolver? patterns,
+  }) {
     debugRasterizeCount++;
     final stopwatch = Stopwatch()..start();
     try {
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
-      final pixelSize = (logicalTileSize * devicePixelRatio).ceil();
+      final pixelSize = pixelSizeFor(devicePixelRatio);
       canvas.clipRect(
           Rect.fromLTWH(0, 0, pixelSize.toDouble(), pixelSize.toDouble()));
-      canvas.scale(pixelSize / logicalTileSize);
+      canvas.scale(pixelScaleFor(devicePixelRatio));
 
       final painted = paint(
         canvas: canvas,
@@ -93,6 +130,18 @@ class TileRasterizer {
         picture.dispose();
         return null;
       }
+      return picture;
+    } finally {
+      debugRasterizeMicros += stopwatch.elapsedMicroseconds;
+    }
+  }
+
+  /// Rasterizes [picture] — recorded in backing pixels, as [record]
+  /// does — into a tile image at [devicePixelRatio], and disposes it.
+  static ui.Image toImage(ui.Picture picture, double devicePixelRatio) {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final pixelSize = pixelSizeFor(devicePixelRatio);
       final image = picture.toImageSync(pixelSize, pixelSize);
       picture.dispose();
       return image;
@@ -139,7 +188,7 @@ class TileRasterizer {
         case CircleThemeLayer():
           painted |= _paintCircle(canvas, layer, data, styleZoom);
         case SymbolThemeLayer():
-          break; // screen-space label pass
+          break; // the label pass, in screen or tile space
       }
       debugLayerMicros[layer.id] = (debugLayerMicros[layer.id] ?? 0) +
           layerStopwatch.elapsedMicroseconds;

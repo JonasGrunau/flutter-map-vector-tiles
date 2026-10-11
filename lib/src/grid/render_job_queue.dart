@@ -15,8 +15,10 @@ enum RenderPhase { raster, symbols }
 ///   the raster before enqueueing it ([pendingRaster], [pendingSymbols]
 ///   report what is queued);
 /// - [pop] is phase-major (all rasters before any symbols), then by
-///   ascending priority (viewport centre first). The linear scan is
-///   fine at queue sizes of a zoom-level change (≤ ~50 entries).
+///   ascending priority (viewport centre first) — or, asked for
+///   `tileMajor`, by priority alone, a tile's symbols ahead of rasters
+///   of equal priority. The linear scan is fine at queue sizes of a
+///   zoom-level change (≤ ~50 entries).
 class RenderJobQueue<T, J> {
   final void Function(J job) onDrop;
   final _raster = <T, ({int priority, J job})>{};
@@ -50,24 +52,45 @@ class RenderJobQueue<T, J> {
     _symbols[key] = (priority: priority, job: job);
   }
 
-  ({T key, RenderPhase phase, J job})? pop() {
+  /// The next job to run. [tileMajor] is for a pump whose tiles only
+  /// show once both phases are done (`LabelMode.tile`): phase-major
+  /// order would hold every tile back until the last raster had run,
+  /// while this finishes the most central tile first. Ties go to the
+  /// symbols phase, so a tile whose raster just ran is finished before
+  /// the next one is started.
+  ({T key, RenderPhase phase, J job})? pop({bool tileMajor = false}) {
+    if (tileMajor) {
+      final symbols = _best(_symbols);
+      final raster = _best(_raster);
+      if (symbols == null && raster == null) return null;
+      final takeSymbols = raster == null ||
+          (symbols != null && symbols.priority <= raster.priority);
+      final (map, phase, key) = takeSymbols
+          ? (_symbols, RenderPhase.symbols, symbols!.key)
+          : (_raster, RenderPhase.raster, raster.key);
+      return (key: key, phase: phase, job: map.remove(key)!.job);
+    }
     for (final (map, phase) in [
       (_raster, RenderPhase.raster),
       (_symbols, RenderPhase.symbols),
     ]) {
-      if (map.isEmpty) continue;
-      T? bestKey;
-      var bestPriority = 0;
-      map.forEach((key, entry) {
-        if (bestKey == null || entry.priority < bestPriority) {
-          bestKey = key;
-          bestPriority = entry.priority;
-        }
-      });
-      final job = map.remove(bestKey as T)!.job;
-      return (key: bestKey as T, phase: phase, job: job);
+      final best = _best(map);
+      if (best == null) continue;
+      final job = map.remove(best.key)!.job;
+      return (key: best.key, phase: phase, job: job);
     }
     return null;
+  }
+
+  /// The key with the lowest priority in [map], or null when it is empty.
+  ({T key, int priority})? _best(Map<T, ({int priority, J job})> map) {
+    ({T key, int priority})? best;
+    map.forEach((key, entry) {
+      if (best == null || entry.priority < best!.priority) {
+        best = (key: key, priority: entry.priority);
+      }
+    });
+    return best;
   }
 
   /// Drops the tile's jobs in both phases (tile disposed/cancelled).

@@ -11,10 +11,11 @@ the tile pipeline, caching and rendering all live in this one package — no
 renderer / cache / executor satellite packages.
 
 The design commitments that shape almost every file: geometry is rasterized
-**once** per display tile into a GPU-resident `ui.Image`; labels are **not**
-baked into those rasters but drawn per frame in screen space with one global
-collision pass; cancellation is a **state**, never an exception; every
-`ui.Image` has exactly one owner and is disposed on eviction.
+**once** per display tile into a GPU-resident `ui.Image`; by default labels
+are **not** baked into those rasters but drawn per frame in screen space with
+one global collision pass (`LabelMode.tile` opts into baking them, through
+the same label painter); cancellation is a **state**, never an exception;
+every `ui.Image` has exactly one owner and is disposed on eviction.
 
 ## Key Files
 

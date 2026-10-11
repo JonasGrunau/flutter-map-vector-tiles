@@ -20,6 +20,7 @@ import 'grid/tile_byte_loader.dart';
 import 'grid/tile_result_cache.dart';
 import 'grid/tile_retention.dart';
 import 'grid/tile_store.dart';
+import 'label_mode.dart';
 import 'logger.dart';
 import 'pipeline/executor/executor.dart';
 import 'pipeline/prepared_tile.dart';
@@ -115,6 +116,9 @@ class VectorTileLayer extends StatefulWidget {
   /// freshly published tile's labels are placed at the pass after their
   /// publish, so they appear at most one such interval later — the same
   /// window their fade-in spans anyway.
+  ///
+  /// Has no effect with [LabelMode.tile], where labels are part of the
+  /// tile image and fade in with it ([tileFadeDuration]).
   final Duration labelFadeDuration;
 
   /// Byte budget for finished display tiles (rasterized geometry plus
@@ -127,8 +131,10 @@ class VectorTileLayer extends StatefulWidget {
   /// [autoRasterCacheBytesFor]. A fixed byte count overrides it.
   ///
   /// These are GPU texture bytes: one tile costs `(256·dpr)²·4` bytes —
-  /// ~1 MiB at devicePixelRatio 2, ~2.25 MiB at 3 — and one phone
-  /// viewport is ~25-35 tiles per zoom level, so a *single* level runs
+  /// ~1 MiB at devicePixelRatio 2, ~2.25 MiB at 3, in either
+  /// [labelMode], since [LabelMode.tile] draws its labels into that
+  /// same texture — and one phone viewport is ~25-35 tiles per zoom
+  /// level, so a *single* level runs
   /// to ~80 MiB on a large dpr-3 phone. That is why a fixed default is
   /// the wrong shape: the 64 MiB this used to default to held about two
   /// levels at dpr 2 but under one at dpr 3, so on exactly the densest
@@ -138,6 +144,14 @@ class VectorTileLayer extends StatefulWidget {
 
   /// Whether to draw text/icon symbol layers.
   final bool showLabels;
+
+  /// Where labels and icons are drawn: every frame in screen space
+  /// ([LabelMode.screen], the default), or once into each tile's raster
+  /// ([LabelMode.tile], which `vector_map_tiles` calls raster mode).
+  /// [LabelMode.tile] removes all per-frame label work from a moving
+  /// map, at the cost of labels that rotate and scale with the map and
+  /// are dropped where they would cross a tile edge — see [LabelMode].
+  final LabelMode labelMode;
 
   final Logger logger;
 
@@ -157,6 +171,7 @@ class VectorTileLayer extends StatefulWidget {
     this.labelFadeDuration = const Duration(milliseconds: 150),
     this.rasterCacheMaxBytes = autoRasterCacheBytes,
     this.showLabels = true,
+    this.labelMode = LabelMode.screen,
     this.logger = const Logger.noop(),
   });
 
@@ -645,6 +660,25 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       _drawnLastFrame.clear();
       _ghostLabels.clear();
     }
+    if (widget.labelMode != oldWidget.labelMode ||
+        (widget.labelMode == LabelMode.tile &&
+            widget.showLabels != oldWidget.showLabels)) {
+      // What a tile image contains changed — labels move into or out of
+      // it — so every live tile is rendered again; until its
+      // replacement lands it keeps the old imagery. Settled for the
+      // same reason as above: the per-frame pass starts or stops.
+      _labelPainter.reset();
+      _drawnLastFrame.clear();
+      _ghostLabels.clear();
+      // A queued job decides at run time which kind of image to make,
+      // and would publish — and cache, under the new signature — the
+      // other kind for a tile it was built for. The live tiles' refresh
+      // retires theirs; the outgoing level's are retired here.
+      for (final tile in _retained.values) {
+        tile.loadGeneration++;
+      }
+      refresh = true;
+    }
     if (oldWidget.memoryCacheMaxBytes != widget.memoryCacheMaxBytes) {
       for (final store in _stores.values) {
         store.memoryCacheMaxBytes = widget.memoryCacheMaxBytes;
@@ -745,8 +779,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// different cache — providers by their cache keys (same theme over
   /// different endpoints must not collide), sprites by their content
   /// signature, the theme by its documented cache id. Widget changes
-  /// that re-rasterize (sprites, showLabels) therefore simply miss the
-  /// old cache.
+  /// that re-rasterize (sprites, showLabels, labelMode) therefore simply
+  /// miss the old cache — the label mode decides whether a tile's image
+  /// has its labels in it.
   ///
   /// The sprite atlas contributes [SpriteAtlas.signature], not its
   /// object identity: re-reading a style yields a new atlas every time,
@@ -760,7 +795,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         'raster:${entry.key}=${entry.value.provider.cacheKey}',
     ]..sort();
     return '${widget.theme.id}|${widget.tileOffset.zoomOffset}|'
-        '$devicePixelRatio|${widget.showLabels}|'
+        '$devicePixelRatio|${widget.showLabels}|${widget.labelMode.name}|'
         '${widget.sprites?.signature}|${providers.join(',')}';
   }
 
@@ -836,6 +871,16 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   double _styleZoomOf(double displayZoom) =>
       math.max(0, displayZoom + widget.tileOffset.zoomOffset);
 
+  /// Whether the per-frame screen-space label pass runs. With
+  /// [LabelMode.tile] the labels are in the tile images and tiles carry
+  /// no placement candidates, so none of its bookkeeping applies.
+  bool get _screenLabels =>
+      widget.showLabels && widget.labelMode == LabelMode.screen;
+
+  /// Whether tile images get their labels drawn into them.
+  bool get _tileLabels =>
+      widget.showLabels && widget.labelMode == LabelMode.tile;
+
   void _updateGrid(MapCamera camera) {
     final layout = GridLayout.forCamera(camera, buffer: 1);
 
@@ -853,7 +898,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // Keep the previous level's imagery underneath until the new level
       // is rasterized — this is what prevents white flicker on zoom.
       final pinLabels =
-          widget.showLabels && widget.labelFadeDuration > Duration.zero;
+          _screenLabels && widget.labelFadeDuration > Duration.zero;
       for (final entry in _tiles.entries) {
         final existing = _retained[entry.key];
         if (existing != null && !identical(existing, entry.value)) {
@@ -1012,7 +1057,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// vanish at whatever opacity it had reached.
   void _parkGhostLabels(_DisplayTile tile) {
     if (tile.symbols.isEmpty ||
-        !widget.showLabels ||
+        !_screenLabels ||
         widget.labelFadeDuration <= Duration.zero) {
       return;
     }
@@ -1293,7 +1338,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// ~20 tiles in one frame drops frames. Each tile passes through two
   /// queue phases — geometry raster, then symbol extraction — so a
   /// crossing shows imagery for the whole viewport before it pays for
-  /// any labels, and the worst single-job overrun is halved.
+  /// any labels, and the worst single-job overrun is halved. (With
+  /// [LabelMode.tile] a tile shows once both phases are done, and the
+  /// pump finishes one tile before starting the next instead.)
   /// Takes ownership of [rasters]: the handles are disposed with the job,
   /// whether it is painted, replaced or rejected.
   void _enqueueRaster(
@@ -1376,12 +1423,15 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     final stopwatch = Stopwatch()..start();
     var processed = 0;
     // At least one job per frame, more while within the time budget:
-    // the viewport centre comes first, rasters before symbol jobs. The
-    // budget is checked before every job — it cannot preempt inside
+    // the viewport centre comes first, rasters before symbol jobs —
+    // except with labels drawn into the tiles, where a tile shows only
+    // once both its phases are done, so each tile is finished in turn.
+    // The budget is checked before every job — it cannot preempt inside
     // one, which is why a tile's two phases are separate jobs.
+    final tileMajor = _tileLabels;
     while (!_renderQueue.isEmpty &&
         (processed == 0 || stopwatch.elapsedMicroseconds < _pumpBudget)) {
-      final next = _renderQueue.pop()!;
+      final next = _renderQueue.pop(tileMajor: tileMajor)!;
       final tile = next.key;
       final job = next.job;
       // A job outlived by its tile's generation was built from content
@@ -1395,10 +1445,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           case RenderPhase.symbols:
             if (!_symbolsJob(tile, job, stopwatch)) {
               // Shaping ran out of tick. The job keeps its cursor and
-              // its already-extracted candidates; requeueing rather
-              // than looping here is what lets a raster for another
-              // tile — or a newer one for this tile, which supersedes
-              // it — take its turn first.
+              // its already-extracted candidates (and, drawing labels
+              // into the tile, its recorded geometry, which therefore
+              // must not be disposed here); requeueing rather than
+              // looping here is what lets a raster for another tile —
+              // or a newer one for this tile, which supersedes it —
+              // take its turn first.
               assert(
                   job.rasters.isEmpty && job.descendantRasters.isEmpty,
                   'a requeued symbols job must own no raster handles: the '
@@ -1425,6 +1477,36 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         rasters: job.rasters,
         descendantSources: job.descendantSources,
         descendantRasters: job.descendantRasters);
+    final symbolsFollow = _symbolsFollow(tile, job.sources);
+    if (symbolsFollow && _tileLabels) {
+      // The labels go into the same image, so nothing is published
+      // until they are drawn: the geometry is only recorded here, and
+      // the symbol phase rasterizes it together with them — one
+      // snapshot per tile. Meanwhile the tile counts as loading, so the
+      // previous level (labels included) keeps covering it.
+      final geometry = TileRasterizer.record(
+        theme: widget.theme,
+        data: data,
+        styleZoom: styleZoom,
+        devicePixelRatio: _devicePixelRatio,
+        patterns: _patternResolver,
+      );
+      developer.Timeline.finishSync();
+      _renderQueue.enqueueSymbols(
+          tile,
+          job.priority,
+          _RenderJob(
+            sources: job.sources,
+            rasters: const {},
+            provisional: job.provisional,
+            priority: job.priority,
+            fadeIn: job.fadeIn,
+            complete: job.complete,
+            generation: job.generation,
+            geometry: geometry,
+          ));
+      return;
+    }
     final image = TileRasterizer.rasterize(
       theme: widget.theme,
       data: data,
@@ -1434,7 +1516,6 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     );
     developer.Timeline.finishSync();
 
-    final symbolsFollow = _symbolsFollow(tile, job.sources);
     tile.setImage(
       image: image,
       provisional: job.provisional,
@@ -1485,6 +1566,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// stays set, which is what keeps the previous level's labels
   /// covering the tile — the same mechanism that already covers the
   /// gap between a tile's raster and its symbols.
+  ///
+  /// With [LabelMode.tile] the finished phase publishes the tile's
+  /// image instead, geometry and labels together (see
+  /// [_rasterizeWithLabels]); a tile in that mode shows nothing of its
+  /// own until then.
   bool _symbolsJob(_DisplayTile tile, _RenderJob job, Stopwatch tick) {
     developer.Timeline.startSync('VT symbols');
     final styleZoom = _styleZoomOf(tile.key.z.toDouble());
@@ -1506,8 +1592,22 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     developer.Timeline.finishSync();
     if (job.shapeCursor < symbols.length) return false;
 
-    tile.setSymbols(symbols, provisional: job.provisional);
-    _cacheResult(tile, job, symbols);
+    if (_tileLabels) {
+      // The tile's first publish: its geometry and labels in one image,
+      // and no placement candidates — nothing is left for the
+      // per-frame pass.
+      tile.setImage(
+        image: _rasterizeWithLabels(job, symbols, styleZoom),
+        provisional: job.provisional,
+        fadeIn: job.fadeIn && widget.tileFadeDuration > Duration.zero,
+        symbolsPending: false,
+      );
+      tile.setSymbols(const [], provisional: job.provisional);
+      _cacheResult(tile, job, const []);
+    } else {
+      tile.setSymbols(symbols, provisional: job.provisional);
+      _cacheResult(tile, job, symbols);
+    }
     _labelCandidatesChanged();
     _repaint.trigger();
     _ensureFadeTicker();
@@ -1515,6 +1615,46 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // the current level was waiting on.
     _releaseRetainedIfReady(DateTime.now());
     return true;
+  }
+
+  /// [LabelMode.tile]'s tile image: the geometry the raster phase
+  /// recorded, with [symbols] placed and drawn over it in tile space,
+  /// rasterized in one snapshot. Null when neither draws anything.
+  ///
+  /// A `toImageSync` like the geometry-only path, so it is covered by
+  /// the same backgrounding workaround: it only runs inside the render
+  /// pump, which the lifecycle gate parks, and the glyph-atlas pages
+  /// it may add to are discarded with the rest on the way back in.
+  ui.Image? _rasterizeWithLabels(
+      _RenderJob job, List<SymbolInstance> symbols, double styleZoom) {
+    developer.Timeline.startSync('VT rasterize with labels');
+    try {
+      final dpr = _devicePixelRatio;
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      final geometry = job.geometry;
+      if (geometry != null) canvas.drawPicture(geometry);
+      final pixelSize = TileRasterizer.pixelSizeFor(dpr).toDouble();
+      canvas.clipRect(Rect.fromLTWH(0, 0, pixelSize, pixelSize));
+      final scale = TileRasterizer.pixelScaleFor(dpr);
+      canvas.scale(scale);
+      _labelPainter.rasterizeGlyphs = _foregrounded;
+      final drawn = _labelPainter.paintTile(
+        canvas: canvas,
+        symbols: symbols,
+        styleZoom: styleZoom,
+        sprites: widget.sprites,
+        devicePixelRatio: scale,
+      );
+      final picture = recorder.endRecording();
+      if (geometry == null && drawn.isEmpty) {
+        picture.dispose();
+        return null;
+      }
+      return TileRasterizer.toImage(picture, dpr);
+    } finally {
+      developer.Timeline.finishSync();
+    }
   }
 
   /// Stores a finished tile in the result cache — final, fully sourced
@@ -1670,6 +1810,12 @@ class _RenderJob {
   /// batch is published only once this reaches its length.
   int shapeCursor = 0;
 
+  /// [LabelMode.tile]'s symbol phase only: the tile's geometry as the
+  /// raster phase recorded it, still to be rasterized together with the
+  /// labels. Owned, and disposed with the job; null when the tile has
+  /// no geometry to draw.
+  final ui.Picture? geometry;
+
   _RenderJob({
     required this.sources,
     required this.rasters,
@@ -1682,9 +1828,11 @@ class _RenderJob {
     this.descendantRasters = const {},
     this.fromCache = false,
     this.symbols,
+    this.geometry,
   });
 
   void dispose() {
+    geometry?.dispose();
     for (final raster in rasters.values) {
       raster.dispose();
     }
@@ -1883,8 +2031,9 @@ class _VectorMapPainter extends CustomPainter {
     }
     canvas.restore();
 
-    // 3. Labels in screen space (upright, globally collision-checked).
-    if (state.widget.showLabels) {
+    // 3. Labels in screen space (upright, globally collision-checked) —
+    // unless they are already in the tile images.
+    if (state._screenLabels) {
       _paintLabels(canvas, size, screenCenter, worldCenter, styleZoom);
     }
   }

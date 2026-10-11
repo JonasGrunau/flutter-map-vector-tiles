@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- ✨ **Labels baked into tiles**: `VectorTileLayer.labelMode` chooses
+  where labels and icons are drawn. The default, `LabelMode.screen`, is
+  the per-frame screen-space pass as before. `LabelMode.tile` places and
+  draws them once per tile, into the tile's image, as `vector_map_tiles`
+  does in its raster mode, so a moving map does no label work at all.
+  The same text engine draws them, curved road names and SDF icons
+  included, but with the limits of a pre-rendered tile: collision is
+  per tile and a label that would cross a tile edge is dropped, text
+  turns with the map, scales with the tile between zoom levels, and
+  fades in with its tile. Texture memory per tile is unchanged.
 - 🐛 A map in an unfocused window kept painting only its background
   colour for every tile it had not finished. The layer stops rasterizing
   in `AppLifecycleState.inactive`, which guards against iOS revoking the
