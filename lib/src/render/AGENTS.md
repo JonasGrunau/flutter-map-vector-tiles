@@ -262,7 +262,8 @@ clips at tile seams.
   stability under fractional zoom sweeps
 - `test/label_painter_prewarm_test.dart` — the resumable `prewarm`
   contract: the cursor it returns, guaranteed progress with no budget,
-  no double shaping across slices
+  no double shaping across slices; and that the text cache holds a
+  three-level zoom round trip without re-shaping
 - `test/label_zoom_gating_test.dart` — per-frame layer zoom-range gate, the
   `maxzoom` fade-out ramp, near-zero `text-size` skip, insertion-order
   collision tiebreak

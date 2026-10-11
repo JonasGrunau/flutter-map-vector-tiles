@@ -114,13 +114,18 @@ typedef DrawnLabelRecord = ({
 /// with global collision detection across tile borders. Text stays
 /// crisp at fractional zoom and upright under rotation.
 class LabelPainter {
-  /// Cache capacities, sized to survive one dense-city screen of
-  /// distinct labels: when the per-frame distinct-label count exceeds
-  /// the cache, every frame evicts entries the same frame still needs
-  /// and the whole screen re-lays-out every frame. The memory ceiling is
-  /// only reached on screens that actually carry that many labels; if a
-  /// byte budget is ever needed, `LruCache.maxCost` is the ready hook.
-  static const int textCacheEntries = 2500;
+  /// Cache capacities. One dense-city screen of distinct labels is the
+  /// floor (below it every frame evicts entries the same frame still
+  /// needs), but the text cache must hold a zoom *round trip*: the
+  /// finished-tile cache serves a revisited level back without its
+  /// shaped text, so whatever was evicted meanwhile is re-shaped by the
+  /// pump for seconds after the camera stopped. A phone-portrait fling
+  /// z15→z17→z15 over central London with `TileOffset.none` shapes
+  /// ~7,400 distinct texts. An entry is ~9 KB (fill and halo
+  /// paragraphs), so the ceiling is ~70 MB, reached only once that many
+  /// distinct labels were drawn; if a byte budget is ever needed,
+  /// `LruCache.maxCost` is the ready hook.
+  static const int textCacheEntries = 8000;
   static const int glyphCacheEntries = 4000;
 
   /// Steps per zoom level for the label eval zoom. Between steps every

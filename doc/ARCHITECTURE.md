@@ -513,7 +513,15 @@ screen's paragraphs into a single frame — the very spike the pump's
 budget exists to prevent, on the path that is supposed to be the fast
 one. The hit therefore takes the imagery immediately and enqueues a
 symbol phase that owes only the shaping, which the pump slices like any
-other. Those jobs are flagged so they are not written back into the
+other. That makes a hit only as cheap as the text cache is large:
+whatever was evicted since the level was last on screen is shaped
+again. So the cache is sized to hold a zoom round trip, not just one
+screen: a phone-portrait fling from z15 to z17 and back over central
+London shapes about 7,400 distinct texts with `TileOffset.none`. At the
+2500 entries it used to hold, z15's text was gone by the time the fling
+returned, and the pump re-shaped it for 4–7.5 s after the camera stopped;
+at 8000 the same fling settles in 0.3 s, for ~40 MB more peak RSS.
+Those jobs are flagged so they are not written back into the
 cache they came from: a second `put` under the same key would mint a
 second master image and dispose the one the display tile's clone came
 from.

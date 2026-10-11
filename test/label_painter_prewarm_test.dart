@@ -118,4 +118,27 @@ void main() {
       painter.dispose();
     });
   });
+
+  test('the text cache holds a zoom round trip', () {
+    // Regression: at 2500 entries a phone-portrait fling z15→z17→z15
+    // with TileOffset.none (~7,400 distinct texts) evicted z15's text
+    // on the way in. The finished-tile cache serves z15 back with its
+    // symbols but not its shaped text, so the pump re-shaped all of it
+    // and the map kept rendering for 4–7.5 s after the fling.
+    final painter = LabelPainter();
+    final layer = _layer();
+    List<SymbolInstance> level(int z) => [
+          for (var i = 0; i < 2450; i++) _symbol(layer, 'z$z label $i'),
+        ];
+    final z15 = level(15);
+    painter.prewarm(z15, 15);
+    painter.prewarm(level(16), 16);
+    painter.prewarm(level(17), 17);
+    final shapedBeforeReturn = painter.debugShapedTextCount;
+
+    painter.prewarm(z15, 15);
+    expect(painter.debugShapedTextCount, shapedBeforeReturn,
+        reason: 'returning to z15 re-shapes nothing');
+    painter.dispose();
+  });
 }
