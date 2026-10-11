@@ -47,8 +47,9 @@ lifecycle or painting is covered by widget tests that pump a real
 | `fade_test.dart` | Tile/label fade progress arithmetic, including sub-millisecond durations |
 | `label_continuity_test.dart` | Per-label fade and placement continuity, including idle repaints not creating placement debt and clearing an in-progress fade when `labelFadeDuration` is disabled at runtime |
 | `show_labels_test.dart` | End-to-end label enable/disable, sub-millisecond fades and fade-ticker settlement on an unchanged map |
-| `label_mode_test.dart` | `LabelMode.tile`: `paintTile` edge drops (allow-overlap too), in-tile collision and untouched screen-pass state; widget-level, labels baked with no per-frame pass, rotating with the map (upright in screen mode), the result cache kept apart per mode, `showLabels` re-rendering, and image/picture leak counting that also holds on web (see below) |
+| `label_mode_test.dart` | `LabelMode.tile`: `paintTile` edge drops (allow-overlap too), in-tile collision and untouched screen-pass state; widget-level, labels baked with no per-frame pass, rotating with the map (upright in screen mode), the result cache kept apart per mode, `showLabels` re-rendering, and image/picture leak counting that also holds on web (see below); and, with `VectorTileLayer.debugPumpBudgetMicros = 0` (one layer or label per frame), the same map in both modes as with the normal budget, every recording spread over one frame per layer, and no slice leaked by a layer disposed mid-recording |
 | `render_job_queue_test.dart` | Render pump queue: phase-major and tile-major pop order, replacement and supersede |
+| `sliced_recording_test.dart` | `TileRasterizer.recordSlice` / `compose`: one layer per slice stacks into exactly the pixels one `record` makes (a translucent line over a fill shows any reordering), symbol and out-of-zoom layers get no slice of their own, a slice always makes progress, and a sliced tile still counts as one rasterization |
 | `sprite_atlas_signature_test.dart` | `SpriteAtlas.signature` — equal sheets agree, different ones do not (the render-signature cache key) |
 
 ## Subdirectories

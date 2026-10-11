@@ -44,6 +44,11 @@ class TileRasterizer {
   @visibleForTesting
   static int debugRasterizeCount = 0;
 
+  /// [recordSlice] calls, of which a tile recorded in one go makes one;
+  /// for tests asserting that recordings are spread over frames.
+  @visibleForTesting
+  static int debugSliceCount = 0;
+
   /// UI-thread microseconds spent inside [rasterize] — picture recording
   /// ([record]) plus `toImageSync` ([toImage]). Accumulates forever; the
   /// bench diffs it per frame to attribute build-time spikes to their
@@ -106,8 +111,39 @@ class TileRasterizer {
     required double styleZoom,
     required double devicePixelRatio,
     PatternResolver? patterns,
+  }) =>
+      recordSlice(
+        theme: theme,
+        data: data,
+        styleZoom: styleZoom,
+        devicePixelRatio: devicePixelRatio,
+        patterns: patterns,
+      ).picture;
+
+  /// [record] spread over several calls: records the theme layers from
+  /// [from] on, and stops at the first layer boundary at which
+  /// [outOfBudget] returns true — always after at least one layer, so
+  /// every call makes progress. A dense tile's recording costs tens of
+  /// milliseconds on a phone, all of it on the UI thread, and the only
+  /// place it can be cut without changing the result is between two
+  /// layers: each one is drawn whole, in order, with its own paints.
+  ///
+  /// Returns the slice's picture (null when it drew nothing) and the
+  /// index to resume from, which is `theme.layers.length` once the tile
+  /// is done. Each slice is clipped and scaled like [record]'s picture,
+  /// so [compose] stacks them into exactly the picture [record] would
+  /// have made.
+  static ({ui.Picture? picture, int next}) recordSlice({
+    required Theme theme,
+    required DisplayTileData data,
+    required double styleZoom,
+    required double devicePixelRatio,
+    PatternResolver? patterns,
+    int from = 0,
+    bool Function()? outOfBudget,
   }) {
-    debugRasterizeCount++;
+    if (from == 0) debugRasterizeCount++;
+    debugSliceCount++;
     final stopwatch = Stopwatch()..start();
     try {
       final recorder = ui.PictureRecorder();
@@ -117,18 +153,43 @@ class TileRasterizer {
           Rect.fromLTWH(0, 0, pixelSize.toDouble(), pixelSize.toDouble()));
       canvas.scale(pixelScaleFor(devicePixelRatio));
 
-      final painted = paint(
+      final (:painted, :next) = _paintLayers(
         canvas: canvas,
         theme: theme,
         data: data,
         styleZoom: styleZoom,
         patterns: patterns,
+        from: from,
+        outOfBudget: outOfBudget,
       );
 
       final picture = recorder.endRecording();
       if (!painted) {
         picture.dispose();
-        return null;
+        return (picture: null, next: next);
+      }
+      return (picture: picture, next: next);
+    } finally {
+      debugRasterizeMicros += stopwatch.elapsedMicroseconds;
+    }
+  }
+
+  /// One picture of [parts] — [recordSlice]'s pictures in the order
+  /// they were recorded — which takes ownership of them: they are
+  /// disposed here unless a single part is returned as it is. Null when
+  /// there are none.
+  static ui.Picture? compose(List<ui.Picture> parts) {
+    if (parts.length <= 1) return parts.isEmpty ? null : parts.single;
+    final stopwatch = Stopwatch()..start();
+    try {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      for (final part in parts) {
+        canvas.drawPicture(part);
+      }
+      final picture = recorder.endRecording();
+      for (final part in parts) {
+        part.dispose();
       }
       return picture;
     } finally {
@@ -158,13 +219,43 @@ class TileRasterizer {
     required DisplayTileData data,
     required double styleZoom,
     PatternResolver? patterns,
+  }) =>
+      _paintLayers(
+        canvas: canvas,
+        theme: theme,
+        data: data,
+        styleZoom: styleZoom,
+        patterns: patterns,
+      ).painted;
+
+  /// [paint] from layer [from] on, stopping before the next layer that
+  /// would draw once [outOfBudget] says so — after at least one such
+  /// layer. Returns whether anything was drawn, and where to resume:
+  /// `theme.layers.length` when every layer is done.
+  static ({bool painted, int next}) _paintLayers({
+    required Canvas canvas,
+    required Theme theme,
+    required DisplayTileData data,
+    required double styleZoom,
+    PatternResolver? patterns,
+    int from = 0,
+    bool Function()? outOfBudget,
   }) {
     var painted = false;
+    var drewLayer = false;
     final zoomCtx = EvalContext(zoom: styleZoom);
 
+    final layers = theme.layers;
     final layerStopwatch = Stopwatch();
-    for (final layer in theme.layers) {
-      if (!layer.coversZoom(styleZoom)) continue;
+    for (var i = from; i < layers.length; i++) {
+      final layer = layers[i];
+      // Skipped before the budget check, so that a slice never ends on —
+      // and the next one never starts with — a layer that draws nothing.
+      if (layer is SymbolThemeLayer || !layer.coversZoom(styleZoom)) continue;
+      if (drewLayer && (outOfBudget?.call() ?? false)) {
+        return (painted: painted, next: i);
+      }
+      drewLayer = true;
       layerStopwatch
         ..reset()
         ..start();
@@ -188,12 +279,12 @@ class TileRasterizer {
         case CircleThemeLayer():
           painted |= _paintCircle(canvas, layer, data, styleZoom);
         case SymbolThemeLayer():
-          break; // the label pass, in screen or tile space
+          break; // skipped above: the label pass, in screen or tile space
       }
       debugLayerMicros[layer.id] = (debugLayerMicros[layer.id] ?? 0) +
           layerStopwatch.elapsedMicroseconds;
     }
-    return painted;
+    return (painted: painted, next: layers.length);
   }
 
   /// Iterates the features of [layer]'s source-layer, calling [visit]

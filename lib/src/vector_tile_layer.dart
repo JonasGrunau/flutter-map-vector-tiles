@@ -188,6 +188,13 @@ class VectorTileLayer extends StatefulWidget {
   @visibleForTesting
   static int debugRetainedTileCount = 0;
 
+  /// Replaces the render pump's per-frame time budget in tests. Zero
+  /// makes every frame do exactly one unit of work — one layer of a
+  /// tile's recording, or one label of its shaping — which spreads each
+  /// phase over as many frames as it can take.
+  @visibleForTesting
+  static int? debugPumpBudgetMicros;
+
   /// How many screenfuls of finished tiles [autoRasterCacheBytes] aims
   /// to hold. Two would be the bare minimum for a zoom round trip — one
   /// level each side of a threshold — and the half is headroom for the
@@ -307,6 +314,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       rotation: camera.rotation,
     );
     if (current == _labelCamera) return;
+    if (_labelCamera != null) {
+      (_sinceCameraMove ??= Stopwatch())
+        ..reset()
+        ..start();
+    }
     _labelCamera = current;
     _labelGeneration++;
   }
@@ -1405,9 +1417,35 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           widget.theme, _styleZoomOf(tile.key.z.toDouble()));
 
   /// Wall-clock the render pump may spend per frame. Checked before
-  /// every job *and* between the labels of a symbol job's shaping, so
-  /// no single unit of work can run away with the frame.
-  static const int _pumpBudget = 4000;
+  /// every job, between the layers of a raster job's recording and
+  /// between the labels of a symbol job's shaping, so no single unit of
+  /// work can run away with the frame: only one layer or one label at a
+  /// time is ever run whole.
+  ///
+  /// Small while the camera moves, when every frame the pump makes late
+  /// is a visible stutter. Once it has stood still for
+  /// [_stillAfterMs], a late frame shows nothing but a fade-in a frame
+  /// behind, while a tight budget would leave most of each frame idle
+  /// and fill the screen seconds later — measured on a phone, 6.7 s to
+  /// a complete map at 4 ms, against 3.8 s before tiles were sliced and
+  /// 1.0 s with this budget.
+  int get _pumpBudget =>
+      VectorTileLayer.debugPumpBudgetMicros ??
+      (_cameraStill ? _stillPumpBudget : _movingPumpBudget);
+
+  static const int _movingPumpBudget = 4000;
+  static const int _stillPumpBudget = 12000;
+
+  /// How long after its last move the camera counts as still: longer
+  /// than the gap between two frames of a drag or a fling, even a late
+  /// one.
+  static const int _stillAfterMs = 150;
+
+  /// Time since the camera last moved; null until it first does.
+  Stopwatch? _sinceCameraMove;
+
+  bool get _cameraStill =>
+      (_sinceCameraMove?.elapsedMilliseconds ?? _stillAfterMs) >= _stillAfterMs;
 
   void _pumpRenderQueue(Duration _) {
     // Rasterizing while the app is away yields magenta textures that the
@@ -1426,8 +1464,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // the viewport centre comes first, rasters before symbol jobs —
     // except with labels drawn into the tiles, where a tile shows only
     // once both its phases are done, so each tile is finished in turn.
-    // The budget is checked before every job — it cannot preempt inside
-    // one, which is why a tile's two phases are separate jobs.
+    // The budget is checked before every job and inside both phases, at
+    // the points where they can stop and resume: a job that runs out of
+    // tick is requeued with its progress, not run to the end.
     final tileMajor = _tileLabels;
     while (!_renderQueue.isEmpty &&
         (processed == 0 || stopwatch.elapsedMicroseconds < _pumpBudget)) {
@@ -1441,7 +1480,17 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           job.generation == tile.loadGeneration) {
         switch (next.phase) {
           case RenderPhase.raster:
-            _rasterizeJob(tile, job);
+            if (!_rasterizeJob(tile, job, stopwatch)) {
+              // Recording ran out of tick. The job keeps its layer
+              // cursor, the slices recorded so far and its raster
+              // handles, which layers still to come may draw — so it
+              // must not be disposed here. Requeued for the same reason
+              // as a symbols job below; a newer raster for this tile
+              // supersedes it, slices and all.
+              _renderQueue.enqueueRaster(tile, job.priority, job);
+              processed++;
+              continue;
+            }
           case RenderPhase.symbols:
             if (!_symbolsJob(tile, job, stopwatch)) {
               // Shaping ran out of tick. The job keeps its cursor and
@@ -1468,7 +1517,14 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     developer.Timeline.finishSync();
   }
 
-  void _rasterizeJob(_DisplayTile tile, _RenderJob job) {
+  /// One slice of a tile's raster phase: record its geometry layers for
+  /// as long as this tick allows (see [TileRasterizer.recordSlice]).
+  /// Returns whether the phase finished — the caller requeues the job
+  /// if not. Nothing is published before the last slice, so a tile
+  /// never shows half its layers: until then it counts as loading, and
+  /// what covered it before (the previous level, or its own previous
+  /// image) keeps covering it.
+  bool _rasterizeJob(_DisplayTile tile, _RenderJob job, Stopwatch tick) {
     developer.Timeline.startSync('VT rasterize');
     final styleZoom = _styleZoomOf(tile.key.z.toDouble());
     final data = DisplayTileData(
@@ -1477,6 +1533,30 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         rasters: job.rasters,
         descendantSources: job.descendantSources,
         descendantRasters: job.descendantRasters);
+    if (!identical(job.recordedTheme, widget.theme) ||
+        job.recordedPixelRatio != _devicePixelRatio) {
+      job.resetRecording();
+      job.recordedTheme = widget.theme;
+      job.recordedPixelRatio = _devicePixelRatio;
+    }
+    final slice = TileRasterizer.recordSlice(
+      theme: widget.theme,
+      data: data,
+      styleZoom: styleZoom,
+      devicePixelRatio: _devicePixelRatio,
+      patterns: _patternResolver,
+      from: job.layerCursor,
+      outOfBudget: () => tick.elapsedMicroseconds >= _pumpBudget,
+    );
+    if (slice.picture case final picture?) job.geometryParts.add(picture);
+    job.layerCursor = slice.next;
+    if (slice.next < widget.theme.layers.length) {
+      developer.Timeline.finishSync();
+      return false;
+    }
+    final geometry = TileRasterizer.compose([...job.geometryParts]);
+    job.geometryParts.clear();
+
     final symbolsFollow = _symbolsFollow(tile, job.sources);
     if (symbolsFollow && _tileLabels) {
       // The labels go into the same image, so nothing is published
@@ -1484,13 +1564,6 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // the symbol phase rasterizes it together with them — one
       // snapshot per tile. Meanwhile the tile counts as loading, so the
       // previous level (labels included) keeps covering it.
-      final geometry = TileRasterizer.record(
-        theme: widget.theme,
-        data: data,
-        styleZoom: styleZoom,
-        devicePixelRatio: _devicePixelRatio,
-        patterns: _patternResolver,
-      );
       developer.Timeline.finishSync();
       _renderQueue.enqueueSymbols(
           tile,
@@ -1505,15 +1578,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             generation: job.generation,
             geometry: geometry,
           ));
-      return;
+      return true;
     }
-    final image = TileRasterizer.rasterize(
-      theme: widget.theme,
-      data: data,
-      styleZoom: styleZoom,
-      devicePixelRatio: _devicePixelRatio,
-      patterns: _patternResolver,
-    );
+    final image = geometry == null
+        ? null
+        : TileRasterizer.toImage(geometry, _devicePixelRatio);
     developer.Timeline.finishSync();
 
     tile.setImage(
@@ -1553,6 +1622,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // disabled nothing else would notice), and the pump runs outside
     // the grid update, so the level is complete enough to judge.
     _releaseRetainedIfReady(DateTime.now());
+    return true;
   }
 
   /// One slice of a tile's symbol phase: extract the candidates (once),
@@ -1816,6 +1886,30 @@ class _RenderJob {
   /// no geometry to draw.
   final ui.Picture? geometry;
 
+  /// The raster phase's progress through the theme's layers, held
+  /// across the ticks its recording is spread over (see
+  /// [TileRasterizer.recordSlice]): the next layer to record, and the
+  /// pictures of the slices recorded so far, owned and disposed with
+  /// the job.
+  int layerCursor = 0;
+  final List<ui.Picture> geometryParts = [];
+
+  /// What the recorded slices were drawn with. A later slice under a
+  /// different theme or pixel ratio would not stack onto them, so the
+  /// recording starts over instead.
+  Theme? recordedTheme;
+  double? recordedPixelRatio;
+
+  /// Drops the slices recorded so far, for a recording that has to
+  /// start over.
+  void resetRecording() {
+    for (final part in geometryParts) {
+      part.dispose();
+    }
+    geometryParts.clear();
+    layerCursor = 0;
+  }
+
   _RenderJob({
     required this.sources,
     required this.rasters,
@@ -1833,6 +1927,7 @@ class _RenderJob {
 
   void dispose() {
     geometry?.dispose();
+    resetRecording();
     for (final raster in rasters.values) {
       raster.dispose();
     }

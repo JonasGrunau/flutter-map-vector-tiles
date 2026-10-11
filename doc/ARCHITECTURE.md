@@ -35,11 +35,13 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
 Rasterization and symbol extraction are two separate jobs in a budgeted
 per-frame render pump (rasters for every pending tile first, symbols
 after — in `LabelMode.tile`, one tile at a time, since a tile shows only
-once both are done), and a finished tile — image plus symbols — enters
-the shared result cache, so re-crossing a zoom level skips the pipeline
-entirely. The pump's stages emit DevTools timeline events (`VT render
-pump`, `VT rasterize`, `VT symbols`, `VT labels`, and in `LabelMode.tile`
-`VT rasterize with labels` and `VT tile labels`).
+once both are done). Both are resumable — a recording stops between
+style layers, shaping between labels — so a dense tile is spread over
+several frames instead of holding up one. A finished tile — image plus
+symbols — enters the shared result cache, so re-crossing a zoom level
+skips the pipeline entirely. The pump's stages emit DevTools timeline
+events (`VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`, and
+in `LabelMode.tile` `VT rasterize with labels` and `VT tile labels`).
 ```
 
 ## Rendering model
@@ -63,6 +65,45 @@ exposes — appears at full opacity at once, because a fade there runs
 over the bare background and reads as a background-coloured shimmer on
 every crossing. Freshly rasterized tiles always fade; their fade is
 what masks staggered pop-in.
+
+Recording that geometry into a `Picture` is the expensive half of the
+raster phase, and it is all UI-thread work: on a Nothing Phone (1), a
+display tile of central Berlin at z16 took 16–28 ms to record, up to
+49 ms, against a 16.7 ms frame — buildings and dashed footpaths about
+half of it. So the raster phase is resumable, like the symbol phase:
+`TileRasterizer.recordSlice` records layers until the pump's budget is
+spent and returns where to resume, the job keeps the slices it has
+(`_RenderJob.geometryParts`) and is requeued with its priority, and once
+the last layer is in, `compose` stacks the slices into exactly the
+picture a single recording would have made. A layer is the smallest
+unit — each is drawn whole, in order, with its own paints, which is
+what keeps the slices stackable — so one frame can still carry the most
+expensive layer of a tile: 5–9 ms on those Berlin tiles, 22 ms for the
+buildings of the densest one. Nothing is published before the last
+slice: a tile halfway through its recording counts as loading, and
+whatever covered it keeps covering it. A slice taken under a different
+theme or pixel ratio than the ones before it starts the recording
+over, since it would not stack onto them.
+
+The budget depends on motion: 4 ms per frame while the camera moves,
+12 ms once it has stood still for 150 ms. While the map moves, every
+late frame is a visible stutter; while it stands still, a late frame
+only puts a fade-in one frame behind, and slicing at 4 ms then left
+most of each frame idle — the first complete map came 3 s later than
+before slicing.
+
+Measured with `compare/` on that phone at 60 Hz, two runs each, panning
+and zooming over the same tiles: with `LabelMode.tile` the map got a
+frame on 95–98% of display refreshes while panning (84–89% before) and
+94–96% while zooming (85–93%), the first complete map came after 1.0 s
+instead of 3.8 s, and the tiles came out pixel-identical. The default
+`LabelMode.screen` delivered the same share of frames as before — its
+per-frame label pass, not recording, is what makes those frames late —
+but its first complete map also came after 1.1–1.2 s instead of
+3.0–3.1 s. The price is the backlog a moving camera leaves: in tile mode
+the last tiles land up to 0.2 s after a pan stops, 0.9 s after a long zoom,
+where before the screen was complete the moment the camera stopped —
+because every frame of the motion had waited for whole tiles.
 
 A display tile whose data has not arrived does not wait blank. While
 the load is pending, the layer renders a *provisional* image from

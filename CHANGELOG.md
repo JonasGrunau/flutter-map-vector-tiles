@@ -15,6 +15,19 @@
   Nothing Phone (1) at 60 Hz, the map got a frame on 84–99% of display
   refreshes while zooming, panning, rotating and flinging, against
   69–83% with screen-space labels (rotating: 69% → 99%).
+- ⚡ A dense tile no longer holds up a frame while the map moves.
+  Recording a tile's roads and buildings took 16–49 ms on a phone for
+  central Berlin, all in one frame; it is now spread over several,
+  one style layer at a time, within the render pump's budget per frame,
+  which is 4 ms while the camera moves and 12 ms once it stands still.
+  On a Nothing Phone (1) with `LabelMode.tile`, the map got a frame on
+  95–98% of display refreshes while panning (was 84–89%) and 94–96%
+  while zooming (was 85–93%). The first complete map appeared after
+  1.0 s instead of 3.8 s, and after 1.1–1.2 s instead of 3.0–3.1 s
+  with the default `LabelMode.screen`, whose frames while moving are
+  held up by its label pass and did not change. The tiles drawn are
+  the same, pixel for pixel. In exchange, the last tiles can land up
+  to 0.2 s after a pan ends, and 0.9 s after a long zoom.
 - 🐛 A map in an unfocused window kept painting only its background
   colour for every tile it had not finished. The layer stops rasterizing
   in `AppLifecycleState.inactive`, which guards against iOS revoking the

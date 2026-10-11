@@ -69,6 +69,39 @@ Theme labelTheme({bool allowOverlap = false}) => const ThemeReader().read({
       ],
     });
 
+/// [labelTheme] with a third layer that draws: the land's outline.
+Theme threeLayerTheme() => const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'bg',
+          'type': 'background',
+          'paint': {'background-color': '#0000ff'},
+        },
+        {
+          'id': 'land',
+          'type': 'fill',
+          'source': 's',
+          'source-layer': 'land',
+          'paint': {'fill-color': '#ff0000'},
+        },
+        {
+          'id': 'coast',
+          'type': 'line',
+          'source': 's',
+          'source-layer': 'land',
+          'paint': {'line-color': '#ffffff'},
+        },
+        {
+          'id': 'poi',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'poi',
+          'layout': {'text-field': '{name}', 'text-size': 40},
+          'paint': {'text-color': '#00ff00'},
+        },
+      ],
+    });
+
 /// Pass the same [theme] and [providers] to every rebuild of one map:
 /// either one replaced rebuilds the layer's stores and tiles from
 /// scratch, which would bypass the in-place updates under test.
@@ -486,11 +519,20 @@ void main() {
       await tester.pump();
     });
 
-    for (final settled in [true, false]) {
+    for (final (settled, sliced) in [
+      (true, false),
+      (false, false),
+      (true, true),
+      (false, true),
+    ]) {
       testWidgets(
           'leaks no image or picture (disposed '
-          '${settled ? 'after settling' : 'with work still queued'})',
-          (tester) async {
+          '${settled ? 'after settling' : 'with work still queued'}'
+          '${sliced ? ', one layer or label per frame' : ''})', (tester) async {
+        if (sliced) {
+          VectorTileLayer.debugPumpBudgetMicros = 0;
+          addTearDown(() => VectorTileLayer.debugPumpBudgetMicros = null);
+        }
         tester.view.physicalSize = const Size(600, 600);
         tester.view.devicePixelRatio = 1;
         addTearDown(tester.view.reset);
@@ -548,5 +590,97 @@ void main() {
         expect(pictures, 0, reason: 'pictures created but never disposed');
       });
     }
+  });
+
+  group('with every layer and label in a frame of its own', () {
+    setUp(() => VectorTileLayer.debugPumpBudgetMicros = 0);
+    tearDown(() => VectorTileLayer.debugPumpBudgetMicros = null);
+
+    for (final mode in LabelMode.values) {
+      testWidgets('${mode.name} mode: the map comes out the same',
+          (tester) async {
+        tester.view.physicalSize = const Size(600, 600);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+
+        Future<({Uint8List pixels, int rasterized, int slices})>
+            render() async {
+          final rasterized = TileRasterizer.debugRasterizeCount;
+          final slices = TileRasterizer.debugSliceCount;
+          final provider = EverywhereProvider(labelledTile());
+          await tester.pumpWidget(labelModeApp(
+              MapController(), TileProviders({'s': provider}), labelTheme(),
+              labelMode: mode));
+          await settleLabelled(tester, provider);
+          await settleRendering(tester);
+          await tester.pump(const Duration(seconds: 1)); // fades done
+          final (data, _, _) = await snapshot(tester);
+          await tester.pumpWidget(const SizedBox());
+          // The second render must not be served from the first one's
+          // finished tiles.
+          VectorTileLayer.clearMemoryCache();
+          return (
+            pixels: data.buffer.asUint8List(),
+            rasterized: TileRasterizer.debugRasterizeCount - rasterized,
+            slices: TileRasterizer.debugSliceCount - slices,
+          );
+        }
+
+        final sliced = await render();
+        VectorTileLayer.debugPumpBudgetMicros = null;
+        final whole = await render();
+
+        // Two layers draw: the background and the land.
+        expect(sliced.rasterized, greaterThan(0));
+        expect(sliced.slices, 2 * sliced.rasterized,
+            reason: 'every recording took one frame per layer');
+        expect(listEquals(sliced.pixels, whole.pixels), isTrue);
+      });
+    }
+
+    testWidgets('a layer disposed mid-recording lets go of the slices',
+        (tester) async {
+      tester.view.physicalSize = const Size(600, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      var pictures = 0;
+      void track(ObjectEvent event) {
+        if (event.object is! ui.Picture || snapshotting) return;
+        if (event is ObjectCreated) pictures++;
+        if (event is ObjectDisposed) pictures--;
+      }
+
+      FlutterMemoryAllocations.instance.addListener(track);
+      addTearDown(
+          () => FlutterMemoryAllocations.instance.removeListener(track));
+
+      // Three layers that draw: the frame `pumpWidget` still runs
+      // before it unmounts the map records a second one, and the third
+      // must still be to come when the layer goes.
+      final provider = EverywhereProvider(labelledTile());
+      final rasterized = TileRasterizer.debugRasterizeCount;
+      final slices = TileRasterizer.debugSliceCount;
+      await tester.pumpWidget(labelModeApp(
+          MapController(), TileProviders({'s': provider}), threeLayerTheme(),
+          labelMode: LabelMode.tile));
+      // Until a tile has one layer recorded and two to come.
+      expect(
+          await pumpUntil(
+              tester,
+              () async =>
+                  TileRasterizer.debugSliceCount - slices ==
+                  3 * (TileRasterizer.debugRasterizeCount - rasterized) - 2),
+          isTrue);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 200)));
+      await tester.pump();
+      VectorTileLayer.clearMemoryCache();
+
+      expect(pictures, 0, reason: 'pictures created but never disposed');
+    });
   });
 }

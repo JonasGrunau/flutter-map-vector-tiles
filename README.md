@@ -471,12 +471,11 @@ Texture memory is the same in both modes: the labels are drawn into the
 tile's existing image, so `rasterCacheMaxBytes` needs no adjustment.
 
 Measured with [`compare/`](compare) on a Nothing Phone (1) at 60 Hz,
-same style and tiles: with `LabelMode.tile` the map got a frame on
-84–99% of display refreshes while zooming, panning, rotating and
-flinging, against 69–83% in the default mode, and the UI thread's 90th
-percentile fell from 18–28 ms to 4–22 ms. The first complete map took
-3.9 s instead of 3.4 s, because each tile waits for its labels before it
-appears.
+same style and tiles, two runs each: with `LabelMode.tile` the map got
+a frame on 94–98% of display refreshes while panning and zooming,
+against 70–89% in the default mode, and the UI thread's 90th percentile
+fell from 14–23 ms to 9–11 ms. The first complete map took about 1 s in
+either mode.
 
 ## 🏗️ Architecture
 
@@ -492,7 +491,10 @@ camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
 
 For profiling, the render pipeline emits DevTools timeline events:
 `VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`, and with
-`LabelMode.tile` `VT rasterize with labels` and `VT tile labels`.
+`LabelMode.tile` `VT rasterize with labels` and `VT tile labels`. A
+dense tile's `VT rasterize` and `VT symbols` can repeat over several
+frames: the pump records a tile's layers and shapes its labels in
+slices, so that no single tile holds up a frame.
 
 On web the disk cache tier is absent and decoding runs on a yielding
 event-loop queue instead of isolates. Everything else is identical.
