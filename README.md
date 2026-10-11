@@ -471,11 +471,11 @@ Texture memory is the same in both modes: the labels are drawn into the
 tile's existing image, so `rasterCacheMaxBytes` needs no adjustment.
 
 Measured with [`compare/`](compare) on a Nothing Phone (1) at 60 Hz,
-same style and tiles, two runs each: with `LabelMode.tile` the map got
-a frame on 94–98% of display refreshes while panning and zooming,
-against 70–89% in the default mode, and the UI thread's 90th percentile
-fell from 14–23 ms to 9–11 ms. The first complete map took about 1 s in
-either mode.
+same style and tiles, three runs each: with `LabelMode.tile` the map
+got a frame on 94–98.5% of display refreshes while zooming, panning,
+rotating and flinging, against 73–88% in the default mode, and the UI
+thread's 90th percentile fell from 14–23 ms to 4–11 ms. The first
+complete map took 1.1 s, against 1.4 s in the default mode.
 
 ## 🏗️ Architecture
 
