@@ -21,4 +21,4 @@ while lab_busy; do
   # The app takes the next queued run, measures it and quits.
   open -W -n "$APP"
 done
-echo "results: $(ls -dt "$COMPARE_DIR"/results/raw/*-macos | head -1)"
+echo "results: $(lab_results macos)"

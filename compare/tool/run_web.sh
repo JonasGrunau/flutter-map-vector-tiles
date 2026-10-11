@@ -27,4 +27,4 @@ flutter build web --profile --base-href /app/ "${WASM[@]}" "${DEFINES[@]}"
 start_lab "$PLATFORM" "$ROUNDS" --app build/web "$@"
 trap stop_lab EXIT
 node tool/run_web.mjs "$LAB"
-echo "results: $(ls -dt "$COMPARE_DIR"/results/raw/*-"$PLATFORM" | head -1)"
+echo "results: $(lab_results "$PLATFORM")"

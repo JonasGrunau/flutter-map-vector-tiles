@@ -49,6 +49,13 @@ Excluded from the published package (`.pubignore`).
   the background colour for `fmvt` (an unfocused window was `inactive`,
   which the layer then treated as backgrounded — fixed in the package) and
   its frame times looked superb. A pass flagged `interrupted` is not data.
+- **"Settled" must outlast every package's silent work.** `_settle` waits
+  for a quiet window with no frame. `vector_map_tiles` renders and
+  PNG-encodes tiles between frames and went 1.75 s without one on the
+  Nothing Phone; the 1.5 s window used until 2026-10-12 shot its z14 screen
+  half-empty and started its cold passes with the previous view still
+  rendering. The window is now 4 s. On a slower device, check that a
+  screenshot taken a few seconds later shows nothing new before trusting it.
 - **Arms pair up by label strategy, not by default.** `fmvt-raster` ↔
   `vmt-raster` (labels baked into the tiles), `fmvt` ↔ `vmt-vector`
   (labels drawn per frame); `fmvt-none` and `fmvt-raster-none` are the

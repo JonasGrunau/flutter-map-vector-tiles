@@ -89,7 +89,12 @@ for the baked-label pair: it draws what `vmt-raster` draws.
   reported too, to explain a drop; a stall is a gap over 50 ms.
 - **Settle** is the time from the camera stopping to the last repaint —
   how long tiles and labels keep arriving and fading after motion.
-  Settled means no frame for 1.5 s and no tile request in flight.
+  Settled means no frame for 4 s and no tile request in flight. The
+  window has to outlast the longest pause between two frames while a
+  package is still working: `vector_map_tiles` renders and PNG-encodes
+  tiles between frames, and went up to 1.75 s without one while filling
+  a fresh screen. Sessions before 2026-10-12 used 1.5 s, which cut some of
+  its work off: see RESULTS.md.
 - **Fidelity screenshots** at fixed cameras, next to MapLibre GL JS
   rendering the same style from the same tiles (`tool/reference_shots.mjs`).
 - Any pass during which the app was not `resumed` (focus lost, screen

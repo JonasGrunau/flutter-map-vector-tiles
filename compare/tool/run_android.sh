@@ -46,8 +46,14 @@ while lab_busy; do
   # The app takes the next queued run, measures it and exits; Android may
   # relaunch it on its own, in which case it simply takes the next run.
   if ! lab_running && ! "${ADB[@]}" shell pidof "$PKG" >/dev/null; then
+    # Stay-on keeps a lit screen lit, but does not light a dark one: a
+    # screen that went off before the session (or between two of them)
+    # leaves the app paused and the run waiting forever. Without a PIN this
+    # also dismisses the lock screen; with one, unlock the phone yourself.
+    "${ADB[@]}" shell input keyevent KEYCODE_WAKEUP
+    "${ADB[@]}" shell wm dismiss-keyguard
     "${ADB[@]}" shell am start -n "$PKG/.MainActivity" >/dev/null
   fi
   sleep 3
 done
-echo "results: $(ls -dt "$COMPARE_DIR"/results/raw/*-android | head -1)"
+echo "results: $(lab_results android)"

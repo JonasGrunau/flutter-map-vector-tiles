@@ -89,3 +89,12 @@ lab_busy() {
 lab_running() {
   curl -sf "$LAB/_status" | grep -q '"running":\["'
 }
+
+# The directory the lab wrote this session to, as its first log line names
+# it (honours --session and --out). `dart run` prefixes that line with its
+# own progress text, hence no anchor.
+#   lab_results <platform>
+lab_results() {
+  LC_ALL=C sed -n 's/.*lab server on .* · results //p' "$COMPARE_DIR/.lab-$1.log" |
+    head -1
+}

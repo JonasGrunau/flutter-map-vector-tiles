@@ -328,11 +328,19 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
     return done.future;
   }
 
-  /// Waits until nothing has repainted for 1.5 s and — with a lab — no tile
+  /// Waits until nothing has repainted for 4 s and — with a lab — no tile
   /// request is in flight, and returns how long after [sinceUs] the last
   /// frame came: the time until the screen stopped changing. -1 on timeout.
+  ///
+  /// The quiet window must outlast the longest stretch a package works
+  /// without producing a frame. `vector_map_tiles` renders, rasterizes and
+  /// PNG-encodes tiles between frames: on a Nothing Phone (1) it went
+  /// 1.75 s without a frame while filling a fresh z14 screen, so the 1.5 s
+  /// used before caught it mid-render — screenshots with missing tiles,
+  /// settle times too short, and cold passes that began with its previous
+  /// view still rendering.
   Future<int> _settle({required int sinceUs}) async {
-    const quietUs = 1500 * 1000;
+    const quietUs = 4000 * 1000;
     final deadline = _log.nowUs + 25 * 1000 * 1000;
     while (true) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
