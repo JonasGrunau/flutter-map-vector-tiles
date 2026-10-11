@@ -14,10 +14,14 @@ import sys
 
 from PIL import Image
 
-ARMS = ['maplibre', 'fmvt', 'vmt-raster', 'vmt-vector', 'fmvt-none']
+ARMS = ['maplibre', 'fmvt', 'fmvt-raster', 'vmt-raster', 'vmt-vector',
+        'fmvt-none', 'fmvt-raster-none']
 TITLES = {
     'maplibre': 'MapLibre GL JS (reference)',
     'fmvt': 'flutter_map_vector_tiles',
+    'fmvt-raster': 'flutter_map_vector_tiles · LabelMode.tile',
+    'fmvt-raster-none':
+        'flutter_map_vector_tiles · LabelMode.tile · TileOffset.none',
     'vmt-raster': 'vector_map_tiles · raster',
     'vmt-vector': 'vector_map_tiles · vector',
     'fmvt-none': 'flutter_map_vector_tiles · TileOffset.none',
@@ -29,7 +33,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('session')
     parser.add_argument('--width', type=int, default=900)
-    parser.add_argument('--arms', default='maplibre,fmvt,vmt-raster,vmt-vector')
+    parser.add_argument('--arms',
+                        default='maplibre,fmvt,fmvt-raster,vmt-raster,vmt-vector')
     args = parser.parse_args()
 
     session = os.path.basename(os.path.normpath(args.session))

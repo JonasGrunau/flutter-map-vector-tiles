@@ -30,9 +30,21 @@ Every run measures exactly one arm, in a fresh process.
 | arm | configuration |
 |---|---|
 | `fmvt` | `flutter_map_vector_tiles` at its defaults |
+| `fmvt-raster` | `flutter_map_vector_tiles` with `labelMode: LabelMode.tile`: labels drawn into the tile images |
 | `vmt-raster` | `vector_map_tiles` at its defaults (raster mode) plus `maximumZoom: 22`, without which its layer goes blank past z18 |
 | `vmt-vector` | `vector_map_tiles` in vector mode, which its docs recommend for sharpness |
 | `fmvt-none` | control: `flutter_map_vector_tiles` with `TileOffset.none` |
+| `fmvt-raster-none` | control: `fmvt-raster` with `TileOffset.none` |
+
+The packages draw labels in different ways, so the arms pair up by
+strategy rather than by default. `vector_map_tiles`' raster mode bakes
+labels and icons into each tile image, so a moving map costs it no label
+work; `flutter_map_vector_tiles` by default draws every label every frame
+in screen space (global collision, upright text under rotation), which
+costs UI-thread time while the camera moves. `vector_map_tiles`' vector
+mode redraws everything, geometry included, every frame. Like against
+like is therefore `fmvt-raster` ↔ `vmt-raster` (labels baked into the
+tiles) and `fmvt` ↔ `vmt-vector` (labels drawn per frame).
 
 The control arm exists because the two packages do not draw the same map
 at the same camera. `flutter_map_vector_tiles` evaluates a 512 px style
@@ -41,7 +53,8 @@ at the flutter_map zoom, one level deeper, so it opens label layers a
 level early and draws more of them (compare the screenshots in
 RESULTS.md with MapLibre's). `TileOffset.none` makes this package do the
 same, so the gap between `fmvt` and `fmvt-none` is the cost of that extra
-content, not of either renderer.
+content, not of either renderer. `fmvt-raster-none` is the same control
+for the baked-label pair: it draws what `vmt-raster` draws.
 
 ## Method
 
@@ -125,7 +138,7 @@ platform's throttling, not the packages. iOS needs a real device too
 | file | |
 |---|---|
 | `lib/main.dart` | entry point: lab run, in-browser benchmark, results page or demo |
-| `lib/src/arms.dart` | the four configurations |
+| `lib/src/arms.dart` | the six configurations |
 | `lib/src/scenarios.dart` | camera paths and screenshot cameras |
 | `lib/src/metrics.dart` | frame log, pacing and timing statistics |
 | `lib/src/bench_page.dart` | one measured run |

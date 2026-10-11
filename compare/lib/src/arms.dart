@@ -16,6 +16,18 @@ enum Arm {
   /// content one zoom higher draws, not of either renderer.
   fmvtNone('fmvt-none', 'flutter_map_vector_tiles', 'TileOffset.none'),
 
+  /// `flutter_map_vector_tiles` with `LabelMode.tile`: labels and icons
+  /// drawn into the tile images, as `vector_map_tiles`' raster mode does,
+  /// instead of by a screen-space pass every frame. The like-for-like
+  /// counterpart of [vmtRaster], as [fmvt] is of [vmtVector].
+  fmvtRaster('fmvt-raster', 'flutter_map_vector_tiles', 'LabelMode.tile'),
+
+  /// [fmvtRaster] at `TileOffset.none`: the same content as
+  /// [vmtRaster] draws, so the pair compares renderers rather than how
+  /// many labels each one has to draw — what [fmvtNone] is to [fmvt].
+  fmvtRasterNone('fmvt-raster-none', 'flutter_map_vector_tiles',
+      'LabelMode.tile · TileOffset.none'),
+
   /// `vector_map_tiles` at its defaults — raster mode — plus
   /// `maximumZoom: 22`, without which its layer goes blank past z18.
   vmtRaster('vmt-raster', 'vector_map_tiles', 'raster mode (default)'),
@@ -85,8 +97,12 @@ Future<LoadedArm> loadArm(
         tileProviders: style.providers,
         rasterSources: style.rasterSources,
         sprites: style.sprites,
-        tileOffset:
-            arm == Arm.fmvtNone ? vt.TileOffset.none : vt.TileOffset.maplibre,
+        tileOffset: arm == Arm.fmvtNone || arm == Arm.fmvtRasterNone
+            ? vt.TileOffset.none
+            : vt.TileOffset.maplibre,
+        labelMode: arm == Arm.fmvtRaster || arm == Arm.fmvtRasterNone
+            ? vt.LabelMode.tile
+            : vt.LabelMode.screen,
         cachePath: cacheDir == null ? null : () async => '$cacheDir/fmvt',
       ),
       vt.VectorTileLayer.clearMemoryCache,

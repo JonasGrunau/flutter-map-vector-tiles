@@ -31,7 +31,14 @@ import 'dart:typed_data';
 const _upstream = 'https://tiles.openfreemap.org/';
 const _userAgent = 'flutter_map_vector_tiles-compare/0.1 '
     '(+https://github.com/JonasGrunau/flutter-map-vector-tiles)';
-const _defaultArms = ['fmvt', 'fmvt-none', 'vmt-raster', 'vmt-vector'];
+const _defaultArms = [
+  'fmvt',
+  'fmvt-none',
+  'fmvt-raster',
+  'fmvt-raster-none',
+  'vmt-raster',
+  'vmt-vector',
+];
 
 Future<void> main(List<String> argv) async {
   final args = _Args(argv);

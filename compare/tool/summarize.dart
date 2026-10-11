@@ -10,10 +10,20 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
-const _armOrder = ['fmvt', 'fmvt-none', 'vmt-raster', 'vmt-vector'];
+const _armOrder = [
+  'fmvt',
+  'fmvt-none',
+  'fmvt-raster',
+  'fmvt-raster-none',
+  'vmt-raster',
+  'vmt-vector',
+];
 const _armTitle = {
   'fmvt': 'flutter_map_vector_tiles',
   'fmvt-none': 'flutter_map_vector_tiles · TileOffset.none',
+  'fmvt-raster': 'flutter_map_vector_tiles · LabelMode.tile',
+  'fmvt-raster-none':
+      'flutter_map_vector_tiles · LabelMode.tile · TileOffset.none',
   'vmt-raster': 'vector_map_tiles · raster',
   'vmt-vector': 'vector_map_tiles · vector',
 };

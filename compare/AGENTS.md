@@ -19,7 +19,7 @@ Excluded from the published package (`.pubignore`).
 | File | Description |
 |------|-------------|
 | `lib/main.dart` | Entry: a lab run when `LAB` is set (dart-define, or `?lab=` on web), else the demo, the in-browser benchmark (`?mode=bench`) or its results page (`?mode=results`) |
-| `lib/src/arms.dart` | `Arm` (`fmvt`, `fmvt-none`, `vmt-raster`, `vmt-vector`) and `loadArm`, which reads the style with that package's own reader and builds its layer. `vector_map_tiles`' `cacheFolder` has a per-platform type — hence the analyzer `ignore` and the `vmtCacheFolder` shim |
+| `lib/src/arms.dart` | `Arm` (`fmvt`, `fmvt-none`, `fmvt-raster`, `fmvt-raster-none`, `vmt-raster`, `vmt-vector`) and `loadArm`, which reads the style with that package's own reader and builds its layer. `vector_map_tiles`' `cacheFolder` has a per-platform type — hence the analyzer `ignore` and the `vmtCacheFolder` shim |
 | `lib/src/scenarios.dart` | The four camera paths (each over its own city, as a function of time) and `shotPoses`, the fidelity cameras — mirrored in `tool/reference_shots.mjs` |
 | `lib/src/metrics.dart` | `FrameLog`: engine vsync timestamps per frame (pacing) plus `FrameTiming` matched to the same window; `FrameStats`, `RssSampler` |
 | `lib/src/bench_page.dart` | One measured run: calibrate refresh, take a run from the lab queue, open → settle, each scenario cold then warm, screenshots in round 0, report, exit. Also the reload-per-arm in-browser benchmark |
@@ -49,6 +49,11 @@ Excluded from the published package (`.pubignore`).
   the background colour for `fmvt` (an unfocused window was `inactive`,
   which the layer then treated as backgrounded — fixed in the package) and
   its frame times looked superb. A pass flagged `interrupted` is not data.
+- **Arms pair up by label strategy, not by default.** `fmvt-raster` ↔
+  `vmt-raster` (labels baked into the tiles), `fmvt` ↔ `vmt-vector`
+  (labels drawn per frame); `fmvt-none` and `fmvt-raster-none` are the
+  content controls, drawing what `vector_map_tiles` draws. Report a
+  package-vs-package number from a pair, never across strategies.
 - **Fairness choices are written down in README.md "The arms".** Changing
   an arm's configuration changes what the results mean; update README.md,
   RESULTS.md and the root README's comparison section with it.

@@ -105,7 +105,13 @@ class _DemoPageState extends State<DemoPage> with TickerProviderStateMixin {
     writeLocal(
       browserPlanKey,
       jsonEncode({
-        'plan': ['warmup', Arm.fmvt.id, Arm.vmtRaster.id, Arm.vmtVector.id],
+        'plan': [
+          'warmup',
+          Arm.fmvt.id,
+          Arm.fmvtRaster.id,
+          Arm.vmtRaster.id,
+          Arm.vmtVector.id,
+        ],
         'index': 0,
         'scenarios': quick ? ['zoom', 'rotate'] : scenarios.map((s) => s.id),
         'results': <Object?>[],
@@ -228,7 +234,12 @@ class _DemoPageState extends State<DemoPage> with TickerProviderStateMixin {
               ]),
               if (_panelOpen) ...[
                 Wrap(spacing: 6, runSpacing: 6, children: [
-                  for (final a in [Arm.fmvt, Arm.vmtRaster, Arm.vmtVector])
+                  for (final a in [
+                    Arm.fmvt,
+                    Arm.fmvtRaster,
+                    Arm.vmtRaster,
+                    Arm.vmtVector,
+                  ])
                     ChoiceChip(
                       label: Text(a.label),
                       selected: current == a.id,
@@ -269,11 +280,11 @@ class _DemoPageState extends State<DemoPage> with TickerProviderStateMixin {
                 Wrap(spacing: 6, runSpacing: 6, children: [
                   FilledButton.tonal(
                     onPressed: () => _startBenchmark(quick: true),
-                    child: const Text('Benchmark · quick (~3 min)'),
+                    child: const Text('Benchmark · quick (~4 min)'),
                   ),
                   OutlinedButton(
                     onPressed: () => _startBenchmark(quick: false),
-                    child: const Text('Benchmark · full (~10 min)'),
+                    child: const Text('Benchmark · full (~13 min)'),
                   ),
                 ]),
                 if (_sideBySide)
@@ -289,6 +300,7 @@ class _DemoPageState extends State<DemoPage> with TickerProviderStateMixin {
                 if (_sideBySide)
                   Wrap(spacing: 6, children: [
                     for (final a in [
+                      Arm.fmvtRaster,
                       Arm.vmtRaster,
                       Arm.vmtVector,
                       Arm.fmvtNone
@@ -317,7 +329,9 @@ class _DemoPageState extends State<DemoPage> with TickerProviderStateMixin {
             'The same OpenFreeMap style, rendered by flutter_map_vector_tiles '
             '$fmvtVersion and vector_map_tiles $vmtVersion, both at their '
             'defaults (vector_map_tiles with maximumZoom: 22, without which '
-            'it goes blank past z18).\n\n'
+            'it goes blank past z18). "LabelMode.tile" is '
+            'flutter_map_vector_tiles with its labels drawn into the tiles, '
+            'the counterpart of vector_map_tiles\' default raster mode.\n\n'
             'Every package switch reloads the page, so each one runs alone '
             'and starts with nothing cached by the other.\n\n'
             'The readout counts frames the display could have shown but did '
