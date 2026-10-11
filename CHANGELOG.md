@@ -11,7 +11,10 @@
   included, but with the limits of a pre-rendered tile: collision is
   per tile and a label that would cross a tile edge is dropped, text
   turns with the map, scales with the tile between zoom levels, and
-  fades in with its tile. Texture memory per tile is unchanged.
+  fades in with its tile. Texture memory per tile is unchanged. On a
+  Nothing Phone (1) at 60 Hz, the map got a frame on 84–99% of display
+  refreshes while zooming, panning, rotating and flinging, against
+  69–83% with screen-space labels (rotating: 69% → 99%).
 - 🐛 A map in an unfocused window kept painting only its background
   colour for every tile it had not finished. The layer stops rasterizing
   in `AppLifecycleState.inactive`, which guards against iOS revoking the
