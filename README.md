@@ -338,7 +338,7 @@ fetched one zoom deeper for the same visual scale.
 | `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, dashes and casing |
 | `symbol` | full, including curved line text and `text-variable-anchor` / `text-radial-offset`; see [Labels](#-labels) below |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity` and brightness/contrast/saturation/hue-rotate matching MapLibre's shader math |
-| `fill-extrusion` | renders as a flat fill |
+| `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, so a building part over its outline does not draw darker |
 | `hillshade`, `heatmap`, `sky` | skipped, with a log line |
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted

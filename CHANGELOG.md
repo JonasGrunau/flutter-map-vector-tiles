@@ -24,6 +24,11 @@
   again. On a Nothing Phone (1), after a run through four dense cities,
   RSS fell by 25–30 MB within 3 s, and by 42–48 MB with
   `TileOffset.none`.
+- 🎨 `fill-extrusion` layers, such as the `building-3d` layer of
+  OpenFreeMap's Liberty style, now apply `fill-extrusion-opacity` to the
+  layer as a whole, as MapLibre does. Each building used to be blended
+  on its own, so wherever a building part overlapped its outline, the
+  overlap drew darker than the rest of the building.
 - ⚡ A dense tile no longer holds up a frame while the map moves.
   Recording a tile's roads and buildings took 16–49 ms on a phone for
   central Berlin, all in one frame; it is now spread over several,

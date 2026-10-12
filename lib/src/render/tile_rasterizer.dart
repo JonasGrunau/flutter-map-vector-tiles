@@ -417,6 +417,49 @@ class TileRasterizer {
         ..isAntiAlias = layer.antialias;
     }
 
+    // `fill-extrusion-opacity` is the opacity of the whole layer, which
+    // MapLibre renders to one buffer and blends once: where a building
+    // part overlaps its outline, the overlap is no darker than either.
+    // With one paint for every feature that is a single path — the
+    // non-zero rule fills the union once, given MVT's winding — and,
+    // drawn in one call, cheaper than a path per building. A colour
+    // that varies by feature needs a layer to composite instead; the
+    // opacity itself never varies by feature, the spec forbids it.
+    if (layer.extrusion && patternProp == null) {
+      if (fillPaint != null) {
+        final union = Path()..fillType = PathFillType.nonZero;
+        var any = false;
+        _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
+            (feature, ctx, transform, clip) {
+          any |= _addPolygon(union, feature, transform, clip);
+        });
+        if (!any) return false;
+        canvas.drawPath(union, fillPaint);
+        return true;
+      }
+      final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
+      if (opacity == 0) return false;
+      if (opacity < 1) {
+        canvas.saveLayer(
+            null, Paint()..color = Color.fromRGBO(0, 0, 0, opacity));
+      }
+      _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
+          (feature, ctx, transform, clip) {
+        final color = layer.color.eval(ctx);
+        if (color.a == 0) return;
+        final path = _polygonPath(feature, transform, clip);
+        if (path == null) return;
+        canvas.drawPath(
+            path,
+            Paint()
+              ..color = color
+              ..isAntiAlias = layer.antialias);
+        painted = true;
+      });
+      if (opacity < 1) canvas.restore();
+      return painted;
+    }
+
     _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
         (feature, ctx, transform, clip) {
       final path = _polygonPath(feature, transform, clip);
@@ -888,6 +931,12 @@ class TileRasterizer {
   static Path? _polygonPath(
       PreparedFeature feature, _TileTransform t, ClipRect? clip) {
     final path = Path()..fillType = PathFillType.nonZero;
+    return _addPolygon(path, feature, t, clip) ? path : null;
+  }
+
+  /// Adds [feature]'s rings to [path]; whether any survived [clip].
+  static bool _addPolygon(
+      Path path, PreparedFeature feature, _TileTransform t, ClipRect? clip) {
     var any = false;
     for (final ring in feature.parts) {
       if (clip == null) {
@@ -901,7 +950,7 @@ class TileRasterizer {
         }
       }
     }
-    return any ? path : null;
+    return any;
   }
 
   static Path _linePath(PreparedFeature feature, _TileTransform t) {

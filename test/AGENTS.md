@@ -30,6 +30,7 @@ lifecycle or painting is covered by widget tests that pump a real
 | `descendant_substitution_test.dart` | Zoom-out substitution: the `findDescendants` walk (partial cover, depth and maxzoom bounds), descendant rasterization into sub-squares with buffer-spill clipping (vector and raster sources), and widget-level: a reopened map below the cached level paints from descendants while its own tiles never arrive |
 | `theme_reader_test.dart` | Layer parsing and MapLibre spec defaults |
 | `line_pattern_test.dart`, `fill_pattern_test.dart` | Pattern paints |
+| `fill_extrusion_test.dart` | `fill-extrusion-opacity` per layer: overlapping buildings blended once (constant and per-feature colour), a plain fill as the double-blend control, no outline on extrusions |
 | `disk_cache_test.dart`, `lru_cache_test.dart` | Cache eviction, TTL, size sweep |
 | `style_reader_cache_test.dart` | Stale-while-revalidate style loading |
 | `style_reader_sources_test.dart` | Source URL resolution: relative TileJSON/tile templates (ArcGIS `root.json` shape), `{key}` substitution |
