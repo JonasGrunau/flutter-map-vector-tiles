@@ -26,6 +26,15 @@ class ExpressionParser {
   /// feature id, geometry type) — the basis for zoom-only detection.
   bool _readsFeature = false;
 
+  /// Whether anything parsed so far reads the zoom — `["zoom"]` anywhere,
+  /// or a legacy function keyed on it. Sticky, so the theme reader
+  /// samples it straight after parsing a layer's filter with a fresh
+  /// parser: a filter that never reads the zoom selects the same
+  /// features at every zoom, which lets the renderer resolve it once
+  /// per prepared tile (see `MatchedFeatures`).
+  bool get readsZoom => _readsZoom;
+  bool _readsZoom = false;
+
   /// Parses one style property, additionally reporting whether the
   /// compiled expression is zoom-only (reads no feature data). The
   /// typed property wrappers memoize zoom-only results against the
@@ -227,6 +236,7 @@ class ExpressionParser {
         _readsFeature = true;
         return (ctx) => ctx.geometryType;
       case 'zoom':
+        _readsZoom = true;
         return (ctx) => ctx.zoom;
       case 'let':
         return _parseLet(a);
@@ -864,7 +874,10 @@ class ExpressionParser {
       if (json['type'] == 'identity') {
         // Identity function: the feature property's raw value (the
         // zoom when no property is named).
-        if (property == null) return (ctx) => ctx.zoom;
+        if (property == null) {
+          _readsZoom = true;
+          return (ctx) => ctx.zoom;
+        }
         _refProp(property);
         final defaultValue = json['default'];
         return (ctx) => ctx.properties[property] ?? defaultValue;
@@ -882,7 +895,11 @@ class ExpressionParser {
     }
     final base = toNumber(json['base']) ?? 1.0;
     final property = json['property'] as String?;
-    if (property != null) _refProp(property);
+    if (property != null) {
+      _refProp(property);
+    } else {
+      _readsZoom = true;
+    }
     final defaultValue = json['default'];
     final type = json['type'] as String? ?? 'exponential';
 
