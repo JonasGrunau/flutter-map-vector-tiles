@@ -57,9 +57,16 @@ package's default) against `vmt-vector`.
   266 MB (RSS on this phone does not include GPU memory, so it is
   sampled separately, below the tables). This package's default needs
   more GPU memory, 372 MB, and vector mode 385 MB; vector mode's RSS is
-  925 MB against this package's 400 MB. With `TileOffset.none` this
-  package's RSS climbs to 480–500 MB over a run, because its label text
-  cache holds up to 8000 shaped labels and keeps every city's. In a
+  925 MB against this package's 400 MB. Most of the default's extra GPU
+  memory goes to its label fades, which draw fading labels through
+  translucent layers: with `labelFadeDuration: Duration.zero`, the peak
+  fell from 350–385 to 272–311 MB over two runs each
+  (`results/raw/2026-10-12-fades-android`). Turning the fades off costs
+  frames, though: the collision pass then runs every frame instead of
+  every 150 ms, and frames fell from 68.7–90.7 % to 59.4–79.5 %. With
+  `TileOffset.none` this package's RSS climbs to 480–500 MB over a run,
+  because its label text cache holds up to 8000 shaped labels and keeps
+  every city's. In a
   same-build A/B over two runs per arm
   (`results/raw/2026-10-12-textcache-android`), that cache size cost
   107–111 MB at the peak (491–495 against 384 MB with 2500 entries) and

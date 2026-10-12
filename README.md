@@ -148,7 +148,7 @@ vt.VectorTileLayer(
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source. The caches are shared process-wide, so the most recently mounted layer's value wins |
 | `rasterCacheMaxBytes` | sized for the device | finished-tile budget: zooming back to a recent level, or reopening the same style, paints instantly instead of re-rendering. These are GPU texture bytes, roughly 1 MB per tile at devicePixelRatio 2 and 2.25 MB at 3, and a phone screenful is 25 to 35 tiles, so a *single* level costs about 80 MB on a large dpr-3 phone. The default measures your viewport and dpr and budgets 2.5 screenfuls, clamped to 64 to 256 MB, so a zoom round trip keeps the level it returns to. Pass a byte count to pin it, or `0` to disable |
 | `tileFadeDuration` | 150 ms | fade-in of newly rendered tiles. Tiles from the finished-tile cache fade only when retained imagery lies beneath to cross-fade over; with nothing beneath, as on a reopened map or in the ring a zoom-out exposes, ready imagery appears at once rather than fading over the background. `Duration.zero` disables |
-| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress. No effect with `LabelMode.tile`, where labels fade in with their tile |
+| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress; on a Nothing Phone (1) that took about 75 MB off the peak GPU memory and cost frames ([compare/RESULTS.md](compare/RESULTS.md)). No effect with `LabelMode.tile`, where labels fade in with their tile |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 | `labelMode` | `LabelMode.screen` | where labels and icons are drawn: every frame in screen space, or once into each tile's image (`LabelMode.tile`, what `vector_map_tiles` calls raster mode). Changing it re-renders the tiles already on screen. See [Choosing a label mode](#choosing-a-label-mode) |
 
@@ -546,8 +546,10 @@ screenshots are in [compare/RESULTS.md](compare/RESULTS.md).
 - **Memory.** With baked labels both use about the same: 273 against
   266 MB of GPU memory at the peak, 386 against 380 MB RSS. This
   package's default, which draws labels every frame, needs more GPU
-  memory than baked labels (372 MB, vector mode 385 MB), and far less
-  RSS than vector mode (400 against 925 MB). Its label text cache
+  memory than baked labels (372 MB, vector mode 385 MB), most of it for
+  the label fades (272–311 MB with fades off, which costs frames
+  instead), and far less RSS than vector mode (400 against 925 MB). Its
+  label text cache
   keeps up to 8000 shaped labels; after a run through four dense cities
   that held 37–49 MB more than the 2500 it used to keep, and 117–119 MB
   more with `TileOffset.none`. `VectorTileLayer.clearMemoryCache()`
