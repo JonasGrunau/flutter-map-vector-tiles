@@ -17,7 +17,7 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      ├─ TileStore (memory LRU of PreparedTile)
      │      └─ miss: bytes ◄─ DiskCache ◄─ VectorTileProvider (network…)
      │                 (providers backed by local storage skip DiskCache)
-     │              └─ IsolatePool: decode MVT + filter per theme layer
+     │              └─ IsolatePool: decode MVT, trim to what the theme reads
      │                             └─ PreparedTile (compact, transferable)
      │
      ├─ TileRasterizer: PreparedTile ─► ui.Picture ─► toImageSync (GPU)
@@ -78,14 +78,32 @@ cache, and a provisional tile still counts as loading for retention.
 At overzoom — display zoom past the source's maxzoom — each display tile
 shows only a small window of its data tile. Features are rejected
 against that window (expanded by a 64-logical-px buffer) using bounds
-computed once at decode time, *before* any filter or paint expression
-runs; from two levels of overzoom the surviving geometry is additionally
+computed once at decode time, *before* any paint expression or
+per-tile filter runs; from two levels of overzoom the surviving geometry is additionally
 clipped to the window, with dash and line-pattern phase measured from
 the original run start so patterns stay aligned across clip boundaries
 and display-tile seams. Rasterization cost per display tile is therefore
 bounded by what is visible, not by the density of the data tile — the
 difference between ~1 ms and ~85 ms per tile for a dense city tile
 viewed at z20 over z14 data.
+
+Layer filters are resolved once per data tile, not once per display
+tile. A style runs many layers over one source layer — a MapTiler
+theme has 60+ line layers over `transportation` alone — and every one
+of them used to test every feature again on each display tile cut from
+the data tile: 45 filter tests per match, measured on a phone. The
+expression parser records whether a filter can read the zoom
+(`["zoom"]` anywhere in it, or a zoom-keyed legacy function inside
+it). One that cannot selects the same features at every zoom, so the
+rasterizer and the symbol layouter take its matches from a list
+computed on first use and attached to the `PreparedSourceLayer`
+(`render/matched_features.dart`): it lives exactly as long as the
+prepared tile, and a swapped theme's layers simply miss. Only
+zoom-reading filters are still evaluated per display tile; the type
+filter and the bounds cull above still run per display tile, over the
+matches. That cut rasterization time per tile by a third to almost
+half on a phone in the z15.5–17.5 band, where one z14 data tile serves
+up to 64 display tiles.
 
 Labels and icons are **not** baked into the tile images. They are drawn
 each frame in screen space:
@@ -459,8 +477,9 @@ used.
 
 ## Concurrency
 
-MVT decoding and per-layer feature filtering run on a small isolate pool
-with a priority queue (tiles closest to the camera centre first) and
+MVT decoding, and trimming each tile to the source layers and
+properties the theme reads, run on a small isolate pool with a priority
+queue (tiles closest to the camera centre first) and
 *silent* cancellation — a cancelled job never surfaces an exception.
 `PreparedTile` keeps geometry in `Float32List`s (tile-extent units) so
 isolate transfer is cheap, and only the feature properties referenced by
@@ -668,7 +687,10 @@ supported. The parser proves per property whether an expression reads
 feature data — properties that depend only on the zoom (most paint
 properties are pure zoom ramps) memoize their coerced result against
 the zoom in the typed wrappers, so a tile pass or a label frame
-evaluates each once instead of per feature. Parsed CSS colours are
+evaluates each once instead of per feature. It also records whether a
+layer's filter reads the zoom (`ThemeLayer.filterReadsZoom`); a filter
+that does not is resolved once per prepared tile instead of per display
+tile (see Rendering model). Parsed CSS colours are
 memoized process-wide for the same reason. Sources are resolved through TileJSON when `url` is present,
 including `{key}` substitution. Whatever a source (or its TileJSON)
 declares as `attribution` is collected into `Style.attributions`,

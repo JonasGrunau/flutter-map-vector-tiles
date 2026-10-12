@@ -16,10 +16,10 @@ happens once at read time; nothing here re-parses JSON per frame.
 |------|-------------|
 | `style_reader.dart` | `StyleReader` / `Style` — fetches the style document, resolves sources through TileJSON, substitutes `{key}`, builds `TileProviders` and `RasterTileSource`s, loads sprites, and owns stale-while-revalidate disk caching via `_Loader`. Relative URLs resolve against the declaring document (tile templates against the TileJSON URL when they came from one — the ArcGIS `"url": "../../"` shape); template braces are restored after `Uri.resolve` percent-encodes them. `pmtiles://` source URLs bypass TileJSON and open a `PmTilesVectorTileProvider`. The `resolveProvider` callback is consulted first of all, before any URL is read, so callers can substitute their own provider (a local MBTiles archive, say) for a source id — it covers vector and raster sources alike, and the resulting provider is owned by the `Style`. Collects each source's `attribution` (the source's own value overriding its TileJSON's, as in MapLibre) into `Style.attributions`, deduplicated in document order. Throws `StyleReaderException`; redacts API keys in logs |
 | `attribution.dart` | `StyleAttribution` / `AttributionSpan` — style attribution is HTML by convention, so `StyleAttribution.parse` flattens it to `text` for a `Text` widget *and* keeps `spans` (text + link) for tappable rendering; `html` is the untouched declaration. Regex-based and forgiving: anything it cannot parse degrades to plain text |
-| `expression_parser.dart` | `ExpressionParser` — the largest file here (~950 lines). Compiles modern expression arrays *and* legacy function/filter syntax into `Expr` closures: `let`/`var`, comparisons, `case`, `match`, `step`, `interpolate` (incl. cubic-bezier easing), the full math operator set, and property references |
+| `expression_parser.dart` | `ExpressionParser` — the largest file here (~950 lines). Compiles modern expression arrays *and* legacy function/filter syntax into `Expr` closures: `let`/`var`, comparisons, `case`, `match`, `step`, `interpolate` (incl. cubic-bezier easing), the full math operator set, and property references. Tracks `readsZoom` — sticky, set by `["zoom"]` and by legacy functions keyed on the zoom — which the reader samples after a layer's filter |
 | `expression.dart` | The compiled-expression runtime: `typedef Expr`, `EvalContext` (feature properties + zoom + vars), coercions (`toBoolean`/`toNumber`/`toColor`/`toStringValue`), and the typed property wrappers `DoubleProp`, `ColorProp`, `StringProp`, `BoolProp`, `NumListProp`, `StringListProp` — each with a fallback and an `isConstant` fast path |
-| `theme.dart` | The compiled style model: `Theme` and the sealed `ThemeLayer` hierarchy — `BackgroundThemeLayer`, `FillThemeLayer`, `LineThemeLayer`, `RasterThemeLayer`, `CircleThemeLayer`, `SymbolThemeLayer`, with `coversZoom()` and `matches()` |
-| `theme_reader.dart` | `ThemeReader` — turns style JSON layers into `ThemeLayer`s, mapping every paint/layout property to a typed prop with the spec's default as fallback; handles `{token}` templates in text fields |
+| `theme.dart` | The compiled style model: `Theme` and the sealed `ThemeLayer` hierarchy — `BackgroundThemeLayer`, `FillThemeLayer`, `LineThemeLayer`, `RasterThemeLayer`, `CircleThemeLayer`, `SymbolThemeLayer`, with `coversZoom()`, `matches()` and `filterReadsZoom` (default true, so hand-built layers are never cached by `render/matched_features.dart`) |
+| `theme_reader.dart` | `ThemeReader` — turns style JSON layers into `ThemeLayer`s, mapping every paint/layout property to a typed prop with the spec's default as fallback; handles `{token}` templates in text fields; sets `filterReadsZoom` from a fresh parser's `readsZoom` straight after parsing the filter |
 | `css_color.dart` | CSS colour parsing: hex, `rgb()`/`rgba()`, `hsl()`/`hsla()` and the full named-colour table |
 | `sprite_atlas.dart` | `SpriteAtlas` — one decoded sheet image plus named sub-rectangles parsed from the sprite index JSON, including `sdf` and `pixelRatio` per sprite |
 | `sprite_packer.dart` | `padSpriteSheet` — repacks a loaded sheet with a 2 px transparent gutter around every sprite (aliases share one cell) so bilinear and mipmapped sampling never reaches a neighbouring icon. Called by `StyleReader` right after decoding; private, not exported. Falls back to the original sheet if readback fails or the packed sheet would exceed 4096 px on either side. Decodes through `decodeRgbaPixels`, which wraps `decodeImageFromPixels` in a guarded zone: that API only reports success, so a failed decode would otherwise leave the style load hanging. Not `ImageDescriptor.raw`, which goes through a straight-alpha BMP on web |
@@ -49,7 +49,8 @@ happens once at read time; nothing here re-parses JSON per frame.
 
 - `test/expression_test.dart` (331 lines) — operators, interpolation, legacy
   syntax, coercions
-- `test/theme_reader_test.dart` — layer parsing and defaults
+- `test/theme_reader_test.dart` — layer parsing and defaults, and
+  `filterReadsZoom` for absent, legacy, expression and zoom-reading filters
 - `test/css_color_test.dart` — every colour syntax
 - `test/style_reader_cache_test.dart` — stale-while-revalidate behaviour
 - `test/style_reader_sources_test.dart` — source URL resolution: relative
@@ -71,6 +72,12 @@ explicit unsupported-input case proving the degradation path.
   fixed zoom) evaluates it once. Anything that reads feature data —
   including `geometry-type`, `id` and legacy `$type`/`$id` — must set
   `_readsFeature`, or the memo returns stale values across features.
+- `filterReadsZoom` decides whether the renderer may resolve a layer's
+  filter once per prepared tile instead of per display tile. Anything a
+  filter can reach that reads `ctx.zoom` must set `_readsZoom`, or a
+  zoom-dependent filter is frozen at the first zoom it was resolved at.
+  The flag is sticky across the parser, so the reader samples it before
+  parsing anything else — erring towards true only costs the cache.
 - Expressions are closures over parse-time state; they must not capture
   anything mutable or non-transferable (the zoom memo lives in the Prop
   wrappers, not in the closures).

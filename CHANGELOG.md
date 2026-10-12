@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- ⚡ **Layer filters run once per data tile.** Every display tile used to
+  test each feature of a source layer against every style layer reading
+  it — on a MapTiler theme about 45 filter tests per feature drawn — and
+  at overzoom one data tile is cut into up to 64 display tiles, each
+  repeating that work. Filters that don't read the zoom, which is nearly
+  all of them, are now evaluated once per data tile and their matches
+  reused, so a tile rasterizes in a third to almost half less time on a
+  mid-range Android phone. Filters that read the zoom are still
+  evaluated per display tile.
 - 📚 The README now says that the package is developed with Claude Code,
   and links the agent instructions Claude works under.
 - 📦 Versions are now published from GitHub Actions. Pushing a `vX.Y.Z`

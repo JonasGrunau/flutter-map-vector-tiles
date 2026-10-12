@@ -28,7 +28,8 @@ lifecycle or painting is covered by widget tests that pump a real
 | `sprite_packer_test.dart` | Sprite sheet repacking: a magnified icon from an edge-to-edge sheet picks up its neighbour (the control) and from the padded sheet does not; byte-exact copies inside a transparent gutter; aliases, flags and off-sheet sprites; a sprite hanging off the sheet keeps its whole cell; a packed sheet over 4096 px on either side keeps the original; a failed pixel decode errors instead of hanging |
 | `tile_retention_test.dart` | The pure retention predicates (17 cases) |
 | `descendant_substitution_test.dart` | Zoom-out substitution: the `findDescendants` walk (partial cover, depth and maxzoom bounds), descendant rasterization into sub-squares with buffer-spill clipping (vector and raster sources), and widget-level: a reopened map below the cached level paints from descendants while its own tiles never arrive |
-| `theme_reader_test.dart` | Layer parsing and MapLibre spec defaults |
+| `theme_reader_test.dart` | Layer parsing and MapLibre spec defaults; `filterReadsZoom` for absent, legacy, expression and zoom-reading filters (including `let`/`step`/`case`/`interpolate` and zoom-keyed legacy functions inside an expression) |
+| `matched_features_test.dart` | Zoom-free filters resolved once per prepared tile: cached matches equal a full scan, a zoom-reading filter is never cached and still flips across zooms, and later display tiles of one data tile — rasterizer and symbol layouter alike — evaluate no filter (counted through a property map that tallies reads, not a hook in the renderer) |
 | `line_pattern_test.dart`, `fill_pattern_test.dart` | Pattern paints |
 | `disk_cache_test.dart`, `lru_cache_test.dart` | Cache eviction, TTL, size sweep |
 | `style_reader_cache_test.dart` | Stale-while-revalidate style loading |

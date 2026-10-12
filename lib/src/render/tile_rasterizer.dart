@@ -13,6 +13,7 @@ import '../style/expression.dart';
 import '../style/theme.dart';
 import 'display_tile_data.dart';
 import 'geometry_clipper.dart';
+import 'matched_features.dart';
 import 'pattern_resolver.dart';
 
 /// Renders the geometry layers (background/fill/line/circle) of one
@@ -225,7 +226,10 @@ class TileRasterizer {
             ? ClipRect(cullMinX, cullMinY, cullMaxX, cullMaxY)
             : null;
 
-    for (final feature in sourceLayer.features) {
+    // A zoom-free filter was resolved once for the whole prepared tile;
+    // only a zoom-reading one is still tested here, per display tile.
+    final matched = MatchedFeatures.of(layer, sourceLayer);
+    for (final feature in matched ?? sourceLayer.features) {
       if (typeFilter != null && feature.type != typeFilter) continue;
       if (cull &&
           (feature.maxX < cullMinX ||
@@ -240,7 +244,7 @@ class TileRasterizer {
         geometryType: feature.geometryType,
         featureId: feature.id,
       );
-      if (!layer.matches(ctx)) continue;
+      if (matched == null && !layer.matches(ctx)) continue;
       // Fully-contained geometry takes the exact unclipped path.
       final featureClip = clip != null &&
               !clip.containsBounds(

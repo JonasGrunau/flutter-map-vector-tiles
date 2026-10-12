@@ -8,6 +8,7 @@ import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
 import 'display_tile_data.dart';
+import 'matched_features.dart';
 import 'tile_rasterizer.dart';
 
 /// A polyline in logical display-tile coordinates with precomputed
@@ -285,7 +286,10 @@ class SymbolLayouter {
       final cullMaxY =
           (TileRasterizer.logicalTileSize + _buffer - offsetY) / scale;
 
-      for (final feature in sourceLayer.features) {
+      // Zoom-free filters are resolved once per prepared tile, as in
+      // the rasterizer.
+      final matched = MatchedFeatures.of(layer, sourceLayer);
+      for (final feature in matched ?? sourceLayer.features) {
         if (feature.maxX < cullMinX ||
             feature.minX > cullMaxX ||
             feature.maxY < cullMinY ||
@@ -298,7 +302,7 @@ class SymbolLayouter {
           geometryType: feature.geometryType,
           featureId: feature.id,
         );
-        if (!layer.matches(ctx)) continue;
+        if (matched == null && !layer.matches(ctx)) continue;
 
         var text = layer.textField.eval(ctx).trim();
         if (text.isNotEmpty) {
