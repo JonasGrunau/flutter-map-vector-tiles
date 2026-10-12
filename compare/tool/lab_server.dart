@@ -144,8 +144,8 @@ class _LabServer {
       ..set('Access-Control-Allow-Origin', '*')
       ..set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
       ..set('Access-Control-Allow-Headers', '*')
-      // Fresh browser contexts already start cold; this keeps a reused one
-      // from serving the next run out of its HTTP cache.
+      // The app and the control endpoints are never cached; proxied
+      // OpenFreeMap resources override this in [_proxy].
       ..set('Cache-Control', 'no-store');
     try {
       if (req.method == 'OPTIONS') return await _end(res, 204);
@@ -271,7 +271,16 @@ class _LabServer {
         body = utf8.encode(utf8.decode(body).replaceAll(_upstream, base));
       }
       run.bytes += body.length;
-      res.headers.set('Content-Type', cached.contentType);
+      // OpenFreeMap lets browsers cache everything it serves, for a day
+      // (style, TileJSON) to ten years (tiles, sprites). On the web,
+      // flutter_map_vector_tiles has no disk cache and counts on that HTTP
+      // cache to bring back a tile it has evicted from memory, so `no-store`
+      // here would measure a tile server nobody runs. Nothing carries over
+      // between runs: every run has its own URL prefix and, on the web, a
+      // fresh browser context. Native HTTP clients have no HTTP cache.
+      res.headers
+        ..set('Content-Type', cached.contentType)
+        ..set('Cache-Control', 'public, max-age=86400');
       res.add(body);
       await res.close();
     } finally {

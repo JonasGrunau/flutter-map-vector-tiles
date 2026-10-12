@@ -62,7 +62,10 @@ for the baked-label pair: it draws what `vmt-raster` draws.
   and records every response into `.lab-cache/` on first use; every later
   run replays it, so both packages read identical bytes over loopback (or
   USB, via `adb reverse`). That also pins OpenFreeMap's dated tileset.
-  `--offline` refuses anything not recorded.
+  `--offline` refuses anything not recorded. Replayed responses are
+  cacheable, as OpenFreeMap's are, so on the web a re-request within a
+  run is served by the browser's HTTP cache, which this package relies
+  on there in place of a disk cache.
 - **Fresh process, empty caches.** The app asks the lab server which arm to
   run (`GET /_next`), measures it and exits. Each run gets new disk-cache
   directories (on web, `vector_map_tiles`' IndexedDB is deleted and the
