@@ -10,6 +10,7 @@ export 'src/core/cancellation.dart' show CancellationToken;
 // it never appears in this type's public signature.
 export 'src/core/single_flight.dart' show SingleFlight;
 export 'src/core/tile_key.dart';
+export 'src/label_mode.dart';
 export 'src/logger.dart';
 export 'src/provider/memory_vector_tile_provider.dart';
 export 'src/provider/network_vector_tile_provider.dart';

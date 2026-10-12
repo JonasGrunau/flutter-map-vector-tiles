@@ -8,6 +8,7 @@ import 'package:flutter/painting.dart';
 import 'package:meta/meta.dart';
 
 import '../cache/lru_cache.dart';
+import '../core/tile_zoom.dart';
 import '../style/expression.dart';
 import '../style/sprite_atlas.dart';
 import '../style/theme.dart';
@@ -113,14 +114,25 @@ typedef DrawnLabelRecord = ({
 /// Draws all visible labels/icons in one screen-space pass per frame,
 /// with global collision detection across tile borders. Text stays
 /// crisp at fractional zoom and upright under rotation.
+///
+/// `LabelMode.tile` runs the same placement and drawing once per tile
+/// instead, into the tile's raster — see [paintTile].
 class LabelPainter {
-  /// Cache capacities, sized to survive one dense-city screen of
-  /// distinct labels: when the per-frame distinct-label count exceeds
-  /// the cache, every frame evicts entries the same frame still needs
-  /// and the whole screen re-lays-out every frame. The memory ceiling is
-  /// only reached on screens that actually carry that many labels; if a
-  /// byte budget is ever needed, `LruCache.maxCost` is the ready hook.
-  static const int textCacheEntries = 2500;
+  /// Cache capacities. One dense-city screen of distinct labels is the
+  /// floor (below it every frame evicts entries the same frame still
+  /// needs), but the text cache must hold a zoom *round trip*: the
+  /// finished-tile cache serves a revisited level back without its
+  /// shaped text, so whatever was evicted meanwhile is re-shaped by the
+  /// pump for seconds after the camera stopped. A phone-portrait fling
+  /// z15→z17→z15 over central London with `TileOffset.none` shapes
+  /// ~7,400 distinct texts. The cost is memory once that many distinct
+  /// labels were drawn: on the same phone, a run through four dense
+  /// cities held 37–49 MB more RSS at its end than at 2500 entries, and
+  /// 117–119 MB more with `TileOffset.none`, whose peak rose from 384 to
+  /// 491–495 MB. [trimCaches] gives part of it back under memory
+  /// pressure. If a byte budget is ever needed, `LruCache.maxCost` is
+  /// the ready hook.
+  static const int textCacheEntries = 8000;
   static const int glyphCacheEntries = 4000;
 
   /// Steps per zoom level for the label eval zoom. Between steps every
@@ -233,6 +245,13 @@ class LabelPainter {
   @visibleForTesting
   static int debugDrawMicros = 0;
 
+  /// UI-thread microseconds spent inside [paintTile] — `LabelMode.tile`'s
+  /// whole label cost, paid once per rasterized tile inside the render
+  /// pump. Never part of [debugPaintMicros], which only the per-frame
+  /// pass adds to.
+  @visibleForTesting
+  static int debugTilePaintMicros = 0;
+
   @visibleForTesting
   int get debugTextCacheLength => _textCache.length;
 
@@ -248,6 +267,40 @@ class LabelPainter {
   late final _glyphCache = LruCache<String, _GlyphText>(
       maxEntries: glyphCacheEntries,
       onEvict: (_, glyph) => _retired.add(glyph.dispose));
+
+  /// Counts placement passes: [paint] frames that decide placement
+  /// afresh, and [paintTile] calls. Every text and glyph a lookup
+  /// returns is stamped with it, which is how [trimCaches] tells the
+  /// labels on screen from the rest. Frames replaying a decision do not
+  /// count: they lay out only its winners, and a trim after one would
+  /// drop the on-screen labels that lost — which the next pass lays out
+  /// again, shaping them inside a frame.
+  var _pass = 0;
+
+  @visibleForTesting
+  int get debugGlyphCacheLength => _glyphCache.length;
+
+  /// Releases the shaped text and glyphs not used since the last
+  /// placement pass began, keeping what is on screen and what the pump
+  /// shaped since — for memory pressure, see
+  /// `VectorTileLayer.clearMemoryCache`.
+  ///
+  /// The caches are sized to hold a zoom round trip (see
+  /// [textCacheEntries]), which after a run through a few dense cities
+  /// is tens of MB of paragraphs for places long left behind, over a
+  /// hundred with `TileOffset.none`.
+  /// Trimming costs nothing on screen: a label shaped again later only
+  /// costs the shaping it would have cost before it was ever cached.
+  ///
+  /// The evicted painters are disposed now rather than at the next
+  /// pass: memory pressure often arrives in the background, where no
+  /// next pass comes. That is safe because this runs between frames, so
+  /// no prepared symbol still holds them.
+  void trimCaches() {
+    _textCache.removeWhere((_, text) => text.pass != _pass);
+    _glyphCache.removeWhere((_, glyph) => glyph.pass != _pass);
+    _disposeRetired();
+  }
 
   /// Curved-text glyphs rasterized once per style, grapheme and device
   /// size, so a curved label draws in one call per pass.
@@ -314,8 +367,9 @@ class LabelPainter {
 
   /// The placement choices each label is sitting on — kept here rather
   /// than on the instances, which are replaced under a label that never
-  /// left the screen. See [PlacementMemory].
-  final _memory = PlacementMemory();
+  /// left the screen. See [PlacementMemory]. [paintTile] swaps in a
+  /// fresh one for the length of its pass.
+  var _memory = PlacementMemory();
 
   /// The placement memory, for tests that assert a label's remembered
   /// choices across frames.
@@ -438,6 +492,7 @@ class LabelPainter {
       generation: placementGeneration,
       screenSize: screenSize,
     );
+    if (placing) _pass++;
     _memory.beginFrame(prune: placing);
     // Quantize the eval zoom to [_zoomStep] steps: the per-instance
     // memo and the zoom-only expression memos compare against the exact
@@ -453,25 +508,21 @@ class LabelPainter {
     // MapLibre makes for the same reason.
     final collision =
         placing ? _CollisionIndex(screenSize) : _CollisionIndex.permissive();
-    // Placement priority: topmost style layers first (they win space),
-    // then incumbents — labels on screen right now, which a same-layer
-    // newcomer must not evict (see [PlacedSymbol.incumbent]) — then by
-    // symbol-sort-key, then by y, then by insertion order — the last
-    // term keeps the non-stable sort deterministic and lets
-    // current-level tiles beat retained ones on exact ties. The
-    // incumbent term only matters on placing frames: the flags are
-    // freshly set there and default-false on every rebuilt candidate
-    // list in between.
+    // Placement priority, see [_byPlacementPriority]. Its incumbent
+    // term only matters on placing frames: the flags are freshly set
+    // there and default-false on every rebuilt candidate list in
+    // between.
     final sortStopwatch = Stopwatch()..start();
     final List<PlacedSymbol> candidates;
     if (placing) {
       _flagIncumbents(symbols, fades);
-      candidates = symbols..sort(_byPriority);
+      candidates = symbols..sort(_byPlacementPriority);
     } else {
       // Replaying: the frozen decision says only the last pass's
       // winners are on screen, so only they are laid out — and only
       // they need sorting, ~100 of a few thousand candidates on a dense
-      // screen. [_byPriority] is a total order (`order` is unique), so
+      // screen. [_byPlacementPriority] is a total order (`order` is
+      // unique), so
       // their relative order is exactly what a full sort gives.
       // Everyone else is at most a fade-out fallback, recorded in input
       // order instead of priority order. That order only settles exact
@@ -487,7 +538,7 @@ class LabelPainter {
           _recordFallback(candidate);
         }
       }
-      candidates.sort(_byPriority);
+      candidates.sort(_byPlacementPriority);
     }
     debugSortMicros += sortStopwatch.elapsedMicroseconds;
     if (placing) debugPlacingFrames++;
@@ -625,6 +676,38 @@ class LabelPainter {
       ]);
     }
     final drawStopwatch = Stopwatch()..start();
+    final drawn = _draw(canvas, toDraw, devicePixelRatio, anyFading);
+    debugDrawMicros += drawStopwatch.elapsedMicroseconds;
+    return drawn;
+  }
+
+  /// Placement priority: topmost style layers first (they win space),
+  /// then incumbents — labels on screen right now, which a same-layer
+  /// newcomer must not evict (see [PlacedSymbol.incumbent]) — then by
+  /// symbol-sort-key, then by y, then by insertion order — the last
+  /// term keeps the non-stable sort deterministic and lets current-level
+  /// tiles beat retained ones on exact ties. A total order: `order` is
+  /// unique per frame.
+  static int _byPlacementPriority(PlacedSymbol a, PlacedSymbol b) {
+    final byLayer = b.instance.layerIndex - a.instance.layerIndex;
+    if (byLayer != 0) return byLayer;
+    if (a.incumbent != b.incumbent) return a.incumbent ? -1 : 1;
+    final bySortKey = a.instance.sortKey.compareTo(b.instance.sortKey);
+    if (bySortKey != 0) return bySortKey;
+    final byY = a.screenAnchor.dy.compareTo(b.screenAnchor.dy);
+    if (byY != 0) return byY;
+    return a.order - b.order;
+  }
+
+  /// Draws the placed symbols [toDraw] onto [canvas] and returns them in
+  /// draw order. [anyFading] says whether any of them draws below full
+  /// opacity, which costs the bucketed path below.
+  List<PlacedSymbol> _draw(
+    Canvas canvas,
+    List<_DrawableSymbol> toDraw,
+    double devicePixelRatio,
+    bool anyFading,
+  ) {
     // Draw bottom style layers first so upper layers paint on top; the
     // insertion-order tiebreaker keeps draw order stable across frames.
     toDraw.sort((a, b) {
@@ -640,7 +723,6 @@ class LabelPainter {
         drawable.draw(canvas, devicePixelRatio);
         drawn.add(drawable.symbol);
       }
-      debugDrawMicros += drawStopwatch.elapsedMicroseconds;
       return drawn;
     }
 
@@ -688,8 +770,89 @@ class LabelPainter {
       }
       canvas.restore();
     }
-    debugDrawMicros += drawStopwatch.elapsedMicroseconds;
     return drawn;
+  }
+
+  /// The tile→canvas transform of [paintTile]'s candidates: the canvas
+  /// is already in logical tile coordinates, so it is the identity.
+  static final _tileSpace =
+      TileTransform(origin: Offset.zero, scale: 1, rotation: 0);
+
+  /// `LabelMode.tile`'s whole label pass: places [symbols] — one display
+  /// tile's candidates, as the layouter produced them — and draws the
+  /// winners onto [canvas], which must already be in logical tile
+  /// coordinates (0..256). Run once when the tile is rasterized, never
+  /// per frame. Returns the drawn symbols, in draw order.
+  ///
+  /// The same preparation and drawing as [paint] — shaping, variable
+  /// anchors, curved text and the glyph atlas, halos, SDF icons, repeat
+  /// suppression — as one placing pass with nothing carried in or out:
+  /// no fades, no throttle, no incumbents, and a placement memory and
+  /// repeat anchors private to the call. The image is then a pure
+  /// function of the tile's candidates, which is what lets the
+  /// finished-tile cache serve it, and none of the screen pass's state
+  /// is touched.
+  ///
+  /// Collision is resolved within the tile, and every collision box —
+  /// of `*-allow-overlap` symbols too — must lie inside it: a label
+  /// that would cross the tile edge is dropped, because the neighbour
+  /// tile that would have to draw its other half never sees it.
+  ///
+  /// [styleZoom] is the tile's integer style zoom; it both evaluates
+  /// the style and gates layers by their zoom range. [devicePixelRatio]
+  /// is the canvas's scale to backing pixels, used exactly as [paint]
+  /// uses the screen's: to size glyph-atlas cells and snap text.
+  List<PlacedSymbol> paintTile({
+    required Canvas canvas,
+    required List<SymbolInstance> symbols,
+    required double styleZoom,
+    SpriteAtlas? sprites,
+    double devicePixelRatio = 1,
+  }) {
+    developer.Timeline.startSync('VT tile labels');
+    final stopwatch = Stopwatch()..start();
+    final screenMemory = _memory;
+    final screenRepeats = _repeatAnchors;
+    _memory = PlacementMemory();
+    _repeatAnchors = {};
+    try {
+      _disposeRetired();
+      _pass++;
+      const tile = Size.square(displayTileSize);
+      final candidates = [
+        for (var i = 0; i < symbols.length; i++)
+          PlacedSymbol(
+            instance: symbols[i],
+            screenAnchor: symbols[i].anchor,
+            screenAngle: symbols[i].angle,
+            transform: symbols[i].alongLine ? _tileSpace : null,
+            order: i,
+          ),
+      ]..sort(_byPlacementPriority);
+      final zoom = (styleZoom * _zoomStep).round() / _zoomStep;
+      final collision = _CollisionIndex(tile, bounds: Offset.zero & tile);
+      final toDraw = <_DrawableSymbol>[];
+      var anyTranslucent = false;
+      for (final candidate in candidates) {
+        final drawable =
+            _prepare(candidate, zoom, styleZoom, collision, sprites, tile);
+        if (drawable == null) continue;
+        final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
+        final repeatKey = drawable.repeatKey;
+        if (repeatKey != null && drawable.drawsText && ramp > 0) {
+          (_repeatAnchors[repeatKey] ??= []).add(_RepeatAnchor(candidate));
+        }
+        drawable.opacity = ramp <= 0 ? 0 : _quantizeOpacity(ramp);
+        toDraw.add(drawable);
+        anyTranslucent |= drawable.opacity < 1;
+      }
+      return _draw(canvas, toDraw, devicePixelRatio, anyTranslucent);
+    } finally {
+      _memory = screenMemory;
+      _repeatAnchors = screenRepeats;
+      debugTilePaintMicros += stopwatch.elapsedMicroseconds;
+      developer.Timeline.finishSync();
+    }
   }
 
   /// Repeat suppression for `symbol-placement: line` text, rebuilt on
@@ -708,8 +871,9 @@ class LabelPainter {
   /// instead, in the final screen-space pass — only a candidate that
   /// survived the exact zoom gate, opacity and collision may suppress a
   /// lower-priority fallback, and screen positions make the zone
-  /// continuous across tile seams.
-  final _repeatAnchors = <Object, List<_RepeatAnchor>>{};
+  /// continuous across tile seams. [paintTile] swaps in a fresh map for
+  /// the length of its pass.
+  var _repeatAnchors = <Object, List<_RepeatAnchor>>{};
 
   /// Whether [placed] repeats text already on screen within [radius]
   /// (half of `symbol-spacing`) *on the same road*. Two anchors count as
@@ -742,19 +906,6 @@ class LabelPainter {
       if (math.min(acrossOther, acrossOwn) <= tolerance) return true;
     }
     return false;
-  }
-
-  /// Placement priority, best first: see the comment at the sort in
-  /// [_paint]. A total order — `order` is unique per frame.
-  static int _byPriority(PlacedSymbol a, PlacedSymbol b) {
-    final byLayer = b.instance.layerIndex - a.instance.layerIndex;
-    if (byLayer != 0) return byLayer;
-    if (a.incumbent != b.incumbent) return a.incumbent ? -1 : 1;
-    final bySortKey = a.instance.sortKey.compareTo(b.instance.sortKey);
-    if (bySortKey != 0) return bySortKey;
-    final byY = a.screenAnchor.dy.compareTo(b.screenAnchor.dy);
-    if (byY != 0) return byY;
-    return a.order - b.order;
   }
 
   /// Marks the candidates whose label is steadily visible on screen, so
@@ -1139,7 +1290,7 @@ class LabelPainter {
     final allowOverlap = text != null
         ? layer.textAllowOverlap.eval(ctx)
         : layer.iconAllowOverlap.eval(ctx);
-    if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
+    if (allowOverlap ? !collision.fits(boxes) : !collision.tryPlaceAll(boxes)) {
       debugRejectProbe?.call(placed.instance.continuityKey, 'collision', false);
       // Icon may still be placed when text is optional.
       if (icon != null &&
@@ -1205,7 +1356,7 @@ class LabelPainter {
         textRect.inflate(padding),
         if (icon != null) icon.bounds.inflate(2),
       ];
-      if (allowOverlap || collision.tryPlaceAll(boxes)) {
+      if (allowOverlap ? collision.fits(boxes) : collision.tryPlaceAll(boxes)) {
         sitting.anchor = anchorName;
         return _DrawableSymbol(placed,
             icon: icon, text: text, textRect: textRect, textScale: textScale);
@@ -1400,7 +1551,9 @@ class LabelPainter {
         _rotatedBounds(textRect, placed.screenAnchor, angle).inflate(padding),
         if (icon != null) icon.bounds.inflate(2),
       ];
-      if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
+      if (allowOverlap
+          ? !collision.fits(boxes)
+          : !collision.tryPlaceAll(boxes)) {
         debugRejectProbe?.call(
             placed.instance.continuityKey, 'collision', false);
         return iconFallback();
@@ -1425,7 +1578,7 @@ class LabelPainter {
             .inflate(padding),
       if (icon != null) icon.bounds.inflate(2),
     ];
-    if (!allowOverlap && !collision.tryPlaceAll(boxes)) {
+    if (allowOverlap ? !collision.fits(boxes) : !collision.tryPlaceAll(boxes)) {
       debugRejectProbe?.call(placed.instance.continuityKey, 'collision', false);
       return iconFallback();
     }
@@ -1462,6 +1615,14 @@ class LabelPainter {
   /// ramps rotate the key a bounded number of times instead of per
   /// eval-zoom step.
   _LaidOutText _layoutText(
+    SymbolInstance instance,
+    SymbolThemeLayer layer,
+    EvalContext ctx,
+    double fontSize,
+  ) =>
+      _lookupText(instance, layer, ctx, fontSize)..pass = _pass;
+
+  _LaidOutText _lookupText(
     SymbolInstance instance,
     SymbolThemeLayer layer,
     EvalContext ctx,
@@ -1698,7 +1859,7 @@ class LabelPainter {
   _GlyphText _glyphPainters(String grapheme, _LaidOutText text) {
     final key = '${text.styleKey}#$grapheme';
     final cached = _glyphCache.get(key);
-    if (cached != null) return cached;
+    if (cached != null) return cached..pass = _pass;
 
     final fill = TextPainter(
       text: TextSpan(text: grapheme, style: text.fillStyle),
@@ -1715,7 +1876,8 @@ class LabelPainter {
     // glyph overhang past the advance box.
     final stroke = text.haloStyle?.foreground?.strokeWidth ?? 0;
     final glyph =
-        _GlyphText(key: key, fill: fill, halo: halo, pad: 2 + stroke / 2);
+        _GlyphText(key: key, fill: fill, halo: halo, pad: 2 + stroke / 2)
+          ..pass = _pass;
     _glyphCache.put(key, glyph);
     return glyph;
   }
@@ -1848,6 +2010,10 @@ class _LaidOutText {
   final TextStyle fillStyle;
   final TextStyle? haloStyle;
 
+  /// The label pass that last used this text — see
+  /// [LabelPainter.trimCaches].
+  int pass = 0;
+
   List<_Cluster>? _clusters;
 
   _LaidOutText({
@@ -1915,7 +2081,11 @@ class _GlyphText {
   /// cell keeps, so halo strokes and overhangs are not clipped.
   final double pad;
 
-  const _GlyphText({
+  /// The label pass that last used this glyph — see
+  /// [LabelPainter.trimCaches].
+  int pass = 0;
+
+  _GlyphText({
     required this.key,
     required this.fill,
     required this.halo,
@@ -2249,7 +2419,7 @@ class _CollisionIndex {
   final int _columns;
   final bool _permissive;
 
-  _CollisionIndex(Size screenSize)
+  _CollisionIndex(Size screenSize, {this.bounds})
       : _columns = math.max(1, (screenSize.width / _cellSize).ceil() + 4),
         _permissive = false;
 
@@ -2259,16 +2429,39 @@ class _CollisionIndex {
   /// frozen placement, where the decision has already been taken.
   _CollisionIndex.permissive()
       : _columns = 1,
-        _permissive = true;
+        _permissive = true,
+        bounds = null;
+
+  /// The area every box must lie within, or null for none — the tile's
+  /// own square in [LabelPainter.paintTile], where a label crossing the
+  /// tile edge would be cut off by it.
+  final Rect? bounds;
 
   /// Whether this index decides nothing. Symbol preparation reads it to
   /// replay the parts of a placement that space, not geometry, decided
   /// — which anchor a label took, whether its text was dropped.
   bool get permissive => _permissive;
 
+  /// Whether [rects] lie within [bounds]. The one test that
+  /// `*-allow-overlap` symbols, which skip [tryPlaceAll], still face.
+  bool fits(List<Rect> rects) {
+    final bounds = this.bounds;
+    if (bounds == null) return true;
+    for (final rect in rects) {
+      if (rect.left < bounds.left ||
+          rect.top < bounds.top ||
+          rect.right > bounds.right ||
+          rect.bottom > bounds.bottom) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /// Whether [rects] fit, reserving them when they do.
   bool tryPlaceAll(List<Rect> rects) {
     if (_permissive) return true;
+    if (!fits(rects)) return false;
     for (final rect in rects) {
       if (_collides(rect)) return false;
     }

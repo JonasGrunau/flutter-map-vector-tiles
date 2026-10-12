@@ -11,10 +11,11 @@ the tile pipeline, caching and rendering all live in this one package — no
 renderer / cache / executor satellite packages.
 
 The design commitments that shape almost every file: geometry is rasterized
-**once** per display tile into a GPU-resident `ui.Image`; labels are **not**
-baked into those rasters but drawn per frame in screen space with one global
-collision pass; cancellation is a **state**, never an exception; every
-`ui.Image` has exactly one owner and is disposed on eviction.
+**once** per display tile into a GPU-resident `ui.Image`; by default labels
+are **not** baked into those rasters but drawn per frame in screen space with
+one global collision pass (`LabelMode.tile` opts into baking them, through
+the same label painter); cancellation is a **state**, never an exception;
+every `ui.Image` has exactly one owner and is disposed on eviction.
 
 ## Key Files
 
@@ -31,6 +32,7 @@ collision pass; cancellation is a **state**, never an exception; every
 | `.github/workflows/checks.yml` | Reusable check suite: format, analyze, VM + Chrome tests, publish dry run, optional pana. Called by the two below |
 | `.github/workflows/ci.yml` | Runs `checks.yml` on every push to `main` and every PR into it |
 | `.github/workflows/publish.yml` | On a pushed `vX.Y.Z` tag: checks tag/pubspec/README/CHANGELOG agree, runs `checks.yml` with pana, publishes to pub.dev via OIDC (see `CLAUDE.md` → Release gate) |
+| `.github/workflows/demo.yml` | Builds the `compare/` web demo on PRs touching `lib/` or `compare/`, and deploys it to GitHub Pages from `main` |
 | `LICENSE` | BSD-3-Clause |
 
 ## Subdirectories
@@ -40,6 +42,7 @@ collision pass; cancellation is a **state**, never an exception; every
 | `lib/` | Package source — the entire library (see `lib/AGENTS.md`) |
 | `test/` | Unit and widget tests, no mocking framework (see `test/AGENTS.md`) |
 | `bench/` | On-device frame-timing and label-stability harness for zoom crossings — profile-mode app that sweeps a zoom band (or records while you zoom by hand in `manual` mode) and reports UI/raster frame-time distributions, cache-hit counters and, in `stability` mode, label pop/blink counts. Not published (see `bench/AGENTS.md`) |
+| `compare/` | Head-to-head with `vector_map_tiles` 9.0.0-beta.13: one app that is the device benchmark (driven by a record/replay lab server, fresh process per arm, frames-delivered as the headline metric, fidelity screenshots next to MapLibre GL JS) and the web demo deployed to GitHub Pages. Results in `compare/RESULTS.md`. Public API only. Not published (see `compare/AGENTS.md`) |
 | `example/` | Runnable example app driven by `--dart-define` (see `example/AGENTS.md`) |
 | `doc/` | `ARCHITECTURE.md` — the prose companion to this file; update it when the data flow, rendering model, concurrency model or cache layers change |
 | `screenshots/` | pub.dev gallery images (WebP, framed in an iPhone bezel), wired up via `screenshots:` in `pubspec.yaml` — these ship in the package; regeneration recipe in `screenshots/AGENTS.md` |
@@ -62,7 +65,13 @@ collision pass; cancellation is a **state**, never an exception; every
 - **CI runs on every push to `main` and every PR** (`ci.yml`): format,
   analyze, VM and Chrome tests, publish dry run. It does not run pana or
   anything in `bench/` — pana runs only in the release workflow, and frame
-  timing only on a real device.
+  timing only on a real device. `demo.yml` builds `compare/` for the web
+  and deploys it from `main`, so a change that breaks the demo build shows
+  up on the PR.
+- **Comparisons with `vector_map_tiles` come from `compare/`**, and so
+  does every claim about it in the README. Re-run it when either package
+  changes rendering, and update `compare/RESULTS.md` and the README's
+  comparison section together.
 - **Frame-time claims need `bench/`, not reasoning.** Rendering costs here
   split across two threads — rasterization, symbol layout and text shaping on
   the UI thread, `saveLayer` on the raster thread — and a `saveLayer` only

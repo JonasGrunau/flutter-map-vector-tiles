@@ -1,5 +1,4 @@
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' hide Theme;
 import 'package:flutter/rendering.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -14,7 +13,7 @@ import 'fixtures/mvt_builder.dart';
 /// blocks of the text colour — so any lime pixel proves a painted label.
 const labelColor = Color(0xff00ff00);
 
-Uint8List labelledTile() => MvtTileBuilder()
+Uint8List labelledTile([String name = 'AAAA']) => MvtTileBuilder()
     .layer('land', extent: extent)
     .feature(type: 3, geometry: [
       cmd(1, 1), zig(0), zig(0), //
@@ -27,7 +26,7 @@ Uint8List labelledTile() => MvtTileBuilder()
     .feature(
       type: 1,
       geometry: [cmd(1, 1), zig(extent ~/ 2), zig(extent ~/ 2)],
-      properties: {'name': 'AAAA'},
+      properties: {'name': name},
     )
     .done()
     .build();
@@ -56,6 +55,20 @@ Theme labelTheme() => const ThemeReader().read({
         },
       ],
     });
+
+/// Labels every tile with its own coordinates, so each place the map
+/// visits brings text no other place shares.
+class NamedTileProvider extends CountingProvider {
+  @override
+  String get cacheKey => 'named';
+
+  @override
+  Future<TileResponse> load(TileKey tile,
+      {CancellationToken? cancellation}) async {
+    note(tile);
+    return TileResponseData(labelledTile('${tile.z}/${tile.x}/${tile.y}'));
+  }
+}
 
 Widget labelApp(
   MapController controller,
@@ -217,6 +230,56 @@ void main() {
     await pumpUntil(tester, () => hasColor(tester, labelColor));
     expect(tester.takeException(), isNull);
     expect(await hasColor(tester, labelColor), isTrue);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('clearMemoryCache trims an open map to the labels on screen',
+      (tester) async {
+    tester.view.physicalSize = const Size(600, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    var live = 0;
+    void track(ObjectEvent event) {
+      if (event.object is! TextPainter) return;
+      if (event is ObjectCreated) live++;
+      if (event is ObjectDisposed) live--;
+    }
+
+    FlutterMemoryAllocations.instance.addListener(track);
+    addTearDown(() => FlutterMemoryAllocations.instance.removeListener(track));
+
+    final provider = NamedTileProvider();
+    final controller = MapController();
+    await tester.pumpWidget(labelApp(controller, provider, showLabels: true));
+    // Whatever the app itself paints with, before any tile arrived.
+    final baseline = live;
+    // Quiet loads, then labels drawn: the grid check would read the
+    // lime labels covering its lattice as unpainted map.
+    Future<void> settleLabels() async {
+      await settleLoads(tester, provider, painted: false);
+      expect(
+          await pumpUntil(tester, () => hasColor(tester, labelColor)), isTrue);
+    }
+
+    await settleLabels();
+    final first = live - baseline;
+    expect(first, greaterThan(0));
+
+    // Far enough that no tile of the first place is on screen or in the
+    // buffer ring.
+    controller.move(const LatLng(48.3, 11.9), 14);
+    await settleLabels();
+    final held = live - baseline;
+    expect(held, greaterThan(first), reason: 'the first place is still held');
+
+    VectorTileLayer.clearMemoryCache();
+    final kept = live - baseline;
+    expect(kept, lessThanOrEqualTo(held - first),
+        reason: 'every label of the first place is released');
+    expect(kept, greaterThan(0), reason: 'the labels on screen are kept');
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump();

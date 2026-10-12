@@ -180,6 +180,33 @@ void main() {
     expect(placed, hasLength(1));
   });
 
+  test('trimCaches keeps the glyphs on screen and releases the rest', () {
+    final points = <Offset>[];
+    for (var i = 0; i <= 24; i++) {
+      final a = -math.pi / 6 + (math.pi / 3) * i / 24;
+      points.add(
+          const Offset(200, 400) + Offset(math.sin(a), -math.cos(a)) * 240);
+    }
+    final path = _path(points);
+    final layer = _lineLayer();
+    final painter = LabelPainter();
+    addTearDown(painter.dispose);
+
+    _paint([_lineSymbol(layer, path, 'Ringstraße')], painter: painter);
+    _paint([_lineSymbol(layer, path, 'Kaiserweg')], painter: painter);
+    // R i n g s t r a ß e, then K a i s e r w g: twelve between them.
+    expect(painter.debugGlyphCacheLength, 12);
+
+    painter.trimCaches();
+    expect(painter.debugGlyphCacheLength, 8,
+        reason: "only the on-screen label's glyphs are kept");
+    expect(painter.debugTextCacheLength, 1);
+
+    _paint([_lineSymbol(layer, path, 'Kaiserweg')], painter: painter);
+    expect(painter.debugGlyphCacheLength, 8,
+        reason: 'the label on screen needs no new glyph');
+  });
+
   test('label longer than its line is dropped', () {
     final layer = _lineLayer();
     final path = _path(const [Offset(0, 0), Offset(30, 0)]);

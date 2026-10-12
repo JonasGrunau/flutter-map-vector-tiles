@@ -23,7 +23,7 @@ layers; this package only draws the map.
 |---|---|
 | 📦 **One package** | MVT decoding, style engine and renderer in one dependency, with no renderer/cache/executor satellites |
 | 🚀 **Smooth interaction** | Geometry is rasterized **once** per tile into GPU-resident images (`Picture.toImageSync`), so pan, zoom and rotate are just textured quads |
-| 🔍 **Crisp labels** | Text and icons drawn per frame in screen space: upright under rotation, sharp at fractional zoom, and **one global collision pass**, so nothing is duplicated or clipped at a tile seam |
+| 🔍 **Crisp labels** | Text and icons drawn per frame in screen space: upright under rotation, sharp at fractional zoom, and **one global collision pass**, so nothing is duplicated or clipped at a tile seam. Or, with `labelMode: LabelMode.tile`, drawn into the tiles once, for no per-frame label cost at all — see [Choosing a label mode](#choosing-a-label-mode) |
 | 🌫️ **No white flashes** | New tiles fade in over retained ancestor imagery. Fast zoom-ins render from already-decoded parent tiles, zoom-outs compose the decoded children until the new level arrives |
 | 🎚️ **Correct MapLibre zoom semantics** | The default `TileOffset.maplibre` renders 512px-convention styles *exactly* as their authors designed them |
 | 🧵 **Isolate pipeline** | Tiles decode and trim on a worker-isolate pool (a yielding event-loop queue on web), viewport-centre first. Cancellation is a state, **never an exception** in your crash reporting |
@@ -133,6 +133,7 @@ vt.VectorTileLayer(
   tileFadeDuration: const Duration(milliseconds: 150),
   labelFadeDuration: const Duration(milliseconds: 150),
   showLabels: true,
+  labelMode: vt.LabelMode.screen,              // or .tile: labels baked into tiles
   logger: const vt.Logger.console(),           // see style warnings in debug
 )
 ```
@@ -147,16 +148,20 @@ vt.VectorTileLayer(
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source. The caches are shared process-wide, so the most recently mounted layer's value wins |
 | `rasterCacheMaxBytes` | sized for the device | finished-tile budget: zooming back to a recent level, or reopening the same style, paints instantly instead of re-rendering. These are GPU texture bytes, roughly 1 MB per tile at devicePixelRatio 2 and 2.25 MB at 3, and a phone screenful is 25 to 35 tiles, so a *single* level costs about 80 MB on a large dpr-3 phone. The default measures your viewport and dpr and budgets 2.5 screenfuls, clamped to 64 to 256 MB, so a zoom round trip keeps the level it returns to. Pass a byte count to pin it, or `0` to disable |
 | `tileFadeDuration` | 150 ms | fade-in of newly rendered tiles. Tiles from the finished-tile cache fade only when retained imagery lies beneath to cross-fade over; with nothing beneath, as on a reopened map or in the ring a zoom-out exposes, ready imagery appears at once rather than fading over the background. `Duration.zero` disables |
-| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress |
+| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress; on a Nothing Phone (1) that took about 75 MB off the peak GPU memory and cost frames ([compare/RESULTS.md](compare/RESULTS.md)). No effect with `LabelMode.tile`, where labels fade in with their tile |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
+| `labelMode` | `LabelMode.screen` | where labels and icons are drawn: every frame in screen space, or once into each tile's image (`LabelMode.tile`, what `vector_map_tiles` calls raster mode). Changing it re-renders the tiles already on screen. See [Choosing a label mode](#choosing-a-label-mode) |
 
 The memory caches are shared process-wide and outlive the layer, which is
 why reopening a map paints instantly. If those budgets are too generous
 under memory pressure, the static `VectorTileLayer.clearMemoryCache()`
 releases decoded tiles, raster-source images and finished tiles alike,
-leaving the disk cache untouched. Call it from a handler such as
+leaving the disk cache untouched. It also trims the label text each open
+map keeps, which is held per map rather than shared, down to the labels
+on screen. Call it from a handler such as
 `WidgetsBindingObserver.didHaveMemoryPressure`: visible maps keep their
-imagery, and only tiles panned to afterwards are re-read from disk.
+imagery and their labels, only tiles panned to afterwards are re-read
+from disk, and only labels met again are shaped again.
 
 The layer manages those caches itself in one case. Coming back from the
 background it discards the finished tiles and re-renders, because iOS
@@ -165,7 +170,9 @@ as that happens comes back solid magenta, indistinguishable from a real
 image. So it stops rasterizing on the way out and treats what it has as
 suspect on the way back in. Recovery costs no network and no decoding,
 since the decoded geometry never left memory, and on-screen imagery is
-replaced only once the new render is ready.
+replaced only once the new render is ready. A window that is merely
+unfocused (a desktop window behind another app, a browser window that
+lost focus, the other half of an Android split screen) keeps rendering.
 
 `StyleReader` also takes:
 
@@ -331,7 +338,7 @@ fetched one zoom deeper for the same visual scale.
 | `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, dashes and casing |
 | `symbol` | full, including curved line text and `text-variable-anchor` / `text-radial-offset`; see [Labels](#-labels) below |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity` and brightness/contrast/saturation/hue-rotate matching MapLibre's shader math |
-| `fill-extrusion` | renders as a flat fill |
+| `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, so a building part over its outline does not draw darker |
 | `hillshade`, `heatmap`, `sky` | skipped, with a log line |
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
@@ -355,8 +362,10 @@ layer with a warning, so one weird layer never kills the whole style.
 
 ### 🏷️ Labels
 
-Text and icons are drawn per frame in screen space rather than baked into
-the tile rasters, which is what the behaviour below rests on:
+By default text and icons are drawn per frame in screen space rather than
+baked into the tile rasters, which is what the behaviour below rests on.
+`LabelMode.tile` bakes them in instead; [Choosing a label
+mode](#choosing-a-label-mode) has what changes then.
 
 - **Curved along the road.** Glyphs are placed one by one with MapLibre
   semantics: `text-max-angle` rejects sharp bends, `text-keep-upright`
@@ -435,6 +444,42 @@ the tile rasters, which is what the behaviour below rests on:
   repaint creates no new placement work, so the animation ticker settles
   when the last real change has been placed.
 
+#### Choosing a label mode
+
+The screen-space pass is what makes labels behave as above, and it is
+also the one part of a moving map that costs UI-thread time on every
+frame: one collision pass and every visible label drawn again. On a
+label-dense screen and a mid-range phone that cost decides whether
+panning, rotating and pinching hold the display's frame rate.
+
+`labelMode: LabelMode.tile` removes it. Labels and icons are placed and
+drawn once per tile, when the tile is rendered, into the same image as
+its roads and buildings, so a moving map draws nothing but tile images,
+as `vector_map_tiles` does in its default raster mode. The same text
+engine draws them (curved road names, halos, SDF icons and all), but
+they inherit the limits of any pre-rendered tile:
+
+| | `LabelMode.screen` (default) | `LabelMode.tile` |
+|---|---|---|
+| Per-frame label work | collision pass + drawing, every frame | none |
+| Collision | one pass across the whole screen | within each tile |
+| At tile seams | seamless | a label that would cross a tile edge is dropped, so labels thin out along tile seams |
+| Under rotation | text stays upright | text rotates with the map |
+| Between zoom levels | sized for the exact zoom | sized for the tile's zoom level, then scales with the map (up to twice the size) until the next level's tiles replace it |
+| `minzoom`/`maxzoom` | cut and ramped at the exact zoom | applied per tile zoom level |
+| Fades | per label, `labelFadeDuration` | with the tile, `tileFadeDuration` |
+| New tiles | geometry first, labels a frame or two later | each tile appears complete, labels included; the previous level covers it until then |
+
+Texture memory is the same in both modes: the labels are drawn into the
+tile's existing image, so `rasterCacheMaxBytes` needs no adjustment.
+
+Measured with [`compare/`](compare) on a Nothing Phone (1) at 60 Hz,
+same style and tiles, three runs each: with `LabelMode.tile` the map
+got a frame on 94.5–98% of display refreshes while zooming, panning,
+rotating and flinging, against 73–88% in the default mode, and the UI
+thread's 90th percentile fell from 14.5–23.3 ms to 3.6–10.3 ms. The first
+complete map took 1.05 s, against 1.25 s in the default mode.
+
 ## 🏗️ Architecture
 
 ```
@@ -443,11 +488,16 @@ camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
    bytes ◄─ disk cache ◄─ network        ─► isolate: decode + trim
    PreparedTile ─► rasterize once ─► GPU image ─► textured quad per frame
    symbols ─────► per-frame screen-space label pass (global collision)
+           └────► or, LabelMode.tile: drawn into that GPU image, once
    finished tiles (image + symbols) ─► shared LRU ─► instant re-crossings
 ```
 
 For profiling, the render pipeline emits DevTools timeline events:
-`VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`.
+`VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`, and with
+`LabelMode.tile` `VT rasterize with labels` and `VT tile labels`. A
+dense tile's `VT rasterize` and `VT symbols` can repeat over several
+frames: the pump records a tile's layers and shapes its labels in
+slices, so that no single tile holds up a frame.
 
 On web the disk cache tier is absent and decoding runs on a yielding
 event-loop queue instead of isolates. Everything else is identical.
@@ -458,14 +508,57 @@ The full rendering model, and the reasoning behind each departure from
 
 ## 🆚 [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles)
 
-| | vector_map_tiles (stable) | this package |
+Compared with `9.0.0-beta.13`, the newest release that runs flutter_map 8
+on stable Flutter (the `10.0.0` betas need Flutter's main channel for
+`flutter_gpu`):
+
+| | vector_map_tiles 9.0.0-beta.13 | this package |
 |---|---|---|
-| Packages | 3 ([`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles), [`vector_tile_renderer`](https://pub.dev/packages/vector_tile_renderer), [`executor_lib`](https://pub.dev/packages/executor_lib)) + [`stash`](https://pub.dev/packages/stash) caching | 1 |
-| Labels | baked into tile rasters / per-tile collision | screen-space pass, global collision, upright text |
-| Zoom flicker | white flash on fast zoom ([#147](https://github.com/greensopinion/flutter-vector-map-tiles/issues/147)) | retained level + ancestor/descendant substitution |
-| Cancellation | `CancellationException` reaches crash reporting ([#205](https://github.com/greensopinion/flutter-vector-map-tiles/issues/205)) | a state, never an exception |
-| Style zoom | evaluated at flutter_map zoom (1 off vs. MapLibre) | `TileOffset.maplibre` default |
-| Rasters | async image encode | `Picture.toImageSync` (stays on GPU) |
+| Packages | 3 ([`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles), [`vector_tile_renderer`](https://pub.dev/packages/vector_tile_renderer), [`executor_lib`](https://pub.dev/packages/executor_lib)), plus `idb_shim` for its web cache | 1 |
+| Labels | raster mode (default): baked into each tile image, collision within the tile; vector mode: redrawn with the tiles every frame | a screen-space pass with one global collision pass and upright text (default), or baked into the tile images with `LabelMode.tile` |
+| Style zoom | evaluated at the flutter_map zoom, one level deeper than MapLibre, so label layers open a level early | `TileOffset.maplibre` by default, as MapLibre renders the style |
+| Tile images | 512 px, `Picture.toImage`, then PNG-encoded into its disk cache before the tile is shown; a revisit decodes the PNG | 256 px × device pixel ratio, `Picture.toImageSync`, kept as GPU textures in an LRU |
+
+Measured with [`compare/`](compare) on a Nothing Phone (1) at 60 Hz: the
+same style and the same recorded tiles, a fresh process per run, three
+runs each. "Frames" is the share of display refreshes that got a frame
+while the camera zoomed, panned, rotated or flung. Full tables and
+screenshots are in [compare/RESULTS.md](compare/RESULTS.md).
+
+| | this package | vector_map_tiles |
+|---|---:|---:|
+| Labels baked into the tiles (`LabelMode.tile` / raster mode): frames | 94.5–97.8% | 76.3–98.7% |
+| … worst stall | 50–100 ms | 67–267 ms |
+| Labels drawn every frame (default / vector mode): frames | 73.1–88.1% | 20.1–40.1% |
+| … worst stall | 50–100 ms | 100–1372 ms |
+| First complete map (baked / raster) | 1.05 s | 2.8 s |
+| Downloaded per run (default / raster) | 12.8 MB | 21.7 MB |
+
+### ⚖️ Trade-offs
+
+- **Revisits.** `vector_map_tiles` keeps every tile it has rendered as a
+  PNG on disk (IndexedDB on web), so a second pass over the same ground
+  decodes tiles instead of drawing them, even after the app restarts. On
+  the repeated pan it got 98.3% of frames, this package 96.8% with baked
+  labels. This package keeps finished tiles as GPU textures in an LRU
+  sized to its screen and draws them again once they fall out; across
+  restarts it keeps the tile data, not the drawn tiles.
+- **Memory.** With baked labels both use about the same: 273 against
+  266 MB of GPU memory at the peak, 386 against 380 MB RSS. This
+  package's default, which draws labels every frame, needs more GPU
+  memory than baked labels (372 MB, vector mode 385 MB), most of it for
+  the label fades (272–311 MB with fades off, which costs frames
+  instead), and far less RSS than vector mode (400 against 925 MB). Its
+  label text cache
+  keeps up to 8000 shaped labels; after a run through four dense cities
+  that held 37–49 MB more than the 2500 it used to keep, and 117–119 MB
+  more with `TileOffset.none`. `VectorTileLayer.clearMemoryCache()`
+  gives 25–48 MB of that back (see the CHANGELOG).
+- **Label density.** At the same camera `vector_map_tiles` draws more
+  labels, because it evaluates the style one zoom level deeper than
+  MapLibre. `tileOffset: TileOffset.none` makes this package do the same
+  (see [Understanding `TileOffset`](#-understanding-tileoffset)).
+- **Not covered yet:** macOS, web and iOS runs, and the `10.0.0` betas.
 
 ## 🐛 Troubleshooting
 

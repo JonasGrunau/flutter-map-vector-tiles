@@ -66,7 +66,8 @@ class ThemeReader {
         );
       case 'fill':
       case 'fill-extrusion':
-        final prefix = type == 'fill-extrusion' ? 'fill-extrusion' : 'fill';
+        final extrusion = type == 'fill-extrusion';
+        final prefix = extrusion ? 'fill-extrusion' : 'fill';
         layer = FillThemeLayer(
           id: id,
           source: source,
@@ -77,7 +78,8 @@ class ThemeReader {
           color:
               _color(parser, paint['$prefix-color'], const Color(0xff000000)),
           opacity: _double(parser, paint['$prefix-opacity'], 1),
-          outlineColor: paint['fill-outline-color'] == null
+          // An extrusion has no outline property.
+          outlineColor: extrusion || paint['fill-outline-color'] == null
               ? null
               : _color(
                   parser, paint['fill-outline-color'], const Color(0x00000000)),
@@ -85,6 +87,7 @@ class ThemeReader {
           pattern: paint['$prefix-pattern'] == null
               ? null
               : _string(parser, paint['$prefix-pattern'], ''),
+          extrusion: extrusion,
         );
       case 'line':
         layer = LineThemeLayer(

@@ -59,7 +59,8 @@ void main() {
     await settleLoads(tester, provider);
   }
 
-  testWidgets('nothing rasterizes while the app is leaving', (tester) async {
+  testWidgets('nothing rasterizes while an iOS app is leaving',
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS), (tester) async {
     // `inactive` is the whole reason this gate exists. The scheduler
     // keeps frames enabled through it, so the pump goes on running while
     // iOS is taking the app away — and from `hidden` on there are no
@@ -95,6 +96,41 @@ void main() {
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     expect(await settle(tester), isTrue);
     expect(TileRasterizer.debugRasterizeCount, greaterThan(rasters));
+  });
+
+  testWidgets('an unfocused window keeps rendering',
+      variant: const TargetPlatformVariant({
+        TargetPlatform.android,
+        TargetPlatform.macOS,
+        TargetPlatform.windows,
+        TargetPlatform.linux,
+      }), (tester) async {
+    // Outside iOS, `inactive` is a window that is visible but not focused:
+    // a desktop window behind another app, the other half of an Android
+    // split screen. Nothing takes the GPU away there, and a map that
+    // stopped rasterizing would paint its background colour in place of
+    // every tile it had not finished when the focus moved.
+    final provider = EverywhereProvider(fullTile());
+    final controller = MapController();
+    tester.view.physicalSize = const Size(600, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(app(controller, provider));
+    await settleLoads(tester, provider);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    final rasters = TileRasterizer.debugRasterizeCount;
+    final loads = provider.loads;
+
+    controller.move(const LatLng(52.5163, 13.3777), 14);
+    await pumpUntil(tester, () async => provider.loads > loads);
+    expect(await settle(tester), isTrue);
+
+    expect(TileRasterizer.debugRasterizeCount, greaterThan(rasters),
+        reason: 'the tiles panned to must render without focus');
+    expect(await centrePixel(tester), land);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
   });
 
   testWidgets('resuming re-rasterizes what was on screen', (tester) async {

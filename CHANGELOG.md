@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- ✨ **Labels baked into tiles**: `VectorTileLayer.labelMode` chooses
+  where labels and icons are drawn. The default, `LabelMode.screen`, is
+  the per-frame screen-space pass as before. `LabelMode.tile` places and
+  draws them once per tile, into the tile's image, as `vector_map_tiles`
+  does in its raster mode, so a moving map does no label work at all.
+  The same text engine draws them, curved road names and SDF icons
+  included, but with the limits of a pre-rendered tile: collision is
+  per tile and a label that would cross a tile edge is dropped, text
+  turns with the map, scales with the tile between zoom levels, and
+  fades in with its tile. Texture memory per tile is unchanged. On a
+  Nothing Phone (1) at 60 Hz, the map got a frame on 94.5–98% of
+  display refreshes while zooming, panning, rotating and flinging,
+  against 73–88% with screen-space labels (rotating: 73–75% →
+  94.5–98%).
+- ✨ `VectorTileLayer.clearMemoryCache()` now also trims the label text
+  every open map keeps down to the labels on screen. Each map keeps up
+  to 8000 shaped labels, so that zooming back to a level does not shape
+  them all again, and until now only closing the map released them.
+  Nothing on screen changes, and a label met again later is shaped
+  again. On a Nothing Phone (1), after a run through four dense cities,
+  RSS fell by 25–30 MB within 3 s, and by 42–48 MB with
+  `TileOffset.none`.
+- 🎨 `fill-extrusion` layers, such as the `building-3d` layer of
+  OpenFreeMap's Liberty style, now apply `fill-extrusion-opacity` to the
+  layer as a whole, as MapLibre does. Each building used to be blended
+  on its own, so wherever a building part overlapped its outline, the
+  overlap drew darker than the rest of the building.
+- ⚡ A dense tile no longer holds up a frame while the map moves.
+  Recording a tile's roads and buildings took 16–49 ms on a phone for
+  central Berlin, all in one frame; it is now spread over several,
+  one style layer at a time, within the render pump's budget per frame,
+  which is 4 ms while the camera moves and 12 ms once it stands still.
+  On a Nothing Phone (1) with `LabelMode.tile`, the map got a frame on
+  95–98% of display refreshes while panning (was 84–89%) and 94–96%
+  while zooming (was 85–93%). The first complete map appeared after
+  1.0 s instead of 3.8 s, and after 1.1–1.2 s instead of 3.0–3.1 s
+  with the default `LabelMode.screen`, whose frames while moving are
+  held up by its label pass and did not change. The tiles drawn are
+  the same, pixel for pixel. In exchange, the last tiles can land up
+  to 0.2 s after a pan ends, and 0.9 s after a long zoom.
 - ⚡ **Layer filters run once per data tile.** Every display tile used to
   test each feature of a source layer against every style layer reading
   it — on a MapTiler theme about 45 filter tests per feature drawn — and
@@ -17,6 +57,26 @@
   change, fast zoom sweeps between z15.5 and z17.5 over Munich (MapTiler
   style, Nothing Phone 1) ran at 8–37 % more frames per second, with
   45–71 % fewer frames over 16.7 ms.
+- 🐛 A map in an unfocused window kept painting only its background
+  colour for every tile it had not finished. The layer stops rasterizing
+  in `AppLifecycleState.inactive`, which guards against iOS revoking the
+  GPU on the way to the background, but on macOS, Windows, Linux, web
+  and an Android split screen `inactive` just means the window lost
+  focus. The gate now applies to `inactive` on iOS only.
+- 🐛 Zooming back to a level you had just left in a label-dense city
+  brought its labels back tile by tile over several seconds, and the map
+  kept rendering until they were all there. Finished tiles come back from
+  the cache with their labels but not with the shaped text, and the
+  2500-entry text cache could not hold one zoom round trip: a fling from
+  z15 to z17 and back over central London shapes about 7,400 distinct
+  labels on a phone with `TileOffset.none`, and settled 4–7.5 s after the
+  camera stopped. The cache now holds 8000 entries, and the same fling
+  settles in about 0.3 s. The price is memory, once that many distinct
+  labels have been drawn: after a run through four dense cities on that
+  phone, RSS was 37–49 MB higher with the default `TileOffset`, and
+  117–119 MB higher with `TileOffset.none`, whose peak rose from 384 to
+  491–495 MB. `VectorTileLayer.clearMemoryCache()` now gives part of it
+  back (see above).
 - 📚 The README now says that the package is developed with Claude Code,
   and links the agent instructions Claude works under.
 - 📦 Versions are now published from GitHub Actions. Pushing a `vX.Y.Z`

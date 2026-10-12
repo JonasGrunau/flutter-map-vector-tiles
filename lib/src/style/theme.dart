@@ -117,6 +117,12 @@ class FillThemeLayer extends ThemeLayer {
   /// the pattern replaces the color fill and outline, per spec.
   final StringProp? pattern;
 
+  /// Whether this is a `fill-extrusion` layer, drawn flat from above.
+  /// Its opacity applies to the layer as a whole rather than to each
+  /// feature, per spec, so overlapping buildings are not darker where
+  /// they overlap.
+  final bool extrusion;
+
   FillThemeLayer({
     required super.id,
     required super.source,
@@ -129,6 +135,7 @@ class FillThemeLayer extends ThemeLayer {
     required this.outlineColor,
     required this.antialias,
     this.pattern,
+    this.extrusion = false,
   });
 }
 

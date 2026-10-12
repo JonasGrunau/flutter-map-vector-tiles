@@ -27,15 +27,21 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │       tile's window of the data tile
      │
      └─ symbols: SymbolLayouter collects label/icon anchors per tile
-             └─ LabelPainter: per-frame screen-space pass, global collision
-                grid across all tiles, upright text under rotation
+             ├─ LabelPainter: per-frame screen-space pass, global collision
+             │  grid across all tiles, upright text under rotation
+             └─ or, LabelMode.tile: LabelPainter.paintTile places them once
+                per tile and draws them into the tile's own image
 
 Rasterization and symbol extraction are two separate jobs in a budgeted
 per-frame render pump (rasters for every pending tile first, symbols
-after), and a finished tile — image plus symbols — enters the shared
-result cache, so re-crossing a zoom level skips the pipeline entirely.
-The pump's stages emit DevTools timeline events (`VT render pump`,
-`VT rasterize`, `VT symbols`, `VT labels`).
+after — in `LabelMode.tile`, one tile at a time, since a tile shows only
+once both are done). Both are resumable — a recording stops between
+style layers, shaping between labels — so a dense tile is spread over
+several frames instead of holding up one. A finished tile — image plus
+symbols — enters the shared result cache, so re-crossing a zoom level
+skips the pipeline entirely. The pump's stages emit DevTools timeline
+events (`VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`, and
+in `LabelMode.tile` `VT rasterize with labels` and `VT tile labels`).
 ```
 
 ## Rendering model
@@ -59,6 +65,45 @@ exposes — appears at full opacity at once, because a fade there runs
 over the bare background and reads as a background-coloured shimmer on
 every crossing. Freshly rasterized tiles always fade; their fade is
 what masks staggered pop-in.
+
+Recording that geometry into a `Picture` is the expensive half of the
+raster phase, and it is all UI-thread work: on a Nothing Phone (1), a
+display tile of central Berlin at z16 took 16–28 ms to record, up to
+49 ms, against a 16.7 ms frame — buildings and dashed footpaths about
+half of it. So the raster phase is resumable, like the symbol phase:
+`TileRasterizer.recordSlice` records layers until the pump's budget is
+spent and returns where to resume, the job keeps the slices it has
+(`_RenderJob.geometryParts`) and is requeued with its priority, and once
+the last layer is in, `compose` stacks the slices into exactly the
+picture a single recording would have made. A layer is the smallest
+unit — each is drawn whole, in order, with its own paints, which is
+what keeps the slices stackable — so one frame can still carry the most
+expensive layer of a tile: 5–9 ms on those Berlin tiles, 22 ms for the
+buildings of the densest one. Nothing is published before the last
+slice: a tile halfway through its recording counts as loading, and
+whatever covered it keeps covering it. A slice taken under a different
+theme or pixel ratio than the ones before it starts the recording
+over, since it would not stack onto them.
+
+The budget depends on motion: 4 ms per frame while the camera moves,
+12 ms once it has stood still for 150 ms. While the map moves, every
+late frame is a visible stutter; while it stands still, a late frame
+only puts a fade-in one frame behind, and slicing at 4 ms then left
+most of each frame idle — the first complete map came 3 s later than
+before slicing.
+
+Measured with `compare/` on that phone at 60 Hz, two runs each, panning
+and zooming over the same tiles: with `LabelMode.tile` the map got a
+frame on 95–98% of display refreshes while panning (84–89% before) and
+94–96% while zooming (85–93%), the first complete map came after 1.0 s
+instead of 3.8 s, and the tiles came out pixel-identical. The default
+`LabelMode.screen` delivered the same share of frames as before — its
+per-frame label pass, not recording, is what makes those frames late —
+but its first complete map also came after 1.1–1.2 s instead of
+3.0–3.1 s. The price is the backlog a moving camera leaves: in tile mode
+the last tiles land up to 0.2 s after a pan stops, 0.9 s after a long zoom,
+where before the screen was complete the moment the camera stopped —
+because every frame of the motion had waited for whole tiles.
 
 A display tile whose data has not arrived does not wait blank. While
 the load is pending, the layer renders a *provisional* image from
@@ -105,8 +150,8 @@ matches. That cut rasterization time per tile by a third to almost
 half on a phone in the z15.5–17.5 band, where one z14 data tile serves
 up to 64 display tiles.
 
-Labels and icons are **not** baked into the tile images. They are drawn
-each frame in screen space:
+By default (`LabelMode.screen`) labels and icons are **not** baked into
+the tile images. They are drawn each frame in screen space:
 
 * text stays crisp at fractional zoom and upright under map rotation;
 * collision detection runs globally across tile borders, so labels never
@@ -480,6 +525,70 @@ repaint boundary. The painter applies the camera transform (translate ·
 rotate about the screen centre) itself; `MobileLayerTransformer` is not
 used.
 
+### Labels in the tile image (`LabelMode.tile`)
+
+Everything above about labels buys its quality with UI-thread time on
+every frame the map moves: one collision pass and every visible label
+drawn again. `LabelMode.tile` is the other trade, the one
+`vector_map_tiles` makes in its default raster mode. Labels and icons are
+placed and drawn once per display tile, into the same image as its
+geometry, and a moving map then costs exactly what a raster tile layer
+costs: no label work at all.
+
+It is the same pipeline with a different ending, not a second text
+stack. The raster phase *records* the tile's geometry
+(`TileRasterizer.record`) and, instead of taking its image, hands the
+`Picture` to the symbol phase. That phase lays out and shapes in budgeted
+slices exactly as before; once shaping completes,
+`LabelPainter.paintTile` places the candidates and draws the winners
+over the nested geometry picture, and a single `toImageSync` produces
+the tile's image — one snapshot per tile, as in the default mode, and
+the picture costs no texture while it waits. The tile is then published
+once, image only, with an empty candidate list, so the per-frame label
+pass, the fade tracker, the retained-label pinning and the ghost labels
+all have nothing to do and are skipped. Until that publish the tile
+counts as loading, so the previous level — with its own labels in its
+images — keeps covering it; and since a tile now shows only once both
+of its phases are done, the pump drops its phase-major order (all
+rasters first, which would hold every tile back until the last raster
+had run) for a tile-major one that finishes the most central tile
+first.
+
+`paintTile` is one placing pass of the screen pass's own `_prepare`, so
+curved text and the glyph atlas, variable anchors, halos, SDF icons and
+repeat suppression all come along unchanged. What it carries over from
+one call to the next is nothing: no fades, no throttle, no incumbents,
+and a placement memory and repeat-anchor map swapped in fresh for the
+call. A tile's image is therefore a pure function of its candidates —
+which the finished-tile cache depends on — and the screen pass's state
+is never disturbed. Its collision index is bounded by the tile, and
+every box must lie inside it, `*-allow-overlap` ones included: a label
+the layouter anchored in this tile but which runs over the edge would be
+cut off there, and the neighbour that would have to draw its other half
+never sees the candidate. Such labels are dropped, which leaves gaps
+along tile seams — the same behaviour as `vector_map_tiles`. MapLibre
+avoids it with cross-tile placement (labels placed once for the
+viewport, then assigned to the tiles they overlap); that is a possible
+follow-up, not something this mode attempts.
+
+The other limits follow from the image. Text is evaluated at the tile's
+integer style zoom and drawn at that size, then scales with the tile
+(1× up to 2× before the next level replaces it), and turns with the map
+under rotation. A symbol layer's zoom range is applied per tile zoom
+level rather than at the exact fractional zoom, and the `maxzoom` ramp
+is evaluated at that level too. Labels fade in with their tile over
+`tileFadeDuration`; `labelFadeDuration` does nothing.
+
+Being a `toImageSync` like any other tile raster, the labelled image is
+covered by the backgrounding workaround below without further work: it
+is only ever made inside the render pump, which the lifecycle gate
+parks, and the glyph-atlas pages it may add to are discarded with the
+rest on the way back in. Switching modes, or toggling `showLabels` in
+tile mode, changes what a tile image contains, so the live tiles are
+rendered again and the outgoing level's queued jobs are retired — a job
+decides at run time which kind of image to make, and would otherwise
+publish, and cache, the wrong one.
+
 ## Concurrency
 
 MVT decoding, and trimming each tile to the source layers and
@@ -507,7 +616,7 @@ chunked event-loop execution.
 | --- | --- | --- |
 | memory: `PreparedTile` | data tile + theme id | entry count + bytes |
 | memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
-| memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprite *content*, labels) | GPU texture bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
+| memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprite *content*, labels, label mode) | GPU texture bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
 | disk: raw tile bytes | hash of `provider.cacheKey` + z/x/y | TTL + total size sweep |
 
 All caches are plain deterministic LRU implementations — no external
@@ -537,10 +646,44 @@ screen's paragraphs into a single frame — the very spike the pump's
 budget exists to prevent, on the path that is supposed to be the fast
 one. The hit therefore takes the imagery immediately and enqueues a
 symbol phase that owes only the shaping, which the pump slices like any
-other. Those jobs are flagged so they are not written back into the
+other. That makes a hit only as cheap as the text cache is large:
+whatever was evicted since the level was last on screen is shaped
+again. So the cache is sized to hold a zoom round trip, not just one
+screen: a phone-portrait fling from z15 to z17 and back over central
+London shapes about 7,400 distinct texts with `TileOffset.none`. At the
+2500 entries it used to hold, z15's text was gone by the time the fling
+returned, and the pump re-shaped it for 4–7.5 s after the camera stopped;
+at 8000 the same fling settles in 0.3 s. The price is memory once that
+many labels have been drawn: after a run through four dense cities the
+phone held 37–49 MB more RSS with the default offset, and 117–119 MB
+more with `TileOffset.none`, whose peak rose from 384 to 491–495 MB
+(`compare/results/raw/2026-10-12-textcache-android`).
+The text caches belong to the live painter, so nothing but eviction at
+the cap frees that while the map stays open — except
+`VectorTileLayer.clearMemoryCache()`, which calls `trimCaches()` on
+every mounted layer's painter. Every text and glyph lookup stamps the
+entry with the current placement pass, and the trim drops everything
+not stamped since the last one began: every candidate laid out on
+screen (collision losers included), plus what the pump has shaped for
+tiles still to arrive. Placement passes rather than frames, because a
+frame replaying a decision lays out only its winners; keyed on that,
+the trim would drop on-screen losers, and the next pass would shape
+them again inside a frame. The evicted painters are disposed at once:
+memory pressure often comes in the background, where no next pass
+arrives to retire them. On that phone RSS fell 25–48 MB within 3 s of
+the trim, not all the way back to what 2500 entries had held.
+Those jobs are flagged so they are not written back into the
 cache they came from: a second `put` under the same key would mint a
 second master image and dispose the one the display tile's clone came
 from.
+
+In `LabelMode.tile` the cached result is the labelled image with an
+empty symbol list, so a hit owes no shaping and is complete the moment
+it is served. The label mode is part of the render signature because it
+decides whether an image has its labels in it: served across modes, a
+cached screen-mode tile would show no labels at all, and a tile-mode
+one would show every label twice. The image is the same size either
+way, so `rasterCacheMaxBytes` and its automatic sizing hold unchanged.
 
 The budget for that cache is sized from the device rather than fixed.
 One display tile costs `(256·dpr)²·4` GPU texture bytes and one phone
@@ -566,7 +709,8 @@ zoom re-rasterizes from the `PreparedTile` LRU — cheap, since only the
 visible window is processed. `VectorTileLayer.clearMemoryCache()` empties
 all three memory tiers at once — the memory-pressure valve, since the
 caches are process-wide and otherwise freed only by their budgets; the
-disk cache is untouched.
+disk cache is untouched. It also trims each open map's label text to the
+labels on screen (see above).
 
 ### Surviving a backgrounding
 
@@ -587,8 +731,14 @@ is `inactive`, not `paused`. The scheduler keeps frames enabled through
 `inactive` — that is what draws the app-switcher snapshot on the way out
 and the first frames on the way back in — while the context is revoked
 somewhere alongside it; from `hidden` onwards no frames are produced at
-all. So the render pump refuses to run below `resumed`, parking its
-queue rather than dropping it, and on the return the layer discards the
+all. So on iOS the render pump refuses to run below `resumed`, parking
+its queue rather than dropping it. Everywhere else it keeps running
+through `inactive`, which there means a window that is visible but not
+focused — a desktop window behind another app, a browser window that
+lost focus, the other half of an Android split screen — and gating it
+made such a window paint its background colour for every tile it had
+not finished; from `hidden` on, the gate is shut on every platform. On
+the return the layer discards the
 finished-tile cache, the raster-source images and the pattern stamps and
 re-rasterizes its live tiles. That recovery is cheap for the same reason
 the pipeline is split the way it is: only the last stage was affected,
@@ -602,7 +752,8 @@ brand-new layer that lived through no backgrounding of its own, and a
 per-layer flag would leave it reading suspect textures out of a cache no
 surviving observer was there to clear. A departure that only reaches
 `inactive` — a permission dialog, a control-centre swipe — gates
-rasterization but marks nothing, so the common case costs no re-render.
+rasterization on iOS but marks nothing, so the common case costs no
+re-render.
 
 Of the two halves, the recovery is the guarantee and the gate is only a
 mitigation: `toImageSync` hands back a *deferred* image, so the raster

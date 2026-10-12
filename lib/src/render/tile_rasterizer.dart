@@ -21,8 +21,9 @@ import 'pattern_resolver.dart';
 ///
 /// Rasterization happens once per (display tile, integer zoom); the
 /// per-frame cost of the map is then just drawing textures. Symbol layers
-/// are *not* rasterized here — they are drawn per-frame in screen space
-/// by the label pass.
+/// are *not* painted here: in `LabelMode.screen` they are drawn per frame
+/// in screen space by the label pass, and in `LabelMode.tile` the layer
+/// draws them over a [record]ed picture before taking its [toImage].
 class TileRasterizer {
   /// Logical tile size in points — the one shared constant, see
   /// `core/tile_zoom.dart`.
@@ -44,9 +45,15 @@ class TileRasterizer {
   @visibleForTesting
   static int debugRasterizeCount = 0;
 
+  /// [recordSlice] calls, of which a tile recorded in one go makes one;
+  /// for tests asserting that recordings are spread over frames.
+  @visibleForTesting
+  static int debugSliceCount = 0;
+
   /// UI-thread microseconds spent inside [rasterize] — picture recording
-  /// plus `toImageSync`. Accumulates forever; the bench diffs it per
-  /// frame to attribute build-time spikes to their phase.
+  /// ([record]) plus `toImageSync` ([toImage]). Accumulates forever; the
+  /// bench diffs it per frame to attribute build-time spikes to their
+  /// phase.
   @visibleForTesting
   static int debugRasterizeMicros = 0;
 
@@ -71,29 +78,132 @@ class TileRasterizer {
     required double devicePixelRatio,
     PatternResolver? patterns,
   }) {
-    debugRasterizeCount++;
+    final picture = record(
+      theme: theme,
+      data: data,
+      styleZoom: styleZoom,
+      devicePixelRatio: devicePixelRatio,
+      patterns: patterns,
+    );
+    return picture == null ? null : toImage(picture, devicePixelRatio);
+  }
+
+  /// The backing size in device pixels of a tile at [devicePixelRatio]:
+  /// its rasters are square, this many pixels on a side.
+  static int pixelSizeFor(double devicePixelRatio) =>
+      (logicalTileSize * devicePixelRatio).ceil();
+
+  /// The scale from logical tile units to the backing pixels: what a
+  /// canvas recording a tile is scaled by, and therefore its effective
+  /// device pixel ratio.
+  static double pixelScaleFor(double devicePixelRatio) =>
+      pixelSizeFor(devicePixelRatio) / logicalTileSize;
+
+  /// Records the tile's geometry without rasterizing it, in backing
+  /// pixels clipped to the tile — [rasterize] minus the `toImageSync`.
+  /// Returns null when there is nothing to draw.
+  ///
+  /// For a caller that draws more on top before taking the image, as
+  /// `LabelMode.tile` does with the tile's labels: nesting the picture
+  /// in that recording costs one snapshot per tile instead of two.
+  static ui.Picture? record({
+    required Theme theme,
+    required DisplayTileData data,
+    required double styleZoom,
+    required double devicePixelRatio,
+    PatternResolver? patterns,
+  }) =>
+      recordSlice(
+        theme: theme,
+        data: data,
+        styleZoom: styleZoom,
+        devicePixelRatio: devicePixelRatio,
+        patterns: patterns,
+      ).picture;
+
+  /// [record] spread over several calls: records the theme layers from
+  /// [from] on, and stops at the first layer boundary at which
+  /// [outOfBudget] returns true — always after at least one layer, so
+  /// every call makes progress. A dense tile's recording costs tens of
+  /// milliseconds on a phone, all of it on the UI thread, and the only
+  /// place it can be cut without changing the result is between two
+  /// layers: each one is drawn whole, in order, with its own paints.
+  ///
+  /// Returns the slice's picture (null when it drew nothing) and the
+  /// index to resume from, which is `theme.layers.length` once the tile
+  /// is done. Each slice is clipped and scaled like [record]'s picture,
+  /// so [compose] stacks them into exactly the picture [record] would
+  /// have made.
+  static ({ui.Picture? picture, int next}) recordSlice({
+    required Theme theme,
+    required DisplayTileData data,
+    required double styleZoom,
+    required double devicePixelRatio,
+    PatternResolver? patterns,
+    int from = 0,
+    bool Function()? outOfBudget,
+  }) {
+    if (from == 0) debugRasterizeCount++;
+    debugSliceCount++;
     final stopwatch = Stopwatch()..start();
     try {
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
-      final pixelSize = (logicalTileSize * devicePixelRatio).ceil();
+      final pixelSize = pixelSizeFor(devicePixelRatio);
       canvas.clipRect(
           Rect.fromLTWH(0, 0, pixelSize.toDouble(), pixelSize.toDouble()));
-      canvas.scale(pixelSize / logicalTileSize);
+      canvas.scale(pixelScaleFor(devicePixelRatio));
 
-      final painted = paint(
+      final (:painted, :next) = _paintLayers(
         canvas: canvas,
         theme: theme,
         data: data,
         styleZoom: styleZoom,
         patterns: patterns,
+        from: from,
+        outOfBudget: outOfBudget,
       );
 
       final picture = recorder.endRecording();
       if (!painted) {
         picture.dispose();
-        return null;
+        return (picture: null, next: next);
       }
+      return (picture: picture, next: next);
+    } finally {
+      debugRasterizeMicros += stopwatch.elapsedMicroseconds;
+    }
+  }
+
+  /// One picture of [parts] — [recordSlice]'s pictures in the order
+  /// they were recorded — which takes ownership of them: they are
+  /// disposed here unless a single part is returned as it is. Null when
+  /// there are none.
+  static ui.Picture? compose(List<ui.Picture> parts) {
+    if (parts.length <= 1) return parts.isEmpty ? null : parts.single;
+    final stopwatch = Stopwatch()..start();
+    try {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      for (final part in parts) {
+        canvas.drawPicture(part);
+      }
+      final picture = recorder.endRecording();
+      for (final part in parts) {
+        part.dispose();
+      }
+      return picture;
+    } finally {
+      debugRasterizeMicros += stopwatch.elapsedMicroseconds;
+    }
+  }
+
+  /// Rasterizes [picture] — recorded in backing pixels, as [record]
+  /// does — into a tile image at [devicePixelRatio], and disposes it.
+  static ui.Image toImage(ui.Picture picture, double devicePixelRatio) {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final pixelSize = pixelSizeFor(devicePixelRatio);
       final image = picture.toImageSync(pixelSize, pixelSize);
       picture.dispose();
       return image;
@@ -110,13 +220,43 @@ class TileRasterizer {
     required DisplayTileData data,
     required double styleZoom,
     PatternResolver? patterns,
+  }) =>
+      _paintLayers(
+        canvas: canvas,
+        theme: theme,
+        data: data,
+        styleZoom: styleZoom,
+        patterns: patterns,
+      ).painted;
+
+  /// [paint] from layer [from] on, stopping before the next layer that
+  /// would draw once [outOfBudget] says so — after at least one such
+  /// layer. Returns whether anything was drawn, and where to resume:
+  /// `theme.layers.length` when every layer is done.
+  static ({bool painted, int next}) _paintLayers({
+    required Canvas canvas,
+    required Theme theme,
+    required DisplayTileData data,
+    required double styleZoom,
+    PatternResolver? patterns,
+    int from = 0,
+    bool Function()? outOfBudget,
   }) {
     var painted = false;
+    var drewLayer = false;
     final zoomCtx = EvalContext(zoom: styleZoom);
 
+    final layers = theme.layers;
     final layerStopwatch = Stopwatch();
-    for (final layer in theme.layers) {
-      if (!layer.coversZoom(styleZoom)) continue;
+    for (var i = from; i < layers.length; i++) {
+      final layer = layers[i];
+      // Skipped before the budget check, so that a slice never ends on —
+      // and the next one never starts with — a layer that draws nothing.
+      if (layer is SymbolThemeLayer || !layer.coversZoom(styleZoom)) continue;
+      if (drewLayer && (outOfBudget?.call() ?? false)) {
+        return (painted: painted, next: i);
+      }
+      drewLayer = true;
       layerStopwatch
         ..reset()
         ..start();
@@ -140,12 +280,12 @@ class TileRasterizer {
         case CircleThemeLayer():
           painted |= _paintCircle(canvas, layer, data, styleZoom);
         case SymbolThemeLayer():
-          break; // screen-space label pass
+          break; // skipped above: the label pass, in screen or tile space
       }
       debugLayerMicros[layer.id] = (debugLayerMicros[layer.id] ?? 0) +
           layerStopwatch.elapsedMicroseconds;
     }
-    return painted;
+    return (painted: painted, next: layers.length);
   }
 
   /// Iterates the features of [layer]'s source-layer, calling [visit]
@@ -279,6 +419,49 @@ class TileRasterizer {
       fillPaint = Paint()
         ..color = color
         ..isAntiAlias = layer.antialias;
+    }
+
+    // `fill-extrusion-opacity` is the opacity of the whole layer, which
+    // MapLibre renders to one buffer and blends once: where a building
+    // part overlaps its outline, the overlap is no darker than either.
+    // With one paint for every feature that is a single path — the
+    // non-zero rule fills the union once, given MVT's winding — and,
+    // drawn in one call, cheaper than a path per building. A colour
+    // that varies by feature needs a layer to composite instead; the
+    // opacity itself never varies by feature, the spec forbids it.
+    if (layer.extrusion && patternProp == null) {
+      if (fillPaint != null) {
+        final union = Path()..fillType = PathFillType.nonZero;
+        var any = false;
+        _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
+            (feature, ctx, transform, clip) {
+          any |= _addPolygon(union, feature, transform, clip);
+        });
+        if (!any) return false;
+        canvas.drawPath(union, fillPaint);
+        return true;
+      }
+      final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
+      if (opacity == 0) return false;
+      if (opacity < 1) {
+        canvas.saveLayer(
+            null, Paint()..color = Color.fromRGBO(0, 0, 0, opacity));
+      }
+      _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
+          (feature, ctx, transform, clip) {
+        final color = layer.color.eval(ctx);
+        if (color.a == 0) return;
+        final path = _polygonPath(feature, transform, clip);
+        if (path == null) return;
+        canvas.drawPath(
+            path,
+            Paint()
+              ..color = color
+              ..isAntiAlias = layer.antialias);
+        painted = true;
+      });
+      if (opacity < 1) canvas.restore();
+      return painted;
     }
 
     _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
@@ -752,6 +935,12 @@ class TileRasterizer {
   static Path? _polygonPath(
       PreparedFeature feature, _TileTransform t, ClipRect? clip) {
     final path = Path()..fillType = PathFillType.nonZero;
+    return _addPolygon(path, feature, t, clip) ? path : null;
+  }
+
+  /// Adds [feature]'s rings to [path]; whether any survived [clip].
+  static bool _addPolygon(
+      Path path, PreparedFeature feature, _TileTransform t, ClipRect? clip) {
     var any = false;
     for (final ring in feature.parts) {
       if (clip == null) {
@@ -765,7 +954,7 @@ class TileRasterizer {
         }
       }
     }
-    return any ? path : null;
+    return any;
   }
 
   static Path _linePath(PreparedFeature feature, _TileTransform t) {

@@ -17,11 +17,11 @@ lifecycle or painting is covered by widget tests that pump a real
 |------|-------------|
 | `expression_test.dart` | Style expression compilation: operators, interpolation, legacy syntax, coercions |
 | `tile_lifecycle_test.dart` | Widget-level: first paint, zoom changes, pan, cache attachment, disposal. The heaviest and most integration-shaped test |
-| `app_lifecycle_raster_test.dart` | The app-backgrounding defence: no rasterizing below `resumed`, parked work resuming, re-rasterization and cache distrust after a departure (including by a layer mounted only after the return), and an `inactive`-only interruption costing nothing. Drives lifecycle with `tester.binding.handleAppLifecycleStateChanged`; note that `pump()` is inert from `hidden` on, because the scheduler disables frames there — the assertions that need frames use `inactive` |
+| `app_lifecycle_raster_test.dart` | The app-backgrounding defence: no rasterizing below `resumed` on iOS, an unfocused (`inactive`) window rendering on every other platform, parked work resuming, re-rasterization and cache distrust after a departure (including by a layer mounted only after the return), and an `inactive`-only interruption costing nothing. Drives lifecycle with `tester.binding.handleAppLifecycleStateChanged`; note that `pump()` is inert from `hidden` on, because the scheduler disables frames there — the assertions that need frames use `inactive` |
 | `symbol_layouter_test.dart` | Label placement candidates, tile-seam behaviour, overzoom |
 | `raster_source_test.dart` | Raster sources declared inside vector styles, image ref-counting |
 | `tile_store_test.dart` | Memory/disk cache keying, miss paths, disposal, stale-while-revalidate (expired entries served instantly, `onRefreshed` on changed content only, corrupt expired entries refetched, `revalidateIfStale` for results served without the stores) |
-| `curved_text_test.dart` | Text along lines and the sharp-bend fallback; the upright guard on a hairpin (dropped on a pass, drawn straight on a replay, kept without `text-keep-upright`, no false rejection near vertical) |
+| `curved_text_test.dart` | Text along lines and the sharp-bend fallback; the upright guard on a hairpin (dropped on a pass, drawn straight on a replay, kept without `text-keep-upright`, no false rejection near vertical); `trimCaches` keeping the on-screen label's glyphs |
 | `icon_rotation_test.dart` | `icon-rotate`/`icon-rotation-alignment`, anchor/offset pivot semantics, and rotated collision bounds |
 | `label_repeat_test.dart` | Screen-space line-repeat suppression, layer priority, and invisible/gated fallback candidates |
 | `sdf_icon_test.dart` | SDF sprite tinting |
@@ -31,6 +31,7 @@ lifecycle or painting is covered by widget tests that pump a real
 | `theme_reader_test.dart` | Layer parsing and MapLibre spec defaults; `filterReadsZoom` for absent, legacy, expression and zoom-reading filters (including `let`/`step`/`case`/`interpolate` and zoom-keyed legacy functions inside an expression) |
 | `matched_features_test.dart` | Zoom-free filters resolved once per prepared tile: cached matches equal a full scan, a zoom-reading filter is never cached and still flips across zooms, and later display tiles of one data tile — rasterizer and symbol layouter alike — evaluate no filter (counted through a property map that tallies reads, not a hook in the renderer) |
 | `line_pattern_test.dart`, `fill_pattern_test.dart` | Pattern paints |
+| `fill_extrusion_test.dart` | `fill-extrusion-opacity` per layer: overlapping buildings blended once (constant and per-feature colour), a plain fill as the double-blend control, no outline on extrusions |
 | `disk_cache_test.dart`, `lru_cache_test.dart` | Cache eviction, TTL, size sweep |
 | `style_reader_cache_test.dart` | Stale-while-revalidate style loading |
 | `style_reader_sources_test.dart` | Source URL resolution: relative TileJSON/tile templates (ArcGIS `root.json` shape), `{key}` substitution |
@@ -48,7 +49,10 @@ lifecycle or painting is covered by widget tests that pump a real
 | `fade_test.dart` | Tile/label fade progress arithmetic, including sub-millisecond durations |
 | `label_replay_test.dart` | Replay frames, which sort only the last pass's winners: they draw exactly what the pass placed, in the same order, whatever order the candidates arrive in, and still find a fallback to fade out a label that lost the pass |
 | `label_continuity_test.dart` | Per-label fade and placement continuity, including idle repaints not creating placement debt and clearing an in-progress fade when `labelFadeDuration` is disabled at runtime |
-| `show_labels_test.dart` | End-to-end label enable/disable, sub-millisecond fades and fade-ticker settlement on an unchanged map |
+| `show_labels_test.dart` | End-to-end label enable/disable, sub-millisecond fades and fade-ticker settlement on an unchanged map, and `VectorTileLayer.clearMemoryCache` trimming an open map's label text to the labels on screen (counted as live `TextPainter`s) |
+| `label_mode_test.dart` | `LabelMode.tile`: `paintTile` edge drops (allow-overlap too), in-tile collision and untouched screen-pass state; widget-level, labels baked with no per-frame pass, rotating with the map (upright in screen mode), the result cache kept apart per mode, `showLabels` re-rendering, and image/picture leak counting that also holds on web (see below); and, with `VectorTileLayer.debugPumpBudgetMicros = 0` (one layer or label per frame), the same map in both modes as with the normal budget, every recording spread over one frame per layer, and no slice leaked by a layer disposed mid-recording |
+| `render_job_queue_test.dart` | Render pump queue: phase-major and tile-major pop order, replacement and supersede |
+| `sliced_recording_test.dart` | `TileRasterizer.recordSlice` / `compose`: one layer per slice stacks into exactly the pixels one `record` makes (a translucent line over a fill shows any reordering), symbol and out-of-zoom layers get no slice of their own, a slice always makes progress, and a sliced tile still counts as one rasterization |
 | `sprite_atlas_signature_test.dart` | `SpriteAtlas.signature` — equal sheets agree, different ones do not (the render-signature cache key) |
 
 ## Subdirectories
@@ -72,7 +76,12 @@ lifecycle or painting is covered by widget tests that pump a real
   specific rendering bug shipped once (SDF blobs, duplicate seam labels, zoom
   jitter); name new ones after the behaviour, not the bug number.
 - Widget tests must dispose the map and assert no images leak — image ownership
-  bugs are the most common defect class in this package.
+  bugs are the most common defect class in this package. `label_mode_test.dart`
+  shows how: count `FlutterMemoryAllocations` creations against disposals of
+  `ui.Image`/`ui.Picture`. Count, don't match by identity — on web an image
+  reports one creation for all its clones and one disposal, through whichever
+  handle went last — and ignore the test's own `RepaintBoundary.toImageSync`
+  snapshots, of which the web engine keeps a picture.
 
 ### Testing Requirements
 
