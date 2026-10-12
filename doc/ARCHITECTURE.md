@@ -345,7 +345,12 @@ duration, the time a new label's fade-in takes anyway. A crossing churns
 the candidate set every few frames, so placing on each churn would be a
 10 ms+ collision pass several times a second on a symbol-heavy style.
 Only a viewport resize places at once; replaying a decision taken for
-another screen misplaces everything.
+another screen misplaces everything. A replay frame sorts only the last
+pass's winners — on a dense screen about a hundred of a few thousand
+candidates; the rest go straight to the fade-out fallbacks. The
+priority order is total (insertion order breaks every tie), so the
+winners come out exactly as a full sort would order them; sorting
+everything cost 2.7 ms per frame on a phone during fast sweeps.
 
 Curved text draws from a glyph atlas (`glyph_atlas.dart`). Each
 grapheme is rasterized once per style and snapped device size onto a

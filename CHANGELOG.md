@@ -11,6 +11,12 @@
   reused, so a tile rasterizes in a third to almost half less time on a
   mid-range Android phone. Filters that read the zoom are still
   evaluated per display tile.
+- ⚡ Frames between two label placement passes now sort only the labels
+  on screen — about a hundred — instead of every candidate, often a few
+  thousand: 1.5–2.6× less sorting per frame. Together with the filter
+  change, fast zoom sweeps between z15.5 and z17.5 over Munich (MapTiler
+  style, Nothing Phone 1) ran at 8–37 % more frames per second, with
+  45–71 % fewer frames over 16.7 ms.
 - 📚 The README now says that the package is developed with Claude Code,
   and links the agent instructions Claude works under.
 - 📦 Versions are now published from GitHub Actions. Pushing a `vX.Y.Z`
