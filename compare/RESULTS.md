@@ -5,7 +5,8 @@ measured with this directory's harness (method and arms: [README.md](README.md))
 
 **Status, 2026-10-12:** one complete session, on Android, with all six
 arms. Still to come: macOS, Chrome, iOS, and MapLibre GL JS reference
-renders next to the screenshots.
+renders next to the screenshots. The first macOS and Chrome sessions ran
+under the wrong conditions ([Earlier sessions](#earlier-sessions)).
 
 The two packages draw labels in different ways, so the arms pair up by
 strategy, not by default. Labels baked into the tile images:
@@ -184,11 +185,14 @@ What the screenshots show, beyond frame counts:
 
 ## Earlier sessions
 
-Kept as raw data under `results/raw/`. Their screenshots are in
-`results/shots/`. None of them is comparable with the session above:
+Kept as raw data under `results/raw/`, with their screenshots, where
+they have any, in `results/shots/`. None of them is comparable with the
+session above:
 
 | session | arms | why it is superseded |
 |---|---|---|
+| `2026-10-12-web-nostore` | all six, Chrome | the lab server answered with `Cache-Control: no-store`, which turned off the browser's HTTP cache, and on the web this package has no disk cache: evicted tiles came back from the network (fixed in fc9dd4c); on battery, other apps open |
+| `2026-10-12-macos-battery` | all six, macOS | on battery in macOS's "Automatic" power mode, other apps open |
 | `2026-10-11-split-android` | `fmvt`, `fmvt-raster`, `vmt-raster` | 1.5 s settle window (below) |
 | `2026-10-11-labelmode-android` | all six | 1.5 s settle window; before tile recording was spread over frames (31c3af2) and before the text-cache fix (4cffd9b), which made `fmvt-none` keep repainting for 4–5 s after a fling |
 | `2026-10-11-android` | `fmvt`, `fmvt-none`, `vmt-raster`, `vmt-vector` | 1.5 s settle window; before 31c3af2, 4cffd9b and `LabelMode.tile`; landscape |
