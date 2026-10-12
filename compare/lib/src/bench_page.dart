@@ -336,9 +336,8 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
   /// without producing a frame. `vector_map_tiles` renders, rasterizes and
   /// PNG-encodes tiles between frames: on a Nothing Phone (1) it went
   /// 1.75 s without a frame while filling a fresh z14 screen, so the 1.5 s
-  /// used before caught it mid-render — screenshots with missing tiles,
-  /// settle times too short, and cold passes that began with its previous
-  /// view still rendering.
+  /// used before caught it mid-render: screenshots with missing tiles, and
+  /// cold passes that began with its previous view still rendering.
   Future<int> _settle({required int sinceUs}) async {
     const quietUs = 4000 * 1000;
     final deadline = _log.nowUs + 25 * 1000 * 1000;

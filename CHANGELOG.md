@@ -12,10 +12,10 @@
   per tile and a label that would cross a tile edge is dropped, text
   turns with the map, scales with the tile between zoom levels, and
   fades in with its tile. Texture memory per tile is unchanged. On a
-  Nothing Phone (1) at 60 Hz, the map got a frame on 94–98.5% of
+  Nothing Phone (1) at 60 Hz, the map got a frame on 94.5–98% of
   display refreshes while zooming, panning, rotating and flinging,
   against 73–88% with screen-space labels (rotating: 73–75% →
-  95–98.5%).
+  94.5–98%).
 - ⚡ A dense tile no longer holds up a frame while the map moves.
   Recording a tile's roads and buildings took 16–49 ms on a phone for
   central Berlin, all in one frame; it is now spread over several,
