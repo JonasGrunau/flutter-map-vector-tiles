@@ -232,18 +232,29 @@ class VectorTileLayer extends StatefulWidget {
         .clamp(_minAutoCacheBytes, _maxAutoCacheBytes);
   }
 
-  /// Releases the decoded tiles held in memory between map opens.
+  /// Releases the decoded tiles held in memory between map opens, and
+  /// the label text open maps have shaped for places no longer on screen.
   ///
   /// Decoded tiles outlive the layer that loaded them so that reopening a map
   /// paints immediately instead of decoding everything again. They are capped
   /// by [memoryCacheMaxBytes] per source and style, but nothing else frees
   /// them — call this from a memory-pressure handler if that budget is too
-  /// generous for your app. Visible maps keep their rasterized imagery; only
-  /// tiles panned to afterwards are re-read from disk.
+  /// generous for your app. Visible maps keep their rasterized imagery and
+  /// their labels; only tiles panned to afterwards are re-read from disk,
+  /// and only labels met again re-shaped.
+  ///
+  /// The label text is held per open map, up to a few thousand labels so
+  /// a zoom round trip comes back without re-shaping them. After a session
+  /// through several dense cities that is tens of MB, over a hundred with
+  /// `TileOffset.none`, and this is the only call that releases it while
+  /// the map stays open.
   static void clearMemoryCache() {
     TileStore.clearMemoryCaches();
     RasterTileStore.clearMemoryCaches();
     TileResultCache.clearAll();
+    for (final layer in _VectorTileLayerState._mounted) {
+      layer._labelPainter.trimCaches();
+    }
   }
 
   @override
@@ -452,6 +463,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// screen may hold count a single departure once between them.
   static var _away = false;
 
+  /// Every layer currently mounted, for [VectorTileLayer.clearMemoryCache]
+  /// to reach the label caches each one holds.
+  static final _mounted = <_VectorTileLayerState>{};
+
   /// The departure this layer has already recovered from; it recovers
   /// whenever this falls behind [_departures].
   late int _recovered;
@@ -460,6 +475,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _mounted.add(this);
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     _foregrounded = _canRasterizeIn(lifecycle);
     // A layer mounting while the app is away — or into a return that no
@@ -862,6 +878,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _mounted.remove(this);
     _fadeTicker.dispose();
     _renderTicker.dispose();
     _clearTiles();

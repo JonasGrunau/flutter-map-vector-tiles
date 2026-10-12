@@ -16,6 +16,14 @@
   display refreshes while zooming, panning, rotating and flinging,
   against 73–88% with screen-space labels (rotating: 73–75% →
   94.5–98%).
+- ✨ `VectorTileLayer.clearMemoryCache()` now also trims the label text
+  every open map keeps down to the labels on screen. Each map keeps up
+  to 8000 shaped labels, so that zooming back to a level does not shape
+  them all again, and until now only closing the map released them.
+  Nothing on screen changes, and a label met again later is shaped
+  again. On a Nothing Phone (1), after a run through four dense cities,
+  RSS fell by 25–30 MB within 3 s, and by 42–48 MB with
+  `TileOffset.none`.
 - ⚡ A dense tile no longer holds up a frame while the map moves.
   Recording a tile's roads and buildings took 16–49 ms on a phone for
   central Berlin, all in one frame; it is now spread over several,
@@ -44,9 +52,11 @@
   labels on a phone with `TileOffset.none`, and settled 4–7.5 s after the
   camera stopped. The cache now holds 8000 entries, and the same fling
   settles in about 0.3 s. The price is memory, once that many distinct
-  labels have been drawn: with `TileOffset.none`, a run through four
-  dense cities on that phone peaked at 492 MB instead of 423 MB, and
-  held 123 MB more at its end.
+  labels have been drawn: after a run through four dense cities on that
+  phone, RSS was 37–49 MB higher with the default `TileOffset`, and
+  117–119 MB higher with `TileOffset.none`, whose peak rose from 384 to
+  491–495 MB. `VectorTileLayer.clearMemoryCache()` now gives part of it
+  back (see above).
 - 📚 The README now says that the package is developed with Claude Code,
   and links the agent instructions Claude works under.
 - 📦 Versions are now published from GitHub Actions. Pushing a `vX.Y.Z`

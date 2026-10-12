@@ -264,6 +264,16 @@ for a frame with no label work in it.
   produces dark blobs, a bug this code has already been fixed for once.
 - `PatternResolver` owns the images it crops and must be disposed with the
   layer; `dispose()` on `LabelPainter` releases cached text painters.
+- **The text caches are per live painter, and only two things free
+  them:** LRU eviction at their cap and `trimCaches()`, which
+  `VectorTileLayer.clearMemoryCache()` calls on every mounted layer.
+  The trim keeps what was used since the last *placement* pass began,
+  not since the last frame: a replayed frame lays out only the
+  decision's winners, and keying on it would drop on-screen losers the
+  next pass shapes again inside a frame. Anything new that looks text
+  up must go through `_layoutText` / `_glyphPainters`, which stamp the
+  pass, or a trim releases text the screen still needs and the next
+  frame shapes it again.
 
 ### Testing Requirements
 
@@ -271,7 +281,8 @@ for a frame with no label work in it.
   Note the boundary tolerance band is intentional design, not a dedup bug
 - `test/curved_text_test.dart` — along-line text, the sharp-bend fallback,
   and the sticky reading direction of a near-vertical road, including
-  across a change of instance
+  across a change of instance; `trimCaches` keeping the glyphs of the
+  label on screen
 - `test/sdf_icon_test.dart` — SDF tinting
 - `test/variable_anchor_test.dart` — variable text anchors, including the
   remembered anchor a label is tried at first and its survival of a
@@ -289,6 +300,10 @@ for a frame with no label work in it.
   contract: the cursor it returns, guaranteed progress with no budget,
   no double shaping across slices; and that the text cache holds a
   three-level zoom round trip without re-shaping
+- `test/label_painter_dispose_test.dart` — evicted painters disposed one
+  pass late, never mid-frame; `trimCaches` keeping what the last
+  placement pass used (cache hits included, the losers a replayed frame
+  skipped too) and what the pump shaped since, and releasing the rest
 - `test/label_zoom_gating_test.dart` — per-frame layer zoom-range gate, the
   `maxzoom` fade-out ramp, near-zero `text-size` skip, insertion-order
   collision tiebreak

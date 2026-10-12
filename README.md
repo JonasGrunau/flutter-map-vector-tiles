@@ -156,9 +156,12 @@ The memory caches are shared process-wide and outlive the layer, which is
 why reopening a map paints instantly. If those budgets are too generous
 under memory pressure, the static `VectorTileLayer.clearMemoryCache()`
 releases decoded tiles, raster-source images and finished tiles alike,
-leaving the disk cache untouched. Call it from a handler such as
+leaving the disk cache untouched. It also trims the label text each open
+map keeps, which is held per map rather than shared, down to the labels
+on screen. Call it from a handler such as
 `WidgetsBindingObserver.didHaveMemoryPressure`: visible maps keep their
-imagery, and only tiles panned to afterwards are re-read from disk.
+imagery and their labels, only tiles panned to afterwards are re-read
+from disk, and only labels met again are shaped again.
 
 The layer manages those caches itself in one case. Coming back from the
 background it discards the finished tiles and re-renders, because iOS
@@ -544,9 +547,11 @@ screenshots are in [compare/RESULTS.md](compare/RESULTS.md).
   266 MB of GPU memory at the peak, 386 against 380 MB RSS. This
   package's default, which draws labels every frame, needs more GPU
   memory than baked labels (372 MB, vector mode 385 MB), and far less
-  RSS than vector mode (400 against 925 MB). Its label text cache keeps up to 8000 shaped labels; over a
-  long session through dense cities with `TileOffset.none`, that held
-  123 MB more than the 2500 it used to keep (see the CHANGELOG).
+  RSS than vector mode (400 against 925 MB). Its label text cache
+  keeps up to 8000 shaped labels; after a run through four dense cities
+  that held 37–49 MB more than the 2500 it used to keep, and 117–119 MB
+  more with `TileOffset.none`. `VectorTileLayer.clearMemoryCache()`
+  gives 25–48 MB of that back (see the CHANGELOG).
 - **Label density.** At the same camera `vector_map_tiles` draws more
   labels, because it evaluates the style one zoom level deeper than
   MapLibre. `tileOffset: TileOffset.none` makes this package do the same

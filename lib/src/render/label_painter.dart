@@ -127,9 +127,11 @@ class LabelPainter {
   /// z15→z17→z15 over central London with `TileOffset.none` shapes
   /// ~7,400 distinct texts. The cost is memory once that many distinct
   /// labels were drawn: on the same phone, a run through four dense
-  /// cities with `TileOffset.none` peaked at 492 MB RSS instead of 423 MB
-  /// at 2500 entries, and held 123 MB more at its end. If a byte budget
-  /// is ever needed, `LruCache.maxCost` is the ready hook.
+  /// cities held 37–49 MB more RSS at its end than at 2500 entries, and
+  /// 117–119 MB more with `TileOffset.none`, whose peak rose from 384 to
+  /// 491–495 MB. [trimCaches] gives part of it back under memory
+  /// pressure. If a byte budget is ever needed, `LruCache.maxCost` is
+  /// the ready hook.
   static const int textCacheEntries = 8000;
   static const int glyphCacheEntries = 4000;
 
@@ -265,6 +267,40 @@ class LabelPainter {
   late final _glyphCache = LruCache<String, _GlyphText>(
       maxEntries: glyphCacheEntries,
       onEvict: (_, glyph) => _retired.add(glyph.dispose));
+
+  /// Counts placement passes: [paint] frames that decide placement
+  /// afresh, and [paintTile] calls. Every text and glyph a lookup
+  /// returns is stamped with it, which is how [trimCaches] tells the
+  /// labels on screen from the rest. Frames replaying a decision do not
+  /// count: they lay out only its winners, and a trim after one would
+  /// drop the on-screen labels that lost — which the next pass lays out
+  /// again, shaping them inside a frame.
+  var _pass = 0;
+
+  @visibleForTesting
+  int get debugGlyphCacheLength => _glyphCache.length;
+
+  /// Releases the shaped text and glyphs not used since the last
+  /// placement pass began, keeping what is on screen and what the pump
+  /// shaped since — for memory pressure, see
+  /// `VectorTileLayer.clearMemoryCache`.
+  ///
+  /// The caches are sized to hold a zoom round trip (see
+  /// [textCacheEntries]), which after a run through a few dense cities
+  /// is tens of MB of paragraphs for places long left behind, over a
+  /// hundred with `TileOffset.none`.
+  /// Trimming costs nothing on screen: a label shaped again later only
+  /// costs the shaping it would have cost before it was ever cached.
+  ///
+  /// The evicted painters are disposed now rather than at the next
+  /// pass: memory pressure often arrives in the background, where no
+  /// next pass comes. That is safe because this runs between frames, so
+  /// no prepared symbol still holds them.
+  void trimCaches() {
+    _textCache.removeWhere((_, text) => text.pass != _pass);
+    _glyphCache.removeWhere((_, glyph) => glyph.pass != _pass);
+    _disposeRetired();
+  }
 
   /// Curved-text glyphs rasterized once per style, grapheme and device
   /// size, so a curved label draws in one call per pass.
@@ -456,6 +492,7 @@ class LabelPainter {
       generation: placementGeneration,
       screenSize: screenSize,
     );
+    if (placing) _pass++;
     _memory.beginFrame(prune: placing);
     // Quantize the eval zoom to [_zoomStep] steps: the per-instance
     // memo and the zoom-only expression memos compare against the exact
@@ -760,6 +797,7 @@ class LabelPainter {
     _repeatAnchors = {};
     try {
       _disposeRetired();
+      _pass++;
       const tile = Size.square(displayTileSize);
       final candidates = [
         for (var i = 0; i < symbols.length; i++)
@@ -1561,6 +1599,14 @@ class LabelPainter {
     SymbolThemeLayer layer,
     EvalContext ctx,
     double fontSize,
+  ) =>
+      _lookupText(instance, layer, ctx, fontSize)..pass = _pass;
+
+  _LaidOutText _lookupText(
+    SymbolInstance instance,
+    SymbolThemeLayer layer,
+    EvalContext ctx,
+    double fontSize,
   ) {
     // Fast path: at an unchanged eval zoom the memoized key is valid
     // as-is. Only the key: the laid-out text itself belongs to the LRU,
@@ -1793,7 +1839,7 @@ class LabelPainter {
   _GlyphText _glyphPainters(String grapheme, _LaidOutText text) {
     final key = '${text.styleKey}#$grapheme';
     final cached = _glyphCache.get(key);
-    if (cached != null) return cached;
+    if (cached != null) return cached..pass = _pass;
 
     final fill = TextPainter(
       text: TextSpan(text: grapheme, style: text.fillStyle),
@@ -1810,7 +1856,8 @@ class LabelPainter {
     // glyph overhang past the advance box.
     final stroke = text.haloStyle?.foreground?.strokeWidth ?? 0;
     final glyph =
-        _GlyphText(key: key, fill: fill, halo: halo, pad: 2 + stroke / 2);
+        _GlyphText(key: key, fill: fill, halo: halo, pad: 2 + stroke / 2)
+          ..pass = _pass;
     _glyphCache.put(key, glyph);
     return glyph;
   }
@@ -1943,6 +1990,10 @@ class _LaidOutText {
   final TextStyle fillStyle;
   final TextStyle? haloStyle;
 
+  /// The label pass that last used this text — see
+  /// [LabelPainter.trimCaches].
+  int pass = 0;
+
   List<_Cluster>? _clusters;
 
   _LaidOutText({
@@ -2010,7 +2061,11 @@ class _GlyphText {
   /// cell keeps, so halo strokes and overhangs are not clipped.
   final double pad;
 
-  const _GlyphText({
+  /// The label pass that last used this glyph — see
+  /// [LabelPainter.trimCaches].
+  int pass = 0;
+
+  _GlyphText({
     required this.key,
     required this.fill,
     required this.halo,

@@ -60,10 +60,15 @@ package's default) against `vmt-vector`.
   925 MB against this package's 400 MB. With `TileOffset.none` this
   package's RSS climbs to 480–500 MB over a run, because its label text
   cache holds up to 8000 shaped labels and keeps every city's. In a
-  same-build A/B over one run, that cache size cost 69 MB at the peak
-  (492 against 423 MB with 2500 entries) and held 123 MB more at the end
-  of the run. It buys an end to seconds of re-shaping after returning to
-  a zoom level (fling settle 0.3 s against 1.5–2.2 s).
+  same-build A/B over two runs per arm
+  (`results/raw/2026-10-12-textcache-android`), that cache size cost
+  107–111 MB at the peak (491–495 against 384 MB with 2500 entries) and
+  held 117–119 MB more at the end; with the default offset, 22–29 MB at
+  the peak and 37–49 MB at the end. It buys an end to seconds of
+  re-shaping after returning to a zoom level: fling settle 0.3–0.4 s
+  against 1.6–1.8 s with `TileOffset.none`, zoom warm 0.16–0.2 s against
+  0.7–0.9 s with the default offset. `VectorTileLayer.clearMemoryCache()`
+  now trims it; RSS fell 25–48 MB within 3 s.
 
 ## Android · Nothing Phone (1)
 

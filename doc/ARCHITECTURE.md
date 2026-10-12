@@ -630,8 +630,24 @@ London shapes about 7,400 distinct texts with `TileOffset.none`. At the
 2500 entries it used to hold, z15's text was gone by the time the fling
 returned, and the pump re-shaped it for 4–7.5 s after the camera stopped;
 at 8000 the same fling settles in 0.3 s. The price is memory once that
-many labels have been drawn: a run through four dense cities peaked at
-492 MB RSS instead of 423 MB, and held 123 MB more at its end.
+many labels have been drawn: after a run through four dense cities the
+phone held 37–49 MB more RSS with the default offset, and 117–119 MB
+more with `TileOffset.none`, whose peak rose from 384 to 491–495 MB
+(`compare/results/raw/2026-10-12-textcache-android`).
+The text caches belong to the live painter, so nothing but eviction at
+the cap frees that while the map stays open — except
+`VectorTileLayer.clearMemoryCache()`, which calls `trimCaches()` on
+every mounted layer's painter. Every text and glyph lookup stamps the
+entry with the current placement pass, and the trim drops everything
+not stamped since the last one began: every candidate laid out on
+screen (collision losers included), plus what the pump has shaped for
+tiles still to arrive. Placement passes rather than frames, because a
+frame replaying a decision lays out only its winners; keyed on that,
+the trim would drop on-screen losers, and the next pass would shape
+them again inside a frame. The evicted painters are disposed at once:
+memory pressure often comes in the background, where no next pass
+arrives to retire them. On that phone RSS fell 25–48 MB within 3 s of
+the trim, not all the way back to what 2500 entries had held.
 Those jobs are flagged so they are not written back into the
 cache they came from: a second `put` under the same key would mint a
 second master image and dispose the one the display tile's clone came
@@ -669,7 +685,8 @@ zoom re-rasterizes from the `PreparedTile` LRU — cheap, since only the
 visible window is processed. `VectorTileLayer.clearMemoryCache()` empties
 all three memory tiers at once — the memory-pressure valve, since the
 caches are process-wide and otherwise freed only by their budgets; the
-disk cache is untouched.
+disk cache is untouched. It also trims each open map's label text to the
+labels on screen (see above).
 
 ### Surviving a backgrounding
 
