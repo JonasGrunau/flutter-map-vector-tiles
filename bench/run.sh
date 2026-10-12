@@ -50,9 +50,13 @@ for _ in $(seq 1 180); do
   kill -0 $PID 2>/dev/null || break
 done
 
+# `$!` is the flutter tool's own Dart process (the wrapper scripts exec into
+# it). Kill that process and its children only: another `flutter run` on this
+# machine belongs to someone else.
 kill $PID 2>/dev/null || true
 sleep 2
-pkill -9 -f "flutter_tools.snapshot run" 2>/dev/null || true
+pkill -9 -P $PID 2>/dev/null || true
+kill -9 $PID 2>/dev/null || true
 
 echo "--- $LABEL ---"
 # iOS logs as `flutter: …`, Android as `I/flutter (<pid>): …`.
