@@ -212,4 +212,187 @@ void main() {
             zoom: 14, properties: {'class': 'cafe', 'name': 'Tambosi'})),
         'Tambosi');
   });
+
+  group('filterReadsZoom', () {
+    bool readsZoom(Object? filter, {Map<String, Object?> paint = const {}}) =>
+        const ThemeReader()
+            .read({
+              'layers': [
+                {
+                  'id': 'roads',
+                  'type': 'line',
+                  'source': 's',
+                  'source-layer': 'transportation',
+                  if (filter != null) 'filter': filter,
+                  'paint': paint,
+                },
+              ],
+            })
+            .layers
+            .single
+            .filterReadsZoom;
+
+    test('is false without a filter, and for legacy filters', () {
+      expect(readsZoom(null), isFalse);
+      expect(readsZoom(['==', 'class', 'motorway']), isFalse);
+      expect(
+          readsZoom([
+            'all',
+            ['==', r'$type', 'LineString'],
+            ['in', 'class', 'primary', 'secondary'],
+            ['!has', 'tunnel'],
+          ]),
+          isFalse);
+    });
+
+    test('is false for an expression filter on feature data only', () {
+      expect(
+          readsZoom([
+            'all',
+            [
+              '==',
+              ['get', 'class'],
+              'motorway'
+            ],
+            [
+              '==',
+              ['geometry-type'],
+              'LineString'
+            ],
+            [
+              'match',
+              ['get', 'brunnel'],
+              ['bridge', 'tunnel'],
+              false,
+              true
+            ],
+          ]),
+          isFalse);
+    });
+
+    test('is true wherever an expression filter reads the zoom', () {
+      for (final filter in [
+        [
+          '<',
+          ['zoom'],
+          15
+        ],
+        [
+          'let',
+          'z',
+          ['zoom'],
+          [
+            '>',
+            ['var', 'z'],
+            10
+          ],
+        ],
+        [
+          'step',
+          ['zoom'],
+          false,
+          12,
+          true
+        ],
+        [
+          'case',
+          [
+            '==',
+            ['get', 'class'],
+            'path'
+          ],
+          [
+            '>=',
+            ['zoom'],
+            15
+          ],
+          true,
+        ],
+        [
+          '>',
+          [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            10,
+            0,
+            16,
+            1
+          ],
+          ['get', 'rank'],
+        ],
+        // Legacy syntax around an expression: the expression still counts.
+        [
+          'all',
+          ['==', 'class', 'path'],
+          [
+            '>=',
+            ['zoom'],
+            15
+          ],
+        ],
+      ]) {
+        expect(readsZoom(filter), isTrue, reason: '$filter');
+      }
+    });
+
+    test('is true for a zoom-keyed legacy function inside a filter', () {
+      expect(
+          readsZoom([
+            '==',
+            ['get', 'rank'],
+            {
+              'stops': [
+                [10, 1],
+                [15, 2],
+              ],
+            },
+          ]),
+          isTrue);
+      expect(
+          readsZoom([
+            '==',
+            ['get', 'rank'],
+            {'type': 'identity'},
+          ]),
+          isTrue);
+      expect(
+          readsZoom([
+            '==',
+            ['get', 'rank'],
+            {
+              'property': 'max_rank',
+              'stops': [
+                [1, 1],
+                [5, 2],
+              ],
+            },
+          ]),
+          isFalse,
+          reason: 'a property function reads feature data, not the zoom');
+    });
+
+    test('ignores zoom read by paint properties', () {
+      expect(
+          readsZoom(
+            [
+              '==',
+              ['get', 'class'],
+              'motorway'
+            ],
+            paint: {
+              'line-width': [
+                'interpolate',
+                ['linear'],
+                ['zoom'],
+                10,
+                1,
+                16,
+                4,
+              ],
+            },
+          ),
+          isFalse);
+    });
+  });
 }

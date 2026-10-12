@@ -513,8 +513,33 @@ class LabelPainter {
     // there and default-false on every rebuilt candidate list in
     // between.
     final sortStopwatch = Stopwatch()..start();
-    if (placing) _flagIncumbents(symbols, fades);
-    final candidates = symbols..sort(_byPlacementPriority);
+    final List<PlacedSymbol> candidates;
+    if (placing) {
+      _flagIncumbents(symbols, fades);
+      candidates = symbols..sort(_byPlacementPriority);
+    } else {
+      // Replaying: the frozen decision says only the last pass's
+      // winners are on screen, so only they are laid out — and only
+      // they need sorting, ~100 of a few thousand candidates on a dense
+      // screen. [_byPlacementPriority] is a total order (`order` is
+      // unique), so
+      // their relative order is exactly what a full sort gives.
+      // Everyone else is at most a fade-out fallback, recorded in input
+      // order instead of priority order. That order only settles exact
+      // distance ties in [_nearestCandidate], between candidates of one
+      // key and so of one layer — which at a shared anchor already fell
+      // through to `order`, the input order, unless their sort keys
+      // differ.
+      candidates = <PlacedSymbol>[];
+      for (final candidate in symbols) {
+        if (!candidate.ghostOnly && _winners.contains(candidate.instance)) {
+          candidates.add(candidate);
+        } else if (fades) {
+          _recordFallback(candidate);
+        }
+      }
+      candidates.sort(_byPlacementPriority);
+    }
     debugSortMicros += sortStopwatch.elapsedMicroseconds;
     if (placing) debugPlacingFrames++;
     if (placing && _winners.isNotEmpty) _promoteIncumbents(candidates);
@@ -529,14 +554,8 @@ class LabelPainter {
     for (final candidate in candidates) {
       if (candidate.ghostOnly) {
         // Never competes for placement — only remembered, in case its
-        // key is fading out and nothing else can draw it.
-        if (fades) _recordFallback(candidate);
-        continue;
-      }
-      if (!placing && !_winners.contains(candidate.instance)) {
-        // Replaying: the frozen decision says this candidate is not on
-        // screen, so it is not even laid out. On a dense screen most
-        // candidates lose, which is most of the label pass's work.
+        // key is fading out and nothing else can draw it. (A replay
+        // frame recorded these while picking its winners.)
         if (fades) _recordFallback(candidate);
         continue;
       }
@@ -667,7 +686,8 @@ class LabelPainter {
   /// newcomer must not evict (see [PlacedSymbol.incumbent]) — then by
   /// symbol-sort-key, then by y, then by insertion order — the last
   /// term keeps the non-stable sort deterministic and lets current-level
-  /// tiles beat retained ones on exact ties.
+  /// tiles beat retained ones on exact ties. A total order: `order` is
+  /// unique per frame.
   static int _byPlacementPriority(PlacedSymbol a, PlacedSymbol b) {
     final byLayer = b.instance.layerIndex - a.instance.layerIndex;
     if (byLayer != 0) return byLayer;

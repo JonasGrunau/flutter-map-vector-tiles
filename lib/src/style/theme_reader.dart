@@ -45,6 +45,8 @@ class ThemeReader {
     final paint = _map(json['paint']);
     final parser = ExpressionParser();
     final filter = parser.parseFilter(json['filter']);
+    // Sampled before anything else is parsed: the flag is sticky.
+    final filterReadsZoom = parser.readsZoom;
     final minzoom = toNumber(json['minzoom']) ?? ThemeLayer.defaultMinzoom;
     final maxzoom = toNumber(json['maxzoom']) ?? ThemeLayer.defaultMaxzoom;
     final source = json['source'] as String?;
@@ -205,6 +207,7 @@ class ThemeReader {
     for (final warning in parser.warnings) {
       logger.warn('layer "$id": $warning');
     }
+    layer.filterReadsZoom = filterReadsZoom;
     if (layer is! BackgroundThemeLayer) {
       layer.referencedProperties =
           parser.referencesAllProperties ? null : parser.referencedProperties;

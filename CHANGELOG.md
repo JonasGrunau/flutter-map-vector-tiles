@@ -42,6 +42,21 @@
   held up by its label pass and did not change. The tiles drawn are
   the same, pixel for pixel. In exchange, the last tiles can land up
   to 0.2 s after a pan ends, and 0.9 s after a long zoom.
+- ⚡ **Layer filters run once per data tile.** Every display tile used to
+  test each feature of a source layer against every style layer reading
+  it — on a MapTiler theme about 45 filter tests per feature drawn — and
+  at overzoom one data tile is cut into up to 64 display tiles, each
+  repeating that work. Filters that don't read the zoom, which is nearly
+  all of them, are now evaluated once per data tile and their matches
+  reused, so a tile rasterizes in a third to almost half less time on a
+  mid-range Android phone. Filters that read the zoom are still
+  evaluated per display tile.
+- ⚡ Frames between two label placement passes now sort only the labels
+  on screen — about a hundred — instead of every candidate, often a few
+  thousand: 1.5–2.6× less sorting per frame. Together with the filter
+  change, fast zoom sweeps between z15.5 and z17.5 over Munich (MapTiler
+  style, Nothing Phone 1) ran at 8–37 % more frames per second, with
+  45–71 % fewer frames over 16.7 ms.
 - 🐛 A map in an unfocused window kept painting only its background
   colour for every tile it had not finished. The layer stops rasterizing
   in `AppLifecycleState.inactive`, which guards against iOS revoking the

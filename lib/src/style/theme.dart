@@ -56,6 +56,13 @@ sealed class ThemeLayer {
   /// after all of the layer's expressions have been parsed.
   Set<String>? referencedProperties;
 
+  /// Whether [filter] reads the zoom. Only a zoom-free filter selects
+  /// the same features at every zoom and may be resolved once per
+  /// prepared tile (see `MatchedFeatures`). Assigned by the theme
+  /// reader; unknown means true, so a hand-built layer is always
+  /// evaluated per display tile.
+  bool filterReadsZoom = true;
+
   ThemeLayer({
     required this.id,
     required this.source,
