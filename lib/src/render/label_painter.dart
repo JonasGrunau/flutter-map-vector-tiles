@@ -125,10 +125,11 @@ class LabelPainter {
   /// shaped text, so whatever was evicted meanwhile is re-shaped by the
   /// pump for seconds after the camera stopped. A phone-portrait fling
   /// z15→z17→z15 over central London with `TileOffset.none` shapes
-  /// ~7,400 distinct texts. An entry is ~9 KB (fill and halo
-  /// paragraphs), so the ceiling is ~70 MB, reached only once that many
-  /// distinct labels were drawn; if a byte budget is ever needed,
-  /// `LruCache.maxCost` is the ready hook.
+  /// ~7,400 distinct texts. The cost is memory once that many distinct
+  /// labels were drawn: on the same phone, a run through four dense
+  /// cities with `TileOffset.none` peaked at 492 MB RSS instead of 423 MB
+  /// at 2500 entries, and held 123 MB more at its end. If a byte budget
+  /// is ever needed, `LruCache.maxCost` is the ready hook.
   static const int textCacheEntries = 8000;
   static const int glyphCacheEntries = 4000;
 

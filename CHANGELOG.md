@@ -43,8 +43,10 @@
   z15 to z17 and back over central London shapes about 7,400 distinct
   labels on a phone with `TileOffset.none`, and settled 4–7.5 s after the
   camera stopped. The cache now holds 8000 entries, and the same fling
-  settles in about 0.3 s. That can use about 50 MB more memory than
-  before, but only once that many distinct labels have been drawn.
+  settles in about 0.3 s. The price is memory, once that many distinct
+  labels have been drawn: with `TileOffset.none`, a run through four
+  dense cities on that phone peaked at 492 MB instead of 423 MB, and
+  held 123 MB more at its end.
 - 📚 The README now says that the package is developed with Claude Code,
   and links the agent instructions Claude works under.
 - 📦 Versions are now published from GitHub Actions. Pushing a `vX.Y.Z`

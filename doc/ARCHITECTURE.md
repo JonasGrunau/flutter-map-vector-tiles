@@ -629,7 +629,9 @@ screen: a phone-portrait fling from z15 to z17 and back over central
 London shapes about 7,400 distinct texts with `TileOffset.none`. At the
 2500 entries it used to hold, z15's text was gone by the time the fling
 returned, and the pump re-shaped it for 4–7.5 s after the camera stopped;
-at 8000 the same fling settles in 0.3 s, for ~40 MB more peak RSS.
+at 8000 the same fling settles in 0.3 s. The price is memory once that
+many labels have been drawn: a run through four dense cities peaked at
+492 MB RSS instead of 423 MB, and held 123 MB more at its end.
 Those jobs are flagged so they are not written back into the
 cache they came from: a second `put` under the same key would mint a
 second master image and dispose the one the display tile's clone came
