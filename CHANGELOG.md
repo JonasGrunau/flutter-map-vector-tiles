@@ -12,10 +12,10 @@
   per tile and a label that would cross a tile edge is dropped, text
   turns with the map, scales with the tile between zoom levels, and
   fades in with its tile. Texture memory per tile is unchanged. On a
-  Nothing Phone (1) at 60 Hz, the map got a frame on 94.5–98% of
-  display refreshes while zooming, panning, rotating and flinging,
-  against 73–88% with screen-space labels (rotating: 73–75% →
-  94.5–98%).
+  Nothing Phone (1) at 60 Hz, the map got a frame on 94–98% of display
+  refreshes while zooming, panning, rotating and flinging, against
+  78–86% with screen-space labels (rotating: 78–81% → 94–98%). On a
+  MacBook Pro (M4 Pro) both modes get 97–100%.
 - ✨ `VectorTileLayer.clearMemoryCache()` now also trims the label text
   every open map keeps down to the labels on screen. Each map keeps up
   to 8000 shaped labels, so that zooming back to a level does not shape
@@ -77,6 +77,13 @@
   117–119 MB higher with `TileOffset.none`, whose peak rose from 384 to
   491–495 MB. `VectorTileLayer.clearMemoryCache()` now gives part of it
   back (see above).
+- 📚 The README's comparison with `vector_map_tiles` now covers macOS and
+  Chrome as well as Android, all measured on this release's code, and
+  `compare/RESULTS.md` puts a MapLibre GL JS render next to every Chrome
+  screenshot. Two differences from MapLibre that those renders show are
+  now listed under Labels: a word wider than `text-max-width` is broken
+  inside the word, and a road shield can sit on a road piece shorter
+  than the shield.
 - 📚 The README now says that the package is developed with Claude Code,
   and links the agent instructions Claude works under.
 - 📦 Versions are now published from GitHub Actions. Pushing a `vX.Y.Z`

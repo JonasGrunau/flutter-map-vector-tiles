@@ -16,7 +16,7 @@ README.md.orig
 # Recorded OpenFreeMap tiles (tool/lab_server.dart --cache) and raw
 # screenshots. The processed results in results/ are checked in.
 .lab-cache/
-results/raw/*/shots/
+results/raw/**/shots/
 
 # Playwright, for the web runs.
 tool/node_modules/
