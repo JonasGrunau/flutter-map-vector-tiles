@@ -515,6 +515,76 @@ void main() {
     expect(placed, hasLength(1));
   });
 
+  test('a viewport-aligned label longer than its line is dropped', () {
+    // A road shield on a ramp: MapLibre leaves it out.
+    final layer = _lineLayer(layout: {'text-rotation-alignment': 'viewport'});
+    final path = _path(const [Offset(100, 100), Offset(120, 100)]);
+    expect(_paint([_lineSymbol(layer, path, 'SB43')]), isEmpty);
+    // The same shield on a road that holds it stays.
+    final longer = _path(const [Offset(100, 100), Offset(300, 100)]);
+    expect(_paint([_lineSymbol(layer, longer, 'SB43')]), hasLength(1));
+  });
+
+  test('a label off-centre on its line must fit both ways', () {
+    final layer = _lineLayer(layout: {'text-rotation-alignment': 'viewport'});
+    final path = _path(const [Offset(0, 100), Offset(300, 100)]);
+    expect(
+        _paint([_lineSymbol(layer, path, 'Long Road Name', pathDistance: 10)]),
+        isEmpty,
+        reason: 'its start would hang past the line');
+    expect(
+        _paint([_lineSymbol(layer, path, 'Long Road Name', pathDistance: 150)]),
+        hasLength(1));
+  });
+
+  test('a straight-drawn script longer than its line is dropped', () {
+    final layer = _lineLayer();
+    final path = _path(const [Offset(100, 100), Offset(115, 100)]);
+    // Arabic is drawn straight, not glyph by glyph, so it never reaches
+    // the curved fit test.
+    expect(_paint([_lineSymbol(layer, path, 'شارع الملك')]), isEmpty);
+  });
+
+  test('a replay keeps a label its line has outgrown', () {
+    final layer = _lineLayer(layout: {'text-rotation-alignment': 'viewport'});
+    final path = _path(const [Offset(0, 100), Offset(80, 100)]);
+    final painter = LabelPainter();
+    addTearDown(painter.dispose);
+    final t0 = DateTime(2026, 1, 1);
+    // One instance throughout, as the layer keeps it: a replay redraws
+    // the last pass's winners by instance.
+    final instance = _lineSymbol(layer, path, 'SB43').instance;
+    List<PlacedSymbol> frame(double scale, int generation, int ms) {
+      final transform =
+          TileTransform(origin: Offset.zero, scale: scale, rotation: 0);
+      final recorder = ui.PictureRecorder();
+      final placed = painter.paint(
+        canvas: Canvas(recorder),
+        screenSize: const Size(400, 400),
+        styleZoom: 12,
+        symbols: [
+          PlacedSymbol(
+            instance: instance,
+            screenAnchor: transform.apply(instance.anchor),
+            screenAngle: instance.angle,
+            transform: transform,
+          ),
+        ],
+        labelFadeDuration: const Duration(milliseconds: 150),
+        placementGeneration: generation,
+        now: t0.add(Duration(milliseconds: ms)),
+      );
+      recorder.endRecording().dispose();
+      return placed;
+    }
+
+    expect(frame(1, 1, 0), hasLength(1), reason: 'it fits at first');
+    // Zooming out: the line shrinks on screen, the shield does not.
+    expect(frame(0.2, 1, 16), hasLength(1),
+        reason: 'a replay does not re-judge the fit');
+    expect(frame(0.2, 2, 400), isEmpty, reason: 'the next placement pass does');
+  });
+
   group('glyph atlas', () {
     SymbolThemeLayer haloLayer() {
       final theme = const ThemeReader().read({

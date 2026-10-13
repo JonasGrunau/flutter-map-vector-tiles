@@ -21,7 +21,8 @@ lifecycle or painting is covered by widget tests that pump a real
 | `symbol_layouter_test.dart` | Label placement candidates, tile-seam behaviour, overzoom |
 | `raster_source_test.dart` | Raster sources declared inside vector styles, image ref-counting |
 | `tile_store_test.dart` | Memory/disk cache keying, miss paths, disposal, stale-while-revalidate (expired entries served instantly, `onRefreshed` on changed content only, corrupt expired entries refetched, `revalidateIfStale` for results served without the stores) |
-| `curved_text_test.dart` | Text along lines and the sharp-bend fallback; the upright guard on a hairpin (dropped on a pass, drawn straight on a replay, kept without `text-keep-upright`, no false rejection near vertical); `trimCaches` keeping the on-screen label's glyphs |
+| `curved_text_test.dart` | Text along lines and the sharp-bend fallback; the upright guard on a hairpin (dropped on a pass, drawn straight on a replay, kept without `text-keep-upright`, no false rejection near vertical); every along-line symbol fitting on its line, shields and straight-drawn scripts included (dropped on a pass, kept on a replay); `trimCaches` keeping the on-screen label's glyphs |
+| `label_wrap_test.dart` | `text-max-width` wrapping, read off the collision box: a word wider than the width stays on one line, words still wrap between them |
 | `icon_rotation_test.dart` | `icon-rotate`/`icon-rotation-alignment`, anchor/offset pivot semantics, and rotated collision bounds |
 | `label_repeat_test.dart` | Screen-space line-repeat suppression, layer priority, and invisible/gated fallback candidates |
 | `sdf_icon_test.dart` | SDF sprite tinting |

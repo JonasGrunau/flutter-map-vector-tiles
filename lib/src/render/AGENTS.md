@@ -199,13 +199,15 @@ for a frame with no label work in it.
   choice added to `_prepare` without one shows up as that choice
   flickering at the placement interval. The converse holds for
   *geometry-dependent rejections*: curved text's `text-max-angle` and
-  fit-on-its-line checks are placement decisions too, so on a permissive
-  index (replay frames and fade-out ghosts) a winner is never dropped by
-  them — the bend check is skipped and text that outgrew its line is drawn
-  straight at its anchor. Re-judging them per frame made a winner vanish
-  with no ghost (the ghost runs the same check): Schmuzerstraße blinked 24×
-  per stability run, and street names popped out at full opacity on every
-  zoom-out. On a pass, an incumbent gets 1.25× `text-max-angle`. The
+  the fit-on-its-line checks (curved text in `_prepareCurved`, every
+  other along-line symbol, shields and arrows included, in `_fitsLine`)
+  are placement decisions too, so on a permissive index (replay frames
+  and fade-out ghosts) a winner is never dropped by them — the bend
+  check is skipped, curved text that outgrew its line is drawn straight
+  at its anchor, and anything else keeps drawing where it was.
+  Re-judging them per frame made a winner vanish with no ghost (the
+  ghost runs the same check): Schmuzerstraße blinked 24× per stability
+  run, and street names popped out at full opacity on every zoom-out. On a pass, an incumbent gets 1.25× `text-max-angle`. The
   upright guard (no glyph of a kept-upright curved label more than
   `_uprightSlack`, 30°, past vertical) follows the same split: a pass
   rejects (`upright`), a replay or ghost draws straight. It catches
@@ -228,6 +230,13 @@ for a frame with no label work in it.
   per pinch that this design removed. The halo stroke is baked as a
   1/128-em quantized ratio of the font size — px-exact halo width at draw
   time is impossible because paragraph paints are encoded at build time.
+- **Read `minIntrinsicWidth` only after an unconstrained layout.**
+  `_shapeTimed` widens wrapping text to its widest word so that no word
+  is broken (MapLibre breaks only between words), and Skia reports the
+  widest unbreakable run there and nowhere else: after a constrained
+  layout that broke a word, `minIntrinsicWidth` depends on where it
+  broke (14 of LUDWIGSVORSTADT's 15 letters, or one). Text that fits on
+  one line keeps a single layout.
 - **Curved labels draw from `GlyphAtlas`, and the atlas is a
   `toImageSync` image like any tile.** Keep `rasterizeGlyphs` tied to
   the layer's `_foregrounded` and `discardGlyphAtlas()` in

@@ -377,6 +377,13 @@ mode](#choosing-a-label-mode) has what changes then.
   turns back on itself (a hairpin) is dropped rather than drawn with
   the letters past the turn upside down, which `text-max-angle` alone
   lets through because each step of a smooth turn stays under it.
+- **Only where it fits.** Anything placed along a line, curved text, a
+  road shield, a one-way arrow, needs all of itself on the line,
+  centred on its anchor, as in MapLibre: a ramp or a crossing shorter
+  than its shield carries none.
+- **Words stay whole.** `text-max-width` wraps between words; a single
+  word wider than it stays on one line, as in MapLibre, rather than
+  breaking where the width runs out.
 - **Repeated road names stay spaced.** A street arrives as many features
   (one per OSM way, sometimes one per road-class style layer), each spaced
   on its own. For `symbol-placement: line`, a visible label therefore
@@ -475,10 +482,13 @@ tile's existing image, so `rasterCacheMaxBytes` needs no adjustment.
 
 Measured with [`compare/`](compare) on a Nothing Phone (1) at 60 Hz,
 same style and tiles, three runs each: with `LabelMode.tile` the map
-got a frame on 94.5–98% of display refreshes while zooming, panning,
-rotating and flinging, against 73–88% in the default mode, and the UI
-thread's 90th percentile fell from 14.5–23.3 ms to 3.6–10.3 ms. The first
-complete map took 1.05 s, against 1.25 s in the default mode.
+got a frame on 94–98% of display refreshes while zooming, panning,
+rotating and flinging, against 78–86% in the default mode, and the UI
+thread's 90th percentile fell from 15.4–21.7 ms to 3.6–9.3 ms. The first
+complete map took 0.95 s, against 1.05 s in the default mode. On a
+MacBook Pro (M4 Pro) the two modes are within a point of each other, at
+97–100%, and in Chrome the default gets 91–100%, so the choice matters
+most on phones.
 
 ## 🏗️ Architecture
 
@@ -519,37 +529,45 @@ on stable Flutter (the `10.0.0` betas need Flutter's main channel for
 | Style zoom | evaluated at the flutter_map zoom, one level deeper than MapLibre, so label layers open a level early | `TileOffset.maplibre` by default, as MapLibre renders the style |
 | Tile images | 512 px, `Picture.toImage`, then PNG-encoded into its disk cache before the tile is shown; a revisit decodes the PNG | 256 px × device pixel ratio, `Picture.toImageSync`, kept as GPU textures in an LRU |
 
-Measured with [`compare/`](compare) on a Nothing Phone (1) at 60 Hz: the
-same style and the same recorded tiles, a fresh process per run, three
-runs each. "Frames" is the share of display refreshes that got a frame
-while the camera zoomed, panned, rotated or flung. Full tables and
-screenshots are in [compare/RESULTS.md](compare/RESULTS.md).
+Measured with [`compare/`](compare) on a Nothing Phone (1) (Android,
+60 Hz), a MacBook Pro with an M4 Pro (macOS, 120 Hz) and Chrome on that
+Mac: the same style and the same recorded tiles, a fresh process per
+run, three runs each. "Frames" is the share of display refreshes that
+got a frame while the camera zoomed, panned, rotated or flung. Each cell
+reads this package / `vector_map_tiles`. Full tables, and screenshots
+next to MapLibre GL JS, are in [compare/RESULTS.md](compare/RESULTS.md).
 
-| | this package | vector_map_tiles |
-|---|---:|---:|
-| Labels baked into the tiles (`LabelMode.tile` / raster mode): frames | 94.5–97.8% | 76.3–98.7% |
-| … worst stall | 50–100 ms | 67–267 ms |
-| Labels drawn every frame (default / vector mode): frames | 73.1–88.1% | 20.1–40.1% |
-| … worst stall | 50–100 ms | 100–1372 ms |
-| First complete map (baked / raster) | 1.05 s | 2.8 s |
-| Downloaded per run (default / raster) | 12.8 MB | 21.7 MB |
+| this package / vector_map_tiles | Android | macOS | Chrome |
+|---|---:|---:|---:|
+| Labels baked into the tiles (`LabelMode.tile` / raster mode): frames | 94–98% / 74–99% | 97.5–100% / 99–100% | 94–100% / 39–100% |
+| … worst frame gap | 67–84 / 67–251 ms | 8–50 / 8–33 ms | 10–34 / 10–159 ms |
+| Labels drawn every frame (default / vector mode): frames | 78–86% / 20–40% | 97–100% / 57–100% | 91–100% / 3–68% |
+| … worst frame gap | 50–134 / 100–1373 ms | 8–42 / 8–167 ms | 10–42 / 100–858 ms |
+| First complete map (baked / raster) | 0.95 / 3.0 s | 0.34 / 0.98 s | 1.25 / 2.6 s |
+| Downloaded per run (default / raster) | 12.8 / 20.4 MB | 11.6 / 18.0 MB | 11.6 / 8.2 MB¹ |
+
+¹ In the browser the HTTP cache answers a repeated request, so this
+counts each tile once; on Android and macOS `vector_map_tiles` requests
+some tiles more than once.
 
 ### ⚖️ Trade-offs
 
 - **Revisits.** `vector_map_tiles` keeps every tile it has rendered as a
   PNG on disk (IndexedDB on web), so a second pass over the same ground
   decodes tiles instead of drawing them, even after the app restarts. On
-  the repeated pan it got 98.3% of frames, this package 96.8% with baked
-  labels. This package keeps finished tiles as GPU textures in an LRU
+  the repeated pan on the phone it got 98.7% of frames, this package
+  97.7% with baked labels; on macOS and in Chrome both got 99.7–100%.
+  This package keeps finished tiles as GPU textures in an LRU
   sized to its screen and draws them again once they fall out; across
   restarts it keeps the tile data, not the drawn tiles.
-- **Memory.** With baked labels both use about the same: 273 against
-  266 MB of GPU memory at the peak, 386 against 380 MB RSS. This
-  package's default, which draws labels every frame, needs more GPU
-  memory than baked labels (372 MB, vector mode 385 MB), most of it for
-  the label fades (272–311 MB with fades off, which costs frames
-  instead), and far less RSS than vector mode (400 against 925 MB). Its
-  label text cache
+- **Memory.** With baked labels this package uses a little less on the
+  phone: 264 against 313 MB of GPU memory at the peak, 391 against
+  401 MB RSS (495 against 577 MB RSS on macOS). This package's default,
+  which draws labels every frame, needs more GPU memory than baked
+  labels (365 MB, vector mode 376 MB), much of it for the label fades
+  (317–320 MB with fades off, which costs frames instead), and far less
+  RSS than vector mode (393 against 892 MB; 527 against 948 MB on
+  macOS). Its label text cache
   keeps up to 8000 shaped labels; after a run through four dense cities
   that held 37–49 MB more than the 2500 it used to keep, and 117–119 MB
   more with `TileOffset.none`. `VectorTileLayer.clearMemoryCache()`
@@ -558,7 +576,7 @@ screenshots are in [compare/RESULTS.md](compare/RESULTS.md).
   labels, because it evaluates the style one zoom level deeper than
   MapLibre. `tileOffset: TileOffset.none` makes this package do the same
   (see [Understanding `TileOffset`](#-understanding-tileoffset)).
-- **Not covered yet:** macOS, web and iOS runs, and the `10.0.0` betas.
+- **Not covered yet:** iOS, and the `10.0.0` betas.
 
 ## 🐛 Troubleshooting
 
