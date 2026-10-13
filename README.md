@@ -564,11 +564,16 @@ next to MapLibre GL JS, are in [compare/RESULTS.md](compare/RESULTS.md).
 | Labels drawn every frame (default / vector mode): frames | 78–86% / 20–40% | 97–100% / 57–100% | 91–100% / 3–68% |
 | … worst frame gap | 50–134 / 100–1373 ms | 8–42 / 8–167 ms | 10–42 / 100–858 ms |
 | First complete map (baked / raster) | 0.95 / 3.0 s | 0.34 / 0.98 s | 1.25 / 2.6 s |
-| Downloaded per run (default / raster) | 12.8 / 20.4 MB | 11.6 / 18.0 MB | 11.6 / 8.2 MB¹ |
+| Downloaded per run (default / raster) | 12.8 / 20.4 MB¹ | 26.6 / 51.2–51.6 MB | 29.3 / 32.6 MB² |
 
-¹ In the browser the HTTP cache answers a repeated request, so this
-counts each tile once; on Android and macOS `vector_map_tiles` requests
-some tiles more than once.
+¹ Only while opening the map and during the measured passes: Android's
+whole-run counts were not kept, and the jumps between scenarios are
+left out. macOS and Chrome count whole runs, as the lab server saw
+them.
+
+² In the browser the HTTP cache answers a repeated request, so this
+counts each URL once; on macOS, with a smaller window and no HTTP
+cache, `vector_map_tiles` fetched some tiles again.
 
 ### ⚖️ Trade-offs
 

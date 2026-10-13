@@ -8,7 +8,7 @@
 set -e
 source "${0:A:h}/common.sh"
 SERIAL="${1:?usage: run_android.sh <adb serial> [rounds] [lab_server args]}"
-ROUNDS="${2:-3}"
+ROUNDS="${2:-4}"
 shift
 (( $# )) && shift
 ADB=("${ADB:-$(command -v adb || echo "$HOME/Library/Android/sdk/platform-tools/adb")}" -s "$SERIAL")
@@ -20,7 +20,6 @@ set_defines "$(prop ro.product.manufacturer) $(prop ro.product.model) · Android
 cd "$COMPARE_DIR"
 flutter build apk --profile "${DEFINES[@]}"
 "${ADB[@]}" install -r build/app/outputs/flutter-apk/app-profile.apk >/dev/null
-"${ADB[@]}" reverse "tcp:$LAB_PORT" "tcp:$LAB_PORT" >/dev/null
 
 # Keep the screen on and the orientation fixed for the whole session, and
 # put the owner's settings back afterwards. Portrait, because a phone
@@ -30,21 +29,36 @@ setting() { "${ADB[@]}" shell settings get "$1" "$2" | tr -d '\r'; }
 STAY_ON="$(setting global stay_on_while_plugged_in)"
 AUTO_ROTATE="$(setting system accelerometer_rotation)"
 USER_ROTATION="$(setting system user_rotation)"
-restore() {
-  "${ADB[@]}" shell settings put global stay_on_while_plugged_in "$STAY_ON"
-  "${ADB[@]}" shell settings put system user_rotation "$USER_ROTATION"
-  "${ADB[@]}" shell settings put system accelerometer_rotation "$AUTO_ROTATE"
-  "${ADB[@]}" reverse --remove "tcp:$LAB_PORT" >/dev/null 2>&1 || true
+# `settings get` prints "null" for a setting that was never set; putting
+# that back would store the string "null", so delete it instead.
+#   put_back <namespace> <key> <value as read>
+put_back() {
+  if [[ -z "$3" || "$3" == null ]]; then
+    "${ADB[@]}" shell settings delete "$1" "$2" >/dev/null
+  else
+    "${ADB[@]}" shell settings put "$1" "$2" "$3"
+  fi
 }
+restore() {
+  put_back global stay_on_while_plugged_in "$STAY_ON"
+  put_back system user_rotation "$USER_ROTATION"
+  put_back system accelerometer_rotation "$AUTO_ROTATE"
+  "${ADB[@]}" reverse --remove "tcp:$LAB_PORT" >/dev/null 2>&1
+  return 0
+}
+# From here on every way out puts them back (common.sh's traps).
+CLEANUP+=(restore)
+"${ADB[@]}" reverse "tcp:$LAB_PORT" "tcp:$LAB_PORT" >/dev/null
 "${ADB[@]}" shell settings put global stay_on_while_plugged_in 15
 "${ADB[@]}" shell settings put system accelerometer_rotation 0
 "${ADB[@]}" shell settings put system user_rotation 0
 
 start_lab android "$ROUNDS" "$@"
-trap 'stop_lab; restore' EXIT
 while lab_busy; do
   # The app takes the next queued run, measures it and exits; Android may
-  # relaunch it on its own, in which case it simply takes the next run.
+  # relaunch it on its own, in which case it simply takes the next run. An
+  # app that crashes leaves its run `running` until the lab server gives
+  # it up (--run-timeout), and then this launches the next one.
   if ! lab_running && ! "${ADB[@]}" shell pidof "$PKG" >/dev/null; then
     # Stay-on keeps a lit screen lit, but does not light a dark one: a
     # screen that went off before the session (or between two of them)

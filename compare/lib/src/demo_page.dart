@@ -43,10 +43,11 @@ class _DemoPageState extends State<DemoPage> with TickerProviderStateMixin {
   bool get _sideBySide => widget.config.arm == 'side';
 
   Arm get _rightArm =>
-      Arm.parse(Uri.base.queryParameters['right'] ?? Arm.vmtRaster.id);
+      Arm.tryParse(Uri.base.queryParameters['right'] ?? '') ?? Arm.vmtRaster;
 
-  List<Arm> get _arms =>
-      _sideBySide ? [Arm.fmvt, _rightArm] : [Arm.parse(widget.config.arm)];
+  List<Arm> get _arms => _sideBySide
+      ? [Arm.fmvt, _rightArm]
+      : [Arm.tryParse(widget.config.arm) ?? Arm.fmvt];
 
   @override
   void initState() {

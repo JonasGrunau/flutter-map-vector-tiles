@@ -1,0 +1,24 @@
+# Whole-run totals for this session, as the lab server counted them: every
+# request a run sent through it (style, TileJSON, sprites and tiles), from
+# the style to the run's end. Copied verbatim from the lab server's console
+# log (.lab-web.log, not checked in); results.jsonl does not hold them, as its
+# open and pass rows leave out the jump to each scenario's start and the
+# wait for it to settle. Round 0 also took the fidelity screenshots.
+■ web-r0-fmvt (80 requests, 29.3 MB)
+■ web-r0-fmvt-none (90 requests, 32.6 MB)
+■ web-r0-fmvt-raster (80 requests, 29.3 MB)
+■ web-r0-fmvt-raster-none (90 requests, 32.6 MB)
+■ web-r0-vmt-raster (90 requests, 32.6 MB)
+■ web-r0-vmt-vector (45 requests, 18.8 MB)
+■ web-r1-fmvt-none (90 requests, 32.6 MB)
+■ web-r1-fmvt-raster (80 requests, 29.3 MB)
+■ web-r1-fmvt-raster-none (90 requests, 32.6 MB)
+■ web-r1-vmt-raster (90 requests, 32.6 MB)
+■ web-r1-vmt-vector (45 requests, 18.8 MB)
+■ web-r1-fmvt (80 requests, 29.3 MB)
+■ web-r2-fmvt-raster (80 requests, 29.3 MB)
+■ web-r2-fmvt-raster-none (90 requests, 32.6 MB)
+■ web-r2-vmt-raster (90 requests, 32.6 MB)
+■ web-r2-vmt-vector (45 requests, 18.8 MB)
+■ web-r2-fmvt (80 requests, 29.3 MB)
+■ web-r2-fmvt-none (90 requests, 32.6 MB)
