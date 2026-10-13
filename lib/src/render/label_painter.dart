@@ -252,6 +252,10 @@ class LabelPainter {
   @visibleForTesting
   static int debugTilePaintMicros = 0;
 
+  /// [paintTile] calls, for tests that assert which frame runs them.
+  @visibleForTesting
+  static int debugTilePaintCount = 0;
+
   @visibleForTesting
   int get debugTextCacheLength => _textCache.length;
 
@@ -810,6 +814,7 @@ class LabelPainter {
     double devicePixelRatio = 1,
   }) {
     developer.Timeline.startSync('VT tile labels');
+    debugTilePaintCount++;
     final stopwatch = Stopwatch()..start();
     final screenMemory = _memory;
     final screenRepeats = _repeatAnchors;
@@ -1744,25 +1749,32 @@ class LabelPainter {
         : math.max(_shapeSize * memo.maxWidthEm, _shapeSize * 2);
     final style = _textStyle(
         memo.fonts, _shapeSize, memo.letterSpacingEm, Color(memo.fillArgb));
+    var text = instance.text;
     // Laid out unconstrained first: that is the one layout after which
     // the min intrinsic width is the paragraph's widest unbreakable run.
     // After a constrained layout that broke a word, Skia reports a
     // width that depends on where it broke, often less than the word.
     final fill = TextPainter(
-      text: TextSpan(text: instance.text, style: style),
+      text: TextSpan(text: text, style: style),
       textDirection: TextDirection.ltr,
       textAlign: TextAlign.center,
       maxLines: maxLines,
     )..layout();
-    // Text that wraps keeps every word whole, as in MapLibre, which
-    // breaks lines only where the text allows a break: Flutter's line
-    // breaker splits a word wider than `text-max-width` wherever the
-    // width runs out (LUDWIGSVORST / ADT). Widening to the widest word
-    // breaks none and leaves every other break where it was. Text on
-    // one line needs no second layout.
+    // Text on one line needs no second layout. Text that wraps keeps
+    // every word whole, as in MapLibre, which breaks lines only where
+    // the text allows a break: Flutter's line breaker splits a word
+    // wider than `text-max-width` wherever the width runs out
+    // (LUDWIGSVORST / ADT), so such text gets its breaks spelled out.
     if (fill.maxIntrinsicWidth > maxWidth) {
-      maxWidth = math.max(maxWidth, fill.minIntrinsicWidth.ceilToDouble());
-      fill.layout(maxWidth: maxWidth);
+      if (fill.minIntrinsicWidth > maxWidth) {
+        text = breakAroundWideRuns(text, style, maxWidth);
+        // Every break is explicit now; a width could only add more.
+        maxWidth = double.infinity;
+        fill.text = TextSpan(text: text, style: style);
+        fill.layout();
+      } else {
+        fill.layout(maxWidth: maxWidth);
+      }
     }
 
     TextPainter? halo;
@@ -1777,7 +1789,7 @@ class LabelPainter {
           ..color = Color(memo.haloArgb),
       );
       halo = TextPainter(
-        text: TextSpan(text: instance.text, style: haloStyle),
+        text: TextSpan(text: text, style: haloStyle),
         textDirection: TextDirection.ltr,
         textAlign: TextAlign.center,
         maxLines: maxLines,
@@ -1785,7 +1797,7 @@ class LabelPainter {
     }
 
     final laidOut = _LaidOutText(
-      text: instance.text,
+      text: text,
       fill: fill,
       halo: halo,
       size: fill.size,
@@ -1795,6 +1807,75 @@ class LabelPainter {
     );
     _textCache.put(memo.cacheKey, laidOut);
     return laidOut;
+  }
+
+  /// [text] with explicit line breaks for a `text-max-width` of
+  /// [maxWidth] that one of its unbreakable runs — a word, to the line
+  /// breaker — is wider than. Each such word gets a line of its own
+  /// instead of being split where the width runs out, and the words
+  /// between them wrap at [maxWidth] as before.
+  ///
+  /// Laying the whole text out at the widest word's width instead would
+  /// also keep it whole, but let the greedy line breaker pull the short
+  /// words around it onto lines wider than `text-max-width`. Only text
+  /// with such a word gets here; it pays a layout per word.
+  @visibleForTesting
+  static String breakAroundWideRuns(
+      String text, TextStyle style, double maxWidth) {
+    final lines = <String>[];
+    final words = <String>[];
+    void addLines(String run, double width) {
+      final painter = TextPainter(
+        text: TextSpan(text: run, style: style),
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: width);
+      // Each character goes to the line its box sits on. Engines differ
+      // on which line `getLineBoundary` gives the offset of a soft
+      // break; a box's top does not, measured to the line's full height.
+      final line = StringBuffer();
+      double? top;
+      for (var i = 0; i < run.length; i++) {
+        final boxes = painter.getBoxesForSelection(
+            TextSelection(baseOffset: i, extentOffset: i + 1),
+            boxHeightStyle: ui.BoxHeightStyle.max);
+        if (boxes.isNotEmpty) {
+          if (top != null && boxes.first.top > top + 0.5) {
+            lines.add(line.toString().trim());
+            line.clear();
+          }
+          top = boxes.first.top;
+        }
+        line.write(run[i]);
+      }
+      lines.add(line.toString().trim());
+      painter.dispose();
+    }
+
+    void flushWords() {
+      if (words.isEmpty) return;
+      addLines(words.join(' '), maxWidth);
+      words.clear();
+    }
+
+    for (final paragraph in text.split('\n')) {
+      for (final word in paragraph.split(' ')) {
+        if (word.isEmpty) continue;
+        final probe = TextPainter(
+          text: TextSpan(text: word, style: style),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        final widest = probe.minIntrinsicWidth;
+        probe.dispose();
+        if (widest <= maxWidth) {
+          words.add(word);
+          continue;
+        }
+        flushWords();
+        addLines(word, widest.ceilToDouble());
+      }
+      flushWords();
+    }
+    return lines.where((line) => line.isNotEmpty).join('\n');
   }
 
   /// Resolves the atlas cells of every curved label in [toDraw],

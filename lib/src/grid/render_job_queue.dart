@@ -37,6 +37,9 @@ class RenderJobQueue<T, J> {
   /// for the phase whose job an incoming raster would supersede.
   J? pendingSymbols(T key) => _symbols[key]?.job;
 
+  /// Every queued symbols job, in no particular order.
+  Iterable<J> get symbolJobs => _symbols.values.map((entry) => entry.job);
+
   void enqueueRaster(T key, int priority, J job) {
     final existingRaster = _raster.remove(key);
     if (existingRaster != null) onDrop(existingRaster.job);

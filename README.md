@@ -148,7 +148,7 @@ vt.VectorTileLayer(
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source. The caches are shared process-wide, so the most recently mounted layer's value wins |
 | `rasterCacheMaxBytes` | sized for the device | finished-tile budget: zooming back to a recent level, or reopening the same style, paints instantly instead of re-rendering. These are GPU texture bytes, roughly 1 MB per tile at devicePixelRatio 2 and 2.25 MB at 3, and a phone screenful is 25 to 35 tiles, so a *single* level costs about 80 MB on a large dpr-3 phone. The default measures your viewport and dpr and budgets 2.5 screenfuls, clamped to 64 to 256 MB, so a zoom round trip keeps the level it returns to. Pass a byte count to pin it, or `0` to disable |
 | `tileFadeDuration` | 150 ms | fade-in of newly rendered tiles. Tiles from the finished-tile cache fade only when retained imagery lies beneath to cross-fade over; with nothing beneath, as on a reopened map or in the ring a zoom-out exposes, ready imagery appears at once rather than fading over the background. `Duration.zero` disables |
-| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress; on a Nothing Phone (1) that took about 75 MB off the peak GPU memory and cost frames ([compare/RESULTS.md](compare/RESULTS.md)). No effect with `LabelMode.tile`, where labels fade in with their tile |
+| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress; on a Nothing Phone (1) that took the peak GPU memory from 391–409 to 317–320 MB and cost frames ([compare/RESULTS.md](compare/RESULTS.md)). No effect with `LabelMode.tile`, where labels fade in with their tile |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 | `labelMode` | `LabelMode.screen` | where labels and icons are drawn: every frame in screen space, or once into each tile's image (`LabelMode.tile`, what `vector_map_tiles` calls raster mode). Changing it re-renders the tiles already on screen. See [Choosing a label mode](#choosing-a-label-mode) |
 
@@ -338,7 +338,7 @@ fetched one zoom deeper for the same visual scale.
 | `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, dashes and casing |
 | `symbol` | full, including curved line text and `text-variable-anchor` / `text-radial-offset`; see [Labels](#-labels) below |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity` and brightness/contrast/saturation/hue-rotate matching MapLibre's shader math |
-| `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, so a building part over its outline does not draw darker |
+| `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, patterned ones included, so a building part over its outline does not draw darker; the alpha of `fill-extrusion-color` is ignored, as the spec says |
 | `hillshade`, `heatmap`, `sky` | skipped, with a log line |
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
@@ -380,10 +380,14 @@ mode](#choosing-a-label-mode) has what changes then.
 - **Only where it fits.** Anything placed along a line, curved text, a
   road shield, a one-way arrow, needs all of itself on the line,
   centred on its anchor, as in MapLibre: a ramp or a crossing shorter
-  than its shield carries none.
+  than its shield carries none. An icon alone at `line-center` is
+  exempt, as in MapLibre. The fit is a placement decision, so it is
+  judged when collision is (see *Collision is decided on a timer*
+  below), not on every frame.
 - **Words stay whole.** `text-max-width` wraps between words; a single
-  word wider than it stays on one line, as in MapLibre, rather than
-  breaking where the width runs out.
+  word wider than it gets a line of its own, as in MapLibre, rather
+  than breaking where the width runs out, and the lines around it
+  still break at `text-max-width`.
 - **Repeated road names stay spaced.** A street arrives as many features
   (one per OSM way, sometimes one per road-class style layer), each spaced
   on its own. For `symbol-placement: line`, a visible label therefore
@@ -444,10 +448,11 @@ mode](#choosing-a-label-mode) has what changes then.
   and rotating drag labels through each other constantly, and re-deciding
   every frame turns each of those brushes past into a label that disappears
   and comes straight back. Between decisions neighbours are simply allowed
-  to overlap for a moment, as they are in MapLibre. A curved street name
-  accepted by a decision also keeps drawing until the next one, even if
-  zooming makes its road bend too sharply under it or its text outgrow its
-  stretch of road; it then fades out instead of vanishing. An unchanged
+  to overlap for a moment, as they are in MapLibre. A label along a line
+  accepted by a decision, a curved street name or a road shield, also
+  keeps drawing until the next one, even if zooming makes its road bend
+  too sharply under it or the label outgrow its stretch of road; it then
+  fades out instead of vanishing. An unchanged
   repaint creates no new placement work, so the animation ticker settles
   when the last real change has been placed.
 
@@ -455,9 +460,11 @@ mode](#choosing-a-label-mode) has what changes then.
 
 The screen-space pass is what makes labels behave as above, and it is
 also the one part of a moving map that costs UI-thread time on every
-frame: one collision pass and every visible label drawn again. On a
-label-dense screen and a mid-range phone that cost decides whether
-panning, rotating and pinching hold the display's frame rate.
+frame: every placed label laid out and drawn again, and, every
+`labelFadeDuration` (300 ms at most), a collision pass over every
+candidate. On a label-dense screen and a mid-range phone that cost
+decides whether panning, rotating and pinching hold the display's frame
+rate.
 
 `labelMode: LabelMode.tile` removes it. Labels and icons are placed and
 drawn once per tile, when the tile is rendered, into the same image as
@@ -468,14 +475,14 @@ they inherit the limits of any pre-rendered tile:
 
 | | `LabelMode.screen` (default) | `LabelMode.tile` |
 |---|---|---|
-| Per-frame label work | collision pass + drawing, every frame | none |
+| Per-frame label work | placed labels laid out and drawn every frame, a collision pass every `labelFadeDuration` (at most 300 ms) | none |
 | Collision | one pass across the whole screen | within each tile |
 | At tile seams | seamless | a label that would cross a tile edge is dropped, so labels thin out along tile seams |
 | Under rotation | text stays upright | text rotates with the map |
 | Between zoom levels | sized for the exact zoom | sized for the tile's zoom level, then scales with the map (up to twice the size) until the next level's tiles replace it |
 | `minzoom`/`maxzoom` | cut and ramped at the exact zoom | applied per tile zoom level |
 | Fades | per label, `labelFadeDuration` | with the tile, `tileFadeDuration` |
-| New tiles | geometry first, labels a frame or two later | each tile appears complete, labels included; the previous level covers it until then |
+| New tiles | geometry first: every queued tile's geometry before any tile's labels, with the previous level's labels covering the gap | each tile appears complete, labels included; the previous level covers it until then |
 
 Texture memory is the same in both modes: the labels are drawn into the
 tile's existing image, so `rasterCacheMaxBytes` needs no adjustment.
@@ -502,12 +509,25 @@ camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
    finished tiles (image + symbols) ─► shared LRU ─► instant re-crossings
 ```
 
+New tiles are rendered by a render pump that runs on a time budget per
+frame: 4 ms while the camera moves, from the first frame of a drag or
+zoom, and 12 ms once it has stood still for 150 ms. It records a tile
+one style layer at a time and shapes its labels one at a time,
+checking the budget in between, so a dense tile is spread over several
+frames. What it never splits can still take a frame of its own: one
+very dense layer (22 ms for the densest buildings layer measured on a
+phone), and with `LabelMode.tile` one tile's label placement, drawing
+and snapshot, which wait for the next frame rather than run in one
+whose budget is already spent. The still budget takes most of a 60 Hz
+frame and more than a 120 Hz one, so an animation of your own running
+over a still map that is still loading tiles can drop frames until
+they are in.
+
 For profiling, the render pipeline emits DevTools timeline events:
 `VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`, and with
 `LabelMode.tile` `VT rasterize with labels` and `VT tile labels`. A
-dense tile's `VT rasterize` and `VT symbols` can repeat over several
-frames: the pump records a tile's layers and shapes its labels in
-slices, so that no single tile holds up a frame.
+dense tile's `VT rasterize` and `VT symbols` repeat over several
+frames, one slice per frame.
 
 On web the disk cache tier is absent and decoding runs on a yielding
 event-loop queue instead of isolates. Everything else is identical.
@@ -564,14 +584,15 @@ some tiles more than once.
   phone: 264 against 313 MB of GPU memory at the peak, 391 against
   401 MB RSS (495 against 577 MB RSS on macOS). This package's default,
   which draws labels every frame, needs more GPU memory than baked
-  labels (365 MB, vector mode 376 MB), much of it for the label fades
-  (317–320 MB with fades off, which costs frames instead), and far less
-  RSS than vector mode (393 against 892 MB; 527 against 948 MB on
-  macOS). Its label text cache
-  keeps up to 8000 shaped labels; after a run through four dense cities
-  that held 37–49 MB more than the 2500 it used to keep, and 117–119 MB
-  more with `TileOffset.none`. `VectorTileLayer.clearMemoryCache()`
-  gives 25–48 MB of that back (see the CHANGELOG).
+  labels (365 MB, vector mode 376 MB), much of it for the label fades:
+  in a separate A/B, turning them off took its peak from 391–409 to
+  317–320 MB, and cost frames instead. It needs far less RSS than
+  vector mode (393 against 892 MB; 527 against 948 MB on macOS). Its
+  label text cache keeps up to 8000 shaped labels; after a run through
+  four dense cities that held 37–49 MB more than the 2500 it used to
+  keep, and 117–119 MB more with `TileOffset.none`.
+  `VectorTileLayer.clearMemoryCache()` gives 25–48 MB of that back (see
+  the CHANGELOG).
 - **Label density.** At the same camera `vector_map_tiles` draws more
   labels, because it evaluates the style one zoom level deeper than
   MapLibre. `tileOffset: TileOffset.none` makes this package do the same

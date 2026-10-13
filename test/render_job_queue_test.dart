@@ -100,4 +100,13 @@ void main() {
     expect(dropped, ['symbols-b']);
     expect(queue.isEmpty, isTrue);
   });
+
+  test('symbolJobs lists the queued symbols jobs and nothing else', () {
+    final queue = RenderJobQueue<String, String>(onDrop: (_) {});
+    expect(queue.symbolJobs, isEmpty);
+    queue.enqueueRaster('a', 0, 'raster-a');
+    queue.enqueueSymbols('b', 1, 'symbols-b');
+    queue.enqueueSymbols('c', 2, 'symbols-c');
+    expect(queue.symbolJobs, unorderedEquals(['symbols-b', 'symbols-c']));
+  });
 }
