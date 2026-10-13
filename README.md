@@ -377,6 +377,13 @@ mode](#choosing-a-label-mode) has what changes then.
   turns back on itself (a hairpin) is dropped rather than drawn with
   the letters past the turn upside down, which `text-max-angle` alone
   lets through because each step of a smooth turn stays under it.
+- **Only where it fits.** Anything placed along a line, curved text, a
+  road shield, a one-way arrow, needs all of itself on the line,
+  centred on its anchor, as in MapLibre: a ramp or a crossing shorter
+  than its shield carries none.
+- **Words stay whole.** `text-max-width` wraps between words; a single
+  word wider than it stays on one line, as in MapLibre, rather than
+  breaking where the width runs out.
 - **Repeated road names stay spaced.** A street arrives as many features
   (one per OSM way, sometimes one per road-class style layer), each spaced
   on its own. For `symbol-placement: line`, a visible label therefore
@@ -443,13 +450,6 @@ mode](#choosing-a-label-mode) has what changes then.
   stretch of road; it then fades out instead of vanishing. An unchanged
   repaint creates no new placement work, so the animation ticker settles
   when the last real change has been placed.
-- **Two known differences from MapLibre**, both visible next to
-  MapLibre GL JS in [compare/RESULTS.md](compare/RESULTS.md): a word
-  wider than `text-max-width` is broken inside the word (LUDWIGSVORST /
-  ADT), where MapLibre breaks lines only between words; and a road
-  shield is drawn on a road piece shorter than the shield, where
-  MapLibre leaves it out, so short ramps and crossings can carry
-  shields MapLibre does not show.
 
 #### Choosing a label mode
 

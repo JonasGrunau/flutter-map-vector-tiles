@@ -165,15 +165,17 @@ same style from the same tiles at the same cameras.
 - `vector_map_tiles` 9 draws Liberty's dashed paths solid and leaves out
   one-way arrows and road shields; this package draws all three as the
   style defines them.
-- This package also draws road-number shields on road pieces too short
-  to hold them, where MapLibre leaves them out: around Karlsplatz in
-  `munich-z16` (KA04, SB43, …). MapLibre places a label along a line
-  only where all of it fits on the line; this package puts one at the
-  middle of any line shorter than `symbol-spacing`. Some of the POI
-  names MapLibre shows nearby are missing from this package's map.
-- This package breaks a word that is wider than `text-max-width`:
-  `munich-z14` reads LUDWIGSVORST / ADT. MapLibre breaks lines only
-  between words and lets a long word run past the width.
+- The build measured here also drew road-number shields on road pieces
+  too short to hold them, where MapLibre leaves them out: around
+  Karlsplatz in `munich-z16` (KA04, SB43, …). MapLibre places a label
+  along a line only where all of it fits on the line; this build put
+  one at the middle of any line shorter than `symbol-spacing`. Some of
+  the POI names MapLibre shows nearby are missing from its map.
+- It also broke a word wider than `text-max-width`: `munich-z14` reads
+  LUDWIGSVORST / ADT. MapLibre breaks lines only between words and
+  lets a long word run past the width.
+- Both are fixed since this session (CHANGELOG, Unreleased); the
+  screenshots on this page predate the fixes.
 - MapLibre draws Liberty's `building-3d` layer as extrusions, so even
   looking straight down the walls show around the edge of the screen.
   Both Flutter packages draw buildings flat (root README, Style support).

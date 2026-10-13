@@ -1255,6 +1255,23 @@ class LabelPainter {
       }
     }
 
+    // Everything else along a line, a road shield or an arrow, a
+    // viewport-aligned name, a script drawn straight, has to fit on its
+    // line too, as [_prepareCurved] makes curved text: MapLibre places a
+    // line label only where all of it lies on the line, the longer of
+    // its text and icon centred on the anchor. Without this a road
+    // piece shorter than its shield carried one. An icon alone at
+    // `line-center` is exempt, as in MapLibre. Like the curved fit,
+    // this is a placement decision: a replay keeps what the last pass
+    // accepted while zooming out grows the label against its line.
+    if (instance.alongLine &&
+        !replaying &&
+        (text != null || layer.placement.eval(ctx) != 'line-center') &&
+        !_fitsLine(placed, text, textScale, icon)) {
+      debugRejectProbe?.call(instance.continuityKey, 'fit', false);
+      return null;
+    }
+
     // Compute collision boxes.
     final boxes = <Rect>[];
     var textRect = Rect.zero;
@@ -1311,6 +1328,23 @@ class LabelPainter {
       textAngle: angle,
       textScale: textScale,
     )..repeatKey = repeatKey;
+  }
+
+  /// Whether [placed]'s label fits on its line: the longer of its text
+  /// and its icon, centred on the anchor, within the line's ends.
+  /// MapLibre's anchor test, with the label measured on screen and the
+  /// line in tile-logical units, which [PlacedSymbol.transform] relates.
+  static bool _fitsLine(PlacedSymbol placed, _LaidOutText? text,
+      double textScale, _DrawableIcon? icon) {
+    final instance = placed.instance;
+    final path = instance.path;
+    final transform = placed.transform;
+    if (path == null || transform == null) return true;
+    final length = math.max(text == null ? 0.0 : text.size.width * textScale,
+        icon?.rect.width ?? 0.0);
+    final half = length / 2 / transform.scale;
+    return instance.pathDistance - half >= 0 &&
+        instance.pathDistance + half <= path.length;
   }
 
   /// `text-variable-anchor` placement: anchors are tried in style order
@@ -1705,17 +1739,31 @@ class LabelPainter {
   _LaidOutText _shapeTimed(SymbolInstance instance, TextStyleMemo memo) {
     final singleLine = instance.alongLine;
     final maxLines = singleLine ? 1 : 4;
-    final maxWidth = singleLine
+    var maxWidth = singleLine
         ? double.infinity
         : math.max(_shapeSize * memo.maxWidthEm, _shapeSize * 2);
     final style = _textStyle(
         memo.fonts, _shapeSize, memo.letterSpacingEm, Color(memo.fillArgb));
+    // Laid out unconstrained first: that is the one layout after which
+    // the min intrinsic width is the paragraph's widest unbreakable run.
+    // After a constrained layout that broke a word, Skia reports a
+    // width that depends on where it broke, often less than the word.
     final fill = TextPainter(
       text: TextSpan(text: instance.text, style: style),
       textDirection: TextDirection.ltr,
       textAlign: TextAlign.center,
       maxLines: maxLines,
-    )..layout(maxWidth: maxWidth);
+    )..layout();
+    // Text that wraps keeps every word whole, as in MapLibre, which
+    // breaks lines only where the text allows a break: Flutter's line
+    // breaker splits a word wider than `text-max-width` wherever the
+    // width runs out (LUDWIGSVORST / ADT). Widening to the widest word
+    // breaks none and leaves every other break where it was. Text on
+    // one line needs no second layout.
+    if (fill.maxIntrinsicWidth > maxWidth) {
+      maxWidth = math.max(maxWidth, fill.minIntrinsicWidth.ceilToDouble());
+      fill.layout(maxWidth: maxWidth);
+    }
 
     TextPainter? halo;
     TextStyle? haloStyle;
