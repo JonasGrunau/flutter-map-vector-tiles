@@ -185,6 +185,9 @@ lost focus, the other half of an Android split screen) keeps rendering.
   services such as `Authorization`.
 - `httpClient`, your own `http.Client` for proxying, certificate pinning
   or tests. A passed client stays yours and is never closed for you.
+- `language`, to show labels in that language (`'de'`, `'fr'`,
+  `'zh-Hans'`) wherever the tiles carry a translation, and in the
+  style's own text everywhere else. See [Label language](#label-language).
 
 ### 🎚️ Understanding `TileOffset`
 
@@ -497,6 +500,36 @@ MacBook Pro (M4 Pro) the two modes are within a point of each other, at
 97–100%, and in Chrome the default gets 91–100%, so the choice matters
 most on phones.
 
+#### Label language
+
+`StyleReader(language: 'de')` shows labels in German wherever the tiles
+carry a German name, and in the style's own label text everywhere else:
+
+```dart
+final style = await vt.StyleReader(
+  uri: 'https://tiles.openfreemap.org/styles/liberty',
+  language: 'de',
+).read();
+```
+
+Each label looks for `name:de` first, the tag OpenMapTiles-schema tiles
+(MapTiler, OpenFreeMap) use, then for `name_de`, the one Mapbox Streets
+and Shortbread tiles use. A feature with neither keeps exactly the text
+the style gives it. So how much of the map changes language depends on
+the tiles, not on the style: OpenStreetMap-based tiles have translations
+for countries, cities and well-known places, and mostly none for
+streets.
+
+Only the name changes. Whatever the style shows beside it, a peak's
+elevation or a road's ref, stays, and a style that shows a place in two
+scripts (Liberty's `name:latin` over `name:nonlatin`) shows the
+translation once. The style's `resolved-locale` expression returns the
+language as well; without one it returns `en`.
+
+The language is fixed per `Style`. To switch, read the style again with
+the other language: the cached style document serves both, and each
+language keeps its own finished tiles.
+
 ## 🏗️ Architecture
 
 ```
@@ -619,6 +652,10 @@ cache, `vector_map_tiles` fetched some tiles again.
   and retried.
 - **Anything MBTiles-related.** See the companion package's own
   [troubleshooting section](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles).
+- **Some labels ignore `language`.** Those features have no
+  `name:<language>` or `name_<language>` in the tiles, so they keep the
+  style's text. That is the tile data, mostly streets and small places;
+  check a feature's tags on openstreetmap.org.
 - **Labels/roads look bigger than in MapLibre.** Probably `TileOffset.none`
   with a 512px-convention style; use the default.
 - **Stale data after changing styles.** The disk cache keys by URL, and a

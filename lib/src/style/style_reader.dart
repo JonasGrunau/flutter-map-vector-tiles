@@ -15,6 +15,7 @@ import '../provider/pmtiles/pmtiles_vector_tile_provider.dart';
 import '../provider/vector_tile_provider.dart';
 import '../tile_providers.dart';
 import 'attribution.dart';
+import 'label_language.dart';
 import 'sprite_atlas.dart';
 import 'sprite_packer.dart';
 import 'theme.dart';
@@ -140,6 +141,27 @@ class StyleReader {
   /// sharing a single provider between two.
   final Future<VectorTileProvider?> Function(String sourceId)? resolveProvider;
 
+  /// The language to show map labels in, as the tag suffix the tiles use
+  /// for translated names: `'de'`, `'fr'`, `'zh-Hans'`. Null (the
+  /// default) shows the style's own label text.
+  ///
+  /// Each label looks for `name:<language>` (OpenMapTiles, MapTiler,
+  /// OpenFreeMap) and then `name_<language>` (Mapbox Streets,
+  /// Shortbread), and keeps the style's original text when the feature
+  /// has neither — so coverage depends on what the tiles carry, not on
+  /// the style. Only the name changes: whatever the style shows next to
+  /// it, such as a peak's elevation or a road's ref, stays. The style
+  /// expression `resolved-locale` answers this language too (`en`
+  /// without one).
+  ///
+  /// ```dart
+  /// final style = await StyleReader(
+  ///   uri: 'https://tiles.openfreemap.org/styles/liberty',
+  ///   language: 'de',
+  /// ).read();
+  /// ```
+  final String? language;
+
   const StyleReader({
     required this.uri,
     this.apiKey,
@@ -150,6 +172,7 @@ class StyleReader {
     this.refreshAfter = const Duration(hours: 12),
     this.cachePath,
     this.resolveProvider,
+    this.language,
   });
 
   Future<Style> read() async {
@@ -162,9 +185,19 @@ class StyleReader {
     final loader = _Loader(client, styleCache, logger, headers);
     try {
       final styleUrl = _substitute(expandMapboxUri(uri));
-      final styleJson = await loader.loadJson(styleUrl);
+      // The cache holds the style as served; the language is applied on
+      // every read, so one cached style serves every language.
+      final styleJson =
+          localizeStyle(await loader.loadJson(styleUrl), language);
 
-      final theme = ThemeReader(logger: logger).read(styleJson);
+      var theme = ThemeReader(logger: logger).read(styleJson);
+      final lang = language;
+      if (lang != null && lang.isNotEmpty) {
+        // The theme id keys the finished-tile cache, which holds label
+        // text (baked into the raster with LabelMode.tile): a style read
+        // in two languages must not share it.
+        theme = Theme(id: '${theme.id}|language=$lang', layers: theme.layers);
+      }
 
       final sources = styleJson['sources'];
       final providers = <String, VectorTileProvider>{};

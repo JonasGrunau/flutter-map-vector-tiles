@@ -38,6 +38,7 @@ lifecycle or painting is covered by widget tests that pump a real
 | `disk_cache_test.dart`, `lru_cache_test.dart` | Cache eviction, TTL, size sweep |
 | `style_reader_cache_test.dart` | Stale-while-revalidate style loading |
 | `style_reader_sources_test.dart` | Source URL resolution: relative TileJSON/tile templates (ArcGIS `root.json` shape), `{key}` substitution |
+| `label_language_test.dart` | `StyleReader.language`: the `text-field` rewrite for every shape real styles use (plain `get`, Liberty's `case` over `name:latin`/`name:nonlatin`, `concat` with a non-name suffix, `{token}` templates, zoom stop functions, names only in conditions), the style returned as the same object without a language, `resolved-locale` folding, labels identical to the original wherever a feature has no translation, and end to end: translated label, fallback, `name:de` kept by tile prep, a distinct theme id per language |
 | `attribution_test.dart` | `StyleAttribution.parse` (link spans, entities, stray markup) and the reader's collection: source over TileJSON, dedup, order |
 | `pmtiles_test.dart` | PMTiles: Hilbert tile IDs (spec anchors + bijection), directory decode/lookup, range-request provider (leaves, coalescing, cancellation), `pmtiles://` style wiring |
 | `pmtiles_gzip_test.dart` | VM-only: gzip-compressed archives via `dart:io` gzip; brotli/zstd rejection |
