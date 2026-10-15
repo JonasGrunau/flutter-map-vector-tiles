@@ -1,3 +1,5 @@
+import 'expression.dart' show toColor, toNumber;
+
 /// Rewrites a style document so its labels prefer a translation into
 /// [language] — what `StyleReader.language` applies before the style is
 /// compiled. Pure JSON in, JSON out: the theme reader and expression
@@ -259,10 +261,12 @@ Object? _templateExpression(String template) {
 /// (`{"stops": [[2, "{ref}"], [6, "{name}"]]}`) evaluates as, its
 /// templates converted by [_templateExpression]; null for anything else.
 ///
-/// A zoom function's string outputs never interpolate, so the parser
-/// holds each stop's output until the next stop and the first one below
-/// it — which is what `step` does. Its `default` never applies: the zoom
-/// is always a number.
+/// The parser holds each stop's output until the next stop, and the
+/// first one below it — which is what `step` does — except where an
+/// exponential function (the default type) meets two neighbouring outputs
+/// that both read as numbers or both as colours (`"1"`, `"2"`): those it
+/// interpolates, so such a function stays as it is. Its `default` never
+/// applies: the zoom is always a number.
 Object? _zoomFunctionExpression(Map<Object?, Object?> function) {
   if (function.containsKey('property')) return null;
   final type = function['type'];
@@ -275,11 +279,19 @@ Object? _zoomFunctionExpression(Map<Object?, Object?> function) {
     'step',
     ['zoom'],
   ];
+  String? previous;
   for (var i = 0; i < stops.length; i++) {
     final stop = stops[i];
     if (stop is! List || stop.length < 2 || stop[0] is! num) return null;
     final output = stop[1];
     if (output is! String) return null;
+    if (type != 'interval' &&
+        previous != null &&
+        ((toNumber(previous) != null && toNumber(output) != null) ||
+            (toColor(previous) != null && toColor(output) != null))) {
+      return null;
+    }
+    previous = output;
     if (i > 0) step.add(stop[0]);
     step.add(_templateExpression(output));
   }

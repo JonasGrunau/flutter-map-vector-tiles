@@ -306,6 +306,22 @@ void main() {
             [4, '{NAME}'],
           ],
         },
+        // An exponential function interpolates neighbouring outputs that
+        // read as numbers or colours, which a step would not.
+        {
+          'stops': [
+            [0, '1'],
+            [5, '2'],
+            [10, '{name}'],
+          ],
+        },
+        {
+          'stops': [
+            [0, 'red'],
+            [5, 'blue'],
+            [10, '{name}'],
+          ],
+        },
         // Data-driven functions are not rewritten.
         {
           'property': 'class',
@@ -341,6 +357,22 @@ void main() {
             [4, '{name:latin}'],
           ],
         },
+        // Numeric outputs that never meet another one, or an interval
+        // function, hold like a step.
+        {
+          'stops': [
+            [0, '1'],
+            [5, '{name}'],
+          ],
+        },
+        {
+          'type': 'interval',
+          'stops': [
+            [0, '1'],
+            [5, '2'],
+            [10, '{name}'],
+          ],
+        },
       ];
       final features = <Map<String, Object?>>[
         {'name': 'Milano', 'ref': 'MI', 'ele': 120},
@@ -352,7 +384,7 @@ void main() {
         final original = _compile(field);
         final localized = _compile(localizeTextField(field, 'de'));
         for (final properties in features) {
-          for (final zoom in [0.0, 2.0, 5.99, 6.0, 8.5, 9.0, 14.0, 22.0]) {
+          for (final zoom in [0.0, 2.0, 2.5, 5.99, 6.0, 8.5, 9.0, 14.0, 22.0]) {
             expect(_label(localized, properties, zoom: zoom),
                 _label(original, properties, zoom: zoom),
                 reason: '$field at $zoom for $properties');
