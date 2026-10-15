@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-Opt-in labels baked into the tiles, smoother frames on dense tiles and
-label-heavy screens, and closer MapLibre parity for road shields, long
-words and buildings.
+Opt-in labels baked into the tiles, labels in a language of your
+choice, smoother frames on dense tiles and label-heavy screens, and
+closer MapLibre parity for road shields, long words and buildings.
 
 - ✨ **Labels baked into tiles**: `VectorTileLayer.labelMode` chooses
   where labels and icons are drawn. The default, `LabelMode.screen`, is
