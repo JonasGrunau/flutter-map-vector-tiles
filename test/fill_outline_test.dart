@@ -102,6 +102,27 @@ void main() {
     expect(edge, _near(191));
   });
 
+  test('a fill-opacity reading the feature id is evaluated per feature',
+      () async {
+    // `["id"]` names no property, so the layer's referenced properties
+    // stay empty although the opacity differs from feature to feature.
+    final edge = await _edge(_theme({
+      'fill-color': '#ffffff',
+      'fill-opacity': [
+        'case',
+        [
+          '==',
+          ['id'],
+          1
+        ],
+        0.5,
+        0,
+      ],
+      'fill-outline-color': '#000000',
+    }));
+    expect(edge, _near(128));
+  });
+
   test('a fill-opacity of 0 hides the outline', () async {
     final edge = await _edge(_theme({
       'fill-color': '#ffffff',

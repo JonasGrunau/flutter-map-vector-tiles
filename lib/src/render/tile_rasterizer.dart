@@ -421,12 +421,13 @@ class TileRasterizer {
     // MapLibre's outline is its antialiasing pass, one device pixel wide
     // at any zoom, and `fill-antialias: false` turns it off.
     final outline = layer.antialias ? layer.outlineColor : null;
-    // The fill paint is per-layer when the colour is a literal — or when
-    // the layer never reads feature properties, which makes every paint
-    // expression zoom-only and therefore constant across this tile.
+    // The fill paint is per-layer when neither the colour nor the opacity
+    // reads the feature, which makes both constant across this tile. It
+    // has to be asked of each one: `["id"]` and `["geometry-type"]` read
+    // the feature without naming a property.
     final constant = patternProp == null &&
-        ((layer.color.isConstant && layer.opacity.isConstant) ||
-            (layer.referencedProperties?.isEmpty ?? false));
+        (layer.color.isConstant || layer.color.zoomOnly) &&
+        (layer.opacity.isConstant || layer.opacity.zoomOnly);
     Paint? fillPaint;
     double? sharedOpacity;
     if (constant) {
