@@ -49,20 +49,30 @@ jobs:
           [ "$pubspec" = "$version" ] ||
             fail "Tag is $GITHUB_REF_NAME but pubspec.yaml says version: $pubspec"
 
-          grep -qF "flutter_map_vector_tiles: ^$version" README.md ||
+          # The yaml block under "### 1. Install", compared line by line: a
+          # substring match anywhere would let ^2.9.10 pass for v2.9.1.
+          snippet=$(awk '/^### 1\. Install/ { f = 1 } f && /^```yaml/ { s = 1; next } s && /^```/ { exit } s' README.md)
+          [ -n "$snippet" ] || fail "README has no yaml block under '### 1. Install'"
+
+          grep -qxF "  flutter_map_vector_tiles: ^$version" <<< "$snippet" ||
             fail "README install snippet does not say flutter_map_vector_tiles: ^$version"
 
           flutter_map=$(sed -n 's/^  flutter_map: *//p' pubspec.yaml)
-          grep -qF "flutter_map: $flutter_map" README.md ||
+          [ -n "$flutter_map" ] && [ "$(wc -l <<< "$flutter_map")" -eq 1 ] ||
+            fail "Could not read one flutter_map constraint from pubspec.yaml (got '$flutter_map')"
+          grep -qxF "  flutter_map: $flutter_map" <<< "$snippet" ||
             fail "README install snippet does not say flutter_map: $flutter_map"
 
           heading=$(grep -m1 '^## ' CHANGELOG.md)
           [ "$heading" = "## $version" ] ||
             fail "Newest CHANGELOG section is '$heading', expected '## $version'"
 
-          summary=$(awk -v h="## $version" '$0 == h { f = 1; next } f && NF { print; exit }' CHANGELOG.md)
+          # The first non-empty line under the heading, indentation stripped.
+          # A bullet (-, *) or another heading (#) there means the summary
+          # line is missing, whatever follows the marker.
+          summary=$(awk -v h="## $version" '$0 == h { f = 1; next } f && NF { sub(/^[ \t]+/, ""); print; exit }' CHANGELOG.md)
           case "$summary" in
-            '' | '- '* | '#'*) fail "CHANGELOG section $version has no summary line under its heading" ;;
+            '' | -* | '*'* | '#'*) fail "CHANGELOG section $version has no summary line under its heading" ;;
           esac
 
   checks:
@@ -83,10 +93,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # Provisions the pub.dev OIDC token; Flutter's `dart` below shadows this
-      # one and reads the same token.
-      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
-
       # No SDK cache here: this job holds the publishing token.
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
@@ -95,4 +101,15 @@ jobs:
 
       - run: flutter pub get
 
-      - run: dart pub publish --force
+      # Last before publishing: setup-dart mints the pub.dev OIDC token when
+      # it runs, and GitHub's OIDC tokens are short-lived (its example token
+      # expires five minutes after it is issued). Run before the uncached
+      # Flutter download and `pub get` above, the token could expire before
+      # the upload.
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+
+      # `flutter pub publish`, not `dart pub publish`: setup-dart just put its
+      # plain Dart SDK first on PATH, and that `dart` cannot resolve the
+      # package's Flutter SDK dependency. Flutter's pub reads the token
+      # setup-dart registered (`dart pub token add … --env-var PUB_TOKEN`).
+      - run: flutter pub publish --force

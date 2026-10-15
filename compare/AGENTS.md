@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-10-09 | Updated: 2026-10-09 -->
+<!-- Generated: 2026-10-09 | Updated: 2026-10-13 -->
 
 # compare
 
@@ -19,18 +19,21 @@ Excluded from the published package (`.pubignore`).
 | File | Description |
 |------|-------------|
 | `lib/main.dart` | Entry: a lab run when `LAB` is set (dart-define, or `?lab=` on web), else the demo, the in-browser benchmark (`?mode=bench`) or its results page (`?mode=results`) |
-| `lib/src/arms.dart` | `Arm` (`fmvt`, `fmvt-none`, `fmvt-raster`, `fmvt-raster-none`, `vmt-raster`, `vmt-vector`) and `loadArm`, which reads the style with that package's own reader and builds its layer. `vector_map_tiles`' `cacheFolder` has a per-platform type — hence the analyzer `ignore` and the `vmtCacheFolder` shim |
+| `lib/src/config.dart` | `Config`: the start-up settings (`lab`, `arm`, `mode`, `style`, `device`), from the page URL on web and from `--dart-define` natively |
+| `lib/src/arms.dart` | `Arm` (`fmvt`, `fmvt-none`, `fmvt-raster`, `fmvt-raster-none`, `vmt-raster`, `vmt-vector`) and `loadArm`, which reads the style with that package's own reader and builds its layer. `Arm.parse` throws on an unknown id (a measured run then records an error row); the demo's URL goes through the lenient `Arm.tryParse`. `vector_map_tiles`' `cacheFolder` has a per-platform type — hence the analyzer `ignore` and the `vmtCacheFolder` shim |
 | `lib/src/scenarios.dart` | The four camera paths (each over its own city, as a function of time) and `shotPoses`, the fidelity cameras — mirrored in `tool/reference_shots.mjs` |
-| `lib/src/metrics.dart` | `FrameLog`: engine vsync timestamps per frame (pacing) plus `FrameTiming` matched to the same window; `FrameStats`, `RssSampler` |
-| `lib/src/bench_page.dart` | One measured run: calibrate refresh, take a run from the lab queue, open → settle, each scenario cold then warm, screenshots in round 0, report, exit. Also the reload-per-arm in-browser benchmark |
+| `lib/src/metrics.dart` | `FrameLog`: engine vsync timestamps per frame (pacing) plus `FrameTiming` matched to the same window; `FrameStats` (nearest-rank percentiles), `RssSampler` |
+| `lib/src/bench_page.dart` | One measured run: calibrate refresh, take a run from the lab queue, open → settle, each scenario cold then warm, a `net` row with the run's whole traffic, screenshots in round 0, exit. Also the reload-per-arm in-browser benchmark, whose warm-up fills the HTTP cache with both packages' tile zooms (`fmvt`, then `fmvt-none`) |
 | `lib/src/demo_page.dart`, `results_page.dart` | The web demo: one package per page load, live readout, "Play" paths, side-by-side, benchmark buttons and the results table |
-| `lib/src/lab.dart` | Client for the lab server |
+| `lib/src/lab.dart` | Client for the lab server; `log` names its run, which keeps the run alive for the inactivity timeout |
 | `lib/src/platform/` | `host_io.dart` / `host_web.dart`: fresh cache dirs, RSS, IndexedDB reset, exit, localStorage |
-| `tool/lab_server.dart` | dart:io only. Record/replay proxy for `tiles.openfreemap.org` (`/r/<run>/ofm/…`, rewriting style.json/TileJSON URLs back to itself), run queue with rotating arm order, per-run request/byte/in-flight counters, results and screenshot sink, static serving of a web build at `/app/` |
-| `tool/run_android.sh`, `run_macos.sh`, `run_web.sh` (+ `run_web.mjs`), `common.sh` | Build once in profile mode, start the lab, launch the app until the queue is empty. `common.sh` generates and patches the scaffolds |
-| `tool/summarize.dart` | `results/raw/<session>/results.jsonl` → the Markdown tables in `RESULTS.md` (medians over rounds, ranges for the headline column) |
+| `tool/lab_server.dart` | dart:io only, loopback only. Record/replay proxy for `tiles.openfreemap.org` (`/r/<run>/ofm/…`, rewriting style.json/TileJSON URLs back to itself; upstream errors pass through uncached), run queue in balanced order (`_roundOrder`: rounds in mirrored pairs), per-run request/byte/in-flight counters, results and screenshot sink, static serving of a web build at `/app/`. Refuses an existing session directory; gives up a run nothing was heard of for `--run-timeout` s (120) with an error row. CORS headers on the proxied paths only, for `maplibre.html` |
+| `tool/run_android.sh`, `run_macos.sh`, `run_web.sh` (+ `run_web.mjs`), `common.sh` | Build once in profile mode, start the lab, launch the app until the queue is empty. `common.sh` generates and patches the scaffolds, refuses a taken port, and installs the EXIT/INT/TERM traps that run its `CLEANUP` steps (stop the lab; on Android also put the phone's settings back) |
+| `tool/summarize.dart` | `results/raw/<session>/results.jsonl` → the Markdown tables in `RESULTS.md` (medians over rounds, ranges for the headline column, timeouts counted as the longest). Warns on mixed viewports, mixed commits and duplicate rows |
 | `tool/reference_shots.mjs`, `maplibre.html` | MapLibre GL JS renders of the fidelity cameras, through the lab |
-| `RESULTS.md`, `results/` | Published numbers and processed screenshots; `results/raw/*/results.jsonl` are the raw data behind them |
+| `tool/fidelity.py` | A session's raw screenshots → `results/shots/<session>/*.webp` and the Markdown grid in `RESULTS.md` (needs Pillow with WebP) |
+| `pubspec.lock` | Checked in, unlike the package's: it pins what `vector_map_tiles` renders with (`vector_tile_renderer`, `executor_lib`), not only `vector_map_tiles` itself |
+| `RESULTS.md`, `results/` | Published numbers and processed screenshots; `results/raw/*/results.jsonl` are the raw data behind them (plus `lab-runs.txt`, the lab server's whole-run counts, where a session predates the `net` row and its log survived) |
 
 ## For AI Agents
 
@@ -73,6 +76,17 @@ Excluded from the published package (`.pubignore`).
   deleted and gitignored.
 - **Never commit the lab cache** (`.lab-cache/`, tiles under OpenFreeMap's
   terms) or raw screenshots; processed WebP shots go in `results/shots/`.
+- **One session per directory, an even number of rounds.** The lab server
+  will not append to an existing `results.jsonl`; name a second same-day
+  session with `--session`. The arm order is balanced over pairs of
+  rounds only, hence the scripts' default of 4.
+- **Requests per run come from the `net` row.** Pass rows count only
+  their own motion and settle. Sessions recorded before 2026-10-13 have
+  no `net` row, and their request figures are labelled as covering the
+  opening and the measured passes only.
+- **Changing the root package's dependencies?** Re-run
+  `flutter pub get --directory compare` and commit the updated
+  `compare/pubspec.lock`.
 
 ### Testing Requirements
 
@@ -95,8 +109,9 @@ builds the web demo on every PR that touches `lib/` or `compare/`.
 
 ### External
 
-- `vector_map_tiles` 9.0.0-beta.13 (pinned exactly), `flutter_map`,
-  `latlong2`, `http`, `web`
+- `vector_map_tiles` 9.0.0-beta.13 (pinned exactly in `pubspec.yaml`, its
+  renderer `vector_tile_renderer` 6.1.0 and `executor_lib` 1.1.2 by the
+  checked-in `pubspec.lock`), `flutter_map`, `latlong2`, `http`, `web`
 - Node + Playwright (`tool/node_modules`, installed on first web run) for
   the Chrome runs and MapLibre reference shots
 

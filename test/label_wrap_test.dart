@@ -88,4 +88,24 @@ void main() {
     // A width they fit in together keeps them on one line.
     expect(_drawnWithLabelBelow(30, 'Altes Rathaus Turm'), 2);
   });
+
+  group('breakAroundWideRuns', () {
+    // The test font draws every glyph one em wide: at font size 10 a
+    // 100 px text-max-width holds ten characters.
+    const style = TextStyle(fontSize: 10);
+    String broken(String text) =>
+        LabelPainter.breakAroundWideRuns(text, style, 100);
+
+    test('gives a wide word its own line and wraps the rest at the width', () {
+      // Widening the paragraph to the long word (17 em) would have put
+      // "aa bb cc dd ee ff" on one line, 17 em against a 10 em width.
+      expect(broken('aa bb cc dd ee ff gg hh LONGWORDXXXXXXXXX'),
+          'aa bb cc\ndd ee ff\ngg hh\nLONGWORDXXXXXXXXX');
+      expect(broken('LONGWORDXXXXXXXXX aa bb'), 'LONGWORDXXXXXXXXX\naa bb');
+    });
+
+    test('keeps explicit line breaks', () {
+      expect(broken('aa\nLONGWORDXXXXXXXXX'), 'aa\nLONGWORDXXXXXXXXX');
+    });
+  });
 }

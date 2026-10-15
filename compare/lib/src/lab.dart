@@ -63,6 +63,10 @@ class Lab {
   Future<void> done(String run) => _client
       .post(Uri.parse('$base/_done?run=${Uri.encodeQueryComponent(run)}'));
 
-  Future<void> log(String message) =>
-      _client.post(Uri.parse('$base/_log'), body: message);
+  /// Prints [message] in the lab server's console. Naming the [run] also
+  /// tells the server the run is alive (its inactivity timeout).
+  Future<void> log(String? run, String message) => _client.post(
+        Uri.parse('$base/_log?run=${Uri.encodeQueryComponent(run ?? '-')}'),
+        body: message,
+      );
 }

@@ -1,7 +1,7 @@
 // The lab server behind every measured run: a record/replay proxy for
 // OpenFreeMap, a run queue, and a sink for results and screenshots.
 //
-//   dart run tool/lab_server.dart --platform android --rounds 3
+//   dart run tool/lab_server.dart --platform android --rounds 4
 //
 // Why a proxy at all: a benchmark that fetches tiles from the internet
 // measures the internet. Every request goes through here instead, so both
@@ -13,12 +13,23 @@
 //
 // Why a run queue: one app binary serves every arm. At start-up the app asks
 // `GET /_next` which arm to run, so a device run needs one build, not one
-// per arm, and every arm still gets a fresh process. Arms rotate their order
-// each round so a slow drift (thermal, battery) cannot favour one arm.
+// per arm, and every arm still gets a fresh process. Rounds come in pairs,
+// the second running the first one's order backwards (see [_roundOrder]),
+// so a steady drift (thermal, battery) costs every arm the same over each
+// pair. An odd round count leaves the last round unpaired.
 //
 // Requests are attributed to a run by URL prefix (`/r/<run>/ofm/…`), which
 // is what the app's style URL points at, so the per-run request and byte
 // counts in the results are counted here rather than inside either package.
+//
+// A run whose app stops talking — it crashed natively, or hung — is given up
+// after `--run-timeout` seconds (default 120) without a request for it: an
+// error row goes into the results and the run counts as done, so the run
+// scripts launch the next one instead of waiting forever. The longest a
+// healthy run goes quiet is one camera path without a tile request (16 s).
+//
+// Every session gets its own directory: the server refuses to start when
+// the session's results.jsonl exists, rather than mixing two sessions.
 //
 // No dependencies beyond dart:io, so it runs with a bare `dart`.
 library;
@@ -45,7 +56,7 @@ Future<void> main(List<String> argv) async {
   final port = int.parse(args.get('port', '8790'));
   final cacheDir = Directory(args.get('cache', '.lab-cache'));
   final platform = args.get('platform', 'unknown');
-  final rounds = int.parse(args.get('rounds', '3'));
+  final rounds = int.parse(args.get('rounds', '4'));
   final arms = args.get('arms', _defaultArms.join(',')).split(',');
   final scenarios = args.get('scenarios', '');
   final offline = args.flag('offline');
@@ -57,18 +68,26 @@ Future<void> main(List<String> argv) async {
   );
   final outDir = Directory(args.get('out', 'results/raw/$session'));
   final appDir = args.get('app', '');
+  final runTimeout =
+      Duration(seconds: int.parse(args.get('run-timeout', '120')));
+
+  // Two sessions in one file would be summarized as one: same-day runs on
+  // one platform share the default name, so the second must pick its own.
+  final results = File('${outDir.path}/results.jsonl');
+  if (results.existsSync()) {
+    stderr.writeln('${results.path} already exists. A session never '
+        'appends to another: name this one with --session <name> '
+        '(or --out <dir>).');
+    exit(1);
+  }
 
   await cacheDir.create(recursive: true);
   await Directory('${outDir.path}/shots').create(recursive: true);
 
   final queue = <_Run>[
     for (var r = 0; r < rounds; r++)
-      for (var i = 0; i < arms.length; i++)
-        _Run(
-          id: '$platform-r$r-${arms[(i + r) % arms.length]}',
-          arm: arms[(i + r) % arms.length],
-          round: r,
-        ),
+      for (final arm in _roundOrder(arms, r))
+        _Run(id: '$platform-r$r-$arm', arm: arm, round: r),
   ];
   final server = _LabServer(
     cacheDir: cacheDir,
@@ -78,17 +97,50 @@ Future<void> main(List<String> argv) async {
     scenarios: scenarios,
     offline: offline,
     latency: latency,
+    runTimeout: runTimeout,
     appDir: appDir.isEmpty ? null : Directory(appDir),
   );
 
-  final http = await HttpServer.bind(InternetAddress.anyIPv4, port);
+  // Loopback only: devices reach it through `adb reverse`, which connects
+  // to the Mac's loopback, and the Mac app, the browser and the scripts use
+  // `localhost`; nothing needs it on the network. Both address families,
+  // because `localhost` may resolve to either first.
+  final servers = [await HttpServer.bind(InternetAddress.loopbackIPv4, port)];
+  try {
+    servers.add(await HttpServer.bind(InternetAddress.loopbackIPv6, port,
+        v6Only: true));
+  } on SocketException catch (e) {
+    stdout.writeln('no IPv6 loopback (${e.osError?.message ?? e.message}); '
+        'serving 127.0.0.1 only');
+  }
   stdout.writeln('lab server on :$port · session $session · '
       '${queue.length} runs (${arms.join(', ')} × $rounds) · '
       'cache ${cacheDir.path}${offline ? ' (offline)' : ''} · '
       'results ${outDir.path}');
-  await for (final request in http) {
-    unawaited(server.handle(request));
+  if (rounds.isOdd && rounds > 1) {
+    stdout.writeln('note: $rounds rounds: the last one has no partner to '
+        'balance its arm order; use an even count');
   }
+  Timer.periodic(const Duration(seconds: 5), (_) => server.reap());
+  for (final http in servers) {
+    http.listen((request) => unawaited(server.handle(request)));
+  }
+}
+
+/// The order of [arms] in [round]. Rounds come in pairs: the first of a
+/// pair runs the arms in order, starting one arm further along with every
+/// pair, and the second runs that order backwards. An arm's two slots in a
+/// pair therefore always add up to `arms.length - 1`, so a steady drift
+/// over the session (the phone warming up, the battery draining) costs
+/// every arm the same on average over each pair of rounds. A plain
+/// rotation does not: with six arms and three rounds it ran one arm in the
+/// back half every time and another in the front half every time.
+List<String> _roundOrder(List<String> arms, int round) {
+  final shift = (round ~/ 2) % arms.length;
+  final order = [
+    for (var i = 0; i < arms.length; i++) arms[(i + shift) % arms.length],
+  ];
+  return round.isOdd ? order.reversed.toList() : order;
 }
 
 class _Run {
@@ -101,7 +153,13 @@ class _Run {
   int requests = 0;
   int bytes = 0;
   int inflight = 0;
+
+  /// The last proxied request for this run: when its network went idle.
   DateTime lastActivity = DateTime.now();
+
+  /// The last request of any kind about this run — proxied, `/_net`,
+  /// `/_result`, `/_log` — for the inactivity timeout.
+  DateTime lastContact = DateTime.now();
 }
 
 class _LabServer {
@@ -113,6 +171,7 @@ class _LabServer {
     required this.scenarios,
     required this.offline,
     required this.latency,
+    required this.runTimeout,
     required this.appDir,
   });
 
@@ -123,12 +182,20 @@ class _LabServer {
   final String scenarios;
   final bool offline;
   final Duration latency;
+  final Duration runTimeout;
 
   /// A `flutter build web --base-href /app/` output to serve at `/app/`, so
   /// browser runs load the app from the same origin as the tiles.
   final Directory? appDir;
-  final _client = HttpClient()..userAgent = _userAgent;
-  final _pending = <String, Future<_Cached?>>{};
+
+  /// Upstream fetches give up rather than hold a run's request open
+  /// forever: the app would wait on it, and so would every `_settle`.
+  final _client = HttpClient()
+    ..userAgent = _userAgent
+    ..connectionTimeout = const Duration(seconds: 10)
+    ..idleTimeout = const Duration(seconds: 15);
+  static const _upstreamTimeout = Duration(seconds: 30);
+  final _pending = <String, Future<_Fetched>>{};
 
   /// Runs outside the queue (the demo, ad-hoc launches) still get counters.
   final _adHoc = <String, _Run>{};
@@ -138,18 +205,37 @@ class _LabServer {
             id, () => _Run(id: id, arm: 'ad-hoc', round: -1));
       });
 
+  /// Marks [id] as alive, for [reap].
+  void _contact(String? id) {
+    if (id != null) _run(id).lastContact = DateTime.now();
+  }
+
   Future<void> handle(HttpRequest req) async {
     final res = req.response;
-    res.headers
-      ..set('Access-Control-Allow-Origin', '*')
-      ..set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-      ..set('Access-Control-Allow-Headers', '*')
-      // The app and the control endpoints are never cached; proxied
-      // OpenFreeMap resources override this in [_proxy].
-      ..set('Cache-Control', 'no-store');
+    // The app and the control endpoints are never cached; proxied
+    // OpenFreeMap resources override this in [_proxy].
+    res.headers.set('Cache-Control', 'no-store');
     try {
-      if (req.method == 'OPTIONS') return await _end(res, 204);
       final path = req.uri.path;
+      final m = RegExp(r'^/r/([^/]+)/ofm/(.+)$').firstMatch(path);
+      final bare = RegExp(r'^/ofm/(.+)$').firstMatch(path);
+      if (m != null || bare != null) {
+        // The one cross-origin client is MapLibre GL JS in
+        // tool/maplibre.html, opened from file:// by reference_shots.mjs,
+        // and it only reads OpenFreeMap resources. The app itself is
+        // served from /app/ on this origin, so the control endpoints below
+        // get no CORS headers.
+        res.headers
+          ..set('Access-Control-Allow-Origin', '*')
+          ..set('Access-Control-Allow-Methods', 'GET')
+          ..set('Access-Control-Allow-Headers', '*');
+        if (req.method == 'OPTIONS') return await _end(res, 204);
+        if (m != null) return await _proxy(req, res, _run(m[1]!), m[2]!);
+        return await _proxy(req, res, _run('-'), bare![1]!);
+      }
+      // No preflight is ever answered here, and an OPTIONS must not reach
+      // a handler: `/_next` would hand out a run.
+      if (req.method == 'OPTIONS') return await _end(res, 405);
       if (path == '/_next') return await _next(res);
       if (path == '/_net') return await _net(req, res);
       if (path == '/_result') return await _result(req, res);
@@ -157,13 +243,11 @@ class _LabServer {
       if (path == '/_done') return await _done(req, res);
       if (path == '/_status') return await _status(res);
       if (path == '/_log') {
-        stdout.writeln('[app] ${await utf8.decodeStream(req)}');
+        final run = req.uri.queryParameters['run'];
+        _contact(run);
+        stdout.writeln('[app] ${run ?? '-'}: ${await utf8.decodeStream(req)}');
         return await _end(res, 204);
       }
-      final m = RegExp(r'^/r/([^/]+)/ofm/(.+)$').firstMatch(path);
-      if (m != null) return await _proxy(req, res, _run(m[1]!), m[2]!);
-      final bare = RegExp(r'^/ofm/(.+)$').firstMatch(path);
-      if (bare != null) return await _proxy(req, res, _run('-'), bare[1]!);
       if (appDir != null && path.startsWith('/app/')) {
         return await _static(res, path.substring('/app/'.length));
       }
@@ -200,7 +284,9 @@ class _LabServer {
   Future<void> _next(HttpResponse res) async {
     final run = queue.where((r) => r.state == 'pending').firstOrNull;
     if (run == null) return _end(res, 200, {'done': true});
-    run.state = 'running';
+    run
+      ..state = 'running'
+      ..lastContact = DateTime.now();
     stdout.writeln('▶ ${run.id}');
     await _end(res, 200, {
       'run': run.id,
@@ -213,6 +299,7 @@ class _LabServer {
 
   Future<void> _net(HttpRequest req, HttpResponse res) async {
     final run = _run(req.uri.queryParameters['run'] ?? '-');
+    run.lastContact = DateTime.now();
     await _end(res, 200, {
       'requests': run.requests,
       'bytes': run.bytes,
@@ -223,11 +310,48 @@ class _LabServer {
 
   Future<void> _result(HttpRequest req, HttpResponse res) async {
     final line = (await utf8.decodeStream(req)).trim();
-    jsonDecode(line); // reject anything that is not one JSON object
-    await File('${outDir.path}/results.jsonl')
-        .writeAsString('$line\n', mode: FileMode.append, flush: true);
+    final json = jsonDecode(line);
+    if (json is! Map<String, dynamic>) return _end(res, 400);
+    final id = json['run'];
+    if (id is String) {
+      final run = _run(id);
+      // A run given up by [reap] already has its error row; an app that
+      // wakes up later must not add numbers to it.
+      if (run.state == 'done') {
+        stderr.writeln('dropped a result for ${run.id}, which is done');
+        return _end(res, 409);
+      }
+      run.lastContact = DateTime.now();
+    }
+    await _append(line);
     stdout.writeln('  ✓ ${line.length > 160 ? line.substring(0, 160) : line}');
     await _end(res, 204);
+  }
+
+  Future<void> _append(String line) => File('${outDir.path}/results.jsonl')
+      .writeAsString('$line\n', mode: FileMode.append, flush: true);
+
+  /// Gives up every running run that nothing has been heard of for
+  /// [runTimeout]: its app crashed or hung. Without this a native crash
+  /// leaves the run `running` forever, and the run scripts wait on it.
+  void reap() {
+    final now = DateTime.now();
+    for (final run in queue.where((r) => r.state == 'running')) {
+      final silent = now.difference(run.lastContact);
+      if (silent < runTimeout) continue;
+      run.state = 'done';
+      stdout.writeln('✗ ${run.id}: nothing heard for ${silent.inSeconds} s, '
+          'given up');
+      unawaited(_append(jsonEncode({
+        'kind': 'error',
+        'run': run.id,
+        'arm': run.arm,
+        'round': run.round,
+        'platform': platform,
+        'error': 'no request from the app for ${silent.inSeconds} s '
+            '(crashed or hung); the lab server gave the run up',
+      })));
+    }
   }
 
   Future<void> _shot(HttpRequest req, HttpResponse res) async {
@@ -255,13 +379,16 @@ class _LabServer {
       HttpRequest req, HttpResponse res, _Run run, String path) async {
     run.requests++;
     run.inflight++;
-    run.lastActivity = DateTime.now();
+    run.lastActivity = run.lastContact = DateTime.now();
     try {
-      final cached = await _fetch(path);
+      final fetched = await _fetch(path);
       if (latency > Duration.zero) await Future<void>.delayed(latency);
-      if (cached == null) return await _end(res, offline ? 504 : 404);
-      var body = cached.bytes;
-      if (cached.contentType.contains('json')) {
+      // Upstream's own status (a 404, a 429, a 5xx) or 504 for an offline
+      // miss or a timeout, uncached by the client (`no-store`) and by
+      // [_fetch], so a retry can still succeed.
+      if (fetched.status != 200) return await _end(res, fetched.status);
+      var body = fetched.bytes;
+      if (fetched.contentType.contains('json')) {
         // Point every OpenFreeMap URL in style.json / TileJSON back here,
         // under this run's prefix, so nothing escapes to the internet.
         final host = req.headers.host ?? 'localhost';
@@ -279,7 +406,7 @@ class _LabServer {
       // between runs: every run has its own URL prefix and, on the web, a
       // fresh browser context. Native HTTP clients have no HTTP cache.
       res.headers
-        ..set('Content-Type', cached.contentType)
+        ..set('Content-Type', fetched.contentType)
         ..set('Cache-Control', 'public, max-age=86400');
       res.add(body);
       await res.close();
@@ -289,8 +416,8 @@ class _LabServer {
     }
   }
 
-  /// Disk-cached upstream fetch, coalesced per path.
-  Future<_Cached?> _fetch(String path) {
+  /// Disk-cached upstream fetch, coalesced per path. Only a 200 is cached.
+  Future<_Fetched> _fetch(String path) {
     final key = path.replaceAll(RegExp(r'[^\w.-]'), '_');
     // A block body on purpose: an arrow would return the removed future —
     // this one — and `whenComplete` would wait for itself forever.
@@ -299,28 +426,38 @@ class _LabServer {
     });
   }
 
-  Future<_Cached?> _fetchUncoalesced(String path, String key) async {
+  Future<_Fetched> _fetchUncoalesced(String path, String key) async {
     final body = File('${cacheDir.path}/$key');
     final meta = File('${cacheDir.path}/$key.type');
     if (body.existsSync() && meta.existsSync()) {
-      return _Cached(await body.readAsBytes(), await meta.readAsString());
+      return _Fetched(200, await body.readAsBytes(), await meta.readAsString());
     }
     if (offline) {
       stderr.writeln('offline miss: $path');
-      return null;
+      return _Fetched.failed(504);
     }
-    final request = await _client.getUrl(Uri.parse('$_upstream$path'));
-    final response = await request.close();
-    final bytes = await _readAll(response);
-    if (response.statusCode != 200) {
-      stderr.writeln('upstream ${response.statusCode}: $path');
-      return null;
+    HttpClientRequest? request;
+    try {
+      request = await _client.getUrl(Uri.parse('$_upstream$path'));
+      final response = await request.close().timeout(_upstreamTimeout);
+      final bytes = await _readAll(response).timeout(_upstreamTimeout);
+      if (response.statusCode != 200) {
+        stderr.writeln('upstream ${response.statusCode}: $path');
+        return _Fetched.failed(response.statusCode);
+      }
+      final type =
+          response.headers.contentType?.mimeType ?? 'application/octet-stream';
+      await body.writeAsBytes(bytes);
+      await meta.writeAsString(type);
+      return _Fetched(200, bytes, type);
+    } on TimeoutException {
+      request?.abort();
+      stderr.writeln('upstream timeout: $path');
+      return _Fetched.failed(504);
+    } on IOException catch (e) {
+      stderr.writeln('upstream unreachable: $path ($e)');
+      return _Fetched.failed(502);
     }
-    final type =
-        response.headers.contentType?.mimeType ?? 'application/octet-stream';
-    await body.writeAsBytes(bytes);
-    await meta.writeAsString(type);
-    return _Cached(bytes, type);
   }
 }
 
@@ -338,8 +475,13 @@ const _mimeTypes = {
   'symbols': 'text/plain',
 };
 
-class _Cached {
-  _Cached(this.bytes, this.contentType);
+class _Fetched {
+  _Fetched(this.status, this.bytes, this.contentType);
+  _Fetched.failed(this.status)
+      : bytes = const [],
+        contentType = '';
+
+  final int status;
   final List<int> bytes;
   final String contentType;
 }

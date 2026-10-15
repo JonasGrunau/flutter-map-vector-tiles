@@ -57,7 +57,8 @@ package. Delete them by hand if you ever run `flutter create` yourself.
   perfectly smooth map for a device that was visibly stuttering.
 - **Check `interrupted=` before believing a run.** An auto-lock or a
   backgrounding parks the render pump (the layer stops rasterizing from
-  `inactive` onwards) and the numbers become fiction.
+  `inactive` onwards on iOS, from `hidden` onwards elsewhere) and the
+  numbers become fiction.
 - **`layouts=0 rasterizes=0` is the cache signal.** It means the crossing was
   served entirely from `TileResultCache`. Any other number means the screen was
   re-rendered.

@@ -24,7 +24,7 @@ class ResultsPage extends StatelessWidget {
     final passes = results.where((r) => r['kind'] == 'pass').toList();
     final arms = [
       for (final id in passes.map((r) => r['arm'] as String).toSet())
-        Arm.parse(id),
+        if (Arm.tryParse(id) case final arm?) arm,
     ];
     final rows = <(String, String)>{
       for (final r in passes) (r['scenario'] as String, r['pass'] as String),
@@ -88,11 +88,13 @@ class ResultsPage extends StatelessWidget {
                               final c = cell(a, row);
                               if (c == null) return const Text('–');
                               final ui = c['buildMs'] as Map<String, dynamic>;
+                              // -1: the map never settled (`_settle`).
+                              final settle = c['settleMs'] as num;
                               return Text(
                                 '${fmt(c['deliveredPct'])}% · '
                                 '${c['stalls50']} · '
                                 '${fmt(ui['p90'])} ms · '
-                                '${c['settleMs']} ms',
+                                '${settle < 0 ? 'timed out' : '$settle ms'}',
                               );
                             })),
                         ]),

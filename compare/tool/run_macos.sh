@@ -6,7 +6,7 @@
 # Close other apps first; keep the window in front and the Mac on power.
 set -e
 source "${0:A:h}/common.sh"
-ROUNDS="${1:-3}"
+ROUNDS="${1:-4}"
 (( $# )) && shift
 
 scaffold macos
@@ -16,9 +16,14 @@ flutter build macos --profile "${DEFINES[@]}"
 APP="$COMPARE_DIR/build/macos/Build/Products/Profile/flutter_map_vector_tiles_compare.app"
 
 start_lab macos "$ROUNDS" "$@"
-trap stop_lab EXIT
 while lab_busy; do
-  # The app takes the next queued run, measures it and quits.
-  open -W -n "$APP"
+  if lab_pending; then
+    # The app takes the next queued run, measures it and quits.
+    open -W -n "$APP"
+  else
+    # Only a run whose app crashed is left; the lab server gives it up
+    # after --run-timeout. A new app would find nothing to run.
+    sleep 3
+  fi
 done
 echo "results: $(lab_results macos)"

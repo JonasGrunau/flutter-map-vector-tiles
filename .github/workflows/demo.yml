@@ -3,8 +3,9 @@
 # https://jonasgrunau.github.io/flutter-map-vector-tiles/
 #
 # It is the dart2js/CanvasKit build on purpose: GitHub Pages cannot send the
-# cross-origin isolation headers a multi-threaded Wasm renderer needs, and
-# this is the configuration the web numbers in compare/RESULTS.md measure.
+# cross-origin isolation headers a multi-threaded Wasm renderer needs. The
+# web numbers in compare/RESULTS.md come from the same renderer, but built
+# with --profile (compare/tool/run_web.sh), not this --release build.
 #
 # One-time setup: Settings → Pages → Source: "GitHub Actions".
 name: Demo
@@ -33,7 +34,10 @@ permissions:
 
 concurrency:
   group: demo-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a PR supersedes its build, which never deploys. Runs on
+  # main queue instead: a deploy-pages cancelled mid-way can leave Pages
+  # half-deployed, so GitHub's Pages starter workflows never cancel either.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:

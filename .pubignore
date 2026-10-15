@@ -5,6 +5,7 @@
 # two in sync when either changes.
 
 # --- mirrors .gitignore ---
+# (except `!compare/pubspec.lock`: all of compare/ is excluded below)
 .DS_Store
 .dart_tool/
 .packages

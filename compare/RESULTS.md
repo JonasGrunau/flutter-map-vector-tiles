@@ -10,6 +10,12 @@ recorded tiles. Still to come: iOS. The sessions this page quoted
 before, and the first macOS and Chrome attempts, are listed under
 [Earlier sessions](#earlier-sessions).
 
+**Correction, 2026-10-13:** the request and download figures this page
+gave "per run" counted only the opening and the measured passes, not the
+jump to each scenario's start; on macOS and in Chrome whole runs fetched
+2.1 to 4.4 times as much. They are relabelled below, next to the lab
+server's whole-run counts for macOS and Chrome; Android's were not kept.
+
 The two packages draw labels in different ways, so the arms pair up by
 strategy, not by default. Labels baked into the tile images:
 `fmvt-raster` (this package with `LabelMode.tile`) against `vmt-raster`
@@ -49,8 +55,10 @@ package's default) against `vmt-vector`.
   vector mode.
 - **Opening the map:** the first complete map took 0.95 s with baked
   labels and 1.05 s by default, against 3.0 s (raster mode) and 1.9 s
-  (vector mode). This package downloaded 31 tiles, 12.8 MB, per run;
-  raster mode 41 tiles, 20.4 MB; vector mode 30 tiles, 12.9 MB.
+  (vector mode). While opening the map and during the measured passes
+  this package sent 31 requests for 12.8 MB, raster mode 41 for 20.4 MB,
+  vector mode 30 for 12.9 MB. A whole run sends more: these counts leave
+  out the jump to each scenario's start (see below the Android tables).
 - **Settling:** with baked labels this package stops repainting 16–32 ms
   after the camera stops, except after the long warm-zoom path (162 ms:
   the last tiles' recording is spread over frames, see the CHANGELOG).
@@ -102,9 +110,10 @@ package's default) against `vmt-vector`.
 - **On this machine the label strategy hardly matters for this package:**
   its two label modes are within 1 point of each other everywhere.
 - **Opening the map:** 0.34 s with baked labels and 0.47 s by default,
-  against 0.98 s (raster mode) and 0.96 s (vector mode). This package
-  downloaded 33 tiles, 11.6 MB, per run; raster mode 39 tiles, 18.0 MB;
-  vector mode 29 tiles, 11.6 MB.
+  against 0.98 s (raster mode) and 0.96 s (vector mode). A whole run
+  downloaded 26.6 MB in 69 requests for this package, 51.2–51.6 MB in
+  111–112 for raster mode and 51.4 MB in 92 for vector mode (the lab
+  server's count, rounds 1 and 2; see below the macOS tables).
 - **Settling:** one frame (7–8 ms) with baked labels, for both packages.
   With live labels this package takes 189–298 ms, the label fade plus
   the placement interval, and vector mode 91–99 ms after a pan and
@@ -136,11 +145,13 @@ package's default) against `vmt-vector`.
 - **Opening the map:** 1.22 s by default and 1.25 s with baked labels,
   against 2.6 s (raster mode) and 1.9 s (vector mode).
 - **Requests:** in the browser the HTTP cache answers a repeated request,
-  so the lab server sees each tile once and these are distinct tiles:
-  this package 33 (11.6 MB), raster mode 21 (8.2 MB), vector mode 14
-  (5.8 MB). On macOS, in a smaller window, `vector_map_tiles` sent 39
-  and 29 requests, so there about half of them went to tiles it had
-  already downloaded. This package sent 33 on both.
+  so the lab server sees each URL once per run. A whole run sent 80
+  requests (29.3 MB) for this package, 90 (32.6 MB) for raster mode and
+  45 (18.8 MB) for vector mode, the same in every round (the lab
+  server's count; see below the Chrome tables). On macOS, in a smaller
+  window and with no HTTP cache, `vector_map_tiles` sent 111–112 and
+  92: more than the distinct URLs it needed for the larger browser
+  window, so there it fetched some tiles again. This package sent 69.
 - **Settling:** with baked labels this package's last repaint comes
   0–83 ms after the camera stops, and 269 ms after the first pan, while
   the last tiles arrive; raster mode's 0–16 ms, and 161–482 ms after a
@@ -244,9 +255,17 @@ Flutter 3.44.5 · flutter_map_vector_tiles 2.9.1 (c1dc45c) · vector_map_tiles 9
 | | flutter_map_vector_tiles | flutter_map_vector_tiles · TileOffset.none | flutter_map_vector_tiles · LabelMode.tile | flutter_map_vector_tiles · LabelMode.tile · TileOffset.none | vector_map_tiles · raster | vector_map_tiles · vector |
 |---|---:|---:|---:|---:|---:|---:|
 | time to first complete map, ms | 1052 | 1467 | 952 | 1092 | 2990 | 1892 |
-| tile requests per run | 31 | 23 | 31 | 23 | 41 | 30 |
-| MB downloaded per run | 12.8 | 10.3 | 12.8 | 10.3 | 20.4 | 12.9 |
+| requests while opening and in the measured passes | 31 | 23 | 31 | 23 | 41 | 30 |
+| MB downloaded while opening and in the measured passes | 12.8 | 10.3 | 12.8 | 10.3 | 20.4 | 12.9 |
 | peak RSS, MB | 393 | 516 | 391 | 488 | 401 | 892 |
+
+Requests count every resource a run fetched through the lab server
+(style, TileJSON, sprites and tiles), but only while opening the map and
+during the measured passes: the jump to each scenario's start and the
+wait for it to settle are left out, so a whole run fetches more. This
+table used to call them "tile requests per run". The lab server's
+whole-run counts for this session were not kept; sessions recorded from
+2026-10-13 on report them (`summarize.dart`'s "requests per run").
 
 **GPU memory, MB** (peak per run, median of 3 <sub>range</sub>; not part of
 `results.jsonl`, see below)
@@ -337,9 +356,19 @@ Flutter 3.44.5 · flutter_map_vector_tiles 2.9.1 (c1dc45c) · vector_map_tiles 9
 | | flutter_map_vector_tiles | flutter_map_vector_tiles · TileOffset.none | flutter_map_vector_tiles · LabelMode.tile | flutter_map_vector_tiles · LabelMode.tile · TileOffset.none | vector_map_tiles · raster | vector_map_tiles · vector |
 |---|---:|---:|---:|---:|---:|---:|
 | time to first complete map, ms | 470 | 487 | 336 | 341 | 982 | 962 |
-| tile requests per run | 33 | 21 | 33 | 21 | 39 | 29 |
-| MB downloaded per run | 11.6 | 8.2 | 11.6 | 8.2 | 18.0 | 11.6 |
+| requests while opening and in the measured passes | 33 | 21 | 33 | 21 | 39 | 29 |
+| MB downloaded while opening and in the measured passes | 11.6 | 8.2 | 11.6 | 8.2 | 18.0 | 11.6 |
 | peak RSS, MB | 527 | 643 | 495 | 590 | 577 | 948 |
+
+The two rows above leave out the jump to each scenario's start and the
+wait for it to settle (see the Android session). Whole runs, as the lab
+server counted them (`results/raw/2026-10-12-c1dc45c-macos/lab-runs.txt`;
+rounds 1 and 2, as round 0 also took the screenshots):
+
+| | flutter_map_vector_tiles | flutter_map_vector_tiles · TileOffset.none | flutter_map_vector_tiles · LabelMode.tile | flutter_map_vector_tiles · LabelMode.tile · TileOffset.none | vector_map_tiles · raster | vector_map_tiles · vector |
+|---|---:|---:|---:|---:|---:|---:|
+| requests per run | 69 | 77 | 69 | 77 | 111–112 | 92 |
+| MB downloaded per run | 26.6 | 29.2 | 26.6 | 29.2 | 51.2–51.6 | 51.4 |
 
 **Screenshots** (fixed Munich cameras after round 0; click for full size)
 
@@ -419,8 +448,18 @@ Flutter 3.44.5 · flutter_map_vector_tiles 2.9.1 (c1dc45c) · vector_map_tiles 9
 | | flutter_map_vector_tiles | flutter_map_vector_tiles · TileOffset.none | flutter_map_vector_tiles · LabelMode.tile | flutter_map_vector_tiles · LabelMode.tile · TileOffset.none | vector_map_tiles · raster | vector_map_tiles · vector |
 |---|---:|---:|---:|---:|---:|---:|
 | time to first complete map, ms | 1220 | 1272 | 1252 | 1309 | 2591 | 1931 |
-| tile requests per run | 33 | 21 | 33 | 21 | 21 | 14 |
-| MB downloaded per run | 11.6 | 8.2 | 11.6 | 8.2 | 8.2 | 5.8 |
+| requests while opening and in the measured passes | 33 | 21 | 33 | 21 | 21 | 14 |
+| MB downloaded while opening and in the measured passes | 11.6 | 8.2 | 11.6 | 8.2 | 8.2 | 5.8 |
+
+The two rows above leave out the jump to each scenario's start and the
+wait for it to settle (see the Android session). Whole runs, as the lab
+server counted them (`results/raw/2026-10-12-c1dc45c-web/lab-runs.txt`;
+the same in all three rounds):
+
+| | flutter_map_vector_tiles | flutter_map_vector_tiles · TileOffset.none | flutter_map_vector_tiles · LabelMode.tile | flutter_map_vector_tiles · LabelMode.tile · TileOffset.none | vector_map_tiles · raster | vector_map_tiles · vector |
+|---|---:|---:|---:|---:|---:|---:|
+| requests per run | 80 | 90 | 80 | 90 | 90 | 45 |
+| MB downloaded per run | 29.3 | 32.6 | 29.3 | 32.6 | 32.6 | 18.8 |
 
 **Screenshots** (fixed Munich cameras after round 0, MapLibre GL JS
 first; click for full size)
