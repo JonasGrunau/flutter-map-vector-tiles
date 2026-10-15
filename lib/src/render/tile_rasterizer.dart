@@ -153,13 +153,15 @@ class TileRasterizer {
       final pixelSize = pixelSizeFor(devicePixelRatio);
       canvas.clipRect(
           Rect.fromLTWH(0, 0, pixelSize.toDouble(), pixelSize.toDouble()));
-      canvas.scale(pixelScaleFor(devicePixelRatio));
+      final pixelScale = pixelScaleFor(devicePixelRatio);
+      canvas.scale(pixelScale);
 
       final (:painted, :next) = _paintLayers(
         canvas: canvas,
         theme: theme,
         data: data,
         styleZoom: styleZoom,
+        pixelScale: pixelScale,
         patterns: patterns,
         from: from,
         outOfBudget: outOfBudget,
@@ -214,12 +216,15 @@ class TileRasterizer {
   }
 
   /// Paints geometry layers onto [canvas] in logical tile coordinates
-  /// (0..256). Returns whether anything was drawn.
+  /// (0..256). [pixelScale] is what [canvas] scales those by to reach
+  /// device pixels, so that fill outlines come out one pixel wide.
+  /// Returns whether anything was drawn.
   static bool paint({
     required Canvas canvas,
     required Theme theme,
     required DisplayTileData data,
     required double styleZoom,
+    double pixelScale = 1,
     PatternResolver? patterns,
   }) =>
       _paintLayers(
@@ -227,6 +232,7 @@ class TileRasterizer {
         theme: theme,
         data: data,
         styleZoom: styleZoom,
+        pixelScale: pixelScale,
         patterns: patterns,
       ).painted;
 
@@ -239,6 +245,7 @@ class TileRasterizer {
     required Theme theme,
     required DisplayTileData data,
     required double styleZoom,
+    required double pixelScale,
     PatternResolver? patterns,
     int from = 0,
     bool Function()? outOfBudget,
@@ -273,7 +280,8 @@ class TileRasterizer {
           );
           painted = true;
         case FillThemeLayer():
-          painted |= _paintFill(canvas, layer, data, styleZoom, patterns);
+          painted |=
+              _paintFill(canvas, layer, data, styleZoom, patterns, pixelScale);
         case LineThemeLayer():
           painted |= _paintLine(canvas, layer, data, styleZoom, patterns);
         case RasterThemeLayer():
@@ -402,6 +410,7 @@ class TileRasterizer {
     DisplayTileData data,
     double styleZoom,
     PatternResolver? patterns,
+    double pixelScale,
   ) {
     if (layer.extrusion) {
       return _paintExtrusion(canvas, layer, data, styleZoom, patterns);
@@ -409,17 +418,25 @@ class TileRasterizer {
     var painted = false;
     final zoomCtx = EvalContext(zoom: styleZoom);
     final patternProp = layer.pattern;
-    // The fill paint is per-layer when the colour is a literal — or when
-    // the layer never reads feature properties, which makes every paint
-    // expression zoom-only and therefore constant across this tile.
+    // MapLibre's outline is its antialiasing pass, one device pixel wide
+    // at any zoom, and `fill-antialias: false` turns it off.
+    final outline = layer.antialias ? layer.outlineColor : null;
+    // The fill paint is per-layer when neither the colour nor the opacity
+    // reads the feature, which makes both constant across this tile. It
+    // has to be asked of each one: `["id"]` and `["geometry-type"]` read
+    // the feature without naming a property.
     final constant = patternProp == null &&
-        ((layer.color.isConstant && layer.opacity.isConstant) ||
-            (layer.referencedProperties?.isEmpty ?? false));
+        (layer.color.isConstant || layer.color.zoomOnly) &&
+        (layer.opacity.isConstant || layer.opacity.zoomOnly);
     Paint? fillPaint;
+    double? sharedOpacity;
     if (constant) {
-      final color = _withOpacity(layer.color.eval(zoomCtx),
-          layer.opacity.eval(zoomCtx).clamp(0.0, 1.0));
-      if (color.a == 0 && layer.outlineColor == null) return false;
+      final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
+      sharedOpacity = opacity;
+      final color = _withOpacity(layer.color.eval(zoomCtx), opacity);
+      if (color.a == 0 && (outline == null || opacity == 0)) {
+        return false;
+      }
       fillPaint = Paint()
         ..color = color
         ..isAntiAlias = layer.antialias;
@@ -447,26 +464,26 @@ class TileRasterizer {
         }
         // Sprite missing: fall through to the color fill.
       }
+      final opacity = sharedOpacity ?? layer.opacity.eval(ctx).clamp(0.0, 1.0);
       final paint = fillPaint ??
           (Paint()
-            ..color = _withOpacity(
-                layer.color.eval(ctx), layer.opacity.eval(ctx).clamp(0.0, 1.0))
+            ..color = _withOpacity(layer.color.eval(ctx), opacity)
             ..isAntiAlias = layer.antialias);
       if (paint.color.a > 0) {
         canvas.drawPath(path, paint);
         painted = true;
       }
-      final outline = layer.outlineColor;
-      if (outline != null) {
-        final color = outline.eval(ctx);
+      // `fill-opacity` dims the outline too, as MapLibre's outline shader
+      // multiplies it in; only the alpha of `fill-color` leaves it alone.
+      if (outline != null && opacity > 0) {
+        final color = _withOpacity(outline.eval(ctx), opacity);
         if (color.a > 0) {
           canvas.drawPath(
             path,
             Paint()
               ..color = color
               ..style = PaintingStyle.stroke
-              ..strokeWidth = 0.6
-              ..isAntiAlias = layer.antialias,
+              ..strokeWidth = 1 / pixelScale,
           );
           painted = true;
         }

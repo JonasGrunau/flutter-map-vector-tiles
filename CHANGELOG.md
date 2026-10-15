@@ -40,6 +40,17 @@ words and buildings.
   `fill-extrusion-color` is ignored, as the style spec says; an `rgba`
   colour used to make buildings translucent, with the same darker
   overlaps.
+- 🎨 Fill outlines (`fill-outline-color`) now draw as MapLibre and
+  Mapbox GL draw them: dimmed by `fill-opacity`, one device pixel wide
+  in the tile image, and not at all under `fill-antialias: false`.
+  Outlines used to be drawn at the outline colour's own alpha, so a
+  faint fill such as Mapbox Streets' buildings (`fill-opacity` 0.07,
+  outline alpha 0.74) got outlines about 14 times more opaque than in
+  MapLibre, standing out against the fill instead of barely showing.
+  They were also 0.6 logical pixels wide, 1.8 device pixels on a 3×
+  screen, and still drew, without antialiasing, when `fill-antialias`
+  was false. Like the rest of a tile, the outline still scales with the
+  map between zoom levels, up to 2 pixels wide.
 - ⚡ **Layer filters run once per data tile.** Every display tile used to
   test each feature of a source layer against every style layer reading
   it — on a MapTiler theme about 45 filter tests per feature drawn — and
@@ -113,6 +124,11 @@ words and buildings.
   between words, and so does this package now. The long word runs past
   the width on a line of its own, and the lines around it still break
   at `text-max-width`.
+- 🐛 A `fill` layer whose `fill-color` or `fill-opacity` reads only the
+  feature id (`["id"]`) or geometry type (`["geometry-type"]`), and no
+  feature property, now colours each feature by its own value. Every
+  feature used to get the value for no feature at all, so a fill made
+  visible only for certain ids was not drawn.
 - 📚 The README's comparison with `vector_map_tiles` now covers macOS and
   Chrome as well as Android, all measured on one build from this
   release's development (c1dc45c), which predates the road-shield and
