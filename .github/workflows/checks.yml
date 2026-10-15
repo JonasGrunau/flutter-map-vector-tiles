@@ -60,8 +60,11 @@ jobs:
       - name: Publish dry run
         run: dart pub publish --dry-run
 
+      # pana is pinned: a new release can change the scoring, and a release
+      # should not fail on a scorer nobody chose. Bumping it is deliberate —
+      # run the new version locally first.
       - name: pana (full points)
         if: inputs.pana
         run: |
-          dart pub global activate pana
+          dart pub global activate pana 0.23.19
           dart pub global run pana --exit-code-threshold 0 .

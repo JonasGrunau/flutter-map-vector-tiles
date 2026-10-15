@@ -69,8 +69,15 @@ for the baked-label pair: it draws what `vmt-raster` draws.
 - **Fresh process, empty caches.** The app asks the lab server which arm to
   run (`GET /_next`), measures it and exits. Each run gets new disk-cache
   directories (on web, `vector_map_tiles`' IndexedDB is deleted and the
-  browser context is new). Arms rotate their order every round, so thermal
-  drift cannot favour one.
+  browser context is new).
+- **Balanced order.** Rounds come in pairs: the second of a pair runs the
+  arms in the reverse of the first one's order, and each pair starts one
+  arm further along. Every arm's two slots in a pair add up to the same
+  number, so a drift that grows steadily over a session (the phone
+  warming up, the battery draining) costs each arm the same on average
+  over a pair. That holds for an even number of rounds only; an odd last
+  round has no partner, which is why the scripts default to 4. It does
+  not cancel a drift that comes and goes.
 - **Scripted camera paths**, driven by elapsed time, not by frame count:
   a janky arm covers the same ground in fewer frames. Each path runs over
   its own dense city, first cold (tiles never loaded in this process),
@@ -108,18 +115,34 @@ for the baked-label pair: it draws what `vmt-raster` draws.
 Each script builds the app in profile mode, starts the lab server, runs
 the queue and leaves the raw results in `results/raw/<date>-<platform>/`.
 The platform scaffolds are generated on first use and not checked in.
+`pubspec.lock` is checked in: it pins the `vector_map_tiles` renderer
+packages (`vector_tile_renderer`, `executor_lib`) along with the package
+itself.
 
 ```sh
 cd compare
-./tool/run_android.sh <adb serial> 3     # USB; keep the phone unlocked
-./tool/run_macos.sh 3                    # keep the window in front
-./tool/run_web.sh 3                      # headed Chrome via Playwright
+./tool/run_android.sh <adb serial> 4     # USB; keep the phone unlocked
+./tool/run_macos.sh 4                    # keep the window in front
+./tool/run_web.sh 4                      # headed Chrome via Playwright
 dart run tool/summarize.dart results/raw/<session>   # → Markdown tables
 ```
 
 Extra arguments go to the lab server: `--arms fmvt,vmt-raster`,
 `--scenarios zoom,rotate`, `--offline`, `--latency-ms 50` (adds a fixed
-delay to every tile, to emulate a network).
+delay to every tile, to emulate a network), `--session <name>`,
+`--run-timeout <s>`.
+
+- **One session, one directory.** The lab server refuses to start when
+  the session's `results.jsonl` already exists, so a second session on
+  the same day and platform needs its own `--session` name; it never
+  appends to the first. It also refuses a port another process holds
+  (a lab server left over from an earlier session, say), and a script
+  stopped with Ctrl-C still stops its lab server and, on Android, puts
+  the phone's settings back.
+- **A crashed run is given up, not waited for.** When the lab server
+  hears nothing about a running run for `--run-timeout` seconds (120 by
+  default; a healthy run is never quiet for longer than one 16 s camera
+  path), it writes an error row for it and moves on to the next run.
 
 **Profile mode on real hardware, and hands off.** A Mac or browser window
 that loses focus is `inactive`, and a pass that ran unfocused measures the
@@ -130,7 +153,16 @@ platform's throttling, not the packages. iOS needs a real device too
 
 - Compare arms within one session only. Each session records its device,
   display refresh rate, Flutter version, viewport, device pixel ratio and
-  commit.
+  commit; `summarize.dart` warns when a session mixes viewports or
+  commits or holds a measurement twice.
+- "Requests per run" counts every resource a run fetched through the lab
+  server (style, TileJSON, sprites and tiles), from the style to the end
+  of its last pass, before round 0's screenshots. Sessions recorded
+  before 2026-10-13 lack that count; for them `summarize.dart` prints
+  "requests while opening and in the measured passes", which leaves out
+  the jump to each scenario's start. A settle that never came within the
+  app's 25 s wait shows as "timed out" and counts as longer than any
+  measured one.
 - `vector_map_tiles` rasterizes every tile at a fixed 512 px (2×), this
   package at 256 px × the device pixel ratio. On a dpr-2.6 phone this
   package therefore rasterizes ~1.7× the pixels per tile and its geometry
@@ -155,3 +187,4 @@ platform's throttling, not the packages. iOS needs a real device too
 | `tool/run_*.sh`, `run_web.mjs` | per-platform drivers |
 | `tool/summarize.dart` | raw results → RESULTS.md tables |
 | `tool/reference_shots.mjs`, `maplibre.html` | MapLibre reference renders |
+| `tool/fidelity.py` | raw screenshots → the WebP grids in RESULTS.md |

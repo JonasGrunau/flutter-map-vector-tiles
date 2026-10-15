@@ -60,7 +60,7 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
     super.initState();
     _lifecycle = AppLifecycleListener(onStateChange: (state) {
       if (state != AppLifecycleState.resumed) _awayStates.add(state.name);
-      unawaited(_lab?.log('${_runId ?? '-'}: lifecycle ${state.name}'));
+      unawaited(_lab?.log(_runId, 'lifecycle ${state.name}'));
     });
     if (_config.hasLab) _lab = Lab(_config.lab);
     // Let the first frame (and the page) settle before calibrating.
@@ -89,7 +89,7 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
 
   void _say(String status) {
     if (mounted) setState(() => _status = status);
-    unawaited(_lab?.log('${_runId ?? '-'}: $status'));
+    unawaited(_lab?.log(_runId, status));
   }
 
   Future<void> _main() async {
@@ -173,18 +173,31 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
 
   /// Fills the browser's HTTP cache along every path before the first
   /// measured arm, so no arm pays the network on behalf of the others.
+  ///
+  /// Twice, because the packages load different tiles for the same camera:
+  /// this package's default loads data tiles one zoom below flutter_map's
+  /// (`TileOffset.maplibre`), `vector_map_tiles` at flutter_map's zoom,
+  /// which `TileOffset.none` reproduces.
   Future<void> _warmUp(List<String> scenarioIds) async {
-    _say('warming the HTTP cache');
-    final loaded =
-        await loadArm(Arm.fmvt, styleUrl: styleUrlFor(_config.style));
-    setState(() => _layer = loaded.buildLayer());
-    await _settle(sinceUs: _log.nowUs);
-    for (final id in scenarioIds) {
-      final s = scenarioById(id);
-      _jump(s.start);
+    LoadedArm? previous;
+    for (final arm in [Arm.fmvt, Arm.fmvtNone]) {
+      _say('warming the HTTP cache: ${arm.label}');
+      final loaded = await loadArm(arm, styleUrl: styleUrlFor(_config.style));
+      // Where the measured arms open.
+      _jump(startPose);
+      // A key per arm: a fresh layer, not the previous one reconfigured.
+      setState(() => _layer =
+          KeyedSubtree(key: ValueKey(arm), child: loaded.buildLayer()));
       await _settle(sinceUs: _log.nowUs);
-      await _animate(s, speed: 2);
-      await _settle(sinceUs: _log.nowUs);
+      previous?.dispose();
+      previous = loaded;
+      for (final id in scenarioIds) {
+        final s = scenarioById(id);
+        _jump(s.start);
+        await _settle(sinceUs: _log.nowUs);
+        await _animate(s, speed: 2);
+        await _settle(sinceUs: _log.nowUs);
+      }
     }
   }
 
@@ -279,6 +292,14 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
           ...await _net(runId, net0),
         });
       }
+    }
+
+    // The whole run's traffic, from the style request to the end of the
+    // last pass: what `summarize.dart` reports per run. A pass row counts
+    // only its own motion and settle, not the jump to its start, and the
+    // screenshots below would add round 0's extra cameras.
+    if (_lab != null) {
+      await emit({...base, 'kind': 'net', ...await _net(runId, null)});
     }
 
     if (shots && _lab != null) {

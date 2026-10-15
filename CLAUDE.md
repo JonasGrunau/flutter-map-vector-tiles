@@ -68,13 +68,16 @@ same change:
 
 ## Release gate
 
-Three workflows, all in `.github/workflows/` and all on the Flutter version
-pinned in `.tool-versions`:
+Four workflows, all in `.github/workflows/` and all on the Flutter version
+pinned in `.tool-versions`. `demo.yml` builds the `compare/` web demo on
+PRs that touch `lib/` or `compare/` and deploys it to GitHub Pages from
+`main`; it has no part in releasing. The other three make up the gate:
 
 - `checks.yml` — the shared suite: `dart format` changes nothing,
   `flutter analyze` is clean, `flutter test` is green on the VM and on Chrome,
   `dart pub publish --dry-run` has no warnings, and optionally pana at full
-  points. Never triggered on its own.
+  points — a pinned pana, so the score cannot move under a release; bump
+  it deliberately. Never triggered on its own.
 - `ci.yml` — runs `checks.yml` (without pana) on every push to `main` and
   every PR into it.
 - `publish.yml` — runs when a `vX.Y.Z` tag is pushed. It refuses to publish
@@ -83,12 +86,16 @@ pinned in `.tool-versions`:
   constraint) and the newest `CHANGELOG.md` heading agree, and that section
   has its summary line; and `checks.yml` passes **with pana**. Only then
   does its `publish` job upload, authenticated by OIDC — there is no
-  pub.dev secret in the repo.
+  pub.dev secret in the repo. The OIDC token lives minutes, so the job
+  mints it (`setup-dart`) right before `flutter pub publish`, after the
+  Flutter SDK download, and publishes with `flutter`, whose own Dart
+  resolves the Flutter SDK dependency.
 
 Shipping a version:
 
-1. Make sure CI is green on `main`, and run pana locally — CI doesn't run
-   it, and a red release workflow costs a re-tag.
+1. Make sure CI is green on `main`, and run pana locally, the version
+   `checks.yml` pins (`dart pub global activate pana <that version>`) — CI
+   doesn't run it, and a red release workflow costs a re-tag.
 2. Commit `Release X.Y.Z`: rename `## Unreleased` to `## X.Y.Z`, write its
    summary line, bump `version:` and the README install snippet.
 3. `git tag vX.Y.Z && git push --atomic origin main vX.Y.Z`.

@@ -52,11 +52,20 @@ done
 
 # `$!` is the flutter tool's own Dart process (the wrapper scripts exec into
 # it). Kill that process and its children only: another `flutter run` on this
-# machine belongs to someone else.
+# machine belongs to someone else. List the children before the tool goes:
+# once it has exited they belong to launchd, and `pkill -P` finds none.
+CHILDREN=($(pgrep -P $PID 2>/dev/null || true))
 kill $PID 2>/dev/null || true
 sleep 2
-pkill -9 -P $PID 2>/dev/null || true
-kill -9 $PID 2>/dev/null || true
+for child in $CHILDREN; do
+  # Still the tool's child, or orphaned by it: not a reused PID.
+  [[ "$(ps -o ppid= -p $child 2>/dev/null | tr -d ' ')" == ($PID|1) ]] &&
+    kill -9 $child 2>/dev/null || true
+done
+# Only if the tool is still running, and still ours: its PID may have been
+# reused since it exited.
+[[ "$(ps -o ppid= -p $PID 2>/dev/null | tr -d ' ')" == "$$" ]] &&
+  kill -9 $PID 2>/dev/null || true
 
 echo "--- $LABEL ---"
 # iOS logs as `flutter: …`, Android as `I/flutter (<pid>): …`.

@@ -13,6 +13,12 @@ try {
   for (;;) {
     const before = await status();
     if (before.pending.length === 0 && before.running.length === 0) break;
+    if (before.pending.length === 0) {
+      // Only a run whose page crashed is left; the lab server gives it up
+      // after --run-timeout. A new page would find nothing to run.
+      await sleep(2000);
+      continue;
+    }
     const context = await browser.newContext({
       viewport: { width: 1000, height: 800 },
       deviceScaleFactor: 2,

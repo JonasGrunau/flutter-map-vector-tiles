@@ -638,6 +638,93 @@ void main() {
       });
     }
 
+    testWidgets("tile mode places a tile's labels in a frame of their own",
+        (tester) async {
+      tester.view.physicalSize = const Size(600, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      final provider = EverywhereProvider(labelledTile());
+      await tester.pumpWidget(labelModeApp(
+          MapController(), TileProviders({'s': provider}), labelTheme(),
+          labelMode: LabelMode.tile));
+      // Every tile shapes its label ("AAAA", so only the first one
+      // really shapes) and then places, draws and snapshots it. With a
+      // budget of nothing, the shaping spends its frame: the rest must
+      // wait for the next one rather than run on top.
+      final start = LabelPainter.debugTilePaintCount;
+      var shaped = LabelPainter.debugShapeMicros;
+      var painted = start;
+      var both = 0;
+      expect(
+          await pumpUntil(tester, () async {
+            final nowShaped = LabelPainter.debugShapeMicros;
+            final nowPainted = LabelPainter.debugTilePaintCount;
+            if (nowShaped > shaped && nowPainted > painted) both++;
+            shaped = nowShaped;
+            painted = nowPainted;
+            return painted - start >= 4;
+          }),
+          isTrue);
+      expect(both, 0, reason: 'a frame shaped a label and placed a tile');
+      await settleLabelled(tester, provider);
+    });
+
+    testWidgets('the first frame of a camera move pumps on the moving budget',
+        (tester) async {
+      tester.view.physicalSize = const Size(600, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      VectorTileLayer.debugPumpCameraStill = null;
+      addTearDown(() => VectorTileLayer.debugPumpCameraStill = null);
+
+      final controller = MapController();
+      final provider = EverywhereProvider(labelledTile());
+      await tester.pumpWidget(labelModeApp(
+          controller, TileProviders({'s': provider}), labelTheme(),
+          labelMode: LabelMode.screen));
+      // Until the pump has work, which one unit per frame keeps it busy
+      // with for many frames more.
+      expect(
+          await pumpUntil(
+              tester, () async => VectorTileLayer.debugPumpCameraStill != null),
+          isTrue);
+      expect(VectorTileLayer.debugPumpCameraStill, isTrue,
+          reason: 'the camera has not moved yet');
+
+      // The pump runs ahead of the build that sees the new camera; the
+      // move event is what tells it in time.
+      controller.move(const LatLng(48.18, 11.75), 14);
+      VectorTileLayer.debugPumpCameraStill = null;
+      await tester.pump();
+      expect(VectorTileLayer.debugPumpCameraStill, isFalse);
+      // Left loading, the web executor's timers would outlive the test.
+      await settleLabelled(tester, provider);
+    });
+
+    testWidgets('a memory trim mid-shaping still finishes every tile',
+        (tester) async {
+      tester.view.physicalSize = const Size(600, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      final provider = EverywhereProvider(labelledTile());
+      await tester.pumpWidget(labelModeApp(
+          MapController(), TileProviders({'s': provider}), labelTheme(),
+          labelMode: LabelMode.tile));
+      // Trimmed as soon as a label is shaped: the tiles still queued
+      // rewind their shaping, which the pump then redoes.
+      final shaped = LabelPainter.debugShapeMicros;
+      expect(
+          await pumpUntil(
+              tester, () async => LabelPainter.debugShapeMicros > shaped),
+          isTrue);
+      VectorTileLayer.clearMemoryCache();
+      await settleLabelled(tester, provider);
+      await settleRendering(tester);
+      expect(await hasColor(tester, labelColor), isTrue);
+    });
+
     testWidgets('a layer disposed mid-recording lets go of the slices',
         (tester) async {
       tester.view.physicalSize = const Size(600, 600);

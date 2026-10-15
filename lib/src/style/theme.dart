@@ -120,7 +120,8 @@ class FillThemeLayer extends ThemeLayer {
   /// Whether this is a `fill-extrusion` layer, drawn flat from above.
   /// Its opacity applies to the layer as a whole rather than to each
   /// feature, per spec, so overlapping buildings are not darker where
-  /// they overlap.
+  /// they overlap — patterned ones included — and the alpha of its
+  /// colour is ignored, as the spec says.
   final bool extrusion;
 
   FillThemeLayer({

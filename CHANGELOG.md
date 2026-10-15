@@ -2,18 +2,25 @@
 
 ## Unreleased
 
+Opt-in labels baked into the tiles, smoother frames on dense tiles and
+label-heavy screens, and closer MapLibre parity for road shields, long
+words and buildings.
+
 - ✨ **Labels baked into tiles**: `VectorTileLayer.labelMode` chooses
   where labels and icons are drawn. The default, `LabelMode.screen`, is
   the per-frame screen-space pass as before. `LabelMode.tile` places and
   draws them once per tile, into the tile's image, as `vector_map_tiles`
-  does in its raster mode, so a moving map does no label work at all.
-  The same text engine draws them, curved road names and SDF icons
-  included, but with the limits of a pre-rendered tile: collision is
-  per tile and a label that would cross a tile edge is dropped, text
-  turns with the map, scales with the tile between zoom levels, and
-  fades in with its tile. Texture memory per tile is unchanged. On a
-  Nothing Phone (1) at 60 Hz, the map got a frame on 94–98% of display
-  refreshes while zooming, panning, rotating and flinging, against
+  does in its raster mode, so a moving map does no per-frame label
+  work; a tile that arrives while the map moves still has its labels
+  laid out, shaped, placed and drawn, once, by the render pump that
+  records its roads. The same text engine draws them, curved road
+  names and SDF icons included, but with the limits of a pre-rendered
+  tile: collision is per tile and a label that would cross a tile edge
+  is dropped, text turns with the map, scales with the tile between
+  zoom levels, and fades in with its tile. Texture memory per tile is
+  unchanged. On a Nothing Phone (1) at 60 Hz, the map got a frame on
+  94–98% of display refreshes while zooming, panning, rotating and
+  flinging, against
   78–86% with screen-space labels (rotating: 78–81% → 94–98%). On a
   MacBook Pro (M4 Pro) both modes get 97–100%.
 - ✨ `VectorTileLayer.clearMemoryCache()` now also trims the label text
@@ -25,10 +32,14 @@
   RSS fell by 25–30 MB within 3 s, and by 42–48 MB with
   `TileOffset.none`.
 - 🎨 `fill-extrusion` layers, such as the `building-3d` layer of
-  OpenFreeMap's Liberty style, now apply `fill-extrusion-opacity` to the
-  layer as a whole, as MapLibre does. Each building used to be blended
-  on its own, so wherever a building part overlapped its outline, the
-  overlap drew darker than the rest of the building.
+  OpenFreeMap's Liberty style, now follow MapLibre's opacity rules.
+  `fill-extrusion-opacity` applies to the layer as a whole, patterned
+  extrusions included: each building used to be blended on its own, so
+  wherever a building part overlapped its outline, the overlap drew
+  darker than the rest of the building. And the alpha of
+  `fill-extrusion-color` is ignored, as the style spec says; an `rgba`
+  colour used to make buildings translucent, with the same darker
+  overlaps.
 - 🎨 Fill outlines (`fill-outline-color`) now draw as MapLibre and
   Mapbox GL draw them: dimmed by `fill-opacity`, one device pixel wide
   in the tile image, and not at all under `fill-antialias: false`.
@@ -40,40 +51,44 @@
   screen, and still drew, without antialiasing, when `fill-antialias`
   was false. Like the rest of a tile, the outline still scales with the
   map between zoom levels, up to 2 pixels wide.
-- ⚡ A dense tile no longer holds up a frame while the map moves.
-  Recording a tile's roads and buildings took 16–49 ms on a phone for
-  central Berlin, all in one frame; it is now spread over several,
-  one style layer at a time, within the render pump's budget per frame,
-  which is 4 ms while the camera moves and 12 ms once it stands still.
-  On a Nothing Phone (1) with `LabelMode.tile`, the map got a frame on
-  95–98% of display refreshes while panning (was 84–89%) and 94–96%
-  while zooming (was 85–93%). The first complete map appeared after
-  1.0 s instead of 3.8 s, and after 1.1–1.2 s instead of 3.0–3.1 s
-  with the default `LabelMode.screen`, whose frames while moving are
-  held up by its label pass and did not change. The tiles drawn are
-  the same, pixel for pixel. In exchange, the last tiles can land up
-  to 0.2 s after a pan ends, and 0.9 s after a long zoom.
 - ⚡ **Layer filters run once per data tile.** Every display tile used to
   test each feature of a source layer against every style layer reading
   it — on a MapTiler theme about 45 filter tests per feature drawn — and
-  at overzoom one data tile is cut into up to 64 display tiles, each
-  repeating that work. Filters that don't read the zoom, which is nearly
-  all of them, are now evaluated once per data tile and their matches
-  reused, so a tile rasterizes in a third to almost half less time on a
+  at overzoom one data tile is cut into many display tiles, up to 64
+  between z15.5 and z17.5 over z14 data, each repeating that work.
+  Filters that don't read the zoom, which is nearly all of them, are now
+  evaluated once per data tile and their matches reused, so in that
+  band a tile rasterizes in a third to almost half less time on a
   mid-range Android phone. Filters that read the zoom are still
   evaluated per display tile.
+- ⚡ Dense tiles are now rendered over several frames instead of in
+  one. Recording a tile's roads and buildings took 16–49 ms on a phone
+  for central Berlin, all in one frame; the render pump now records it
+  one style layer at a time, as it already shaped labels one at a time,
+  and stops for the frame once its budget is spent: 4 ms while the
+  camera moves, from the first frame of a drag or zoom, and 12 ms once
+  it has stood still for 150 ms. A layer is never split, so one very
+  dense layer can still take a frame of its own (22 ms for the densest
+  buildings layer measured), and with `LabelMode.tile` so can a tile's
+  label placement, drawing and snapshot, which wait for the next frame
+  rather than run in one whose budget is already spent. On a Nothing
+  Phone (1) with `LabelMode.tile`, the map got a frame on 95–98% of
+  display refreshes while panning (was 84–89%) and 94–96% while zooming
+  (was 85–93%). The first complete map appeared after 1.0 s instead of
+  3.8 s, and after 1.1–1.2 s instead of 3.0–3.1 s with the default
+  `LabelMode.screen`, whose frames while moving are held up by its
+  label pass and did not change. The tiles drawn are the same, pixel
+  for pixel. In exchange, with `LabelMode.tile` the last tiles can land
+  up to 0.2 s after a pan ends, and 0.9 s after a long zoom; and while
+  a still map is loading, the pump may take most of a 60 Hz frame and
+  more than a 120 Hz one, so an animation running over it can drop
+  frames until the tiles are in.
 - ⚡ Frames between two label placement passes now sort only the labels
   on screen — about a hundred — instead of every candidate, often a few
   thousand: 1.5–2.6× less sorting per frame. Together with the filter
   change, fast zoom sweeps between z15.5 and z17.5 over Munich (MapTiler
-  style, Nothing Phone 1) ran at 8–37 % more frames per second, with
-  45–71 % fewer frames over 16.7 ms.
-- 🐛 A map in an unfocused window kept painting only its background
-  colour for every tile it had not finished. The layer stops rasterizing
-  in `AppLifecycleState.inactive`, which guards against iOS revoking the
-  GPU on the way to the background, but on macOS, Windows, Linux, web
-  and an Android split screen `inactive` just means the window lost
-  focus. The gate now applies to `inactive` on iOS only.
+  style, Nothing Phone (1)) ran at 8–37% more frames per second, with
+  45–71% fewer frames over 16.7 ms.
 - 🐛 Zooming back to a level you had just left in a label-dense city
   brought its labels back tile by tile over several seconds, and the map
   kept rendering until they were all there. Finished tiles come back from
@@ -88,6 +103,12 @@
   117–119 MB higher with `TileOffset.none`, whose peak rose from 384 to
   491–495 MB. `VectorTileLayer.clearMemoryCache()` now gives part of it
   back (see above).
+- 🐛 A map in an unfocused window kept painting only its background
+  colour for every tile it had not finished. The layer stops rasterizing
+  in `AppLifecycleState.inactive`, which guards against iOS revoking the
+  GPU on the way to the background, but on macOS, Windows, Linux, web
+  and an Android split screen `inactive` just means the window lost
+  focus. The gate now applies to `inactive` on iOS only.
 - 🐛 Road shields no longer sit on road pieces too short for them. A
   symbol placed along a line but not curved letter by letter, such as
   a shield, a one-way arrow or text in the viewport's orientation, was
@@ -95,16 +116,19 @@
   crossings, Munich's Karlsplatz for one, carried shields MapLibre does
   not show. It now needs all of itself on the line, the longer of its
   text and icon centred on its anchor, as curved text already did and
-  as MapLibre requires.
+  as MapLibre requires; an icon alone at `line-center` is exempt, as
+  there.
 - 🐛 A word wider than `text-max-width` is no longer broken in the
   middle. Flutter's line breaker split it where the width ran out, so
   a district label read LUDWIGSVORST / ADT; MapLibre breaks lines only
-  between words, and so does this package now, letting the long word
-  run past the width on a line of its own.
+  between words, and so does this package now. The long word runs past
+  the width on a line of its own, and the lines around it still break
+  at `text-max-width`.
 - 📚 The README's comparison with `vector_map_tiles` now covers macOS and
-  Chrome as well as Android, all measured on this release's code, and
-  `compare/RESULTS.md` puts a MapLibre GL JS render next to every Chrome
-  screenshot.
+  Chrome as well as Android, all measured on one build from this
+  release's development (c1dc45c), which predates the road-shield and
+  long-word fixes above, and `compare/RESULTS.md` puts a MapLibre GL JS
+  render next to every Chrome screenshot.
 - 📚 The README now says that the package is developed with Claude Code,
   and links the agent instructions Claude works under.
 - 📦 Versions are now published from GitHub Actions. Pushing a `vX.Y.Z`

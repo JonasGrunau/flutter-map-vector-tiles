@@ -23,7 +23,8 @@ import 'pattern_resolver.dart';
 /// per-frame cost of the map is then just drawing textures. Symbol layers
 /// are *not* painted here: in `LabelMode.screen` they are drawn per frame
 /// in screen space by the label pass, and in `LabelMode.tile` the layer
-/// draws them over a [record]ed picture before taking its [toImage].
+/// draws them over the geometry [recordSlice] recorded (and [compose]
+/// stacked) before taking its [toImage].
 class TileRasterizer {
   /// Logical tile size in points — the one shared constant, see
   /// `core/tile_zoom.dart`.
@@ -411,6 +412,9 @@ class TileRasterizer {
     PatternResolver? patterns,
     double pixelScale,
   ) {
+    if (layer.extrusion) {
+      return _paintExtrusion(canvas, layer, data, styleZoom, patterns);
+    }
     var painted = false;
     final zoomCtx = EvalContext(zoom: styleZoom);
     final patternProp = layer.pattern;
@@ -435,49 +439,6 @@ class TileRasterizer {
       fillPaint = Paint()
         ..color = color
         ..isAntiAlias = layer.antialias;
-    }
-
-    // `fill-extrusion-opacity` is the opacity of the whole layer, which
-    // MapLibre renders to one buffer and blends once: where a building
-    // part overlaps its outline, the overlap is no darker than either.
-    // With one paint for every feature that is a single path — the
-    // non-zero rule fills the union once, given MVT's winding — and,
-    // drawn in one call, cheaper than a path per building. A colour
-    // that varies by feature needs a layer to composite instead; the
-    // opacity itself never varies by feature, the spec forbids it.
-    if (layer.extrusion && patternProp == null) {
-      if (fillPaint != null) {
-        final union = Path()..fillType = PathFillType.nonZero;
-        var any = false;
-        _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
-            (feature, ctx, transform, clip) {
-          any |= _addPolygon(union, feature, transform, clip);
-        });
-        if (!any) return false;
-        canvas.drawPath(union, fillPaint);
-        return true;
-      }
-      final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
-      if (opacity == 0) return false;
-      if (opacity < 1) {
-        canvas.saveLayer(
-            null, Paint()..color = Color.fromRGBO(0, 0, 0, opacity));
-      }
-      _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
-          (feature, ctx, transform, clip) {
-        final color = layer.color.eval(ctx);
-        if (color.a == 0) return;
-        final path = _polygonPath(feature, transform, clip);
-        if (path == null) return;
-        canvas.drawPath(
-            path,
-            Paint()
-              ..color = color
-              ..isAntiAlias = layer.antialias);
-        painted = true;
-      });
-      if (opacity < 1) canvas.restore();
-      return painted;
     }
 
     _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
@@ -527,6 +488,82 @@ class TileRasterizer {
         }
       }
     });
+    return painted;
+  }
+
+  /// [_paintFill] for a `fill-extrusion` layer, drawn flat from above.
+  ///
+  /// `fill-extrusion-opacity` is the opacity of the whole layer, which
+  /// MapLibre renders to one buffer and blends once: where a building
+  /// part overlaps its outline, the overlap is no darker than either.
+  /// It is also the only translucency an extrusion has — the spec
+  /// ignores the alpha of `fill-extrusion-color` — so every building is
+  /// drawn opaque into that buffer. With one colour for the whole layer
+  /// the buffer is a single path, drawn with the opacity in its paint:
+  /// the non-zero rule fills the union once, given MVT's winding, and
+  /// one call is cheaper than a path per building. A colour that varies
+  /// by feature, or a pattern, needs a layer to composite instead; the
+  /// opacity itself never varies by feature, the spec forbids it.
+  static bool _paintExtrusion(
+    Canvas canvas,
+    FillThemeLayer layer,
+    DisplayTileData data,
+    double styleZoom,
+    PatternResolver? patterns,
+  ) {
+    final zoomCtx = EvalContext(zoom: styleZoom);
+    final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
+    if (opacity == 0) return false;
+    final patternProp = layer.pattern;
+    final oneColour = patternProp == null &&
+        (layer.color.isConstant ||
+            (layer.referencedProperties?.isEmpty ?? false));
+    if (oneColour) {
+      final union = Path()..fillType = PathFillType.nonZero;
+      var any = false;
+      _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
+          (feature, ctx, transform, clip) {
+        any |= _addPolygon(union, feature, transform, clip);
+      });
+      if (!any) return false;
+      canvas.drawPath(
+          union,
+          Paint()
+            ..color = layer.color.eval(zoomCtx).withValues(alpha: opacity)
+            ..isAntiAlias = layer.antialias);
+      return true;
+    }
+
+    var painted = false;
+    if (opacity < 1) {
+      canvas.saveLayer(null, Paint()..color = Color.fromRGBO(0, 0, 0, opacity));
+    }
+    _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
+        (feature, ctx, transform, clip) {
+      final path = _polygonPath(feature, transform, clip);
+      if (path == null) return;
+      if (patternProp != null && patterns != null) {
+        final name = patternProp.eval(ctx);
+        final image = name.isEmpty ? null : patterns.imageFor(name);
+        if (image != null) {
+          canvas.drawPath(
+            path,
+            _patternPaint(image, patterns.pixelRatio, 1, data.displayKey,
+                layer.antialias),
+          );
+          painted = true;
+          return;
+        }
+        // Sprite missing: fall through to the colour, as a fill does.
+      }
+      canvas.drawPath(
+          path,
+          Paint()
+            ..color = layer.color.eval(ctx).withValues(alpha: 1)
+            ..isAntiAlias = layer.antialias);
+      painted = true;
+    });
+    if (opacity < 1) canvas.restore();
     return painted;
   }
 

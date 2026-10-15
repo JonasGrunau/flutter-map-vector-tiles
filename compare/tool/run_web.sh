@@ -8,7 +8,7 @@
 # drives the Chrome installed on this machine.
 set -e
 source "${0:A:h}/common.sh"
-ROUNDS="${1:-3}"
+ROUNDS="${1:-4}"
 (( $# )) && shift
 WASM=()
 PLATFORM=web
@@ -25,6 +25,5 @@ flutter build web --profile --base-href /app/ "${WASM[@]}" "${DEFINES[@]}"
   (cd tool && npm install --no-save --silent playwright@1.49.1)
 
 start_lab "$PLATFORM" "$ROUNDS" --app build/web "$@"
-trap stop_lab EXIT
 node tool/run_web.mjs "$LAB"
 echo "results: $(lab_results "$PLATFORM")"

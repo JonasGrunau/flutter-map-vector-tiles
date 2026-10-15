@@ -31,18 +31,21 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
              │  grid across all tiles, upright text under rotation
              └─ or, LabelMode.tile: LabelPainter.paintTile places them once
                 per tile and draws them into the tile's own image
+```
 
 Rasterization and symbol extraction are two separate jobs in a budgeted
 per-frame render pump (rasters for every pending tile first, symbols
 after — in `LabelMode.tile`, one tile at a time, since a tile shows only
 once both are done). Both are resumable — a recording stops between
 style layers, shaping between labels — so a dense tile is spread over
-several frames instead of holding up one. A finished tile — image plus
-symbols — enters the shared result cache, so re-crossing a zoom level
-skips the pipeline entirely. The pump's stages emit DevTools timeline
-events (`VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`, and
-in `LabelMode.tile` `VT rasterize with labels` and `VT tile labels`).
-```
+several frames. What is never split can still fill a frame on its own:
+one style layer's recording, and in `LabelMode.tile` one tile's label
+placement, drawing and snapshot (see below). A finished tile — image
+plus symbols — enters the shared result cache, so re-crossing a zoom
+level skips the pipeline entirely. The pump's stages emit DevTools
+timeline events (`VT render pump`, `VT rasterize`, `VT symbols`,
+`VT labels`, and in `LabelMode.tile` `VT rasterize with labels` and
+`VT tile labels`).
 
 ## Rendering model
 
@@ -90,7 +93,10 @@ The budget depends on motion: 4 ms per frame while the camera moves,
 late frame is a visible stutter; while it stands still, a late frame
 only puts a fade-in one frame behind, and slicing at 4 ms then left
 most of each frame idle — the first complete map came 3 s later than
-before slicing.
+before slicing. The one casualty of the still budget is an animation
+the app runs over a still map that is still loading: 12 ms is most of
+a 60 Hz frame and more than a 120 Hz one, so that animation can drop
+frames until the tiles are in.
 
 Measured with `compare/` on that phone at 60 Hz, two runs each, panning
 and zooming over the same tiles: with `LabelMode.tile` the map got a
@@ -104,6 +110,13 @@ but its first complete map also came after 1.1–1.2 s instead of
 the last tiles land up to 0.2 s after a pan stops, 0.9 s after a long zoom,
 where before the screen was complete the moment the camera stopped —
 because every frame of the motion had waited for whole tiles.
+
+A move is picked up from flutter_map's map events (`MapEventWithMove`,
+size changes excepted, since the first layout fires one too), not only
+in `build`. Tickers run before the build phase, so `build` sees a move
+only after that frame's pump has already run on the still budget; the
+event arrives before the frame starts, so the first frame of a drag or
+zoom over a still, loading map already gets 4 ms.
 
 A display tile whose data has not arrived does not wait blank. While
 the load is pending, the layer renders a *provisional* image from
@@ -143,7 +156,11 @@ it). One that cannot selects the same features at every zoom, so the
 rasterizer and the symbol layouter take its matches from a list
 computed on first use and attached to the `PreparedSourceLayer`
 (`render/matched_features.dart`): it lives exactly as long as the
-prepared tile, and a swapped theme's layers simply miss. Only
+prepared tile, and a swapped theme's layers simply miss. Both levels of
+that cache are weak — an `Expando` per source layer, holding an
+`Expando` per style layer — so a theme that has been swapped out, a
+light and a dark style taking turns say, is not kept alive by the
+decoded tiles it was drawn from, and neither are its match lists. Only
 zoom-reading filters are still evaluated per display tile; the type
 filter and the bounds cull above still run per display tile, over the
 matches. That cut rasterization time per tile by a third to almost
@@ -528,22 +545,31 @@ used.
 ### Labels in the tile image (`LabelMode.tile`)
 
 Everything above about labels buys its quality with UI-thread time on
-every frame the map moves: one collision pass and every visible label
-drawn again. `LabelMode.tile` is the other trade, the one
+every frame the map moves: every placed label laid out and drawn
+again, and a collision pass over every candidate at each placement
+interval. `LabelMode.tile` is the other trade, the one
 `vector_map_tiles` makes in its default raster mode. Labels and icons are
 placed and drawn once per display tile, into the same image as its
-geometry, and a moving map then costs exactly what a raster tile layer
-costs: no label work at all.
+geometry, and a moving map then costs what a raster tile layer costs:
+no per-frame label work. A tile that arrives while the map moves still
+has its labels laid out, shaped, placed and drawn — once, inside the
+render pump, like its geometry.
 
 It is the same pipeline with a different ending, not a second text
-stack. The raster phase *records* the tile's geometry
-(`TileRasterizer.record`) and, instead of taking its image, hands the
-`Picture` to the symbol phase. That phase lays out and shapes in budgeted
-slices exactly as before; once shaping completes,
+stack. The raster phase records the tile's geometry in slices as in
+the default mode (`TileRasterizer.recordSlice`, stacked by `compose`)
+and, instead of taking its image, hands the composed `Picture` to the
+symbol job it enqueues (`_RenderJob.geometry`). That phase lays out and
+shapes in budgeted slices exactly as before; once shaping completes,
 `LabelPainter.paintTile` places the candidates and draws the winners
 over the nested geometry picture, and a single `toImageSync` produces
 the tile's image — one snapshot per tile, as in the default mode, and
-the picture costs no texture while it waits. The tile is then published
+the picture costs no texture while it waits. Placement, drawing and
+snapshot are one unit of work, the largest a tile in this mode has,
+so when shaping finishes with the frame's budget already spent, the
+job is requeued and the unit runs in a later frame — as that pump's
+first job, or while it still has budget, never on top of a frame that
+is already full. The tile is then published
 once, image only, with an empty candidate list, so the per-frame label
 pass, the fade tracker, the retained-label pinning and the ghost labels
 all have nothing to do and are skipped. Until that publish the tile
@@ -646,7 +672,12 @@ screen's paragraphs into a single frame — the very spike the pump's
 budget exists to prevent, on the path that is supposed to be the fast
 one. The hit therefore takes the imagery immediately and enqueues a
 symbol phase that owes only the shaping, which the pump slices like any
-other. That makes a hit only as cheap as the text cache is large:
+other. Those jobs are flagged (`_RenderJob.fromCache`) so they are not
+written back into the cache they came from: a second `put` under the
+same key would mint a second master image and dispose the one the
+display tile's clone came from.
+
+That makes a hit only as cheap as the text cache is large:
 whatever was evicted since the level was last on screen is shaped
 again. So the cache is sized to hold a zoom round trip, not just one
 screen: a phone-portrait fling from z15 to z17 and back over central
@@ -662,20 +693,24 @@ The text caches belong to the live painter, so nothing but eviction at
 the cap frees that while the map stays open — except
 `VectorTileLayer.clearMemoryCache()`, which calls `trimCaches()` on
 every mounted layer's painter. Every text and glyph lookup stamps the
-entry with the current placement pass, and the trim drops everything
-not stamped since the last one began: every candidate laid out on
-screen (collision losers included), plus what the pump has shaped for
-tiles still to arrive. Placement passes rather than frames, because a
-frame replaying a decision lays out only its winners; keyed on that,
-the trim would drop on-screen losers, and the next pass would shape
-them again inside a frame. The evicted painters are disposed at once:
-memory pressure often comes in the background, where no next pass
-arrives to retire them. On that phone RSS fell 25–48 MB within 3 s of
-the trim, not all the way back to what 2500 entries had held.
-Those jobs are flagged so they are not written back into the
-cache they came from: a second `put` under the same key would mint a
-second master image and dispose the one the display tile's clone came
-from.
+entry with the current placement pass, and the trim keeps only what is
+stamped with it: whatever was used since the last placing pass began.
+That is every candidate on screen, collision losers included, since a
+placing pass lays them all out, plus whatever the pump has shaped since
+then. In `LabelMode.tile` every `paintTile` call counts as a pass. A
+tile whose shaping straddles a pass loses the part shaped before it to
+a trim, so the layer's trim also rewinds every queued symbol job's
+shaping cursor: the pump goes over the batch again within its budget,
+a cache hit for what survived and a fresh shape for what did not,
+instead of publishing the tile and leaving the label pass to shape the
+rest inside a frame. Placement passes
+rather than frames, because a frame replaying a decision lays out only
+its winners; keyed on that, the trim would drop on-screen losers, and
+the next pass would shape them again inside a frame. The evicted
+painters are disposed at once: memory pressure often comes in the
+background, where no next pass arrives to retire them. On that phone
+RSS fell 25–48 MB within 3 s of the trim, not all the way back to what
+2500 entries had held.
 
 In `LabelMode.tile` the cached result is the labelled image with an
 empty symbol list, so a hit owes no shaping and is complete the moment
@@ -917,9 +952,12 @@ which is the standard any future format adapter should be held to.
 ## What was deliberately changed vs. vector_map_tiles
 
 * one package instead of three (`vector_map_tiles`, `vector_tile_renderer`,
-  `executor_lib`), one rendering mode instead of three;
+  `executor_lib`), one rendering pipeline instead of three modes — the
+  only choice left is where labels go (`LabelMode`), and both choices
+  share one text engine;
 * `stash` replaced by ~200 lines of deterministic cache code;
-* labels moved out of tile rasters into a global screen-space pass;
+* labels moved out of tile rasters into a global screen-space pass by
+  default, with the raster-mode trade (`LabelMode.tile`) as an opt-in;
 * cancellation is a state, not an exception;
 * tile substitution (parent/child retention) is part of the core grid
   logic instead of an afterthought;

@@ -17,7 +17,9 @@ dependencies:
   http: ^1.2.0
   latlong2: ">=0.9.1 <0.11.0"
   # Pinned exactly: the comparison is against this release, and a newer beta
-  # should be a deliberate re-run, not a silent drift between two runs.
+  # should be a deliberate re-run, not a silent drift between two runs. The
+  # checked-in pubspec.lock pins what it renders with (vector_tile_renderer,
+  # executor_lib) the same way.
   vector_map_tiles: 9.0.0-beta.13
   web: ^1.1.0
 

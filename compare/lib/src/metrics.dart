@@ -123,9 +123,14 @@ List<double> _gaps(List<int> vsyncs) => [
         (vsyncs[i] - vsyncs[i - 1]) / 1000,
     ];
 
-double _pct(List<double> sorted, double q) => sorted.isEmpty
-    ? 0
-    : sorted[math.min(sorted.length - 1, (sorted.length * q).floor())];
+/// Nearest-rank percentile: the smallest value with at least [q] of the
+/// values at or below it, `sorted[⌈n·q⌉ - 1]`. The epsilon keeps a
+/// product such as 70 × 0.9 = 63.00000000000001 from rounding up a rank.
+double _pct(List<double> sorted, double q) {
+  if (sorted.isEmpty) return 0;
+  final rank = (sorted.length * q - 1e-9).ceil().clamp(1, sorted.length);
+  return sorted[rank - 1];
+}
 
 class Percentiles {
   Percentiles(List<double> values) : _sorted = values..sort();

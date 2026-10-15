@@ -46,8 +46,16 @@ enum Arm {
 
   bool get isVmt => this == vmtRaster || this == vmtVector;
 
+  /// The arm with [id]. Throws on an unknown one: a measured run must fail
+  /// with an error row, not measure [fmvt] under the misspelt name.
   static Arm parse(String id) =>
-      values.firstWhere((a) => a.id == id, orElse: () => fmvt);
+      tryParse(id) ??
+      (throw ArgumentError.value(id, 'arm',
+          'unknown arm; one of ${values.map((a) => a.id).join(', ')}'));
+
+  /// The arm with [id], or null. For the demo's URL, which may be stale.
+  static Arm? tryParse(String id) =>
+      values.where((a) => a.id == id).firstOrNull;
 }
 
 /// The versions under test, shown on every result. The first follows the

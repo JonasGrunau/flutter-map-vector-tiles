@@ -195,6 +195,12 @@ class VectorTileLayer extends StatefulWidget {
   @visibleForTesting
   static int? debugPumpBudgetMicros;
 
+  /// Whether the last render-pump tick counted the camera as still, and
+  /// so ran on the larger budget — recorded whether or not
+  /// [debugPumpBudgetMicros] then replaced it. Null before the first.
+  @visibleForTesting
+  static bool? debugPumpCameraStill;
+
   /// How many screenfuls of finished tiles [autoRasterCacheBytes] aims
   /// to hold. Two would be the bare minimum for a zoom round trip — one
   /// level each side of a threshold — and the half is headroom for the
@@ -243,17 +249,18 @@ class VectorTileLayer extends StatefulWidget {
   /// their labels; only tiles panned to afterwards are re-read from disk,
   /// and only labels met again re-shaped.
   ///
-  /// The label text is held per open map, up to a few thousand labels so
-  /// a zoom round trip comes back without re-shaping them. After a session
-  /// through several dense cities that is tens of MB, over a hundred with
-  /// `TileOffset.none`, and this is the only call that releases it while
-  /// the map stays open.
+  /// The label text is held per open map, up to
+  /// [LabelPainter.textCacheEntries] shaped labels so a zoom round trip
+  /// comes back without re-shaping them. After a session through several
+  /// dense cities that is tens of MB, over a hundred with
+  /// `TileOffset.none`, and short of eviction at that cap this is the only
+  /// call that releases it while the map stays open.
   static void clearMemoryCache() {
     TileStore.clearMemoryCaches();
     RasterTileStore.clearMemoryCaches();
     TileResultCache.clearAll();
     for (final layer in _VectorTileLayerState._mounted) {
-      layer._labelPainter.trimCaches();
+      layer._trimLabelCaches();
     }
   }
 
@@ -325,13 +332,54 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       rotation: camera.rotation,
     );
     if (current == _labelCamera) return;
-    if (_labelCamera != null) {
-      (_sinceCameraMove ??= Stopwatch())
-        ..reset()
-        ..start();
-    }
+    if (_labelCamera != null) _cameraMoved();
     _labelCamera = current;
     _labelGeneration++;
+  }
+
+  /// [LabelPainter.trimCaches], for [VectorTileLayer.clearMemoryCache].
+  ///
+  /// The trim keeps what the pump shaped since the last placement pass,
+  /// but a tile whose shaping straddled that pass loses the text it
+  /// shaped before it. Published like that, the tile would have the
+  /// label pass shape the rest inside a frame, where there is no budget.
+  /// Rewinding every queued shaping instead has the pump redo it, within
+  /// its budget: what survived the trim costs a cache hit, the rest is
+  /// shaped again.
+  void _trimLabelCaches() {
+    _labelPainter.trimCaches();
+    for (final job in _renderQueue.symbolJobs) {
+      job.shapeCursor = 0;
+    }
+  }
+
+  /// Restarts the clock behind [_cameraStill].
+  void _cameraMoved() => (_sinceCameraMove ??= Stopwatch())
+    ..reset()
+    ..start();
+
+  /// The map's event stream, for camera moves. [build] notices a move
+  /// only after the frame's render pump has run — tickers come first —
+  /// so on its own the first frame of a gesture would still pump on the
+  /// still budget, and arrive late. A move event is delivered before
+  /// that frame starts.
+  StreamSubscription<MapEvent>? _mapEvents;
+  MapController? _mapController;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final controller = MapController.maybeOf(context);
+    if (identical(controller, _mapController)) return;
+    unawaited(_mapEvents?.cancel());
+    _mapController = controller;
+    _mapEvents = controller?.mapEventStream.listen((event) {
+      // A resized map is not a moving one: the size change fires on
+      // the first layout, too, and would cost the opening its budget.
+      if (event is MapEventWithMove && event is! MapEventNonRotatedSizeChange) {
+        _cameraMoved();
+      }
+    });
   }
 
   /// Fade-out fallbacks for labels whose tile is gone: when a retained
@@ -879,6 +927,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _mounted.remove(this);
+    unawaited(_mapEvents?.cancel());
     _fadeTicker.dispose();
     _renderTicker.dispose();
     _clearTiles();
@@ -1435,9 +1484,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   /// Wall-clock the render pump may spend per frame. Checked before
   /// every job, between the layers of a raster job's recording and
-  /// between the labels of a symbol job's shaping, so no single unit of
-  /// work can run away with the frame: only one layer or one label at a
-  /// time is ever run whole.
+  /// between the labels of a symbol job's shaping, so the units of work
+  /// that run whole are small: one geometry layer of a tile, one
+  /// label's shaping — and with [LabelMode.tile], one tile's label
+  /// placement, drawing and snapshot, which a tick starts with rather
+  /// than adds to a spent budget. Only a unit that is itself longer
+  /// than a frame, such as the buildings layer of the densest tiles,
+  /// still makes one frame late.
   ///
   /// Small while the camera moves, when every frame the pump makes late
   /// is a visible stutter. Once it has stood still for
@@ -1445,7 +1498,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// behind, while a tight budget would leave most of each frame idle
   /// and fill the screen seconds later — measured on a phone, 6.7 s to
   /// a complete map at 4 ms, against 3.8 s before tiles were sliced and
-  /// 1.0 s with this budget.
+  /// 1.0 s with this budget. The price is paid by anything else that
+  /// animates over a still map while it loads: the pump takes most of
+  /// a 60 Hz frame then, and more than a 120 Hz one.
   int get _pumpBudget =>
       VectorTileLayer.debugPumpBudgetMicros ??
       (_cameraStill ? _stillPumpBudget : _movingPumpBudget);
@@ -1475,6 +1530,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       return;
     }
     developer.Timeline.startSync('VT render pump');
+    VectorTileLayer.debugPumpCameraStill = _cameraStill;
     final stopwatch = Stopwatch()..start();
     var processed = 0;
     // At least one job per frame, more while within the time budget:
@@ -1662,6 +1718,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     developer.Timeline.startSync('VT symbols');
     final styleZoom = _styleZoomOf(tile.key.z.toDouble());
     var symbols = job.symbols;
+    final shapedBefore = symbols != null && job.shapeCursor >= symbols.length;
     if (symbols == null) {
       // Extraction is cheap next to shaping (sub-ms against several ms
       // on a dense tile), so it runs whole rather than in slices.
@@ -1678,6 +1735,15 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     );
     developer.Timeline.finishSync();
     if (job.shapeCursor < symbols.length) return false;
+    // Drawing labels into the tile, what is left — placing and drawing
+    // every label, then the snapshot — is one more unit of work, and
+    // the largest. A tick whose budget the extraction or the shaping
+    // just used up leaves it to the next one, which starts with it.
+    if (_tileLabels &&
+        !shapedBefore &&
+        tick.elapsedMicroseconds >= _pumpBudget) {
+      return false;
+    }
 
     if (_tileLabels) {
       // The tile's first publish: its geometry and labels in one image,
