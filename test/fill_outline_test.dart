@@ -8,8 +8,10 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// One square in the middle half of the tile, its feature carrying
-/// `o` for a per-feature `fill-opacity`.
+/// One square whose left edge sits at x = 63.5 logical px, which at an
+/// odd device pixel ratio is the centre of a pixel column — so a one
+/// pixel outline covers exactly that column. Its feature carries `o`
+/// for a per-feature `fill-opacity`.
 DisplayTileData _squareTile() {
   final tile = PreparedTile(
     key: const TileKey(2, 1, 1),
@@ -20,7 +22,7 @@ DisplayTileData _squareTile() {
           type: PreparedGeomType.polygon,
           parts: [
             Float32List.fromList(
-                [1024, 1024, 3072, 1024, 3072, 3072, 1024, 3072]),
+                [1016, 1016, 3072, 1016, 3072, 3072, 1016, 3072]),
           ],
           properties: {'o': 0.5},
         ),
@@ -49,21 +51,28 @@ Theme _theme(Map<String, Object?> paint) => const ThemeReader().read({
       ],
     });
 
-/// The grey level just outside the square's left edge, where only the
-/// outline paints. At 4× the 0.6 px outline is 2.4 device pixels wide,
-/// centred on x = 256, so pixel 255 is fully covered by it.
-Future<int> _outlineGrey(Theme theme) async {
+/// The grey levels, halfway down the square, of the pixel column the
+/// left edge runs through and of its neighbours on either side.
+Future<({int outside, int edge, int inside})> _greys(Theme theme,
+    {double devicePixelRatio = 3}) async {
   final image = TileRasterizer.rasterize(
     theme: theme,
     data: _squareTile(),
     styleZoom: 2,
-    devicePixelRatio: 4,
+    devicePixelRatio: devicePixelRatio,
   )!;
   final data = (await image.toByteData())!;
-  final grey = data.getUint8((512 * image.width + 255) * 4);
+  final x = (63.5 * devicePixelRatio).floor();
+  final y = (128 * devicePixelRatio).floor();
+  int greyAt(int x) => data.getUint8((y * image.width + x) * 4);
+  final greys =
+      (outside: greyAt(x - 1), edge: greyAt(x), inside: greyAt(x + 1));
   image.dispose();
-  return grey;
+  return greys;
 }
+
+/// The grey level of the edge column alone.
+Future<int> _edge(Theme theme) async => (await _greys(theme)).edge;
 
 Matcher _near(int grey) => inInclusiveRange(grey - 2, grey + 2);
 
@@ -74,47 +83,65 @@ void main() {
   // shows: its grey level is 255 × (1 − outline alpha).
 
   test('fill-opacity dims fill-outline-color, as MapLibre does', () async {
-    expect(
-      await _outlineGrey(_theme({
-        'fill-color': '#ffffff',
-        'fill-opacity': 0.5,
-        'fill-outline-color': '#000000',
-      })),
-      _near(128),
-    );
+    final edge = await _edge(_theme({
+      'fill-color': '#ffffff',
+      'fill-opacity': 0.5,
+      'fill-outline-color': '#000000',
+    }));
+    expect(edge, _near(128));
   });
 
   test('a per-feature fill-opacity multiplies the outline colour alpha',
       () async {
     // Mapbox Streets' buildings in miniature: 0.5 × 0.5 = 0.25.
-    expect(
-      await _outlineGrey(_theme({
-        'fill-color': '#ffffff',
-        'fill-opacity': ['get', 'o'],
-        'fill-outline-color': 'rgba(0, 0, 0, 0.5)',
-      })),
-      _near(191),
-    );
+    final edge = await _edge(_theme({
+      'fill-color': '#ffffff',
+      'fill-opacity': ['get', 'o'],
+      'fill-outline-color': 'rgba(0, 0, 0, 0.5)',
+    }));
+    expect(edge, _near(191));
   });
 
   test('a fill-opacity of 0 hides the outline', () async {
-    expect(
-      await _outlineGrey(_theme({
-        'fill-color': '#ffffff',
-        'fill-opacity': 0,
-        'fill-outline-color': '#000000',
-      })),
-      255,
-    );
+    final edge = await _edge(_theme({
+      'fill-color': '#ffffff',
+      'fill-opacity': 0,
+      'fill-outline-color': '#000000',
+    }));
+    expect(edge, 255);
   });
 
   test('the alpha of fill-color leaves the outline alone', () async {
-    expect(
-      await _outlineGrey(_theme({
-        'fill-color': 'rgba(255, 255, 255, 0)',
-        'fill-outline-color': '#000000',
-      })),
-      _near(0),
-    );
+    final edge = await _edge(_theme({
+      'fill-color': 'rgba(255, 255, 255, 0)',
+      'fill-outline-color': '#000000',
+    }));
+    expect(edge, _near(0));
+  });
+
+  for (final ratio in [1.0, 3.0]) {
+    test('the outline is one device pixel wide at a pixel ratio of $ratio',
+        () async {
+      final greys = await _greys(
+        _theme({
+          'fill-color': '#ffffff',
+          'fill-outline-color': '#000000',
+        }),
+        devicePixelRatio: ratio,
+      );
+      expect(greys.edge, _near(0));
+      expect(greys.outside, _near(255));
+      expect(greys.inside, _near(255));
+    });
+  }
+
+  test('fill-antialias: false turns the outline off, as the spec says',
+      () async {
+    final edge = await _edge(_theme({
+      'fill-color': '#ffffff',
+      'fill-outline-color': '#000000',
+      'fill-antialias': false,
+    }));
+    expect(edge, 255);
   });
 }

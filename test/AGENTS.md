@@ -33,7 +33,7 @@ lifecycle or painting is covered by widget tests that pump a real
 | `matched_features_test.dart` | Zoom-free filters resolved once per prepared tile: cached matches equal a full scan, a zoom-reading filter is never cached and still flips across zooms, and later display tiles of one data tile — rasterizer and symbol layouter alike — evaluate no filter (counted through a property map that tallies reads, not a hook in the renderer) |
 | `line_pattern_test.dart`, `fill_pattern_test.dart` | Pattern paints |
 | `fill_extrusion_test.dart` | `fill-extrusion-opacity` per layer: overlapping buildings blended once (constant and per-feature colour), a plain fill as the double-blend control, no outline on extrusions |
-| `fill_outline_test.dart` | `fill-outline-color` dimmed by `fill-opacity` (constant and per-feature, multiplying the outline's own alpha), hidden at opacity 0, untouched by the alpha of `fill-color` |
+| `fill_outline_test.dart` | `fill-outline-color` dimmed by `fill-opacity` (constant and per-feature, multiplying the outline's own alpha), hidden at opacity 0, untouched by the alpha of `fill-color`, one device pixel wide at pixel ratios 1 and 3, off under `fill-antialias: false`. The square's edge sits on a pixel-column centre so the outline covers exactly one column |
 | `disk_cache_test.dart`, `lru_cache_test.dart` | Cache eviction, TTL, size sweep |
 | `style_reader_cache_test.dart` | Stale-while-revalidate style loading |
 | `style_reader_sources_test.dart` | Source URL resolution: relative TileJSON/tile templates (ArcGIS `root.json` shape), `{key}` substitution |

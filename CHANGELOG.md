@@ -29,12 +29,17 @@
   layer as a whole, as MapLibre does. Each building used to be blended
   on its own, so wherever a building part overlapped its outline, the
   overlap drew darker than the rest of the building.
-- 🎨 `fill-outline-color` is now dimmed by `fill-opacity`, as MapLibre
-  and Mapbox GL do. Outlines used to be drawn at the outline colour's
-  own alpha, so a faint fill such as Mapbox Streets' buildings
-  (`fill-opacity` 0.07, outline alpha 0.74) got outlines about 14 times
-  more opaque than in MapLibre, standing out against the fill instead of
-  barely showing.
+- 🎨 Fill outlines (`fill-outline-color`) now draw as MapLibre and
+  Mapbox GL draw them: dimmed by `fill-opacity`, one device pixel wide
+  in the tile image, and not at all under `fill-antialias: false`.
+  Outlines used to be drawn at the outline colour's own alpha, so a
+  faint fill such as Mapbox Streets' buildings (`fill-opacity` 0.07,
+  outline alpha 0.74) got outlines about 14 times more opaque than in
+  MapLibre, standing out against the fill instead of barely showing.
+  They were also 0.6 logical pixels wide, 1.8 device pixels on a 3×
+  screen, and still drew, without antialiasing, when `fill-antialias`
+  was false. Like the rest of a tile, the outline still scales with the
+  map between zoom levels, up to 2 pixels wide.
 - ⚡ A dense tile no longer holds up a frame while the map moves.
   Recording a tile's roads and buildings took 16–49 ms on a phone for
   central Berlin, all in one frame; it is now spread over several,

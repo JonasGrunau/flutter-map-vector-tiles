@@ -152,13 +152,15 @@ class TileRasterizer {
       final pixelSize = pixelSizeFor(devicePixelRatio);
       canvas.clipRect(
           Rect.fromLTWH(0, 0, pixelSize.toDouble(), pixelSize.toDouble()));
-      canvas.scale(pixelScaleFor(devicePixelRatio));
+      final pixelScale = pixelScaleFor(devicePixelRatio);
+      canvas.scale(pixelScale);
 
       final (:painted, :next) = _paintLayers(
         canvas: canvas,
         theme: theme,
         data: data,
         styleZoom: styleZoom,
+        pixelScale: pixelScale,
         patterns: patterns,
         from: from,
         outOfBudget: outOfBudget,
@@ -213,12 +215,15 @@ class TileRasterizer {
   }
 
   /// Paints geometry layers onto [canvas] in logical tile coordinates
-  /// (0..256). Returns whether anything was drawn.
+  /// (0..256). [pixelScale] is what [canvas] scales those by to reach
+  /// device pixels, so that fill outlines come out one pixel wide.
+  /// Returns whether anything was drawn.
   static bool paint({
     required Canvas canvas,
     required Theme theme,
     required DisplayTileData data,
     required double styleZoom,
+    double pixelScale = 1,
     PatternResolver? patterns,
   }) =>
       _paintLayers(
@@ -226,6 +231,7 @@ class TileRasterizer {
         theme: theme,
         data: data,
         styleZoom: styleZoom,
+        pixelScale: pixelScale,
         patterns: patterns,
       ).painted;
 
@@ -238,6 +244,7 @@ class TileRasterizer {
     required Theme theme,
     required DisplayTileData data,
     required double styleZoom,
+    required double pixelScale,
     PatternResolver? patterns,
     int from = 0,
     bool Function()? outOfBudget,
@@ -272,7 +279,8 @@ class TileRasterizer {
           );
           painted = true;
         case FillThemeLayer():
-          painted |= _paintFill(canvas, layer, data, styleZoom, patterns);
+          painted |=
+              _paintFill(canvas, layer, data, styleZoom, patterns, pixelScale);
         case LineThemeLayer():
           painted |= _paintLine(canvas, layer, data, styleZoom, patterns);
         case RasterThemeLayer():
@@ -401,10 +409,14 @@ class TileRasterizer {
     DisplayTileData data,
     double styleZoom,
     PatternResolver? patterns,
+    double pixelScale,
   ) {
     var painted = false;
     final zoomCtx = EvalContext(zoom: styleZoom);
     final patternProp = layer.pattern;
+    // MapLibre's outline is its antialiasing pass, one device pixel wide
+    // at any zoom, and `fill-antialias: false` turns it off.
+    final outline = layer.antialias ? layer.outlineColor : null;
     // The fill paint is per-layer when the colour is a literal — or when
     // the layer never reads feature properties, which makes every paint
     // expression zoom-only and therefore constant across this tile.
@@ -417,7 +429,7 @@ class TileRasterizer {
       final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
       sharedOpacity = opacity;
       final color = _withOpacity(layer.color.eval(zoomCtx), opacity);
-      if (color.a == 0 && (layer.outlineColor == null || opacity == 0)) {
+      if (color.a == 0 && (outline == null || opacity == 0)) {
         return false;
       }
       fillPaint = Paint()
@@ -501,7 +513,6 @@ class TileRasterizer {
       }
       // `fill-opacity` dims the outline too, as MapLibre's outline shader
       // multiplies it in; only the alpha of `fill-color` leaves it alone.
-      final outline = layer.outlineColor;
       if (outline != null && opacity > 0) {
         final color = _withOpacity(outline.eval(ctx), opacity);
         if (color.a > 0) {
@@ -510,8 +521,7 @@ class TileRasterizer {
             Paint()
               ..color = color
               ..style = PaintingStyle.stroke
-              ..strokeWidth = 0.6
-              ..isAntiAlias = layer.antialias,
+              ..strokeWidth = 1 / pixelScale,
           );
           painted = true;
         }
