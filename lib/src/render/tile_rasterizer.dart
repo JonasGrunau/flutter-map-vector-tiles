@@ -412,10 +412,14 @@ class TileRasterizer {
         ((layer.color.isConstant && layer.opacity.isConstant) ||
             (layer.referencedProperties?.isEmpty ?? false));
     Paint? fillPaint;
+    double? sharedOpacity;
     if (constant) {
-      final color = _withOpacity(layer.color.eval(zoomCtx),
-          layer.opacity.eval(zoomCtx).clamp(0.0, 1.0));
-      if (color.a == 0 && layer.outlineColor == null) return false;
+      final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
+      sharedOpacity = opacity;
+      final color = _withOpacity(layer.color.eval(zoomCtx), opacity);
+      if (color.a == 0 && (layer.outlineColor == null || opacity == 0)) {
+        return false;
+      }
       fillPaint = Paint()
         ..color = color
         ..isAntiAlias = layer.antialias;
@@ -486,18 +490,20 @@ class TileRasterizer {
         }
         // Sprite missing: fall through to the color fill.
       }
+      final opacity = sharedOpacity ?? layer.opacity.eval(ctx).clamp(0.0, 1.0);
       final paint = fillPaint ??
           (Paint()
-            ..color = _withOpacity(
-                layer.color.eval(ctx), layer.opacity.eval(ctx).clamp(0.0, 1.0))
+            ..color = _withOpacity(layer.color.eval(ctx), opacity)
             ..isAntiAlias = layer.antialias);
       if (paint.color.a > 0) {
         canvas.drawPath(path, paint);
         painted = true;
       }
+      // `fill-opacity` dims the outline too, as MapLibre's outline shader
+      // multiplies it in; only the alpha of `fill-color` leaves it alone.
       final outline = layer.outlineColor;
-      if (outline != null) {
-        final color = outline.eval(ctx);
+      if (outline != null && opacity > 0) {
+        final color = _withOpacity(outline.eval(ctx), opacity);
         if (color.a > 0) {
           canvas.drawPath(
             path,
