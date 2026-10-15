@@ -640,7 +640,7 @@ chunked event-loop execution.
 
 | layer | keyed by | bounded by |
 | --- | --- | --- |
-| memory: `PreparedTile` | data tile + theme id | entry count + bytes |
+| memory: `PreparedTile` | data tile, per source (`provider.cacheKey`) and property keep-lists | entry count + bytes |
 | memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
 | memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprite *content*, labels, label mode) | GPU texture bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
 | disk: raw tile bytes | hash of `provider.cacheKey` + z/x/y | TTL + total size sweep |
@@ -892,6 +892,33 @@ document that declared them — sprite and source URLs against the style
 URL, tile templates against the TileJSON URL when they came from one
 (ArcGIS declares `"url": "../../"` and `tile/{z}/{y}/{x}.pbf`) — and
 the `{z}`/`{x}`/`{y}` braces survive resolution un-percent-encoded.
+
+`StyleReader.language` is applied to the style document, not to the
+engine. Before `ThemeReader` compiles anything, `localizeStyle`
+(`style/label_language.dart`) rewrites each symbol layer's `text-field`
+so that the smallest subexpression holding every name reference
+(`name`, `name:*`, `name_*`) becomes
+`["coalesce", ["get", "name:<lang>"], ["get", "name_<lang>"], <original>]`,
+and folds `resolved-locale` to the language wherever it appears. The
+smallest subexpression, not the whole field and not each reference:
+wrapping the field would drop what is shown beside the name (an
+elevation, a `({ref})`), and wrapping each reference would show the
+translation twice where a style stacks `name:latin` over
+`name:nonlatin`. Inside a `concat`, only the run of arguments spanning
+the names is wrapped, for the first reason. Only references whose value
+can reach the label count, so `case` conditions, `match` inputs,
+comparisons and `has` are never touched. Legacy `{token}` templates and
+zoom stop functions are first turned into the `concat` or `step` they
+evaluate as, and only when they reference a name; with no language the
+document is passed through as the same object. Because the rewrite
+precedes compilation, the parser records `name:<lang>` and
+`name_<lang>` like any other reference, so tile preparation keeps them
+unprompted, and the property keep-lists that key the decoded-tile cache
+differ per language. The finished-tile cache is keyed by the theme id,
+and its tiles hold label text (baked into the raster with
+`LabelMode.tile`), so a language makes the id `<id>|language=<lang>`.
+The style disk cache holds the document as served; the rewrite runs on
+every read.
 
 The sprite sheet is repacked once after decoding (`padSpriteSheet` in
 `style/sprite_packer.dart`): every distinct sprite rectangle is copied

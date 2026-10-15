@@ -457,6 +457,9 @@ class ExpressionParser {
       case 'is-supported-script':
         return (_) => true;
       case 'resolved-locale':
+        // With `StyleReader.language` set, `localizeStyle` has already
+        // folded this to that language; only a style read without one
+        // gets here.
         return (_) => 'en';
       case 'collator':
         return (_) => null;
