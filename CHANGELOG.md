@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-Opt-in labels baked into the tiles, smoother frames on dense tiles and
-label-heavy screens, and closer MapLibre parity for road shields, long
-words and buildings.
+Opt-in labels baked into the tiles, labels in a language of your
+choice, smoother frames on dense tiles and label-heavy screens, and
+closer MapLibre parity for road shields, long words and buildings.
 
 - ✨ **Labels baked into tiles**: `VectorTileLayer.labelMode` chooses
   where labels and icons are drawn. The default, `LabelMode.screen`, is
@@ -23,6 +23,14 @@ words and buildings.
   flinging, against
   78–86% with screen-space labels (rotating: 78–81% → 94–98%). On a
   MacBook Pro (M4 Pro) both modes get 97–100%.
+- ✨ **Label language**: `StyleReader(language: 'de')` shows labels in
+  that language wherever the tiles carry a translation (`name:de`, as
+  in OpenMapTiles, MapTiler and OpenFreeMap tiles, or `name_de`, as in
+  Mapbox Streets and Shortbread) and in the style's own text everywhere
+  else. Only the name changes: an elevation or road ref shown beside it
+  stays, and a place the style shows in two scripts shows its
+  translation once. The style's `resolved-locale` expression returns
+  the language too; until now it always returned `en`.
 - ✨ `VectorTileLayer.clearMemoryCache()` now also trims the label text
   every open map keeps down to the labels on screen. Each map keeps up
   to 8000 shaped labels, so that zooming back to a level does not shape

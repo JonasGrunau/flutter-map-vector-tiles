@@ -8,8 +8,11 @@ import 'package:latlong2/latlong.dart';
 /// ```
 /// flutter run \
 ///   --dart-define=MAPTILER_KEY=yourKey \
-///   --dart-define=STYLE_URL=https://api.maptiler.com/maps/streets-v2/style.json?key={key}
+///   --dart-define=STYLE_URL=https://api.maptiler.com/maps/streets-v2/style.json?key={key} \
+///   --dart-define=LANGUAGE=de
 /// ```
+///
+/// `LANGUAGE` is optional: without it labels show the style's own text.
 ///
 /// On web (`flutter run -d chrome --dart-define=MAPTILER_KEY=yourKey`)
 /// the style and tile hosts must send CORS headers — MapTiler does.
@@ -18,6 +21,7 @@ const _styleUrl = String.fromEnvironment(
   'STYLE_URL',
   defaultValue: 'https://api.maptiler.com/maps/streets-v2/style.json?key={key}',
 );
+const _language = String.fromEnvironment('LANGUAGE');
 
 void main() => runApp(const ExampleApp());
 
@@ -44,10 +48,11 @@ class _VectorMapPageState extends State<VectorMapPage> {
   @override
   void initState() {
     super.initState();
-    _style = const vt.StyleReader(
+    _style = vt.StyleReader(
       uri: _styleUrl,
       apiKey: _apiKey,
-      logger: vt.Logger.console(),
+      language: _language.isEmpty ? null : _language,
+      logger: const vt.Logger.console(),
     ).read();
   }
 

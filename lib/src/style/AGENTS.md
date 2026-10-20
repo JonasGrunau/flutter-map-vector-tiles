@@ -14,7 +14,8 @@ happens once at read time; nothing here re-parses JSON per frame.
 
 | File | Description |
 |------|-------------|
-| `style_reader.dart` | `StyleReader` / `Style` — fetches the style document, resolves sources through TileJSON, substitutes `{key}`, builds `TileProviders` and `RasterTileSource`s, loads sprites, and owns stale-while-revalidate disk caching via `_Loader`. Relative URLs resolve against the declaring document (tile templates against the TileJSON URL when they came from one — the ArcGIS `"url": "../../"` shape); template braces are restored after `Uri.resolve` percent-encodes them. `pmtiles://` source URLs bypass TileJSON and open a `PmTilesVectorTileProvider`. The `resolveProvider` callback is consulted first of all, before any URL is read, so callers can substitute their own provider (a local MBTiles archive, say) for a source id — it covers vector and raster sources alike, and the resulting provider is owned by the `Style`. Collects each source's `attribution` (the source's own value overriding its TileJSON's, as in MapLibre) into `Style.attributions`, deduplicated in document order. Throws `StyleReaderException`; redacts API keys in logs |
+| `style_reader.dart` | `StyleReader` / `Style` — fetches the style document, resolves sources through TileJSON, substitutes `{key}`, builds `TileProviders` and `RasterTileSource`s, loads sprites, and owns stale-while-revalidate disk caching via `_Loader`. Relative URLs resolve against the declaring document (tile templates against the TileJSON URL when they came from one — the ArcGIS `"url": "../../"` shape); template braces are restored after `Uri.resolve` percent-encodes them. `pmtiles://` source URLs bypass TileJSON and open a `PmTilesVectorTileProvider`. The `resolveProvider` callback is consulted first of all, before any URL is read, so callers can substitute their own provider (a local MBTiles archive, say) for a source id — it covers vector and raster sources alike, and the resulting provider is owned by the `Style`. Collects each source's `attribution` (the source's own value overriding its TileJSON's, as in MapLibre) into `Style.attributions`, deduplicated in document order. Applies `language` through `localizeStyle` before compiling, and suffixes the theme id with it (`|language=de`) so finished tiles, which hold label text, never mix languages. Throws `StyleReaderException`; redacts API keys in logs |
+| `label_language.dart` | `localizeStyle` / `localizeTextField` — the pure JSON rewrite behind `StyleReader.language`. Wraps the smallest subexpression of a symbol layer's `text-field` that holds every value-position name reference (`name`, `name:*`, `name_*`) as `coalesce(name:<lang>, name_<lang>, original)` — inside a `concat` only the run spanning the names — and folds `resolved-locale` to the language in every layer. `{token}` templates and zoom stop functions that reference a name become the equivalent `concat` / `step` first; property functions are left alone. Returns its argument itself when nothing changes. Not exported |
 | `attribution.dart` | `StyleAttribution` / `AttributionSpan` — style attribution is HTML by convention, so `StyleAttribution.parse` flattens it to `text` for a `Text` widget *and* keeps `spans` (text + link) for tappable rendering; `html` is the untouched declaration. Regex-based and forgiving: anything it cannot parse degrades to plain text |
 | `expression_parser.dart` | `ExpressionParser` — the largest file here (~1100 lines). Compiles modern expression arrays *and* legacy function/filter syntax into `Expr` closures: `let`/`var`, comparisons, `case`, `match`, `step`, `interpolate` (incl. cubic-bezier easing), the full math operator set, and property references. Tracks `readsZoom` — sticky, set by `["zoom"]` and by legacy functions keyed on the zoom — which the reader samples after a layer's filter |
 | `expression.dart` | The compiled-expression runtime: `typedef Expr`, `EvalContext` (feature properties + zoom + vars), coercions (`toBoolean`/`toNumber`/`toColor`/`toStringValue`), and the typed property wrappers `DoubleProp`, `ColorProp`, `StringProp`, `BoolProp`, `NumListProp`, `StringListProp` — each with a fallback and an `isConstant` fast path |
@@ -42,6 +43,11 @@ happens once at read time; nothing here re-parses JSON per frame.
 - **Fallbacks must match the MapLibre spec defaults**, not convenient values —
   a wrong fallback is invisible on styles that set the property and wrong on
   those that don't.
+- **Language is a document rewrite.** `StyleReader.language` never
+  reaches the parser: `label_language.dart` rewrites the JSON before
+  `ThemeReader` runs, so the parser records the translated name keys as
+  ordinary references. Keep it that way — a parser-side lookup would
+  have to register those keys itself or tile prep drops them.
 - `SpriteAtlas.dispose()` disposes the sheet image; `Style.dispose()` fans out
   to sprites and providers.
 
@@ -58,6 +64,9 @@ happens once at read time; nothing here re-parses JSON per frame.
   substitution in TileJSON URLs
 - `test/attribution_test.dart` — attribution parsing (links, entities,
   stray markup) and collection (source over TileJSON, dedup, order)
+- `test/label_language_test.dart` — every `text-field` shape the
+  language rewrite meets, unchanged output without a translation, and
+  end to end through `StyleReader`, tile preparation and symbol layout
 
 New expression operators need a case in `expression_test.dart` *and* an
 explicit unsupported-input case proving the degradation path.
