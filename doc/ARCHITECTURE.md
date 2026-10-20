@@ -86,9 +86,12 @@ what keeps the slices stackable — so one frame can still carry the most
 expensive layer of a tile: 5–9 ms on those Berlin tiles, 22 ms for the
 buildings of the densest one. Nothing is published before the last
 slice: a tile halfway through its recording counts as loading, and
-whatever covered it keeps covering it. A slice taken under a different
-theme or pixel ratio than the ones before it starts the recording
-over, since it would not stack onto them. The symbol phase inherits
+whatever covered it keeps covering it. A slice taken at a different
+pixel ratio than the ones before it starts the recording over, since
+it would not stack onto them; the other inputs cannot change under a
+job — a theme change empties the queue, and a change that re-renders
+the live tiles (sprites, `showLabels`, the label mode, the resume
+recovery) retires the outgoing level's queued jobs too. The symbol phase inherits
 the ratio the geometry was recorded at — `LabelMode.tile` draws the
 labels over that geometry at it — and a tile finished at a ratio the
 screen has since left is published but not cached, so the next visit

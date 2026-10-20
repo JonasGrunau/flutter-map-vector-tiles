@@ -746,13 +746,6 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       _labelPainter.reset();
       _drawnLastFrame.clear();
       _ghostLabels.clear();
-      // A queued job decides at run time which kind of image to make,
-      // and would publish — and cache, under the new signature — the
-      // other kind for a tile it was built for. The live tiles' refresh
-      // retires theirs; the outgoing level's are retired here.
-      for (final tile in _retained.values) {
-        tile.loadGeneration++;
-      }
       refresh = true;
     }
     if (oldWidget.memoryCacheMaxBytes != widget.memoryCacheMaxBytes) {
@@ -786,14 +779,23 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   /// Re-rasterizes every live tile from already-decoded data — for
   /// widget changes that alter what is baked into the raster or the
-  /// symbol set (sprites, showLabels) without changing the data. The
-  /// old imagery stays on screen until its replacement is ready, and
-  /// nothing re-fades.
+  /// symbol set (sprites, showLabels, labelMode) without changing the
+  /// data, and for the resume recovery. The old imagery stays on screen
+  /// until its replacement is ready, and nothing re-fades.
   void _refreshTiles() {
     for (final tile in _tiles.values) {
       tile.renderedWith = null; // identical sources must still re-enqueue
       tile.loadGeneration++;
       unawaited(_loadTile(tile, _priorityOf(tile), fadeIn: false));
+    }
+    // The outgoing level is not rendered again, but its queued jobs were
+    // built before the change — a recording half done with the old
+    // patterns, a tile-mode label job holding geometry drawn with them,
+    // a symbols job about to cache an image published before it — and
+    // would publish, and cache under the new signature, what the change
+    // replaced. Retiring the generation drops them.
+    for (final tile in _retained.values) {
+      tile.loadGeneration++;
     }
   }
 
@@ -1612,10 +1614,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         rasters: job.rasters,
         descendantSources: job.descendantSources,
         descendantRasters: job.descendantRasters);
-    if (!identical(job.recordedTheme, widget.theme) ||
-        job.recordedPixelRatio != _devicePixelRatio) {
+    // A theme change rebuilds the stores, which empties this queue, and
+    // a sprites change retires every queued job (see [_refreshTiles]):
+    // the pixel ratio is the one input that can change under a job
+    // between its slices.
+    if (job.recordedPixelRatio != _devicePixelRatio) {
       job.resetRecording();
-      job.recordedTheme = widget.theme;
       job.recordedPixelRatio = _devicePixelRatio;
     }
     final slice = TileRasterizer.recordSlice(
@@ -1991,12 +1995,11 @@ class _RenderJob {
   int layerCursor = 0;
   final List<ui.Picture> geometryParts = [];
 
-  /// What the recorded slices were drawn with. A later slice under a
-  /// different theme or pixel ratio would not stack onto them, so the
-  /// recording starts over instead. The symbol phase inherits the pixel
-  /// ratio: [LabelMode.tile] rasterizes the recorded geometry at it, and
-  /// a tile finished at a ratio the screen has left is not cached.
-  Theme? recordedTheme;
+  /// The pixel ratio the recorded slices were drawn at. A later slice at
+  /// a different one would not stack onto them, so the recording starts
+  /// over instead. The symbol phase inherits it: [LabelMode.tile]
+  /// rasterizes the recorded geometry at it, and a tile finished at a
+  /// ratio the screen has left is not cached.
   double? recordedPixelRatio;
 
   /// Drops the slices recorded so far, for a recording that has to

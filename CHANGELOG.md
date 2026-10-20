@@ -138,6 +138,12 @@ closer MapLibre parity for road shields, long words and buildings.
   feature used to get the value for no feature at all, so a fill made
   visible only for certain ids was not drawn, and a building or road
   coloured by its id took the fallback colour.
+- 🐛 Changing `VectorTileLayer.sprites` while a zoom was still
+  settling no longer leaves tiles drawn with the old sprites in the
+  finished-tile cache. Tiles of the level being zoomed away from
+  finished rendering with the old fill and line patterns after the
+  change, were cached under the new sprites, and came back with the
+  old patterns on a later visit.
 - 🐛 A tile that finished rendering just after the screen's pixel
   ratio changed (a window moved to another monitor, a browser zoom) is
   no longer kept in the finished-tile cache at the old resolution,
