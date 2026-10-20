@@ -907,7 +907,10 @@ wrapping the field would drop what is shown beside the name (an
 elevation, a `({ref})`), and wrapping each reference would show the
 translation twice where a style stacks `name:latin` over
 `name:nonlatin`. Inside a `concat`, only the run of arguments spanning
-the names is wrapped, for the first reason. Only references whose value
+the names is wrapped, for the first reason; an expression that chooses
+between branches (`case`, `match`, `step`, `coalesce`, `string`) wraps
+each branch showing a name on its own, for the same reason, and the
+whole once only when every such branch is nothing but a name. Only references whose value
 can reach the label count, so `case` conditions, `match` inputs,
 comparisons and `has` are never touched. Legacy `{token}` templates and
 zoom stop functions are first turned into the `concat` or `step` they

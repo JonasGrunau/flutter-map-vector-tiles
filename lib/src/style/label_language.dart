@@ -57,7 +57,11 @@ Map<String, Object?> localizeStyle(
 ///   `name:nonlatin`, which wrapping each reference would show twice.
 ///
 /// Inside a `concat`, only the contiguous run of arguments spanning the
-/// name references is wrapped, for the first reason. Only references
+/// name references is wrapped, for the first reason. Where a `case`,
+/// `match`, `step` (a zoom stop function becomes one), `coalesce` or
+/// `string` shows a name in more than one branch, each such branch is
+/// wrapped on its own, so a branch that adds a ref or an elevation keeps
+/// it; branches that are nothing but a name share one wrap. Only references
 /// whose value can reach the label count: a name tested in a `case`
 /// condition, matched by `match`, compared, measured or checked with
 /// `has` stays as it is, and so does everything else outside the
@@ -206,17 +210,33 @@ Iterable<int> _valueArgs(List<Object?> e) sync* {
   }
 }
 
+/// Operators whose value is one of their value arguments, never several
+/// combined: a name in two of their branches is shown by one branch at a
+/// time, so each branch can take a translation of its own.
+const _alternatives = {'case', 'match', 'step', 'coalesce', 'string'};
+
 /// Wraps the smallest subexpression of [e] that holds all of [e]'s name
-/// references (at least one).
+/// references (at least one) — per branch, where [e] chooses between
+/// branches ([_alternatives]).
 List<Object?> _wrapSmallest(List<Object?> e, String language) {
   if (_isNameGet(e)) return _preferTranslation(e, language);
   final holding = [
     for (final i in _valueArgs(e))
       if (_nameRefs(e[i]) > 0) i,
   ];
-  if (holding.length == 1) {
-    final i = holding.single;
-    return List.of(e)..[i] = _wrapSmallest(e[i]! as List<Object?>, language);
+  if (holding.length == 1 || _alternatives.contains(e.first)) {
+    final out = List.of(e);
+    // Branches that all came out wrapped whole share one wrap instead,
+    // which reads the same and looks the translation up once.
+    var allWhole = holding.length > 1;
+    for (final i in holding) {
+      final branch = e[i]! as List<Object?>;
+      final wrapped = _wrapSmallest(branch, language);
+      out[i] = wrapped;
+      allWhole =
+          allWhole && wrapped.length == 4 && identical(wrapped[3], branch);
+    }
+    return allWhole ? _preferTranslation(e, language) : out;
   }
   final first = holding.first;
   final last = holding.last;

@@ -250,6 +250,67 @@ void main() {
       );
     });
 
+    test('a name in several branches is wrapped in each of them', () {
+      // Wrapping the step would show only the translation from z14, the
+      // ref beside it lost.
+      expect(
+        localizeTextField({
+          'stops': [
+            [10, '{name}'],
+            [14, '{name} ({ref})'],
+          ],
+        }, 'de'),
+        [
+          'step',
+          ['zoom'],
+          _de(['get', 'name']),
+          14,
+          [
+            'concat',
+            _de(['get', 'name']),
+            ' (',
+            ['get', 'ref'],
+            ')'
+          ],
+        ],
+      );
+    });
+
+    test('branches that are only names share one wrap', () {
+      // Carto's place labels: the translation is looked up once.
+      final carto = {
+        'stops': [
+          [8, '{name_en}'],
+          [13, '{name}'],
+        ],
+      };
+      expect(
+        localizeTextField(carto, 'de'),
+        _de([
+          'step',
+          ['zoom'],
+          ['get', 'name_en'],
+          13,
+          ['get', 'name'],
+        ]),
+      );
+      // A let combines its bindings, like a concat: one wrap.
+      final let = [
+        'let',
+        'latin',
+        ['get', 'name:latin'],
+        'nonlatin',
+        ['get', 'name:nonlatin'],
+        [
+          'concat',
+          ['var', 'latin'],
+          ' ',
+          ['var', 'nonlatin'],
+        ],
+      ];
+      expect(localizeTextField(let, 'de'), _de(let));
+    });
+
     test('token templates become the equivalent expression', () {
       expect(localizeTextField('{name}', 'de'), _de(['get', 'name']));
       expect(
@@ -410,6 +471,52 @@ void main() {
           _label(_compile(localizeTextField('{name}', 'de')),
               {'name': 'München', 'name_de': 'München (de_)'}),
           'München (de_)');
+    });
+
+    test('with a translation, a branch keeps what it shows beside the name',
+        () {
+      const road = {
+        'name': 'Main Street',
+        'name:de': 'Hauptstraße',
+        'ref': 'B2'
+      };
+      final stops = _compile(localizeTextField({
+        'stops': [
+          [10, '{name}'],
+          [14, '{name} ({ref})'],
+        ],
+      }, 'de'));
+      expect(_label(stops, road, zoom: 12), 'Hauptstraße');
+      expect(_label(stops, road, zoom: 14), 'Hauptstraße (B2)');
+
+      final peak = _compile(localizeTextField([
+        'case',
+        ['has', 'ele'],
+        [
+          'concat',
+          ['get', 'name'],
+          '\n',
+          ['get', 'ele'],
+          ' m',
+        ],
+        ['get', 'name'],
+      ], 'de'));
+      expect(
+          _label(peak,
+              {'name': 'Zugspitze', 'name:de': 'Zugspitze (de)', 'ele': 2962}),
+          'Zugspitze (de)\n2962 m');
+
+      // A branch that shows no name stays the style's own.
+      final refFirst = _compile(localizeTextField({
+        'stops': [
+          [2, '{ref}'],
+          [6, '{name}'],
+          [9, '{name}\n{ele} m'],
+        ],
+      }, 'de'));
+      expect(_label(refFirst, road, zoom: 5), 'B2');
+      expect(
+          _label(refFirst, {'name': 'Tokyo', 'name:de': 'Tokio'}, zoom: 5), '');
     });
   });
 
