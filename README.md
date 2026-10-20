@@ -644,7 +644,7 @@ runs a short version of the benchmark in your browser.
   label text cache keeps up to 8000 shaped labels; after a run through
   four dense cities that held 37–49 MB more than the 2500 it used to
   keep, and 117–119 MB more with `TileOffset.none`.
-  `VectorTileLayer.clearMemoryCache()` gives 25–48 MB of that back (see
+  `VectorTileLayer.clearMemoryCache()` gives 23–43 MB of that back (see
   the CHANGELOG).
 - **Label density.** At the same camera `vector_map_tiles` draws more
   labels, because it evaluates the style one zoom level deeper than

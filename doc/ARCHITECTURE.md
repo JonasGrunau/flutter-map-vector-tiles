@@ -731,8 +731,8 @@ its winners; keyed on that, the trim would drop on-screen losers, and
 the next pass would shape them again inside a frame. The evicted
 painters are disposed at once: memory pressure often comes in the
 background, where no next pass arrives to retire them. On that phone
-RSS fell 25–48 MB within 3 s of the trim, not all the way back to what
-2500 entries had held.
+RSS fell 23–43 MB within 3 s of the trim, not all the way back to what
+2500 entries had held (`compare/results/raw/2026-10-20-trim-android`).
 
 In `LabelMode.tile` the cached result is the labelled image with an
 empty symbol list, so a hit owes no shaping and is complete the moment

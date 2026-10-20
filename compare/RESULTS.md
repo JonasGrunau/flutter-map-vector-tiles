@@ -91,7 +91,8 @@ package's default) against `vmt-vector`.
   after returning to a zoom level: fling settle 0.3–0.4 s against
   1.6–1.8 s with `TileOffset.none`, zoom warm 0.16–0.2 s against
   0.7–0.9 s with the default offset. `VectorTileLayer.clearMemoryCache()`
-  now trims it; RSS fell 25–48 MB within 3 s.
+  now trims it; RSS fell 23–43 MB within 3 s
+  (`results/raw/2026-10-20-trim-android`, built from 8090c1f).
 
 ## What the macOS session shows
 

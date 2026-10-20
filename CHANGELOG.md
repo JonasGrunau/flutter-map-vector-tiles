@@ -40,7 +40,7 @@ closer MapLibre parity for road shields, long words and buildings.
   map released them.
   Nothing on screen changes, and a label met again later is shaped
   again. On a Nothing Phone (1), after a run through four dense cities,
-  RSS fell by 25–30 MB within 3 s, and by 42–48 MB with
+  RSS fell by 23–30 MB within 3 s, and by 36–43 MB with
   `TileOffset.none`.
 - 🎨 `fill-extrusion` layers, such as the `building-3d` layer of
   OpenFreeMap's Liberty style, now follow MapLibre's opacity rules.
