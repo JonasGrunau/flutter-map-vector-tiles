@@ -32,13 +32,47 @@ pairs like with like.
 
 ## Results
 
-Frames delivered while the map moves, this package / `vector_map_tiles`:
+Each cell reads this package / `vector_map_tiles`. A range covers the
+first and the second pass over the same ground; each number is the
+median over the runs. Bold marks the better of the two: at least 1
+point more frames, or at least 5% less time, memory or download.
+Anything closer counts as a tie, and neither is bold.
 
 | | Android phone | iPhone | Mac | Chrome |
 |---|---:|---:|---:|---:|
-| Labels baked into the tiles | 94–98% / 74–99% | 99–100% / 96.8–100% | 97.5–100% / 99–100% | 94–100% / 39–100% |
-| Labels drawn every frame | 78–86% / 20–40% | 99–100% / 65–99.8% | 97–100% / 57–100% | 91–100% / 3–68% |
-| First complete map, baked labels | 0.95 / 3.0 s | 0.36 / 1.74 s | 0.34 / 0.98 s | 1.25 / 2.6 s |
+| **Labels baked into the tiles** (`LabelMode.tile` / raster mode) |  |  |  |  |
+| Frames delivered while zooming | **94–95%** / 75–91% | 99.7–99.8% / 98–99.6% | 97–99% / **99–100%** | **94–96%** / 54–88% |
+| … while panning | **95–98%** / 79–99% | 99–99.9% / 99.7–100% | 99.7–99.8% / 99.8–100% | **97–100%** / 75–100% |
+| … while rotating | **94–98%** / 90–99% | 99–100% / 99.7–100% | 99.8–100% / 99.9–100% | **98–100%** / 86–100% |
+| … while flinging | **94–96%** / 74% | **99.6–100%** / 98–99% | 100% / 99–100% | **96–99.9%** / 39–75% |
+| Longest pause between two frames | **84** / 251 ms | **29** / 45 ms | 50 / **33** ms | **34** / 159 ms |
+| First complete map | **0.95** / 2.99 s | **0.36** / 1.74 s | **0.34** / 0.98 s | **1.25** / 2.59 s |
+| Peak memory (RSS) | 391 / 401 MB | **336** / 387 MB | **495** / 577 MB | not measured |
+| Peak GPU memory | **264** / 313 MB | not measured | not measured | not measured |
+| **Labels drawn every frame** (default / vector mode) |  |  |  |  |
+| Frames delivered while zooming | **85%** / 35% | **99.8–99.9%** / 69–71% | **97–98%** / 65% | **91–94%** / 17% |
+| … while panning | **79%** / 40% | 99.6–100% / 99.7–99.8% | 99–99.7% / 100% | **95–100%** / 67–68% |
+| … while rotating | **78–81%** / 20–21% | **99–100%** / 84–90% | **99.8–100%** / 57–58% | **95–99.8%** / 12–14% |
+| … while flinging | **82–86%** / 21–22% | **99.7–99.8%** / 66–67% | **99–100%** / 63–64% | **93–95%** / 3% |
+| Longest pause between two frames | **134** / 1373 ms | **18** / 182 ms | **42** / 167 ms | **42** / 858 ms |
+| Longest wait for the map to go still after moving | **0.3** / 4.4 s | **0.3** / 1.1 s | **0.3** / 1.3 s | **0.3** / 3.5 s |
+| First complete map | **1.05** / 1.89 s | **0.50** / 1.19 s | **0.47** / 0.96 s | **1.22** / 1.93 s |
+| Peak memory (RSS) | **393** / 892 MB | **335** / 836 MB | **527** / 948 MB | not measured |
+| Peak GPU memory | 365 / 376 MB | not measured | not measured | not measured |
+| **Network** (this package / raster mode) |  |  |  |  |
+| Downloaded per run | **12.8** / 20.4 MB¹ | **26.7** / 50.3–55.0 MB | **26.6** / 51.2–51.6 MB | **29.3** / 32.6 MB² |
+
+The longest pause is the longest gap between two frames in any of the
+movements; at 60 Hz a frame is due every 17 ms, at 120 Hz every 8 ms.
+The wait to go still is how long tiles and labels kept changing after
+the camera stopped. With baked labels both packages went still within
+half a second everywhere.
+
+¹ Android counts only opening the map and the measured movements, not
+the jumps between them. The other platforms count whole runs.
+
+² Chrome's HTTP cache answers a repeated request, so this counts each
+address once.
 
 ## What this means
 
@@ -51,12 +85,14 @@ ahead on the first zoom and 58 on the first fling, passes on which
 
 With labels drawn every frame, the gap is wide everywhere except panning
 on the Mac and the iPhone. `vector_map_tiles`' vector mode got 20 to 40%
-of frames on the Android phone, about 3% when flinging in Chrome, and 57
-to 71% while zooming or flinging on the Mac and the iPhone. This package
-got 78 to 86% on the phone and above 90% everywhere else.
+of frames on the Android phone and about 3% when flinging in Chrome. On
+the Mac and the iPhone it got 63 to 71% while zooming or flinging, and
+57 to 58% while rotating on the Mac. This package got 78 to 86% on the
+phone and above 90% everywhere else.
 
-With baked labels, the first complete map appeared 2 to 5 times sooner
-with this package, on every platform.
+The first complete map appeared 2 to 5 times sooner with this package
+with baked labels, and 1.6 to 2.4 times sooner with labels drawn every
+frame, on every platform.
 
 In raster mode, `vector_map_tiles` downloaded about twice as much per run
 on the iPhone and the Mac (50 to 55 MB against 27 MB). It also used more
