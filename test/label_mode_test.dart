@@ -40,7 +40,8 @@ Uint8List labelledTile() => MvtTileBuilder()
     .done()
     .build();
 
-Theme labelTheme({bool allowOverlap = false}) => const ThemeReader().read({
+Theme labelTheme({bool allowOverlap = false, double? minzoom}) =>
+    const ThemeReader().read({
       'layers': [
         {
           'id': 'bg',
@@ -59,6 +60,7 @@ Theme labelTheme({bool allowOverlap = false}) => const ThemeReader().read({
           'type': 'symbol',
           'source': 's',
           'source-layer': 'poi',
+          if (minzoom != null) 'minzoom': minzoom,
           'layout': {
             'text-field': '{name}',
             'text-size': 40,
@@ -431,6 +433,30 @@ void main() {
 
         await tester.pumpWidget(const SizedBox());
         await tester.pump();
+      });
+    }
+
+    for (final mode in LabelMode.values) {
+      testWidgets(
+          '${mode.name} mode: a layer starting halfway into the level '
+          '${mode == LabelMode.tile ? 'is not' : 'is'} laid out',
+          (tester) async {
+        tester.view.physicalSize = const Size(600, 600);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+
+        // The map is at 14: a tile of 14 draws its labels at 14 in tile
+        // mode, while the screen pass may show them from 14.5 on.
+        final provider = EverywhereProvider(labelledTile());
+        final layouts = SymbolLayouter.debugLayoutCount;
+        await tester.pumpWidget(labelModeApp(MapController(),
+            TileProviders({'s': provider}), labelTheme(minzoom: 14.5),
+            labelMode: mode));
+        await settleLabelled(tester, provider);
+        await settleRendering(tester);
+        expect(SymbolLayouter.debugLayoutCount > layouts,
+            mode == LabelMode.screen);
+        expect(await hasColor(tester, labelColor), isFalse);
       });
     }
 

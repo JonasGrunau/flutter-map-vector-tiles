@@ -480,10 +480,10 @@ they inherit the limits of any pre-rendered tile:
 |---|---|---|
 | Per-frame label work | placed labels laid out and drawn every frame, a collision pass every `labelFadeDuration` (at most 300 ms) | none |
 | Collision | one pass across the whole screen | within each tile |
-| At tile seams | seamless | a label that would cross a tile edge is dropped, so labels thin out along tile seams |
+| At tile seams | seamless | a label that would cross a tile edge is dropped, so labels thin out along tile seams; a road name repeated along a road is thinned out only within a tile, so it can show on both sides of a seam |
 | Under rotation | text stays upright | text rotates with the map |
 | Between zoom levels | sized for the exact zoom | sized for the tile's zoom level, then scales with the map (up to twice the size) until the next level's tiles replace it |
-| `minzoom`/`maxzoom` | cut and ramped at the exact zoom | applied per tile zoom level |
+| `minzoom`/`maxzoom` | cut and ramped at the exact zoom | applied at the tile's zoom level: `minzoom: 12.2` shows from 13, `maxzoom: 16.5` until 17 |
 | Fades | per label, `labelFadeDuration` | with the tile, `tileFadeDuration` |
 | New tiles | geometry first: every queued tile's geometry before any tile's labels, with the previous level's labels covering the gap | each tile appears complete, labels included; the previous level covers it until then |
 

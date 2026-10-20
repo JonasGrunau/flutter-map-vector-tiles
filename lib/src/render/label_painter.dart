@@ -879,7 +879,8 @@ class LabelPainter {
   /// survived the exact zoom gate, opacity and collision may suppress a
   /// lower-priority fallback, and screen positions make the zone
   /// continuous across tile seams. [paintTile] swaps in a fresh map for
-  /// the length of its pass.
+  /// the length of its pass, so there repeats are suppressed within the
+  /// tile only.
   var _repeatAnchors = <Object, List<_RepeatAnchor>>{};
 
   /// Whether [placed] repeats text already on screen within [radius]

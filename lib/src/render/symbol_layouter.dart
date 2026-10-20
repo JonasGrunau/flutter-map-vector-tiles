@@ -232,20 +232,30 @@ class SymbolLayouter {
   /// Whether any symbol layer of [theme] is visible somewhere in the
   /// zoom band [styleZoom, styleZoom + 1) — the render pump skips the
   /// symbol phase entirely below the first symbol minzoom, so
-  /// label-free zooms pay nothing for it.
-  static bool anySymbolLayerCovers(Theme theme, double styleZoom) {
+  /// label-free zooms pay nothing for it. [exact] asks about [styleZoom]
+  /// itself instead, as for [layout].
+  static bool anySymbolLayerCovers(Theme theme, double styleZoom,
+      {bool exact = false}) {
     for (final layer in theme.layers) {
-      if (layer is SymbolThemeLayer && layer.coversZoomBand(styleZoom)) {
+      if (layer is SymbolThemeLayer && _covers(layer, styleZoom, exact)) {
         return true;
       }
     }
     return false;
   }
 
+  static bool _covers(SymbolThemeLayer layer, double styleZoom, bool exact) =>
+      exact ? layer.coversZoom(styleZoom) : layer.coversZoomBand(styleZoom);
+
+  /// [exact] lays out only the layers visible at [styleZoom] itself, for
+  /// labels drawn into the tile (`LabelMode.tile`), which
+  /// `LabelPainter.paintTile` gates at that zoom: a layer that starts
+  /// later in the band would be laid out and shaped for nothing.
   static List<SymbolInstance> layout({
     required Theme theme,
     required DisplayTileData data,
     required double styleZoom,
+    bool exact = false,
   }) {
     debugLayoutCount++;
     final stopwatch = Stopwatch()..start();
@@ -256,7 +266,7 @@ class SymbolLayouter {
       // [styleZoom, styleZoom + 1); any layer whose range intersects
       // that band is laid out, and the label pass gates each frame at
       // the exact fractional zoom.
-      if (layer is! SymbolThemeLayer || !layer.coversZoomBand(styleZoom)) {
+      if (layer is! SymbolThemeLayer || !_covers(layer, styleZoom, exact)) {
         continue;
       }
       final source = layer.source;

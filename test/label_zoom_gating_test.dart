@@ -115,6 +115,39 @@ void main() {
     });
   });
 
+  group('layout gate', () {
+    Theme theme({double? minzoom, double? maxzoom}) => Theme(
+        id: 't', layers: [_symbolLayer(minzoom: minzoom, maxzoom: maxzoom)]);
+
+    test('the band: any layer visible somewhere in [z, z + 1)', () {
+      // The screen pass gates each frame itself, so a tile of z14 lays
+      // out a layer that starts at 14.5.
+      expect(SymbolLayouter.anySymbolLayerCovers(theme(minzoom: 14.5), 14),
+          isTrue);
+      expect(SymbolLayouter.anySymbolLayerCovers(theme(maxzoom: 14.5), 14),
+          isTrue);
+      expect(
+          SymbolLayouter.anySymbolLayerCovers(theme(minzoom: 15), 14), isFalse);
+    });
+
+    test('exact: only layers visible at z itself, as paintTile gates', () {
+      // LabelMode.tile draws a z14 tile's labels at 14 and nowhere else,
+      // so a layer starting at 14.5 would be laid out for nothing.
+      expect(
+          SymbolLayouter.anySymbolLayerCovers(theme(minzoom: 14.5), 14,
+              exact: true),
+          isFalse);
+      expect(
+          SymbolLayouter.anySymbolLayerCovers(theme(minzoom: 14.5), 15,
+              exact: true),
+          isTrue);
+      expect(
+          SymbolLayouter.anySymbolLayerCovers(theme(maxzoom: 14.5), 14,
+              exact: true),
+          isTrue);
+    });
+  });
+
   group('zoom-range fade-out', () {
     test('full opacity until the window before a declared maxzoom', () {
       final layer = _symbolLayer(minzoom: 10, maxzoom: 16);

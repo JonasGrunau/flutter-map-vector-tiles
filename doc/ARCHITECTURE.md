@@ -601,7 +601,10 @@ every box must lie inside it, `*-allow-overlap` ones included: a label
 the layouter anchored in this tile but which runs over the edge would be
 cut off there, and the neighbour that would have to draw its other half
 never sees the candidate. Such labels are dropped, which leaves gaps
-along tile seams — the same behaviour as `vector_map_tiles`. MapLibre
+along tile seams — the same behaviour as `vector_map_tiles`. Repeat
+suppression stops at the tile edge for the same reason: two ways of
+one street meeting at a seam can each show its name, a few pixels
+apart, where the screen pass would keep one. MapLibre
 avoids it with cross-tile placement (labels placed once for the
 viewport, then assigned to the tiles they overlap); that is a possible
 follow-up, not something this mode attempts.
@@ -610,8 +613,12 @@ The other limits follow from the image. Text is evaluated at the tile's
 integer style zoom and drawn at that size, then scales with the tile
 (1× up to 2× before the next level replaces it), and turns with the map
 under rotation. A symbol layer's zoom range is applied per tile zoom
-level rather than at the exact fractional zoom, and the `maxzoom` ramp
-is evaluated at that level too. Labels fade in with their tile over
+level rather than at the exact fractional zoom — `minzoom: 12.2` shows
+from 13, `maxzoom: 16.5` until 17, as geometry layers already do in
+both modes — and the `maxzoom` ramp is evaluated at that level too. The
+layouter applies the same gate in this mode (`exact`), rather than the
+screen pass's band, so a layer the tile will not draw is neither laid
+out nor shaped. Labels fade in with their tile over
 `tileFadeDuration`; `labelFadeDuration` does nothing.
 
 Being a `toImageSync` like any other tile raster, the labelled image is

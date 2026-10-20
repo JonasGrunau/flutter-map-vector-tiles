@@ -16,9 +16,11 @@ closer MapLibre parity for road shields, long words and buildings.
   records its roads. The same text engine draws them, curved road
   names and SDF icons included, but with the limits of a pre-rendered
   tile: collision is per tile and a label that would cross a tile edge
-  is dropped, text turns with the map, scales with the tile between
-  zoom levels, and fades in with its tile. Texture memory per tile is
-  unchanged. On a Nothing Phone (1) at 60 Hz, the map got a frame on
+  is dropped, a road name can repeat on both sides of a tile edge,
+  `minzoom` and `maxzoom` apply at the tile's zoom level, and text
+  turns with the map, scales with the tile between zoom levels, and
+  fades in with its tile. Texture memory per tile is unchanged. On a
+  Nothing Phone (1) at 60 Hz, the map got a frame on
   94–98% of display refreshes while zooming, panning, rotating and
   flinging, against
   78–86% with screen-space labels (rotating: 78–81% → 94–98%). On an

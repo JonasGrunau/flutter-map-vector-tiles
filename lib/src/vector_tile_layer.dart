@@ -1496,7 +1496,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       widget.showLabels &&
       sources.isNotEmpty &&
       SymbolLayouter.anySymbolLayerCovers(
-          widget.theme, _styleZoomOf(tile.key.z.toDouble()));
+          widget.theme, _styleZoomOf(tile.key.z.toDouble()),
+          exact: _tileLabels);
 
   /// Wall-clock the render pump may spend per frame. Checked before
   /// every job, between the layers of a raster job's recording and
@@ -1744,8 +1745,14 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // on a dense tile), so it runs whole rather than in slices.
       final data = DisplayTileData(
           displayKey: tile.key, sources: job.sources, rasters: const {});
+      // Drawn into the tile, the labels are gated at the tile's own
+      // zoom (`LabelPainter.paintTile`), so only those layers are laid
+      // out and shaped.
       symbols = job.symbols = SymbolLayouter.layout(
-          theme: widget.theme, data: data, styleZoom: styleZoom);
+          theme: widget.theme,
+          data: data,
+          styleZoom: styleZoom,
+          exact: _tileLabels);
     }
     job.shapeCursor = _labelPainter.prewarm(
       symbols,
