@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/painting.dart';
 import 'package:flutter_map_vector_tiles/src/core/tile_key.dart';
 import 'package:flutter_map_vector_tiles/src/pipeline/prepared_tile.dart';
+import 'package:flutter_map_vector_tiles/src/pipeline/tile_processor.dart';
 import 'package:flutter_map_vector_tiles/src/render/display_tile_data.dart';
 import 'package:flutter_map_vector_tiles/src/render/pattern_resolver.dart';
 import 'package:flutter_map_vector_tiles/src/render/tile_rasterizer.dart';
@@ -11,6 +12,8 @@ import 'package:flutter_map_vector_tiles/src/style/sprite_atlas.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'fixtures/mvt_builder.dart';
 
 /// Two buildings overlapping in the middle third of the tile, the way a
 /// building part sits on its outline. Clockwise in y-down tile
@@ -60,10 +63,10 @@ Theme _theme(String type, Map<String, Object?> paint) =>
 /// The colour, as `[r, g, b]`, at the three columns that matter: the
 /// first building alone, the overlap, and the second building alone.
 Future<List<List<int>>> _columns(Theme theme,
-    {PatternResolver? patterns}) async {
+    {PatternResolver? patterns, DisplayTileData? tile}) async {
   final image = TileRasterizer.rasterize(
     theme: theme,
-    data: _overlappingTile(),
+    data: tile ?? _overlappingTile(),
     styleZoom: 2,
     devicePixelRatio: 1,
     patterns: patterns,
@@ -213,6 +216,42 @@ void main() {
       expect(right, _closeTo(second));
     });
   }
+
+  test('a building wound the wrong way still fills its overlap', () async {
+    // The second building counter-clockwise, as a producer ignoring the
+    // MVT winding rule writes it: one non-zero union of both would
+    // cancel out where they overlap, unless the decoder turns it over.
+    final bytes = MvtTileBuilder()
+        .layer('building')
+        .feature(type: 3, geometry: [
+          cmd(1, 1), zig(0), zig(1024), //
+          cmd(2, 3), zig(2731), zig(0), zig(0), zig(2048), zig(-2731),
+          zig(0),
+          cmd(7, 1),
+        ])
+        .feature(type: 3, geometry: [
+          cmd(1, 1), zig(1365), zig(1024), //
+          cmd(2, 3), zig(0), zig(2048), zig(2731), zig(0), zig(0),
+          zig(-2048),
+          cmd(7, 1),
+        ])
+        .done()
+        .build();
+    final prepared = prepareTileSync(PrepareInput(
+      z: 2,
+      x: 1,
+      y: 1,
+      bytes: bytes,
+      layerProperties: const {'building': <String>{}},
+    ));
+    final [first, overlap, second] = await _columns(
+        _theme('fill-extrusion', {'fill-extrusion-color': '#000000'}),
+        tile: DisplayTileData(
+            displayKey: const TileKey(2, 1, 1), sources: {'s': prepared}));
+    expect(first, _closeTo([0, 0, 0]));
+    expect(overlap, _closeTo([0, 0, 0]));
+    expect(second, _closeTo([0, 0, 0]));
+  });
 
   test('a patterned extrusion is blended once too', () async {
     final atlas = _redAtlas();

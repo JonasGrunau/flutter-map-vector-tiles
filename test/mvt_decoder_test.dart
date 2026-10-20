@@ -134,6 +134,29 @@ void main() {
     expect(feature.ringAreas.single, greaterThan(0));
   });
 
+  test('turns a polygon wound the wrong way over, holes and all', () {
+    // Exterior counter-clockwise in y-down space, hole clockwise: the
+    // reverse of what the spec asks, as some producers write it.
+    final bytes = MvtTileBuilder()
+        .layer('water')
+        .feature(type: 3, geometry: [
+          cmd(1, 1), zig(0), zig(0), //
+          cmd(2, 3), zig(0), zig(10), zig(10), zig(0), zig(0), zig(-10),
+          cmd(7, 1),
+          cmd(1, 1), zig(-8), zig(2), //
+          cmd(2, 3), zig(6), zig(0), zig(0), zig(6), zig(-6), zig(0),
+          cmd(7, 1),
+        ])
+        .done()
+        .build();
+
+    final feature = decodeMvt(bytes).layers.single.features.single;
+    expect(feature.ringAreas[0], greaterThan(0));
+    expect(feature.ringAreas[1], lessThan(0));
+    expect(feature.parts[0], [10.0, 0.0, 10.0, 10.0, 0.0, 10.0, 0.0, 0.0]);
+    expect(feature.parts[1], [2.0, 8.0, 8.0, 8.0, 8.0, 2.0, 2.0, 2.0]);
+  });
+
   test('decodes multiple layers and double values', () {
     final bytes = MvtTileBuilder()
         .layer('a')

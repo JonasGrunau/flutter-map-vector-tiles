@@ -345,7 +345,7 @@ for frames with no per-frame label work in them.
   pass late, never mid-frame; `trimCaches` keeping what the last
   placement pass used (cache hits included, the losers a replayed frame
   skipped too) and what the pump shaped since, and releasing the rest
-- `test/label_zoom_gating_test.dart` — per-frame layer zoom-range gate, the
+- `test/label_zoom_gating_test.dart` — the layouter's band and `exact` gates, per-frame layer zoom-range gate, the
   `maxzoom` fade-out ramp, near-zero `text-size` skip, insertion-order
   collision tiebreak
 - `test/label_continuity_test.dart` — the per-label fade model: key

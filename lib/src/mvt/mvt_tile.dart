@@ -57,7 +57,9 @@ class MvtFeature {
   final List<Float32List> parts;
 
   /// Ring areas (shoelace, y-down: positive = exterior) for polygon
-  /// features, aligned with [parts]; empty for other geometry types.
+  /// features, aligned with [parts]; empty for other geometry types. A
+  /// feature whose first ring came negative has been turned over whole,
+  /// so a decoded polygon's first ring is always an exterior.
   final Float64List ringAreas;
 
   /// Geometry bounds in tile-extent units over all retained [parts] —
