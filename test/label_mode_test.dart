@@ -672,6 +672,50 @@ void main() {
       await settleLabelled(tester, provider);
     });
 
+    testWidgets('tile mode: a pixel ratio change between the phases',
+        (tester) async {
+      tester.view.physicalSize = const Size(600, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      const background = Color(0xff0000ff);
+
+      final controller = MapController();
+      final provider = EverywhereProvider(labelledTile());
+      final rasterized = TileRasterizer.debugRasterizeCount;
+      final slices = TileRasterizer.debugSliceCount;
+      final painted = LabelPainter.debugTilePaintCount;
+      await tester.pumpWidget(labelModeApp(
+          controller, TileProviders({'s': provider}), labelTheme(),
+          labelMode: LabelMode.tile));
+      // Until a tile's geometry is recorded and its labels are still to
+      // be drawn over it.
+      expect(
+          await pumpUntil(tester, () async {
+            final recorded = TileRasterizer.debugRasterizeCount - rasterized;
+            return recorded > LabelPainter.debugTilePaintCount - painted &&
+                TileRasterizer.debugSliceCount - slices == 2 * recorded;
+          }),
+          isTrue);
+
+      // Same logical size, twice the pixels: the geometry recorded at
+      // the old ratio must still fill the tile it is drawn into.
+      tester.view.physicalSize = const Size(1200, 1200);
+      tester.view.devicePixelRatio = 2;
+      await settleLabelled(tester, provider);
+      await settleRendering(tester);
+      expect(await hasColor(tester, background), isFalse,
+          reason: 'a tile shows only part of its geometry');
+
+      // Nor may such a tile come back from the result cache.
+      controller.move(const LatLng(48.3, 11.9), 14);
+      await settleLabelled(tester, provider);
+      controller.move(const LatLng(48.1725, 11.7375), 14);
+      await settleLabelled(tester, provider);
+      await settleRendering(tester);
+      expect(await hasColor(tester, background), isFalse,
+          reason: 'the result cache served a tile with part of its geometry');
+    });
+
     testWidgets("tile mode places a tile's labels in a frame of their own",
         (tester) async {
       tester.view.physicalSize = const Size(600, 600);

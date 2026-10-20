@@ -88,7 +88,11 @@ buildings of the densest one. Nothing is published before the last
 slice: a tile halfway through its recording counts as loading, and
 whatever covered it keeps covering it. A slice taken under a different
 theme or pixel ratio than the ones before it starts the recording
-over, since it would not stack onto them.
+over, since it would not stack onto them. The symbol phase inherits
+the ratio the geometry was recorded at — `LabelMode.tile` draws the
+labels over that geometry at it — and a tile finished at a ratio the
+screen has since left is published but not cached, so the next visit
+renders it afresh.
 
 The budget depends on motion: 4 ms per frame while the camera moves,
 12 ms once it has stood still for 150 ms. While the map moves, every

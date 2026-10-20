@@ -138,6 +138,10 @@ closer MapLibre parity for road shields, long words and buildings.
   feature used to get the value for no feature at all, so a fill made
   visible only for certain ids was not drawn, and a building or road
   coloured by its id took the fallback colour.
+- 🐛 A tile that finished rendering just after the screen's pixel
+  ratio changed (a window moved to another monitor, a browser zoom) is
+  no longer kept in the finished-tile cache at the old resolution,
+  where it came back blurry on the next visit.
 - 📚 The README's comparison with `vector_map_tiles` now covers iOS,
   macOS and Chrome as well as Android. Android, macOS and Chrome were
   measured on one build from this release's development (c1dc45c),

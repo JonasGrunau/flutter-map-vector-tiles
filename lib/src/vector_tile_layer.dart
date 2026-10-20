@@ -1656,7 +1656,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             complete: job.complete,
             generation: job.generation,
             geometry: geometry,
-          ));
+          )..recordedPixelRatio = job.recordedPixelRatio);
       return true;
     }
     final image = geometry == null
@@ -1686,7 +1686,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             fadeIn: job.fadeIn,
             complete: job.complete,
             generation: job.generation,
-          ));
+          )..recordedPixelRatio = job.recordedPixelRatio);
     } else {
       // Still a publish: a tile that finishes with no labels at all is
       // what releases the retained level's labels over it into their
@@ -1788,7 +1788,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       _RenderJob job, List<SymbolInstance> symbols, double styleZoom) {
     developer.Timeline.startSync('VT rasterize with labels');
     try {
-      final dpr = _devicePixelRatio;
+      // The ratio the geometry was recorded at, which the screen may
+      // have left since: the clip, the label scale and the image size
+      // have to match the picture.
+      final dpr = job.recordedPixelRatio ?? _devicePixelRatio;
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
       final geometry = job.geometry;
@@ -1825,6 +1828,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   void _cacheResult(
       _DisplayTile tile, _RenderJob job, List<SymbolInstance> symbols) {
     if (job.provisional || !job.complete || job.fromCache) return;
+    // An image rasterized at a pixel ratio the screen has since left
+    // would be stored under the new ratio's signature.
+    if (job.recordedPixelRatio case final dpr? when dpr != _devicePixelRatio) {
+      return;
+    }
     _resultCache?.put(
       tile.key,
       image: tile.image?.clone(),
@@ -1985,7 +1993,9 @@ class _RenderJob {
 
   /// What the recorded slices were drawn with. A later slice under a
   /// different theme or pixel ratio would not stack onto them, so the
-  /// recording starts over instead.
+  /// recording starts over instead. The symbol phase inherits the pixel
+  /// ratio: [LabelMode.tile] rasterizes the recorded geometry at it, and
+  /// a tile finished at a ratio the screen has left is not cached.
   Theme? recordedTheme;
   double? recordedPixelRatio;
 
