@@ -76,8 +76,10 @@ display tile of central Berlin at z16 took 16–28 ms to record, up to
 half of it. So the raster phase is resumable, like the symbol phase:
 `TileRasterizer.recordSlice` records layers until the pump's budget is
 spent and returns where to resume, the job keeps the slices it has
-(`_RenderJob.geometryParts`) and is requeued with its priority, and once
-the last layer is in, `compose` stacks the slices into exactly the
+(`_RenderJob.geometryParts`) and is requeued with its priority, ahead
+of the jobs it ties with — otherwise tiles of one priority, such as
+every tile a refresh re-renders, would take turns a slice each and none
+would finish until all had started — and once the last layer is in, `compose` stacks the slices into exactly the
 picture a single recording would have made. A layer is the smallest
 unit — each is drawn whole, in order, with its own paints, which is
 what keeps the slices stackable — so one frame can still carry the most

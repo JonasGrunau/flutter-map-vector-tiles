@@ -793,9 +793,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     for (final tile in _tiles.values) {
       tile.renderedWith = null; // identical sources must still re-enqueue
       tile.loadGeneration++;
-      unawaited(_loadTile(tile, 0, fadeIn: false));
+      unawaited(_loadTile(tile, _priorityOf(tile), fadeIn: false));
     }
   }
+
+  /// The render priority of a live tile in the current grid: viewport
+  /// centre first, as for a fresh load.
+  int _priorityOf(_DisplayTile tile) => _lastLayout?.priorityOf(tile.key) ?? 0;
 
   /// A background revalidation replaced [refreshed]'s decoded content —
   /// re-rasterize the visible display tiles it serves. The new raster
@@ -813,7 +817,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       if (dataKeyOf(tile.key) != refreshed) continue;
       tile.renderedWith = null; // identical source set must still re-enqueue
       tile.loadGeneration++;
-      unawaited(_loadTile(tile, 0));
+      unawaited(_loadTile(tile, _priorityOf(tile)));
     }
     // Retained tiles are on their way out and are not worth re-rendering,
     // but their queued jobs still hold the replaced sources. Retiring
@@ -1560,7 +1564,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
               // must not be disposed here. Requeued for the same reason
               // as a symbols job below; a newer raster for this tile
               // supersedes it, slices and all.
-              _renderQueue.enqueueRaster(tile, job.priority, job);
+              _renderQueue.enqueueRaster(tile, job.priority, job,
+                  resumed: true);
               processed++;
               continue;
             }
@@ -1577,7 +1582,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
                   job.rasters.isEmpty && job.descendantRasters.isEmpty,
                   'a requeued symbols job must own no raster handles: the '
                   'pump skips dispose() for it');
-              _renderQueue.enqueueSymbols(tile, job.priority, job);
+              _renderQueue.enqueueSymbols(tile, job.priority, job,
+                  resumed: true);
               processed++;
               continue;
             }

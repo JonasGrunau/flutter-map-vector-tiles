@@ -53,6 +53,37 @@ void main() {
     expect(queue.pop()!.job, 's-far');
   });
 
+  for (final tileMajor in [false, true]) {
+    test('a resumed job wins a tie (tileMajor: $tileMajor)', () {
+      // Sliced recording: tiles of equal priority must finish one after
+      // the other, not take turns a slice each.
+      final queue = RenderJobQueue<String, String>(onDrop: (_) {});
+      for (final key in ['a', 'b', 'c']) {
+        queue.enqueueRaster(key, 0, 'raster-$key');
+      }
+      final first = queue.pop(tileMajor: tileMajor)!;
+      expect(first.job, 'raster-a');
+      queue.enqueueRaster('a', 0, first.job, resumed: true);
+      expect(queue.pop(tileMajor: tileMajor)!.job, 'raster-a');
+
+      final symbols = RenderJobQueue<String, String>(onDrop: (_) {});
+      for (final key in ['x', 'y']) {
+        symbols.enqueueSymbols(key, 7, 'symbols-$key');
+      }
+      symbols.enqueueSymbols('y', 7, 'symbols-y', resumed: true);
+      expect(symbols.pop(tileMajor: tileMajor)!.job, 'symbols-y');
+      expect(symbols.pop(tileMajor: tileMajor)!.job, 'symbols-x');
+    });
+  }
+
+  test('a resumed job does not beat a more central fresh one', () {
+    final queue = RenderJobQueue<String, String>(onDrop: (_) {});
+    queue.enqueueRaster('edge', 4, 'raster-edge', resumed: true);
+    queue.enqueueRaster('centre', 0, 'raster-centre');
+    expect(queue.pop()!.job, 'raster-centre');
+    expect(queue.pop()!.job, 'raster-edge');
+  });
+
   test('a new raster job replaces the tile\'s pending raster job', () {
     final dropped = <String>[];
     final queue = RenderJobQueue<String, String>(onDrop: dropped.add);

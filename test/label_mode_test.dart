@@ -638,6 +638,40 @@ void main() {
       });
     }
 
+    testWidgets('a refresh finishes each recording before it starts the next',
+        (tester) async {
+      tester.view.physicalSize = const Size(600, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      final provider = EverywhereProvider(labelledTile());
+      final controller = MapController();
+      final providers = TileProviders({'s': provider});
+      final theme = threeLayerTheme();
+      await tester.pumpWidget(labelModeApp(controller, providers, theme,
+          labelMode: LabelMode.tile));
+      await settleLabelled(tester, provider);
+      await settleRendering(tester);
+
+      // Re-renders every live tile at once. The tiles must come out one
+      // after the other, not take turns a layer each.
+      final rasterized = TileRasterizer.debugRasterizeCount;
+      final slices = TileRasterizer.debugSliceCount;
+      await tester.pumpWidget(labelModeApp(controller, providers, theme,
+          labelMode: LabelMode.tile, showLabels: false));
+      for (var frame = 0; frame < 200; frame++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        final started = TileRasterizer.debugRasterizeCount - rasterized;
+        final recorded = TileRasterizer.debugSliceCount - slices;
+        expect(recorded, greaterThan(3 * (started - 1)),
+            reason: 'a recording started before the one ahead finished');
+        if (started >= 4 && recorded == 3 * started) break;
+      }
+      expect(TileRasterizer.debugRasterizeCount - rasterized,
+          greaterThanOrEqualTo(4));
+      await settleLabelled(tester, provider);
+    });
+
     testWidgets("tile mode places a tile's labels in a frame of their own",
         (tester) async {
       tester.view.physicalSize = const Size(600, 600);
