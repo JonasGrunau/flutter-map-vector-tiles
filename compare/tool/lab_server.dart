@@ -101,10 +101,12 @@ Future<void> main(List<String> argv) async {
     appDir: appDir.isEmpty ? null : Directory(appDir),
   );
 
-  // Loopback only: devices reach it through `adb reverse`, which connects
-  // to the Mac's loopback, and the Mac app, the browser and the scripts use
-  // `localhost`; nothing needs it on the network. Both address families,
-  // because `localhost` may resolve to either first.
+  // Loopback: Android devices reach it through `adb reverse`, which
+  // connects to the Mac's loopback, and the Mac app, the browser and the
+  // scripts use `localhost`. Both address families, because `localhost`
+  // may resolve to either first. An iPhone has no `adb reverse`, so
+  // run_ios.sh adds the Mac's end of the phone's USB link with `--bind`:
+  // one address on a cable to one device, never every interface.
   final servers = [await HttpServer.bind(InternetAddress.loopbackIPv4, port)];
   try {
     servers.add(await HttpServer.bind(InternetAddress.loopbackIPv6, port,
@@ -113,6 +115,8 @@ Future<void> main(List<String> argv) async {
     stdout.writeln('no IPv6 loopback (${e.osError?.message ?? e.message}); '
         'serving 127.0.0.1 only');
   }
+  final bind = args.get('bind', '');
+  if (bind.isNotEmpty) servers.add(await HttpServer.bind(bind, port));
   stdout.writeln('lab server on :$port · session $session · '
       '${queue.length} runs (${arms.join(', ')} × $rounds) · '
       'cache ${cacheDir.path}${offline ? ' (offline)' : ''} · '

@@ -495,10 +495,11 @@ same style and tiles, three runs each: with `LabelMode.tile` the map
 got a frame on 94–98% of display refreshes while zooming, panning,
 rotating and flinging, against 78–86% in the default mode, and the UI
 thread's 90th percentile fell from 15.4–21.7 ms to 3.6–9.3 ms. The first
-complete map took 0.95 s, against 1.05 s in the default mode. On a
-MacBook Pro (M4 Pro) the two modes are within a point of each other, at
-97–100%, and in Chrome the default gets 91–100%, so the choice matters
-most on phones.
+complete map took 0.95 s, against 1.05 s in the default mode. On an
+iPhone 15 Pro Max both modes get 99–100%, on a MacBook Pro (M4 Pro)
+they are within a point of each other at 97–100%, and in Chrome the
+default gets 91–100%, so the choice matters most on a mid-range
+phone.
 
 #### Label language
 
@@ -583,49 +584,61 @@ on stable Flutter (the `10.0.0` betas need Flutter's main channel for
 | Tile images | 512 px, `Picture.toImage`, then PNG-encoded into its disk cache before the tile is shown; a revisit decodes the PNG | 256 px × device pixel ratio, `Picture.toImageSync`, kept as GPU textures in an LRU |
 
 Measured with [`compare/`](compare) on a Nothing Phone (1) (Android,
-60 Hz), a MacBook Pro with an M4 Pro (macOS, 120 Hz) and Chrome on that
-Mac: the same style and the same recorded tiles, a fresh process per
-run, three runs each. "Frames" is the share of display refreshes that
-got a frame while the camera zoomed, panned, rotated or flung. Each cell
-reads this package / `vector_map_tiles`. Full tables, and screenshots
-next to MapLibre GL JS, are in [compare/RESULTS.md](compare/RESULTS.md).
+60 Hz), an iPhone 15 Pro Max (iOS, 120 Hz), a MacBook Pro with an M4 Pro
+(macOS, 120 Hz) and Chrome on that Mac: the same style and the same
+recorded tiles, a fresh process per run, three runs each (four on the
+iPhone, measured a week later on a newer build). "Frames" is the share
+of display refreshes that got a frame while the camera zoomed, panned,
+rotated or flung. Each cell reads this package / `vector_map_tiles`.
+[compare/SUMMARY.md](compare/SUMMARY.md) explains the results in plain
+words; the full tables, and screenshots next to MapLibre GL JS, are in
+[compare/RESULTS.md](compare/RESULTS.md).
 
-| this package / vector_map_tiles | Android | macOS | Chrome |
-|---|---:|---:|---:|
-| Labels baked into the tiles (`LabelMode.tile` / raster mode): frames | 94–98% / 74–99% | 97.5–100% / 99–100% | 94–100% / 39–100% |
-| … worst frame gap | 67–84 / 67–251 ms | 8–50 / 8–33 ms | 10–34 / 10–159 ms |
-| Labels drawn every frame (default / vector mode): frames | 78–86% / 20–40% | 97–100% / 57–100% | 91–100% / 3–68% |
-| … worst frame gap | 50–134 / 100–1373 ms | 8–42 / 8–167 ms | 10–42 / 100–858 ms |
-| First complete map (baked / raster) | 0.95 / 3.0 s | 0.34 / 0.98 s | 1.25 / 2.6 s |
-| Downloaded per run (default / raster) | 12.8 / 20.4 MB¹ | 26.6 / 51.2–51.6 MB | 29.3 / 32.6 MB² |
+| this package / vector_map_tiles | Android | iOS | macOS | Chrome |
+|---|---:|---:|---:|---:|
+| Labels baked into the tiles (`LabelMode.tile` / raster mode): frames | 94–98% / 74–99% | 99–100% / 96.8–100% | 97.5–100% / 99–100% | 94–100% / 39–100% |
+| … worst frame gap | 67–84 / 67–251 ms | 8–29 / 8–45 ms | 8–50 / 8–33 ms | 10–34 / 10–159 ms |
+| Labels drawn every frame (default / vector mode): frames | 78–86% / 20–40% | 99–100% / 65–99.8% | 97–100% / 57–100% | 91–100% / 3–68% |
+| … worst frame gap | 50–134 / 100–1373 ms | 8–18 / 17–182 ms | 8–42 / 8–167 ms | 10–42 / 100–858 ms |
+| First complete map (baked / raster) | 0.95 / 3.0 s | 0.36 / 1.74 s | 0.34 / 0.98 s | 1.25 / 2.6 s |
+| Downloaded per run (default / raster) | 12.8 / 20.4 MB¹ | 26.7 / 50.3–55.0 MB | 26.6 / 51.2–51.6 MB | 29.3 / 32.6 MB² |
 
 ¹ Only while opening the map and during the measured passes: Android's
 whole-run counts were not kept, and the jumps between scenarios are
-left out. macOS and Chrome count whole runs, as the lab server saw
-them.
+left out. iOS, macOS and Chrome count whole runs, as the lab server
+saw them.
 
 ² In the browser the HTTP cache answers a repeated request, so this
 counts each URL once; on macOS, with a smaller window and no HTTP
 cache, `vector_map_tiles` fetched some tiles again.
+
+To check these numbers on your own devices, follow
+[Reproducing the results](compare/README.md#reproducing-the-results):
+every session's raw data is in the repository, and the scripts
+measure each one again. With no setup at all, the
+[web demo](https://jonasgrunau.github.io/flutter-map-vector-tiles/)
+runs a short version of the benchmark in your browser.
 
 ### ⚖️ Trade-offs
 
 - **Revisits.** `vector_map_tiles` keeps every tile it has rendered as a
   PNG on disk (IndexedDB on web), so a second pass over the same ground
   decodes tiles instead of drawing them, even after the app restarts. On
-  the repeated pan on the phone it got 98.7% of frames, this package
-  97.7% with baked labels; on macOS and in Chrome both got 99.7–100%.
+  the repeated pan on the Android phone it got 98.7% of frames, this
+  package 97.7% with baked labels; on the iPhone, on macOS and in Chrome
+  both got 99.7–100%.
   This package keeps finished tiles as GPU textures in an LRU
   sized to its screen and draws them again once they fall out; across
   restarts it keeps the tile data, not the drawn tiles.
 - **Memory.** With baked labels this package uses a little less on the
-  phone: 264 against 313 MB of GPU memory at the peak, 391 against
-  401 MB RSS (495 against 577 MB RSS on macOS). This package's default,
-  which draws labels every frame, needs more GPU memory than baked
-  labels (365 MB, vector mode 376 MB), much of it for the label fades:
-  in a separate A/B, turning them off took its peak from 391–409 to
-  317–320 MB, and cost frames instead. It needs far less RSS than
-  vector mode (393 against 892 MB; 527 against 948 MB on macOS). Its
+  Android phone: 264 against 313 MB of GPU memory at the peak, 391
+  against 401 MB RSS (336 against 387 MB on the iPhone, 495 against
+  577 MB on macOS). This package's default, which draws labels every
+  frame, needs more GPU memory than baked labels (365 MB, vector mode
+  376 MB), much of it for the label fades: in a separate A/B, turning
+  them off took its peak from 391–409 to 317–320 MB, and cost frames
+  instead. It needs far less RSS than vector mode (393 against 892 MB;
+  335 against 836 MB on the iPhone, 527 against 948 MB on macOS). Its
   label text cache keeps up to 8000 shaped labels; after a run through
   four dense cities that held 37–49 MB more than the 2500 it used to
   keep, and 117–119 MB more with `TileOffset.none`.
@@ -635,7 +648,7 @@ cache, `vector_map_tiles` fetched some tiles again.
   labels, because it evaluates the style one zoom level deeper than
   MapLibre. `tileOffset: TileOffset.none` makes this package do the same
   (see [Understanding `TileOffset`](#-understanding-tileoffset)).
-- **Not covered yet:** iOS, and the `10.0.0` betas.
+- **Not covered yet:** the `10.0.0` betas.
 
 ## 🐛 Troubleshooting
 

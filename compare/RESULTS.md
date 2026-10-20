@@ -3,10 +3,11 @@
 How `flutter_map_vector_tiles` and `vector_map_tiles` 9.0.0-beta.13 compare,
 measured with this directory's harness (method and arms: [README.md](README.md)).
 
-**Status, 2026-10-13:** complete sessions on Android, macOS and Chrome,
+**Status, 2026-10-20:** complete sessions on Android, macOS and Chrome,
 all six arms each, built from c1dc45c, with MapLibre GL JS rendering the
-same cameras next to the Chrome screenshots. Every run replayed the same
-recorded tiles. Still to come: iOS. The sessions this page quoted
+same cameras next to the Chrome screenshots, and on iOS, built later
+from d8c2e86 (see [its section](#ios--iphone-15-pro-max)). Every run
+replayed the same recorded tiles. The sessions this page quoted
 before, and the first macOS and Chrome attempts, are listed under
 [Earlier sessions](#earlier-sessions).
 
@@ -158,6 +159,43 @@ package's default) against `vmt-vector`.
   pan. With live labels this package takes 191–268 ms, vector mode
   0.5–3.5 s. There is no memory figure: the browser does not give a
   page its process's RSS.
+
+## What the iOS session shows
+
+Measured a week after the other three, on a later build (d8c2e86): by
+then this package kept road shields off lines too short for them, kept
+long words whole and drew fill outlines as MapLibre does. Read its
+numbers against each other, not against the other platforms'.
+
+- **Labels baked into the tiles.** Both packages get nearly every frame:
+  this package 99.0–100 %, `vector_map_tiles` 96.8–100 %. They are within
+  1 point of each other everywhere except the first pass of zoom and
+  fling, where this package is 1.5–1.6 points ahead. `vector_map_tiles`
+  stalls once on the first fling; the worst gaps are 29 ms against
+  45 ms.
+- **Labels drawn every frame.** This package got 99.1–100 %, vector mode
+  65.2–99.8 %: vector mode keeps up while panning, but gets 66–71 % while
+  zooming and flinging and 84–90 % while rotating, with gaps of up to
+  182 ms against this package's 18 ms. Its raster thread needs
+  9.3–12.8 ms per frame there (p90), over the budget of 8.3 ms at 120 Hz,
+  and its UI thread up to 14.0 ms; this package's need 0.7–0.9 ms and
+  2.7–3.4 ms.
+  With the denser `TileOffset.none` content this package gets
+  94.1–99.2 %, least while rotating.
+- **The label strategy hardly matters for this package here:** its two
+  label modes are within 0.2 points of each other everywhere.
+- **Opening the map:** 0.36 s with baked labels and 0.50 s by default,
+  against 1.74 s (raster mode) and 1.19 s (vector mode). A whole run
+  downloaded 26.7 MB in 68 requests for this package, 50.3–55.0 MB in
+  107–111 for raster mode and 44.5 MB in 80 for vector mode.
+- **Settling:** with baked labels, one frame (8 ms) after a pan, a
+  rotation and, for this package, a fling; 116–125 ms after a zoom for
+  both, and 66–70 ms for raster mode after a fling. With live labels this package takes
+  167–300 ms, vector mode 16 ms after a pan and 0.9–1.15 s after a zoom,
+  rotation or fling.
+- **Memory:** peak RSS 336 MB with baked labels against raster mode's
+  387 MB, and 335 MB by default against vector mode's 836 MB; 449 and
+  465 MB with `TileOffset.none`. GPU memory was not sampled on iOS.
 
 ## What the screenshots show
 
@@ -473,6 +511,94 @@ first; click for full size)
 | `munich-z18` | [![MapLibre GL JS (reference), munich-z18](results/shots/2026-10-12-c1dc45c-web/munich-z18-maplibre.webp)](results/shots/2026-10-12-c1dc45c-web/munich-z18-maplibre.webp) | [![flutter_map_vector_tiles, munich-z18](results/shots/2026-10-12-c1dc45c-web/munich-z18-fmvt.webp)](results/shots/2026-10-12-c1dc45c-web/munich-z18-fmvt.webp) | [![flutter_map_vector_tiles · LabelMode.tile, munich-z18](results/shots/2026-10-12-c1dc45c-web/munich-z18-fmvt-raster.webp)](results/shots/2026-10-12-c1dc45c-web/munich-z18-fmvt-raster.webp) | [![vector_map_tiles · raster, munich-z18](results/shots/2026-10-12-c1dc45c-web/munich-z18-vmt-raster.webp)](results/shots/2026-10-12-c1dc45c-web/munich-z18-vmt-raster.webp) | [![vector_map_tiles · vector, munich-z18](results/shots/2026-10-12-c1dc45c-web/munich-z18-vmt-vector.webp)](results/shots/2026-10-12-c1dc45c-web/munich-z18-vmt-vector.webp) | [![flutter_map_vector_tiles · TileOffset.none, munich-z18](results/shots/2026-10-12-c1dc45c-web/munich-z18-fmvt-none.webp)](results/shots/2026-10-12-c1dc45c-web/munich-z18-fmvt-none.webp) | [![flutter_map_vector_tiles · LabelMode.tile · TileOffset.none, munich-z18](results/shots/2026-10-12-c1dc45c-web/munich-z18-fmvt-raster-none.webp)](results/shots/2026-10-12-c1dc45c-web/munich-z18-fmvt-raster-none.webp) |
 
 Raw data: [results/raw/2026-10-12-c1dc45c-web/results.jsonl](results/raw/2026-10-12-c1dc45c-web/results.jsonl).
+
+## iOS · iPhone 15 Pro Max
+
+iOS 27.0.1 · 120 Hz · wired to the Mac and charging, nobody touching it;
+the app reached the lab server over the USB link · session
+`2026-10-20-ios`, built from d8c2e86, 4 rounds.
+
+Flutter 3.44.5 · flutter_map_vector_tiles 2.9.1 (d8c2e86) · vector_map_tiles 9.0.0-beta.13 · 430×932 logical px at dpr 3.0 · display 120 Hz · median of 4 runs per arm · ⚠️ 1 interrupted measurement(s) excluded
+
+**Frames delivered while the camera moves (higher is better)**
+
+| | flutter_map_vector_tiles | flutter_map_vector_tiles · TileOffset.none | flutter_map_vector_tiles · LabelMode.tile | flutter_map_vector_tiles · LabelMode.tile · TileOffset.none | vector_map_tiles · raster | vector_map_tiles · vector |
+|---|---:|---:|---:|---:|---:|---:|
+| zoom · cold | 99.8 % <sub>99.8–99.8</sub> | 98.8 % <sub>98.5–99.0</sub> | 99.7 % <sub>99.5–99.8</sub> | 99.4 % <sub>99.3–99.7</sub> | 98.1 % <sub>96.8–98.3</sub> | 69.4 % <sub>67.8–72.0</sub> · 33 stalls |
+| zoom · warm | 99.9 % <sub>99.8–100.0</sub> | 98.1 % <sub>97.9–98.2</sub> | 99.8 % <sub>99.7–99.9</sub> | 99.3 % <sub>99.1–99.5</sub> | 99.6 % <sub>99.5–99.7</sub> | 71.1 % <sub>69.1–71.6</sub> · 36 stalls |
+| pan · cold | 99.6 % <sub>99.5–99.8</sub> | 98.3 % <sub>97.9–98.6</sub> | 99.4 % <sub>99.0–99.6</sub> | 99.2 % <sub>99.1–99.3</sub> | 99.7 % <sub>99.4–100.0</sub> | 99.7 % <sub>99.6–99.8</sub> |
+| pan · warm | 100.0 % <sub>99.7–100.0</sub> | 99.0 % <sub>98.2–99.3</sub> | 99.9 % <sub>99.8–100.0</sub> | 100.0 % <sub>99.4–100.0</sub> | 100.0 % <sub>100.0–100.0</sub> | 99.8 % <sub>99.7–99.8</sub> |
+| rotate · cold | 99.2 % <sub>99.1–99.3</sub> | 94.4 % <sub>94.1–94.7</sub> | 99.2 % <sub>99.0–99.5</sub> | 99.1 % <sub>98.9–99.5</sub> | 99.7 % <sub>99.5–99.8</sub> | 89.8 % <sub>89.7–90.3</sub> · 2 stalls |
+| rotate · warm | 100.0 % <sub>99.9–100.0</sub> | 95.3 % <sub>95.3–95.8</sub> | 100.0 % <sub>99.9–100.0</sub> | 100.0 % <sub>100.0–100.0</sub> | 100.0 % <sub>100.0–100.0</sub> | 83.6 % <sub>83.3–84.8</sub> · 1 stall |
+| fling · cold | 99.7 % <sub>99.3–99.9</sub> | 97.3 % <sub>97.0–97.9</sub> | 99.6 % <sub>99.6–99.8</sub> | 99.2 % <sub>99.0–99.7</sub> | 98.1 % <sub>97.2–98.1</sub> · 1 stalls | 66.0 % <sub>65.2–67.4</sub> · 1 stalls |
+| fling · warm | 99.8 % <sub>99.7–99.9</sub> | 96.9 % <sub>96.8–97.9</sub> | 100.0 % <sub>99.8–100.0</sub> | 100.0 % <sub>100.0–100.0</sub> | 99.3 % <sub>98.5–100.0</sub> | 66.6 % <sub>66.3–66.8</sub> |
+
+**Worst frame gap, ms (lower is better)**
+
+| | flutter_map_vector_tiles | flutter_map_vector_tiles · TileOffset.none | flutter_map_vector_tiles · LabelMode.tile | flutter_map_vector_tiles · LabelMode.tile · TileOffset.none | vector_map_tiles · raster | vector_map_tiles · vector |
+|---|---:|---:|---:|---:|---:|---:|
+| zoom · cold | 17 | 21 | 17 | 18 | 38 | 182 |
+| zoom · warm | 17 | 22 | 17 | 25 | 30 | 138 |
+| pan · cold | 17 | 17 | 29 | 27 | 17 | 17 |
+| pan · warm | 8 | 17 | 14 | 8 | 8 | 17 |
+| rotate · cold | 18 | 33 | 26 | 33 | 17 | 79 |
+| rotate · warm | 8 | 27 | 8 | 8 | 8 | 92 |
+| fling · cold | 17 | 24 | 17 | 27 | 45 | 52 |
+| fling · warm | 17 | 27 | 8 | 8 | 23 | 47 |
+
+**UI thread p90 / raster thread p90, ms**
+
+| | flutter_map_vector_tiles | flutter_map_vector_tiles · TileOffset.none | flutter_map_vector_tiles · LabelMode.tile | flutter_map_vector_tiles · LabelMode.tile · TileOffset.none | vector_map_tiles · raster | vector_map_tiles · vector |
+|---|---:|---:|---:|---:|---:|---:|
+| zoom · cold | 2.8 / 0.9 | 4.5 / 0.8 | 0.6 / 0.5 | 0.6 / 0.5 | 1.8 / 0.4 | 10.7 / 9.5 |
+| zoom · warm | 2.7 / 0.9 | 4.0 / 0.7 | 0.6 / 0.5 | 0.6 / 0.5 | 0.9 / 0.5 | 9.9 / 10.3 |
+| pan · cold | 2.9 / 0.8 | 4.5 / 0.6 | 0.6 / 0.5 | 0.6 / 0.5 | 0.9 / 0.4 | 0.4 / 3.8 |
+| pan · warm | 2.8 / 0.8 | 4.3 / 0.6 | 0.6 / 0.5 | 0.6 / 0.5 | 0.9 / 0.4 | 0.4 / 4.0 |
+| rotate · cold | 3.4 / 0.8 | 4.5 / 0.6 | 0.6 / 0.5 | 0.6 / 0.5 | 1.1 / 0.5 | 5.3 / 11.3 |
+| rotate · warm | 3.3 / 0.7 | 3.7 / 0.5 | 0.6 / 0.5 | 0.6 / 0.5 | 1.1 / 0.5 | 5.2 / 12.8 |
+| fling · cold | 3.4 / 0.9 | 4.7 / 0.7 | 0.6 / 0.5 | 0.6 / 0.5 | 3.0 / 0.4 | 14.0 / 9.6 |
+| fling · warm | 3.1 / 0.9 | 4.2 / 0.7 | 0.6 / 0.5 | 0.6 / 0.5 | 0.9 / 0.4 | 14.0 / 9.3 |
+
+**Settle: time from the camera stopping to the last repaint, ms**
+
+| | flutter_map_vector_tiles | flutter_map_vector_tiles · TileOffset.none | flutter_map_vector_tiles · LabelMode.tile | flutter_map_vector_tiles · LabelMode.tile · TileOffset.none | vector_map_tiles · raster | vector_map_tiles · vector |
+|---|---:|---:|---:|---:|---:|---:|
+| zoom · cold | 167 | 191 | 125 | 187 | 116 | 912 |
+| zoom · warm | 275 | 176 | 125 | 197 | 116 | 895 |
+| pan · cold | 300 | 247 | 8 | 8 | 8 | 16 |
+| pan · warm | 246 | 250 | 8 | 8 | 8 | 16 |
+| rotate · cold | 224 | 296 | 8 | 8 | 8 | 1148 |
+| rotate · warm | 200 | 275 | 8 | 8 | 8 | 1149 |
+| fling · cold | 167 | 195 | 8 | 8 | 66 | 1014 |
+| fling · warm | 183 | 274 | 8 | 8 | 70 | 1000 |
+
+**Opening the map, network and memory**
+
+| | flutter_map_vector_tiles | flutter_map_vector_tiles · TileOffset.none | flutter_map_vector_tiles · LabelMode.tile | flutter_map_vector_tiles · LabelMode.tile · TileOffset.none | vector_map_tiles · raster | vector_map_tiles · vector |
+|---|---:|---:|---:|---:|---:|---:|
+| time to first complete map, ms | 499 | 501 | 363 | 381 | 1737 | 1192 |
+| requests per run | 68 | 74 | 68 | 74 | 109 | 80 |
+| MB downloaded per run | 26.7 | 29.2 | 26.7 | 29.2 | 52.7 | 44.5 |
+| peak RSS, MB | 335 | 465 | 336 | 449 | 387 | 836 |
+
+One measurement is left out: round 0's first pan with `fmvt`, during
+which the app was `inactive` for a moment; that cell is the median of
+the other three rounds. Across rounds, frames delivered moved by at most
+4.2 points (vector mode, first zoom), 0.4 at the median.
+
+**Screenshots** (fixed Munich cameras after round 0; click for full size;
+this build has the road-shield and long-word fixes)
+
+| camera | flutter_map_vector_tiles | flutter_map_vector_tiles · LabelMode.tile | vector_map_tiles · raster | vector_map_tiles · vector |
+|---|:---:|:---:|:---:|:---:|
+| `munich-z14` | [![flutter_map_vector_tiles, munich-z14](results/shots/2026-10-20-ios/munich-z14-fmvt.webp)](results/shots/2026-10-20-ios/munich-z14-fmvt.webp) | [![flutter_map_vector_tiles · LabelMode.tile, munich-z14](results/shots/2026-10-20-ios/munich-z14-fmvt-raster.webp)](results/shots/2026-10-20-ios/munich-z14-fmvt-raster.webp) | [![vector_map_tiles · raster, munich-z14](results/shots/2026-10-20-ios/munich-z14-vmt-raster.webp)](results/shots/2026-10-20-ios/munich-z14-vmt-raster.webp) | [![vector_map_tiles · vector, munich-z14](results/shots/2026-10-20-ios/munich-z14-vmt-vector.webp)](results/shots/2026-10-20-ios/munich-z14-vmt-vector.webp) |
+| `munich-z16` | [![flutter_map_vector_tiles, munich-z16](results/shots/2026-10-20-ios/munich-z16-fmvt.webp)](results/shots/2026-10-20-ios/munich-z16-fmvt.webp) | [![flutter_map_vector_tiles · LabelMode.tile, munich-z16](results/shots/2026-10-20-ios/munich-z16-fmvt-raster.webp)](results/shots/2026-10-20-ios/munich-z16-fmvt-raster.webp) | [![vector_map_tiles · raster, munich-z16](results/shots/2026-10-20-ios/munich-z16-vmt-raster.webp)](results/shots/2026-10-20-ios/munich-z16-vmt-raster.webp) | [![vector_map_tiles · vector, munich-z16](results/shots/2026-10-20-ios/munich-z16-vmt-vector.webp)](results/shots/2026-10-20-ios/munich-z16-vmt-vector.webp) |
+| `munich-z16-rot45` | [![flutter_map_vector_tiles, munich-z16-rot45](results/shots/2026-10-20-ios/munich-z16-rot45-fmvt.webp)](results/shots/2026-10-20-ios/munich-z16-rot45-fmvt.webp) | [![flutter_map_vector_tiles · LabelMode.tile, munich-z16-rot45](results/shots/2026-10-20-ios/munich-z16-rot45-fmvt-raster.webp)](results/shots/2026-10-20-ios/munich-z16-rot45-fmvt-raster.webp) | [![vector_map_tiles · raster, munich-z16-rot45](results/shots/2026-10-20-ios/munich-z16-rot45-vmt-raster.webp)](results/shots/2026-10-20-ios/munich-z16-rot45-vmt-raster.webp) | [![vector_map_tiles · vector, munich-z16-rot45](results/shots/2026-10-20-ios/munich-z16-rot45-vmt-vector.webp)](results/shots/2026-10-20-ios/munich-z16-rot45-vmt-vector.webp) |
+| `munich-z17.5` | [![flutter_map_vector_tiles, munich-z17.5](results/shots/2026-10-20-ios/munich-z17.5-fmvt.webp)](results/shots/2026-10-20-ios/munich-z17.5-fmvt.webp) | [![flutter_map_vector_tiles · LabelMode.tile, munich-z17.5](results/shots/2026-10-20-ios/munich-z17.5-fmvt-raster.webp)](results/shots/2026-10-20-ios/munich-z17.5-fmvt-raster.webp) | [![vector_map_tiles · raster, munich-z17.5](results/shots/2026-10-20-ios/munich-z17.5-vmt-raster.webp)](results/shots/2026-10-20-ios/munich-z17.5-vmt-raster.webp) | [![vector_map_tiles · vector, munich-z17.5](results/shots/2026-10-20-ios/munich-z17.5-vmt-vector.webp)](results/shots/2026-10-20-ios/munich-z17.5-vmt-vector.webp) |
+| `munich-z18` | [![flutter_map_vector_tiles, munich-z18](results/shots/2026-10-20-ios/munich-z18-fmvt.webp)](results/shots/2026-10-20-ios/munich-z18-fmvt.webp) | [![flutter_map_vector_tiles · LabelMode.tile, munich-z18](results/shots/2026-10-20-ios/munich-z18-fmvt-raster.webp)](results/shots/2026-10-20-ios/munich-z18-fmvt-raster.webp) | [![vector_map_tiles · raster, munich-z18](results/shots/2026-10-20-ios/munich-z18-vmt-raster.webp)](results/shots/2026-10-20-ios/munich-z18-vmt-raster.webp) | [![vector_map_tiles · vector, munich-z18](results/shots/2026-10-20-ios/munich-z18-vmt-vector.webp)](results/shots/2026-10-20-ios/munich-z18-vmt-vector.webp) |
+
+Raw data: [results/raw/2026-10-20-ios/results.jsonl](results/raw/2026-10-20-ios/results.jsonl),
+notes in [notes.md](results/raw/2026-10-20-ios/notes.md).
 
 ## Earlier sessions
 

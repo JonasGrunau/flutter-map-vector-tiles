@@ -45,10 +45,18 @@ set_defines() {
 scaffold() {
   local platform="$1"
   [[ -d "$COMPARE_DIR/$platform" ]] && return
+  # `flutter create` overwrites pubspec.lock (with --no-pub, with a stub
+  # that pins none of `vector_map_tiles`' renderer packages), so the next
+  # `pub get` would resolve them anew. Put the checked-in one back.
+  local lock
+  lock="$(mktemp -t fmvt-lock)"
+  cp "$COMPARE_DIR/pubspec.lock" "$lock"
   (cd "$COMPARE_DIR" &&
-    flutter create --platforms="$platform" --org dev.fmvt \
+    flutter create --no-pub --platforms="$platform" --org dev.fmvt \
       --project-name flutter_map_vector_tiles_compare . >/dev/null &&
     rm -rf analysis_options.yaml test)
+  cp "$lock" "$COMPARE_DIR/pubspec.lock"
+  rm -f "$lock"
   case "$platform" in
     macos)
       # The sandbox blocks outgoing connections, including to the lab.
@@ -74,6 +82,33 @@ scaffold() {
         "$COMPARE_DIR/android/app/src/main/AndroidManifest.xml" ||
         sed -i '' 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application#' \
           "$COMPARE_DIR/android/app/src/main/AndroidManifest.xml"
+      ;;
+    ios)
+      local plist="$COMPARE_DIR/ios/Runner/Info.plist"
+      # Portrait only, as run_android.sh locks the phone: a phone turned
+      # on its side mid-session changes the tiles per screen.
+      /usr/libexec/PlistBuddy -c 'Delete :UISupportedInterfaceOrientations' \
+        -c 'Add :UISupportedInterfaceOrientations array' \
+        -c 'Add :UISupportedInterfaceOrientations:0 string UIInterfaceOrientationPortrait' \
+        "$plist"
+      # The lab is plain HTTP on the phone's USB link (see run_ios.sh),
+      # which iOS counts as the local network: it asks once before the
+      # first connection.
+      /usr/libexec/PlistBuddy \
+        -c 'Add :NSLocalNetworkUsageDescription string The benchmark fetches its tiles from the lab server on the Mac over USB.' \
+        -c 'Add :NSAppTransportSecurity dict' \
+        -c 'Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true' \
+        "$plist"
+      # Nobody touches the phone during a session, and a screen that
+      # auto-locks mid-run interrupts it.
+      perl -pi -e 's/^(\s*)(return super\.application\(application, didFinishLaunchingWithOptions)/$1application.isIdleTimerDisabled = true\n$1$2/' \
+        "$COMPARE_DIR/ios/Runner/AppDelegate.swift"
+      # Xcode 27 refuses the template's 13.0 deployment target.
+      sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 13.0/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' \
+        "$COMPARE_DIR/ios/Runner.xcodeproj/project.pbxproj"
+      # Signing: Profile builds read Release.xcconfig. A team set here
+      # also stops `flutter build` asking which certificate to use.
+      echo "DEVELOPMENT_TEAM = $IOS_TEAM" >>"$COMPARE_DIR/ios/Flutter/Release.xcconfig"
       ;;
   esac
 }
