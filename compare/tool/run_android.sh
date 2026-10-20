@@ -54,6 +54,20 @@ CLEANUP+=(restore)
 "${ADB[@]}" shell settings put system user_rotation 0
 
 start_lab android "$ROUNDS" "$@"
+# GPU memory into the session directory (see gpu_sampler.sh). The quoted
+# sessions all ran with it, so it is part of the conditions, not optional.
+SESSION_DIR="$(lab_results android)"
+if [[ ! -d "$SESSION_DIR" ]]; then
+  echo "the lab log names no session directory; see .lab-android.log" >&2
+  exit 1
+fi
+zsh "${0:A:h}/gpu_sampler.sh" "$SESSION_DIR/gpu-memory.txt" "$SERIAL" &
+SAMPLER_PID=$!
+stop_sampler() {
+  kill "$SAMPLER_PID" 2>/dev/null
+  return 0
+}
+CLEANUP+=(stop_sampler)
 while lab_busy; do
   # The app takes the next queued run, measures it and exits; Android may
   # relaunch it on its own, in which case it simply takes the next run. An

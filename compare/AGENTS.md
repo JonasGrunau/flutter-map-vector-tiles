@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-10-09 | Updated: 2026-10-13 -->
+<!-- Generated: 2026-10-09 | Updated: 2026-10-20 -->
 
 # compare
 
@@ -27,8 +27,9 @@ Excluded from the published package (`.pubignore`).
 | `lib/src/demo_page.dart`, `results_page.dart` | The web demo: one package per page load, live readout, "Play" paths, side-by-side, benchmark buttons and the results table |
 | `lib/src/lab.dart` | Client for the lab server; `log` names its run, which keeps the run alive for the inactivity timeout |
 | `lib/src/platform/` | `host_io.dart` / `host_web.dart`: fresh cache dirs, RSS, IndexedDB reset, exit, localStorage |
-| `tool/lab_server.dart` | dart:io only, loopback only. Record/replay proxy for `tiles.openfreemap.org` (`/r/<run>/ofm/…`, rewriting style.json/TileJSON URLs back to itself; upstream errors pass through uncached), run queue in balanced order (`_roundOrder`: rounds in mirrored pairs), per-run request/byte/in-flight counters, results and screenshot sink, static serving of a web build at `/app/`. Refuses an existing session directory; gives up a run nothing was heard of for `--run-timeout` s (120) with an error row. CORS headers on the proxied paths only, for `maplibre.html` |
-| `tool/run_android.sh`, `run_macos.sh`, `run_web.sh` (+ `run_web.mjs`), `common.sh` | Build once in profile mode, start the lab, launch the app until the queue is empty. `common.sh` generates and patches the scaffolds, refuses a taken port, and installs the EXIT/INT/TERM traps that run its `CLEANUP` steps (stop the lab; on Android also put the phone's settings back) |
+| `tool/lab_server.dart` | dart:io only. Listens on loopback, plus the one address `--bind` names (`run_ios.sh` passes the Mac's end of the iPhone's USB link). Record/replay proxy for `tiles.openfreemap.org` (`/r/<run>/ofm/…`, rewriting style.json/TileJSON URLs back to itself; upstream errors pass through uncached), run queue in balanced order (`_roundOrder`: rounds in mirrored pairs), per-run request/byte/in-flight counters, results and screenshot sink, static serving of a web build at `/app/`. Refuses an existing session directory; gives up a run nothing was heard of for `--run-timeout` s (120) with an error row. CORS headers on the proxied paths only, for `maplibre.html` |
+| `tool/run_android.sh`, `run_ios.sh`, `run_macos.sh`, `run_web.sh` (+ `run_web.mjs`), `common.sh` | Build once in profile mode, start the lab, launch the app until the queue is empty. `run_ios.sh` launches through `devicectl --console`, which waits for the app to exit. `common.sh` generates and patches the scaffolds, refuses a taken port, and installs the EXIT/INT/TERM traps that run its `CLEANUP` steps (stop the lab; on Android also put the phone's settings back) |
+| `tool/gpu_sampler.sh`, `gpu_memory.py` | Android GPU memory: `run_android.sh` starts the sampler for every session (`dumpsys gpu --gpumem` every ~3 s into the session's `gpu-memory.txt`, so every Android session carries the same load), and `gpu_memory.py` turns the samples into RESULTS.md's GPU table. iOS has no counterpart |
 | `tool/summarize.dart` | `results/raw/<session>/results.jsonl` → the Markdown tables in `RESULTS.md` (medians over rounds, ranges for the headline column, timeouts counted as the longest). Warns on mixed viewports, mixed commits and duplicate rows |
 | `tool/reference_shots.mjs`, `maplibre.html` | MapLibre GL JS renders of the fidelity cameras, through the lab |
 | `tool/fidelity.py` | A session's raw screenshots → `results/shots/<session>/*.webp` and the Markdown grid in `RESULTS.md` (needs Pillow with WebP) |
@@ -71,9 +72,14 @@ Excluded from the published package (`.pubignore`).
   MapLibre's zoom is one lower and its bearing has the opposite sign.
 - **Platform scaffolds are generated, not checked in** (except `web/`, which
   CI builds). `common.sh` patches them: macOS network entitlement, arm64
-  only and deployment target 12.0 (Xcode 27), Android cleartext to the lab.
-  `flutter create` also drops `analysis_options.yaml` and `test/`; both are
-  deleted and gitignored.
+  only and deployment target 12.0 (Xcode 27), Android cleartext to the lab;
+  on iOS portrait only, the local-network prompt's text, the idle timer off
+  in `AppDelegate.swift`, deployment target 15.0 (Xcode 27) and
+  `DEVELOPMENT_TEAM` from `IOS_TEAM`. `flutter create` also drops
+  `analysis_options.yaml` and `test/`; both are deleted and gitignored. It
+  also overwrites `pubspec.lock`, so `scaffold` puts the checked-in one
+  back; otherwise the next `pub get` would pick `vector_map_tiles`'
+  renderer packages anew.
 - **Never commit the lab cache** (`.lab-cache/`, tiles under OpenFreeMap's
   terms) or raw screenshots; processed WebP shots go in `results/shots/`.
 - **One session per directory, an even number of rounds.** The lab server

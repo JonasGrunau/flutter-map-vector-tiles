@@ -61,7 +61,8 @@ for the baked-label pair: it draws what `vmt-raster` draws.
 - **Same tiles, same latency.** `tool/lab_server.dart` proxies OpenFreeMap
   and records every response into `.lab-cache/` on first use; every later
   run replays it, so both packages read identical bytes over loopback (or
-  USB, via `adb reverse`). That also pins OpenFreeMap's dated tileset.
+  USB: through `adb reverse` on Android, and on iOS over the network link
+  a wired iPhone also is). That also pins OpenFreeMap's dated tileset.
   `--offline` refuses anything not recorded. Replayed responses are
   cacheable, as OpenFreeMap's are, so on the web a re-request within a
   run is served by the browser's HTTP cache, which this package relies
@@ -122,6 +123,7 @@ itself.
 ```sh
 cd compare
 ./tool/run_android.sh <adb serial> 4     # USB; keep the phone unlocked
+IOS_TEAM=<team> ./tool/run_ios.sh <udid> 4   # USB; see below
 ./tool/run_macos.sh 4                    # keep the window in front
 ./tool/run_web.sh 4                      # headed Chrome via Playwright
 dart run tool/summarize.dart results/raw/<session>   # → Markdown tables
@@ -147,7 +149,18 @@ delay to every tile, to emulate a network), `--session <name>`,
 **Profile mode on real hardware, and hands off.** A Mac or browser window
 that loses focus is `inactive`, and a pass that ran unfocused measures the
 platform's throttling, not the packages. iOS needs a real device too
-(simulators cannot run profile mode); that is not scripted yet.
+(simulators cannot run profile mode).
+
+**An iPhone reaches the lab over its cable.** iOS has no `adb reverse`,
+but a wired iPhone is also a network link: the Mac lists it as a "USB
+Ethernet" interface with a 169.254 address. `run_ios.sh` builds the app
+against that address and has the lab server bind it too (`--bind`), so
+the tiles come over USB, as on Android, not over Wi-Fi. The first launch
+asks to find devices on the local network: unlock the phone and tap
+Allow. `IOS_TEAM` is the team that signs the app, read only when the
+scaffold is generated; `LAB_HOST` picks the address when more than one
+USB link is up. The app keeps the screen on while it runs, and the
+scaffold allows portrait only.
 
 ## Reading the numbers
 
@@ -173,6 +186,104 @@ platform's throttling, not the packages. iOS needs a real device too
   Frame numbers compare what each package actually does with the same
   style; the screenshots show what that is.
 
+## Reproducing the results
+
+Every number in RESULTS.md, and in the package README's comparison,
+comes from a session under `results/raw/`, and you can measure each one
+again. You need a Mac with Flutter at the version in the repository's
+`.tool-versions` (each result row also records the Flutter it was built
+with), Xcode for macOS and iOS, `adb` for Android, Node for Chrome, and
+Python 3 with Pillow for the screenshots.
+
+The quickest check needs none of that. The
+[web demo](https://jonasgrunau.github.io/flutter-map-vector-tiles/) has
+two "Benchmark" buttons, which run `fmvt`, `fmvt-raster`, `vmt-raster`
+and `vmt-vector` along the same camera paths in your browser and show
+the table at the end. That is one round against the live OpenFreeMap
+servers, not recorded tiles, so expect its numbers to vary more than a
+lab session's.
+
+1. **Build what was measured.** Each session's `notes.md` names the
+   commit it was built from, and every row of its `results.jsonl`
+   carries it (`commit`), along with the device and the Flutter version.
+   Check that commit out and run `flutter pub get --directory compare`.
+   The checked-in `pubspec.lock` pins `vector_map_tiles` and the packages
+   it renders with.
+2. **Record the tiles once, then replay them.** The lab cache is not in
+   the repository (the tiles are OpenFreeMap's, under its terms), so your
+   first session records your own: leave out `--offline` that one time,
+   then pass it to every session after, so that every platform replays
+   the same bytes. The quoted sessions replayed a recording of
+   OpenFreeMap's `planet/20261004_113936_pt` build. Yours holds whichever
+   build OpenFreeMap serves on the day you record, so the maps can
+   differ in detail.
+3. **Run the sessions.**
+
+   ```sh
+   cd compare
+   ./tool/run_android.sh <adb serial> 4 --offline
+   IOS_TEAM=<team> ./tool/run_ios.sh <udid> 4 --offline
+   ./tool/run_macos.sh 4 --offline
+   ./tool/run_web.sh 4 --offline
+   ```
+
+   The quoted Android, macOS and Chrome sessions ran 3 rounds, before the
+   scripts' default became 4. Keep a phone plugged in, unlocked and
+   untouched; the scripts keep its screen on and lock it to portrait. For
+   macOS and Chrome, run on mains power with other apps closed and the
+   window in front, and leave the Mac alone: the quoted sessions waited
+   until nobody had touched it for 10 minutes. `run_android.sh` also
+   writes the GPU memory samples (`gpu-memory.txt`, see
+   `tool/gpu_sampler.sh`).
+4. **The label-fades A/B** is two Android sessions of the `fmvt` arm, 2
+   rounds each. Run the first as is. For the second, add
+   `labelFadeDuration: Duration.zero,` to the `VectorTileLayer` in
+   `lib/src/arms.dart`, after its `labelMode:` argument, and undo that
+   afterwards:
+
+   ```sh
+   ./tool/run_android.sh <adb serial> 2 --offline --arms fmvt --session <name>-fades-150ms
+   ./tool/run_android.sh <adb serial> 2 --offline --arms fmvt --session <name>-fades-off
+   ```
+
+5. **MapLibre's screenshots** in the Chrome grid come from
+   `tool/reference_shots.mjs`, which fetches through a lab server of its
+   own and drives the Playwright that `run_web.sh` installs. Glyphs reach
+   the cache only once MapLibre has fetched them (neither Flutter package
+   reads them), so start that lab without `--offline` the first time:
+
+   ```sh
+   dart run tool/lab_server.dart --platform maplibre --rounds 1 --session refs --out /tmp/refs-lab &
+   node tool/reference_shots.mjs http://localhost:8790 results/raw/<chrome session>/shots
+   kill %1
+   ```
+
+6. **Make the tables.**
+
+   ```sh
+   dart run tool/summarize.dart results/raw/<session>                 # frames, gaps, settle, RSS, requests
+   python3 -I tool/gpu_memory.py results/raw/<session>/gpu-memory.txt # Android GPU memory
+   python3 -I tool/fidelity.py results/raw/<session>                  # the screenshot grid
+   ```
+
+   Run `summarize.dart` on the quoted session's directory as well, and
+   put the two side by side.
+
+**What should agree.** Another device gives other absolute numbers.
+What should hold is the order within each pair (`fmvt-raster` against
+`vmt-raster`, `fmvt` against `vmt-vector`) and roughly the size of the
+gap. For scale: from one round to the next, the same arm and pass in
+the quoted sessions moved by up to 7.3 points of frames delivered on
+Android (1.8 at the median), 4.2 on the iPhone (0.4), 3.7 in Chrome
+(0.5) and 1.1 on macOS (0.1).
+If yours disagree, open an issue and attach the session's directory:
+its `results.jsonl` holds everything the tables are made from.
+
+`bench/` in the repository root is a different harness. It measures
+this package on its own (frame times and label stability across zoom
+crossings) and answers whether a change made it faster, not how it
+compares with `vector_map_tiles`; see `bench/README.md`.
+
 ## Files
 
 | file | |
@@ -186,5 +297,6 @@ platform's throttling, not the packages. iOS needs a real device too
 | `tool/lab_server.dart` | record/replay proxy, run queue, results sink |
 | `tool/run_*.sh`, `run_web.mjs` | per-platform drivers |
 | `tool/summarize.dart` | raw results → RESULTS.md tables |
+| `tool/gpu_sampler.sh`, `gpu_memory.py` | Android GPU memory samples → the GPU table in RESULTS.md |
 | `tool/reference_shots.mjs`, `maplibre.html` | MapLibre reference renders |
 | `tool/fidelity.py` | raw screenshots → the WebP grids in RESULTS.md |
