@@ -285,16 +285,18 @@ class LabelPainter {
   int get debugGlyphCacheLength => _glyphCache.length;
 
   /// Releases the shaped text and glyphs not used since the last
-  /// placement pass began, keeping what is on screen and what the pump
-  /// shaped since — for memory pressure, see
-  /// `VectorTileLayer.clearMemoryCache`.
+  /// placement pass began, keeping what is on screen and what was
+  /// shaped or [prewarm]ed since — for memory pressure, see
+  /// `VectorTileLayer.clearMemoryCache`, which prewarms the labels of
+  /// every tile it holds first, so that only text for places the map has
+  /// left goes.
   ///
   /// The caches are sized to hold a zoom round trip (see
   /// [textCacheEntries]), which after a run through a few dense cities
   /// is tens of MB of paragraphs for places long left behind, over a
   /// hundred with `TileOffset.none`.
-  /// Trimming costs nothing on screen: a label shaped again later only
-  /// costs the shaping it would have cost before it was ever cached.
+  /// Trimming that text costs nothing on screen: a label shaped again
+  /// later goes through the pump, as it did before it was ever cached.
   ///
   /// The evicted painters are disposed now rather than at the next
   /// pass: memory pressure often arrives in the background, where no

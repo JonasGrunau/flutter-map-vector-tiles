@@ -706,8 +706,14 @@ entry with the current placement pass, and the trim keeps only what is
 stamped with it: whatever was used since the last placing pass began.
 That is every candidate on screen, collision losers included, since a
 placing pass lays them all out, plus whatever the pump has shaped since
-then. In `LabelMode.tile` every `paintTile` call counts as a pass. A
-tile whose shaping straddles a pass loses the part shaped before it to
+then. In `LabelMode.tile` every `paintTile` call counts as a pass.
+A placing pass only looks up labels within 150 px of the screen and of
+layers in zoom range, though, while the pump shaped every published
+tile's, the buffer ring's included; trimmed, that text would be shaped
+again in paint as soon as the map moved toward it. So the layer first
+runs `prewarm` over the symbols of every tile it holds — cache hits,
+which stamp them — and the trim takes only text for places the map has
+left. A tile whose shaping straddles a pass loses the part shaped before it to
 a trim, so the layer's trim also rewinds every queued symbol job's
 shaping cursor: the pump goes over the batch again within its budget,
 a cache hit for what survived and a fresh shape for what did not,

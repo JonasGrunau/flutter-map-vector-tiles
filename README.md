@@ -158,7 +158,7 @@ under memory pressure, the static `VectorTileLayer.clearMemoryCache()`
 releases decoded tiles, raster-source images and finished tiles alike,
 leaving the disk cache untouched. It also trims the label text each open
 map keeps, which is held per map rather than shared, down to the labels
-on screen. Call it from a handler such as
+of the tiles it is showing. Call it from a handler such as
 `WidgetsBindingObserver.didHaveMemoryPressure`: visible maps keep their
 imagery and their labels, only tiles panned to afterwards are re-read
 from disk, and only labels met again are shaped again.

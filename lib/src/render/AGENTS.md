@@ -291,7 +291,10 @@ for frames with no per-frame label work in them.
   frame. A tile whose shaping straddles a pass loses its earlier-shaped
   text to a trim, which is why the layer's `_trimLabelCaches` also
   rewinds every queued symbol job's shaping cursor, so the pump, not
-  paint, shapes it again. Anything new that looks text up must go
+  paint, shapes it again. A pass looks up only labels near the screen,
+  so before trimming the layer also `prewarm`s every published tile's
+  symbols (cache hits), keeping the buffer ring's text the pump already
+  shaped. Anything new that looks text up must go
   through `_layoutText` / `_glyphPainters`, which stamp the pass, or a
   trim releases text the screen still needs and the next frame shapes
   it again.

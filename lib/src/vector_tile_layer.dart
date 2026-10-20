@@ -249,12 +249,12 @@ class VectorTileLayer extends StatefulWidget {
   /// their labels; only tiles panned to afterwards are re-read from disk,
   /// and only labels met again re-shaped.
   ///
-  /// The label text is held per open map, up to
-  /// [LabelPainter.textCacheEntries] shaped labels so a zoom round trip
-  /// comes back without re-shaping them. After a session through several
-  /// dense cities that is tens of MB, over a hundred with
+  /// The label text is held per open map, up to 8000 shaped labels so a
+  /// zoom round trip comes back without re-shaping them. After a session
+  /// through several dense cities that is tens of MB, over a hundred with
   /// `TileOffset.none`, and short of eviction at that cap this is the only
-  /// call that releases it while the map stays open.
+  /// call that releases it while the map stays open. The labels of the
+  /// tiles a map is showing stay.
   static void clearMemoryCache() {
     TileStore.clearMemoryCaches();
     RasterTileStore.clearMemoryCaches();
@@ -347,6 +347,16 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// its budget: what survived the trim costs a cache hit, the rest is
   /// shaped again.
   void _trimLabelCaches() {
+    // The trim keeps what the last placing pass looked up, which is only
+    // the labels near the screen of layers in zoom range. The pump shaped
+    // every published tile's, the buffer ring's included, so those are
+    // stamped again first — cache hits, short of what the LRU already
+    // let go. Trimmed, they would be shaped again in paint, outside every
+    // budget, as soon as the map moved toward them.
+    for (final tile in [..._tiles.values, ..._retained.values]) {
+      if (tile.symbols.isEmpty) continue;
+      _labelPainter.prewarm(tile.symbols, _styleZoomOf(tile.key.z.toDouble()));
+    }
     _labelPainter.trimCaches();
     for (final job in _renderQueue.symbolJobs) {
       job.shapeCursor = 0;

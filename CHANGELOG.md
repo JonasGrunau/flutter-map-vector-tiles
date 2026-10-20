@@ -32,9 +32,10 @@ closer MapLibre parity for road shields, long words and buildings.
   translation once. The style's `resolved-locale` expression returns
   the language too; until now it always returned `en`.
 - ✨ `VectorTileLayer.clearMemoryCache()` now also trims the label text
-  every open map keeps down to the labels on screen. Each map keeps up
-  to 8000 shaped labels, so that zooming back to a level does not shape
-  them all again, and until now only closing the map released them.
+  every open map keeps down to the labels of the tiles it is showing.
+  Each map keeps up to 8000 shaped labels, so that zooming back to a
+  level does not shape them all again, and until now only closing the
+  map released them.
   Nothing on screen changes, and a label met again later is shaped
   again. On a Nothing Phone (1), after a run through four dense cities,
   RSS fell by 25–30 MB within 3 s, and by 42–48 MB with
