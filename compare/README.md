@@ -7,7 +7,8 @@ and with [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles)
 measures what a user would see. It is two things:
 
 - **A benchmark** you can run on your own devices. The latest numbers and
-  screenshots are in [RESULTS.md](RESULTS.md).
+  screenshots are in [RESULTS.md](RESULTS.md), and
+  [SUMMARY.md](SUMMARY.md) explains them in plain words.
 - **A web demo**, built from `main` by CI:
   <https://jonasgrunau.github.io/flutter-map-vector-tiles/>. Switch
   packages, play the benchmark's camera paths, watch the frame readout,

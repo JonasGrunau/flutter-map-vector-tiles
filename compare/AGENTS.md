@@ -33,6 +33,7 @@ Excluded from the published package (`.pubignore`).
 | `tool/summarize.dart` | `results/raw/<session>/results.jsonl` → the Markdown tables in `RESULTS.md` (medians over rounds, ranges for the headline column, timeouts counted as the longest). Warns on mixed viewports, mixed commits and duplicate rows |
 | `tool/reference_shots.mjs`, `maplibre.html` | MapLibre GL JS renders of the fidelity cameras, through the lab |
 | `tool/fidelity.py` | A session's raw screenshots → `results/shots/<session>/*.webp` and the Markdown grid in `RESULTS.md` (needs Pillow with WebP) |
+| `SUMMARY.md` | The results in plain words, for readers who will not read RESULTS.md: what was compared, how to read frames delivered, the four-platform table, where `vector_map_tiles` is ahead, fidelity, limits. Every number in it comes from RESULTS.md; update the two together |
 | `pubspec.lock` | Checked in, unlike the package's: it pins what `vector_map_tiles` renders with (`vector_tile_renderer`, `executor_lib`), not only `vector_map_tiles` itself |
 | `RESULTS.md`, `results/` | Published numbers and processed screenshots; `results/raw/*/results.jsonl` are the raw data behind them (plus `lab-runs.txt`, the lab server's whole-run counts, where a session predates the `net` row and its log survived) |
 

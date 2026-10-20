@@ -142,7 +142,8 @@ closer MapLibre parity for road shields, long words and buildings.
   measured on one build from this release's development (c1dc45c),
   which predates the road-shield and long-word fixes above, and iOS on a
   later one (d8c2e86) that has them. `compare/RESULTS.md` puts a
-  MapLibre GL JS render next to every Chrome screenshot, and
+  MapLibre GL JS render next to every Chrome screenshot.
+  `compare/SUMMARY.md` explains the results in plain words, and
   `compare/README.md` walks through measuring every session again, on
   your own devices.
 - 📚 The README now says that the package is developed with Claude Code,

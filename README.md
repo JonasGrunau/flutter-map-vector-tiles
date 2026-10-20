@@ -589,8 +589,10 @@ Measured with [`compare/`](compare) on a Nothing Phone (1) (Android,
 recorded tiles, a fresh process per run, three runs each (four on the
 iPhone, measured a week later on a newer build). "Frames" is the share
 of display refreshes that got a frame while the camera zoomed, panned,
-rotated or flung. Each cell reads this package / `vector_map_tiles`. Full tables, and screenshots
-next to MapLibre GL JS, are in [compare/RESULTS.md](compare/RESULTS.md).
+rotated or flung. Each cell reads this package / `vector_map_tiles`.
+[compare/SUMMARY.md](compare/SUMMARY.md) explains the results in plain
+words; the full tables, and screenshots next to MapLibre GL JS, are in
+[compare/RESULTS.md](compare/RESULTS.md).
 
 | this package / vector_map_tiles | Android | iOS | macOS | Chrome |
 |---|---:|---:|---:|---:|
