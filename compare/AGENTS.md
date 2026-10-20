@@ -18,7 +18,7 @@ Excluded from the published package (`.pubignore`).
 
 | File | Description |
 |------|-------------|
-| `lib/main.dart` | Entry: a lab run when `LAB` is set (dart-define, or `?lab=` on web), else the demo, the in-browser benchmark (`?mode=bench`) or its results page (`?mode=results`) |
+| `lib/main.dart` | Entry: a lab run when `LAB` is set (dart-define, or on web a `?lab=` naming the page's own origin), else the demo, the in-browser benchmark (`?mode=bench`) or its results page (`?mode=results`) |
 | `lib/src/config.dart` | `Config`: the start-up settings (`lab`, `arm`, `mode`, `style`, `device`), from the page URL on web and from `--dart-define` natively |
 | `lib/src/arms.dart` | `Arm` (`fmvt`, `fmvt-none`, `fmvt-raster`, `fmvt-raster-none`, `vmt-raster`, `vmt-vector`) and `loadArm`, which reads the style with that package's own reader and builds its layer. `Arm.parse` throws on an unknown id (a measured run then records an error row); the demo's URL goes through the lenient `Arm.tryParse`. `vector_map_tiles`' `cacheFolder` has a per-platform type — hence the analyzer `ignore` and the `vmtCacheFolder` shim |
 | `lib/src/scenarios.dart` | The four camera paths (each over its own city, as a function of time) and `shotPoses`, the fidelity cameras — mirrored in `tool/reference_shots.mjs` |
@@ -104,7 +104,10 @@ builds the web demo on every PR that touches `lib/` or `compare/`.
 ### Common Patterns
 
 - Settings come from `--dart-define` natively and from the URL query on
-  web (`config.dart`), so the demo switches packages by reloading.
+  web (`config.dart`), so the demo switches packages by reloading. A
+  `?lab=` counts only when it is the page's own origin, which a real lab
+  always is (it serves the app at `/app/`); anything else is ignored, so
+  a link to the public demo cannot point it at someone else's server.
 - Every arm switch in the demo is a page load: two packages in one process
   would share an isolate pool, image cache and frame budget.
 

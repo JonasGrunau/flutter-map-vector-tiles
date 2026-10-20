@@ -10,13 +10,34 @@ const _defines = {
 
 /// A setting from the page URL on web (so the demo can switch packages by
 /// reloading), otherwise from `--dart-define`.
+///
+/// `lab` from the URL only when it names the page's own origin. The lab
+/// server serves the app from its own `/app/` and gives its control
+/// endpoints no CORS headers, so a real lab never is anywhere else; on
+/// the public demo, any other `?lab=` would make the page render a style
+/// from that server and report to it.
 String _setting(String name, String fallback) {
   if (kIsWeb) {
     final fromUrl = Uri.base.queryParameters[name];
-    if (fromUrl != null && fromUrl.isNotEmpty) return fromUrl;
+    if (fromUrl != null &&
+        fromUrl.isNotEmpty &&
+        (name != 'lab' || _isPageOrigin(fromUrl))) {
+      return fromUrl;
+    }
   }
   final defined = _defines[name] ?? '';
   return defined.isEmpty ? fallback : defined;
+}
+
+bool _isPageOrigin(String url) {
+  final uri = Uri.tryParse(url);
+  // `origin` throws for anything but http(s) with a host.
+  if (uri == null ||
+      !(uri.isScheme('http') || uri.isScheme('https')) ||
+      uri.host.isEmpty) {
+    return false;
+  }
+  return uri.origin == Uri.base.origin;
 }
 
 /// The app's start-up configuration.
