@@ -72,6 +72,10 @@ explicit unsupported-input case proving the degradation path.
   fixed zoom) evaluates it once. Anything that reads feature data —
   including `geometry-type`, `id` and legacy `$type`/`$id` — must set
   `_readsFeature`, or the memo returns stale values across features.
+  To decide that a paint is the same for every feature, ask each prop
+  (`isConstant || zoomOnly`), as `_paintFill` does: a layer's empty
+  `referencedProperties` does not prove it, since `id` and
+  `geometry-type` read the feature without naming a property.
 - `filterReadsZoom` decides whether the renderer may resolve a layer's
   filter once per prepared tile instead of per display tile. Anything a
   filter can reach that reads `ctx.zoom` must set `_readsZoom`, or a
