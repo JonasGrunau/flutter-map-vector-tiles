@@ -573,8 +573,10 @@ The full rendering model, and the reasoning behind each departure from
 ## 🆚 [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles)
 
 Compared with `9.0.0-beta.13`, the newest release that runs flutter_map 8
-on stable Flutter (the `10.0.0` betas need Flutter's main channel for
-`flutter_gpu`):
+on stable Flutter (the
+[`10.0.0` betas](https://pub.dev/packages/vector_map_tiles/versions) need
+Flutter's main channel for `flutter_gpu`, per
+[their README](https://github.com/greensopinion/flutter-vector-map-tiles#version-1000-beta)):
 
 | | vector_map_tiles 9.0.0-beta.13 | this package |
 |---|---|---|
