@@ -21,8 +21,8 @@ closer MapLibre parity for road shields, long words and buildings.
   unchanged. On a Nothing Phone (1) at 60 Hz, the map got a frame on
   94–98% of display refreshes while zooming, panning, rotating and
   flinging, against
-  78–86% with screen-space labels (rotating: 78–81% → 94–98%). On a
-  MacBook Pro (M4 Pro) both modes get 97–100%.
+  78–86% with screen-space labels (rotating: 78–81% → 94–98%). On an
+  iPhone 15 Pro Max and a MacBook Pro (M4 Pro) both modes get 97–100%.
 - ✨ **Label language**: `StyleReader(language: 'de')` shows labels in
   that language wherever the tiles carry a translation (`name:de`, as
   in OpenMapTiles, MapTiler and OpenFreeMap tiles, or `name_de`, as in
@@ -137,11 +137,14 @@ closer MapLibre parity for road shields, long words and buildings.
   feature property, now colours each feature by its own value. Every
   feature used to get the value for no feature at all, so a fill made
   visible only for certain ids was not drawn.
-- 📚 The README's comparison with `vector_map_tiles` now covers macOS and
-  Chrome as well as Android, all measured on one build from this
-  release's development (c1dc45c), which predates the road-shield and
-  long-word fixes above, and `compare/RESULTS.md` puts a MapLibre GL JS
-  render next to every Chrome screenshot.
+- 📚 The README's comparison with `vector_map_tiles` now covers iOS,
+  macOS and Chrome as well as Android. Android, macOS and Chrome were
+  measured on one build from this release's development (c1dc45c),
+  which predates the road-shield and long-word fixes above, and iOS on a
+  later one (d8c2e86) that has them. `compare/RESULTS.md` puts a
+  MapLibre GL JS render next to every Chrome screenshot, and
+  `compare/README.md` walks through measuring every session again, on
+  your own devices.
 - 📚 The README now says that the package is developed with Claude Code,
   and links the agent instructions Claude works under.
 - 📦 Versions are now published from GitHub Actions. Pushing a `vX.Y.Z`
