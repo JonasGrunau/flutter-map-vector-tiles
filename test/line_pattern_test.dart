@@ -151,6 +151,53 @@ void main() {
     atlas.dispose();
   });
 
+  for (final (reads, colour) in [
+    (
+      'id',
+      [
+        'match',
+        ['id'],
+        1,
+        '#ff0000',
+        '#888888'
+      ]
+    ),
+    (
+      'geometry type',
+      [
+        'match',
+        ['geometry-type'],
+        'LineString',
+        '#ff0000',
+        '#888888'
+      ]
+    ),
+  ]) {
+    test('a line-color reading only the $reads is evaluated per feature',
+        () async {
+      // Neither names a property, so the layer reads no property at all
+      // and the colour still varies from feature to feature.
+      final image = TileRasterizer.rasterize(
+        theme: const ThemeReader().read({
+          'layers': [
+            {
+              'id': 'r',
+              'type': 'line',
+              'source': 's',
+              'source-layer': 'roads',
+              'paint': {'line-color': colour, 'line-width': 8},
+            },
+          ],
+        }),
+        data: _lineTile(),
+        styleZoom: 2,
+        devicePixelRatio: 1,
+      )!;
+      expect(await _pixel(image, 128, 128), const Color(0xffff0000));
+      image.dispose();
+    });
+  }
+
   test('no resolver: pattern layer falls back to color stroke', () {
     final recorder = ui.PictureRecorder();
     final painted = TileRasterizer.paint(

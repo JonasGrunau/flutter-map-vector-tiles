@@ -132,11 +132,12 @@ closer MapLibre parity for road shields, long words and buildings.
   between words, and so does this package now. The long word runs past
   the width on a line of its own, and the lines around it still break
   at `text-max-width`.
-- 🐛 A `fill` layer whose `fill-color` or `fill-opacity` reads only the
-  feature id (`["id"]`) or geometry type (`["geometry-type"]`), and no
-  feature property, now colours each feature by its own value. Every
+- 🐛 A `fill`, `fill-extrusion` or `line` layer whose paint reads only
+  the feature id (`["id"]`) or geometry type (`["geometry-type"]`), and
+  no feature property, now draws each feature with its own value. Every
   feature used to get the value for no feature at all, so a fill made
-  visible only for certain ids was not drawn.
+  visible only for certain ids was not drawn, and a building or road
+  coloured by its id took the fallback colour.
 - 📚 The README's comparison with `vector_map_tiles` now covers iOS,
   macOS and Chrome as well as Android. Android, macOS and Chrome were
   measured on one build from this release's development (c1dc45c),

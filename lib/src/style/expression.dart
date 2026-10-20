@@ -173,13 +173,19 @@ class ColorProp {
 class StringProp {
   final Expr _expr;
   final String fallback;
+  final bool isConstant;
   final bool zoomOnly;
   double _memoZoom = double.nan;
   String _memoValue = '';
 
-  StringProp(this._expr, this.fallback, {this.zoomOnly = false});
+  StringProp(this._expr, this.fallback, {this.zoomOnly = false})
+      : isConstant = false;
 
-  factory StringProp.constant(String value) => StringProp((_) => value, value);
+  StringProp.constant(String value)
+      : _expr = ((_) => value),
+        fallback = value,
+        isConstant = true,
+        zoomOnly = false;
 
   String eval(EvalContext ctx) {
     if (zoomOnly) {
@@ -236,6 +242,8 @@ class NumListProp {
 
   NumListProp(this._expr, this.fallback, {this.zoomOnly = false})
       : _constant = null;
+
+  bool get isConstant => _constant != null;
 
   NumListProp.constant(List<double> value)
       : _expr = constExpr(value),

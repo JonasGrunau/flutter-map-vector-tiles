@@ -176,6 +176,44 @@ void main() {
     expect(overlap, _closeTo(second));
   });
 
+  const grey = [136, 136, 136], red = [255, 0, 0];
+  for (final (reads, colour, first, second) in [
+    (
+      'id',
+      [
+        'match',
+        ['id'],
+        2,
+        '#ff0000',
+        '#888888'
+      ],
+      grey,
+      red
+    ),
+    (
+      'geometry type',
+      [
+        'match',
+        ['geometry-type'],
+        'Polygon',
+        '#ff0000',
+        '#888888'
+      ],
+      red,
+      red,
+    ),
+  ]) {
+    test('a colour reading only the $reads is evaluated per building',
+        () async {
+      // Neither names a property, so the layer reads no property at all
+      // and the colour still varies from feature to feature.
+      final [left, _, right] = await _columns(
+          _theme('fill-extrusion', {'fill-extrusion-color': colour}));
+      expect(left, _closeTo(first));
+      expect(right, _closeTo(second));
+    });
+  }
+
   test('a patterned extrusion is blended once too', () async {
     final atlas = _redAtlas();
     final patterns = PatternResolver(atlas);

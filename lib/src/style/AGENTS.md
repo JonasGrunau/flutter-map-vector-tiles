@@ -82,7 +82,8 @@ explicit unsupported-input case proving the degradation path.
   including `geometry-type`, `id` and legacy `$type`/`$id` — must set
   `_readsFeature`, or the memo returns stale values across features.
   To decide that a paint is the same for every feature, ask each prop
-  (`isConstant || zoomOnly`), as `_paintFill` does: a layer's empty
+  (`isConstant || zoomOnly`), as `_paintFill`, `_paintExtrusion` and
+  `_paintLine` do: a layer's empty
   `referencedProperties` does not prove it, since `id` and
   `geometry-type` read the feature without naming a property.
 - `filterReadsZoom` decides whether the renderer may resolve a layer's
