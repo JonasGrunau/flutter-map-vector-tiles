@@ -39,7 +39,7 @@ layers; this package only draws the map.
 ```yaml
 dependencies:
   flutter_map: ^8.2.0
-  flutter_map_vector_tiles: ^2.10.0
+  flutter_map_vector_tiles: ^2.10.1
 ```
 
 ### 2. Load a style & drop in the layer

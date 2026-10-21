@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.10.1
 
 API keys kept out of log messages.
 
