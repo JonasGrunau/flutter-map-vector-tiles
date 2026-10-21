@@ -657,7 +657,10 @@ runs a short version of the benchmark in your browser.
 - **Blank map, no errors.** Pass `logger: const vt.Logger.console()` to
   both `StyleReader` and `VectorTileLayer`. Usually the style's source ids
   don't match your `TileProviders` keys, or the API key is invalid; HTTP
-  403s are logged, with keys redacted.
+  403s are logged. Every message reaches the logger with API keys
+  redacted (`key`, `apikey`, `api_key`, `access_token` and `token` query
+  values read `***`), so warnings can be forwarded to a crash reporter
+  as they are.
 - **`read()` or `open()` throws.** The designed failure path for a broken
   setup. `StyleReader.read()` throws `StyleReaderException` when the style
   can't be loaded or parsed, and `PmTilesVectorTileProvider.open` throws

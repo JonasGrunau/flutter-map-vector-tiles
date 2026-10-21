@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+API keys kept out of log messages.
+
+- 🐛 API keys no longer reach your `Logger`. A tile request that failed
+  or was refused (HTTP 401/403) was logged with its full URL, key
+  included, a failed request's `ClientException` repeated it after
+  `uri=`, and the PMTiles provider and the style reader's own failure
+  messages did the same, so an app forwarding warnings to a crash
+  reporter sent its key along. `Logger` now replaces the value of every
+  `key`, `apikey`, `api_key`, `access_token` and `token` query parameter
+  in a message with `***`, whichever part of the package logs it. Where
+  the style reader did redact, it wrote a literal `$1=***` in place of
+  the parameter's name, and caught parameters merely ending in `key` too
+  (`?monkey=1` came out as `?mon$1=***`); its messages, and
+  `StyleReaderException`'s, now read `?key=***` and leave other
+  parameters alone. Code that parses these messages sees `key=***` where
+  it saw `$1=***`.
+
 ## 2.10.0
 
 Opt-in labels baked into the tiles, labels in a language of your

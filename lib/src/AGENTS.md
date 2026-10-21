@@ -19,7 +19,7 @@ depended on by everything.
 | `label_mode.dart` | `LabelMode` — public enum: `screen` (default, per-frame screen-space label pass) or `tile` (labels baked into each tile's raster, `vector_map_tiles`' raster mode). Its doc comment carries the trade-off table |
 | `tile_providers.dart` | `TileProviders` (providers keyed by style source id) and `RasterTileSource` (a raster source declared inside a vector style) |
 | `tile_offset.dart` | `TileOffset` — relates display zoom to data/style zoom. `TileOffset.maplibre` (offset −1, 512px convention) is the default |
-| `logger.dart` | `Logger` abstraction plus a console implementation; the only sanctioned diagnostic channel (`avoid_print` is enforced) |
+| `logger.dart` | `Logger` abstraction plus a console implementation; the only sanctioned diagnostic channel (`avoid_print` is enforced). Redacts API keys in every message through `core/redact.dart`, so no call site has to |
 
 ## Subdirectories
 
