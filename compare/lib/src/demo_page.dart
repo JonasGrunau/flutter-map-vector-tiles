@@ -277,102 +277,115 @@ class _DemoPageState extends State<DemoPage> with TickerProviderStateMixin {
       elevation: 4,
       margin: EdgeInsets.zero,
       clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        // Collapsed, the whole card opens it.
-        onTap: open ? null : () => setState(() => _panelOpen = true),
-        child: SingleChildScrollView(
-          child: Padding(
-            padding: EdgeInsets.fromLTRB(16, 8, 8, open ? 16 : 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(children: [
-                  Expanded(
-                    child: Text('Vector tiles in flutter_map',
-                        style: theme.textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600)),
-                  ),
-                  IconButton(
-                    tooltip: 'How this demo works',
-                    icon: const Icon(Icons.help_outline),
-                    onPressed: () => _about(context),
-                  ),
-                  IconButton(
-                    tooltip: open ? 'Hide controls' : 'Show controls',
-                    icon: Icon(open ? Icons.expand_less : Icons.expand_more),
-                    onPressed: () => setState(() => _panelOpen = !open),
-                  ),
-                ]),
-                if (!open)
-                  Text(
-                    _sideBySide
-                        ? 'Side by side · labels '
-                            '${baked ? 'baked into tiles' : 'drawn every frame'}'
-                        : '${arms.first.package} · ${arms.first.setup}',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                if (open) ...[
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: Text(
-                      'Two Flutter packages draw the same OpenFreeMap style. '
-                      'Pick one, move the map, and watch how smoothly it '
-                      'follows.',
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // The header opens and closes the panel; only it takes the
+            // tap, so its ripple stays in the header instead of filling
+            // the card as it opens.
+            InkWell(
+              onTap: () => setState(() => _panelOpen = !open),
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(16, 8, 8, open ? 0 : 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Expanded(
+                        child: Text('Vector tiles in flutter_map',
+                            style: theme.textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w600)),
+                      ),
+                      IconButton(
+                        tooltip: 'How this demo works',
+                        icon: const Icon(Icons.help_outline),
+                        onPressed: () => _about(context),
+                      ),
+                      IconButton(
+                        tooltip: open ? 'Hide controls' : 'Show controls',
+                        icon:
+                            Icon(open ? Icons.expand_less : Icons.expand_more),
+                        onPressed: () => setState(() => _panelOpen = !open),
+                      ),
+                    ]),
+                    if (!open)
+                      Text(
+                        _sideBySide
+                            ? 'Side by side · labels '
+                                '${baked ? 'baked into tiles' : 'drawn every frame'}'
+                            : '${arms.first.package} · ${arms.first.setup}',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            if (open)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Two Flutter packages draw the same OpenFreeMap '
+                      'style. Pick one, move the map, and watch how '
+                      'smoothly it follows.',
                       style: theme.textTheme.bodyMedium
                           ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                     ),
-                  ),
-                  // Side by side shows both; the description names them.
-                  if (!_sideBySide) ...[
-                    const _Heading('Package'),
+                    // Side by side shows both; the description names
+                    // them.
+                    if (!_sideBySide) ...[
+                      const _Heading('Package'),
+                      _Segments<bool>(
+                        values: const {
+                          false: 'flutter_map_vector_tiles',
+                          true: 'vector_map_tiles',
+                        },
+                        selected: {vmt},
+                        onSelected: (v) => _show(vmt: v, baked: baked),
+                      ),
+                    ],
+                    const _Heading('Labels'),
                     _Segments<bool>(
                       values: const {
-                        false: 'flutter_map_vector_tiles',
-                        true: 'vector_map_tiles',
+                        true: 'Baked into the tiles',
+                        false: 'Drawn every frame',
                       },
-                      selected: {vmt},
-                      onSelected: (v) => _show(vmt: v, baked: baked),
+                      selected: {baked},
+                      onSelected: (b) => _show(vmt: vmt, baked: b),
                     ),
-                  ],
-                  const _Heading('Labels'),
-                  _Segments<bool>(
-                    values: const {
-                      true: 'Baked into the tiles',
-                      false: 'Drawn every frame',
-                    },
-                    selected: {baked},
-                    onSelected: (b) => _show(vmt: vmt, baked: b),
-                  ),
-                  const SizedBox(height: 8),
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child:
-                        Text(_description(), style: theme.textTheme.bodySmall),
-                  ),
-                  const SizedBox(height: 4),
-                  Row(children: [
-                    Switch(value: _sideBySide, onChanged: _setSideBySide),
-                    const SizedBox(width: 8),
-                    Text('Side by side', style: theme.textTheme.bodyMedium),
-                    const Spacer(),
-                    DropdownButton<String>(
-                      value: widget.config.style,
-                      isDense: true,
-                      underline: const SizedBox.shrink(),
-                      items: [
-                        for (final MapEntry(:key, :value) in _styles.entries)
-                          DropdownMenuItem(
-                              value: key, child: Text('$value style')),
-                      ],
-                      onChanged: (s) => _go({'style': s!}),
-                    ),
-                    const SizedBox(width: 8),
-                  ]),
-                  const _Heading('Play a camera path'),
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: Row(children: [
+                    const SizedBox(height: 8),
+                    Text(_description(), style: theme.textTheme.bodySmall),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      Switch(
+                        value: _sideBySide,
+                        onChanged: _setSideBySide,
+                        // Flush with the text above, not inset by a
+                        // tap target or the track's own padding.
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        padding: EdgeInsets.zero,
+                      ),
+                      const SizedBox(width: 12),
+                      Text('Side by side', style: theme.textTheme.bodyMedium),
+                      const Spacer(),
+                      DropdownButton<String>(
+                        value: widget.config.style,
+                        isDense: true,
+                        underline: const SizedBox.shrink(),
+                        items: [
+                          for (final MapEntry(:key, :value) in _styles.entries)
+                            DropdownMenuItem(
+                                value: key, child: Text('$value style')),
+                        ],
+                        onChanged: (s) => _go({'style': s!}),
+                      ),
+                    ]),
+                    const _Heading('Play a camera path'),
+                    Row(children: [
                       for (final (i, s) in scenarios.indexed) ...[
                         if (i > 0) const SizedBox(width: 8),
                         Expanded(
@@ -391,34 +404,33 @@ class _DemoPageState extends State<DemoPage> with TickerProviderStateMixin {
                         ),
                       ],
                     ]),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    _playing?.title ??
-                        'The moves the benchmark makes, the same for every '
-                            'package.',
-                    style: theme.textTheme.bodySmall
-                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-                  ),
-                  const SizedBox(height: 12),
-                  const Divider(height: 1),
-                  const SizedBox(height: 12),
-                  Wrap(spacing: 8, runSpacing: 4, children: [
-                    FilledButton.icon(
-                      onPressed: () => _benchmark(context),
-                      icon: const Icon(Icons.speed, size: 18),
-                      label: const Text('Run the benchmark'),
+                    const SizedBox(height: 8),
+                    Text(
+                      _playing?.title ??
+                          'The moves the benchmark makes, the same for '
+                              'every package.',
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                     ),
-                    TextButton.icon(
-                      onPressed: () => openInNewTab(summaryUrl),
-                      icon: const Icon(Icons.open_in_new, size: 18),
-                      label: const Text('Results from real devices'),
-                    ),
-                  ]),
-                ],
-              ],
-            ),
-          ),
+                    const SizedBox(height: 16),
+                    const Divider(height: 1),
+                    const SizedBox(height: 16),
+                    Wrap(spacing: 8, runSpacing: 4, children: [
+                      FilledButton.icon(
+                        onPressed: () => _benchmark(context),
+                        icon: const Icon(Icons.speed, size: 18),
+                        label: const Text('Run the benchmark'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => openInNewTab(summaryUrl),
+                        icon: const Icon(Icons.open_in_new, size: 18),
+                        label: const Text('Results from real devices'),
+                      ),
+                    ]),
+                  ],
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -568,12 +580,15 @@ class _PathButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final child = Column(mainAxisSize: MainAxisSize.min, children: [
       Icon(icon, size: 20),
-      const SizedBox(height: 2),
+      const SizedBox(height: 4),
       Text(label),
     ]);
     const style = ButtonStyle(
+      // Desktop's compact density takes 8 px off the vertical padding,
+      // which put the icon and the label against the edges.
+      visualDensity: VisualDensity.standard,
       padding: WidgetStatePropertyAll(
-          EdgeInsets.symmetric(horizontal: 4, vertical: 8)),
+          EdgeInsets.symmetric(horizontal: 4, vertical: 10)),
       shape: WidgetStatePropertyAll(RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(12)))),
     );
@@ -600,33 +615,30 @@ class _Segments<T> extends StatelessWidget {
   final void Function(T)? onSelected;
 
   @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(right: 8),
-        child: SizedBox(
-          width: double.infinity,
-          child: SegmentedButton<T>(
-            segments: [
-              for (final MapEntry(:key, :value) in values.entries)
-                ButtonSegment(
-                  value: key,
-                  label: FittedBox(fit: BoxFit.scaleDown, child: Text(value)),
-                ),
-            ],
-            selected: selected,
-            multiSelectionEnabled: selected.length > 1,
-            showSelectedIcon: false,
-            onSelectionChanged: onSelected == null
-                ? null
-                : (s) {
-                    if (s.length == 1 && !selected.contains(s.single)) {
-                      onSelected!(s.single);
-                    }
-                  },
-            style: const ButtonStyle(
-              visualDensity: VisualDensity.compact,
-              padding:
-                  WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 8)),
-            ),
+  Widget build(BuildContext context) => SizedBox(
+        width: double.infinity,
+        child: SegmentedButton<T>(
+          segments: [
+            for (final MapEntry(:key, :value) in values.entries)
+              ButtonSegment(
+                value: key,
+                label: FittedBox(fit: BoxFit.scaleDown, child: Text(value)),
+              ),
+          ],
+          selected: selected,
+          multiSelectionEnabled: selected.length > 1,
+          showSelectedIcon: false,
+          onSelectionChanged: onSelected == null
+              ? null
+              : (s) {
+                  if (s.length == 1 && !selected.contains(s.single)) {
+                    onSelected!(s.single);
+                  }
+                },
+          style: const ButtonStyle(
+            visualDensity: VisualDensity.compact,
+            padding:
+                WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 8)),
           ),
         ),
       );
