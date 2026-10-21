@@ -42,4 +42,5 @@ void exitApp() => io.exit(0);
 String? readLocal(String key) => null;
 void writeLocal(String key, String? value) {}
 void navigate(String url) {}
+void openInNewTab(String url) {}
 String get userAgent => io.Platform.operatingSystemVersion;
