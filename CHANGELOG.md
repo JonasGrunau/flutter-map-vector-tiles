@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.10.0
 
 Opt-in labels baked into the tiles, labels in a language of your
 choice, smoother frames on dense tiles and label-heavy screens, and
