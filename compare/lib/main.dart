@@ -37,7 +37,7 @@ class CompareApp extends StatelessWidget {
       home: switch (config.mode) {
         _ when config.hasLab => BenchPage(config: config),
         'bench' => BenchPage(config: config),
-        'results' => const ResultsPage(),
+        'results' => ResultsPage(config: config),
         _ => DemoPage(config: config),
       },
     );

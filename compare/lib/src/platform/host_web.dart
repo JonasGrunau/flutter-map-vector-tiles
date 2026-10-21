@@ -60,4 +60,6 @@ void writeLocal(String key, String? value) {
 
 void navigate(String url) => web.window.location.href = url;
 
+void openInNewTab(String url) => web.window.open(url, '_blank');
+
 String get userAgent => web.window.navigator.userAgent;

@@ -46,6 +46,25 @@ enum Arm {
 
   bool get isVmt => this == vmtRaster || this == vmtVector;
 
+  /// Labels drawn into the tile images rather than every frame: the
+  /// benchmark pairs arms by this, see compare/AGENTS.md.
+  bool get bakesLabels =>
+      this == fmvtRaster || this == fmvtRasterNone || this == vmtRaster;
+
+  /// The demo's four arms: one per package and label strategy.
+  static Arm pick({required bool vmt, required bool baked}) =>
+      vmt ? (baked ? vmtRaster : vmtVector) : (baked ? fmvtRaster : fmvt);
+
+  /// How the arm is set up, in the demo's words.
+  String get setup => switch (this) {
+        fmvt => 'default settings',
+        fmvtNone => 'TileOffset.none',
+        fmvtRaster => 'LabelMode.tile',
+        fmvtRasterNone => 'LabelMode.tile and TileOffset.none',
+        vmtRaster => 'raster mode, its default',
+        vmtVector => 'vector mode',
+      };
+
   /// The arm with [id]. Throws on an unknown one: a measured run must fail
   /// with an error row, not measure [fmvt] under the misspelt name.
   static Arm parse(String id) =>

@@ -20,6 +20,53 @@ import 'scenarios.dart';
 /// localStorage key holding an in-browser benchmark across its reloads.
 const browserPlanKey = 'fmvt-compare.plan';
 
+/// The in-browser benchmark's two lengths, which differ in the camera
+/// paths they drive.
+enum BenchmarkLength {
+  quick(['zoom', 'rotate'], '2 paths, ~8 min'),
+  full(null, '4 paths, ~13 min');
+
+  const BenchmarkLength(this._scenarioIds, this.summary);
+
+  final List<String>? _scenarioIds;
+
+  /// What the demo's button says about it.
+  final String summary;
+
+  List<String> get scenarioIds =>
+      _scenarioIds ?? [for (final s in scenarios) s.id];
+}
+
+/// Starts the in-browser benchmark: the plan goes to localStorage, and
+/// every step after this one is a page load of [BenchPage].
+void startBrowserBenchmark(BenchmarkLength length, String style) {
+  writeLocal(
+    browserPlanKey,
+    jsonEncode({
+      'plan': [
+        'warmup',
+        Arm.fmvt.id,
+        Arm.fmvtRaster.id,
+        Arm.vmtRaster.id,
+        Arm.vmtVector.id,
+      ],
+      'index': 0,
+      'scenarios': length.scenarioIds,
+      'results': <Object?>[],
+      'started': DateTime.now().toIso8601String(),
+    }),
+  );
+  navigate(Uri.base.replace(queryParameters: {
+    'mode': 'bench',
+    'step': '0',
+    'style': style,
+  }).toString());
+}
+
+/// Back to the demo, in [style].
+void openDemo(String style) =>
+    navigate(Uri.base.replace(queryParameters: {'style': style}).toString());
+
 /// One measured run: one arm, every scenario twice (cold, then warm), and —
 /// in the first round of a lab session — the fidelity screenshots.
 ///
@@ -45,6 +92,14 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
   String _status = 'calibrating';
   Widget? _layer;
   String? _runId;
+
+  // The in-browser benchmark's progress, for its card.
+  List<String> _steps = const [];
+  int _index = 0;
+  int _passesDone = 0;
+  int _passes = 1;
+  String _doing = 'Measuring the display';
+  bool _noPlan = false;
 
   /// Lifecycle states other than `resumed` seen since the last [_mark].
   /// A pass that saw one is flagged `interrupted`: an app that is not in
@@ -136,7 +191,7 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
   Future<void> _browserRun() async {
     final raw = readLocal(browserPlanKey);
     if (raw == null) {
-      _say('No benchmark in progress. Start one from the demo.');
+      setState(() => _noPlan = true);
       return;
     }
     final plan = jsonDecode(raw) as Map<String, dynamic>;
@@ -144,6 +199,10 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
     final index = plan['index'] as int;
     final scenarioIds = (plan['scenarios'] as List).cast<String>();
     final results = (plan['results'] as List).cast<Object?>();
+    setState(() {
+      _steps = steps;
+      _index = index;
+    });
     final refresh = await _log.calibrate();
     final step = steps[index];
     _runId = 'browser-$index-$step';
@@ -168,6 +227,7 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
     navigate(Uri.base.replace(queryParameters: {
       'mode': more ? 'bench' : 'results',
       if (more) 'step': '${index + 1}',
+      'style': _config.style,
     }).toString());
   }
 
@@ -180,7 +240,12 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
   /// which `TileOffset.none` reproduces.
   Future<void> _warmUp(List<String> scenarioIds) async {
     LoadedArm? previous;
+    _passes = 2 * scenarioIds.length;
     for (final arm in [Arm.fmvt, Arm.fmvtNone]) {
+      // fmvt-none loads the zoom levels vector_map_tiles does.
+      _doing = 'Loading the tiles '
+          '${arm == Arm.fmvt ? 'flutter_map_vector_tiles' : 'vector_map_tiles'}'
+          ' uses';
       _say('warming the HTTP cache: ${arm.label}');
       final loaded = await loadArm(arm, styleUrl: styleUrlFor(_config.style));
       // Where the measured arms open.
@@ -197,6 +262,7 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
         await _settle(sinceUs: _log.nowUs);
         await _animate(s, speed: 2);
         await _settle(sinceUs: _log.nowUs);
+        _passesDone++;
       }
     }
   }
@@ -210,6 +276,7 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
     required bool shots,
     required Future<void> Function(Map<String, Object?>) emit,
   }) async {
+    _doing = 'Opening the map';
     _say('loading ${arm.label}');
     final view = View.of(context);
     final cacheDir = await freshCacheDir(runId);
@@ -264,11 +331,14 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
           Duration(microseconds: 3500 * 1000 - sinceMount));
     }
 
-    for (final s in [
+    final measured = [
       for (final id in scenarioIds ?? scenarios.map((s) => s.id))
         scenarioById(id),
-    ]) {
+    ];
+    _passes = 2 * measured.length;
+    for (final s in measured) {
       for (final pass in ['cold', 'warm']) {
+        _doing = '${s.title}, $pass pass';
         _say('${s.id} · $pass');
         _jump(s.start);
         await _settle(sinceUs: _log.nowUs);
@@ -291,6 +361,7 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
           ..._lifecycleFields(),
           ...await _net(runId, net0),
         });
+        _passesDone++;
       }
     }
 
@@ -414,25 +485,121 @@ class _BenchPageState extends State<BenchPage> with TickerProviderStateMixin {
               style: Theme.of(context).textTheme.labelSmall,
             ),
           ),
-          Positioned(
-            left: 8,
-            top: MediaQuery.paddingOf(context).top + 8,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.6),
-                borderRadius: BorderRadius.circular(4),
+          if (_lab == null)
+            Positioned(
+              left: 8,
+              top: 8,
+              child: SizedBox(
+                width: math.min(400, MediaQuery.sizeOf(context).width - 16),
+                child: _noPlan ? _nothingRunning(context) : _progress(context),
               ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                child: Text(
-                  _status,
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
+            )
+          else
+            Positioned(
+              left: 8,
+              top: MediaQuery.paddingOf(context).top + 8,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.6),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  child: Text(
+                    _status,
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
                 ),
               ),
             ),
-          ),
         ],
       ),
     );
   }
+
+  /// What the in-browser benchmark is doing, how far it got, and a way
+  /// out. Nothing on it animates: it sits over the measured map.
+  Widget _progress(BuildContext context) {
+    final theme = Theme.of(context);
+    final step = _steps.isEmpty ? null : _steps[_index];
+    final title = switch (step) {
+      null => 'Getting ready',
+      'warmup' => 'Warm-up: loading every tile once',
+      final id => _armTitle(Arm.parse(id)),
+    };
+    final done =
+        _steps.isEmpty ? 0.0 : (_index + _passesDone / _passes) / _steps.length;
+    return Card(
+      elevation: 4,
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Benchmark running',
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            if (_steps.isNotEmpty)
+              Text('Step ${_index + 1} of ${_steps.length}',
+                  style: theme.textTheme.labelLarge
+                      ?.copyWith(color: theme.colorScheme.primary)),
+            Text(title, style: theme.textTheme.bodyMedium),
+            Text(_doing,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            const SizedBox(height: 10),
+            LinearProgressIndicator(value: done),
+            const SizedBox(height: 10),
+            Text(
+              'Keep this tab in front and leave the mouse alone. The page '
+              'reloads between packages.',
+              style: theme.textTheme.bodySmall,
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () {
+                  writeLocal(browserPlanKey, null);
+                  openDemo(_config.style);
+                },
+                child: const Text('Cancel'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _armTitle(Arm arm) => '${arm.package}, labels '
+      '${arm.bakesLabels ? 'baked into the tiles' : 'drawn every frame'}';
+
+  Widget _nothingRunning(BuildContext context) => Card(
+        elevation: 4,
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('No benchmark is running',
+                  style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 4),
+              const Text('Start one from the demo.'),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () => openDemo(_config.style),
+                  child: const Text('Back to the demo'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
 }

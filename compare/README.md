@@ -10,9 +10,10 @@ measures what a user would see. It is two things:
   screenshots are in [RESULTS.md](RESULTS.md), and
   [SUMMARY.md](SUMMARY.md) explains them in plain words.
 - **A web demo**, built from `main` by CI:
-  <https://jonasgrunau.github.io/flutter-map-vector-tiles/>. Switch
-  packages, play the benchmark's camera paths, watch the frame readout,
-  compare the two side by side, or run the benchmark in your browser.
+  <https://jonasgrunau.github.io/flutter-map-vector-tiles/>. Pick a
+  package and how it draws labels, play the benchmark's camera paths,
+  watch the smoothness meter, compare the two side by side, or run the
+  benchmark in your browser.
 
 It is not published to pub.dev and the package does not depend on it.
 
@@ -201,11 +202,12 @@ Python 3 with Pillow for the screenshots.
 
 The quickest check needs none of that. The
 [web demo](https://jonasgrunau.github.io/flutter-map-vector-tiles/) has
-two "Benchmark" buttons, which run `fmvt`, `fmvt-raster`, `vmt-raster`
-and `vmt-vector` along the same camera paths in your browser and show
-the table at the end. That is one round against the live OpenFreeMap
-servers, not recorded tiles, so expect its numbers to vary more than a
-lab session's.
+a "Run the benchmark" button, which runs `fmvt`, `fmvt-raster`,
+`vmt-raster` and `vmt-vector` along the same camera paths in your
+browser: two of them (quick, about 8 min) or all four (full, about
+13 min). The results come as one table per pair. That is one round
+against the live OpenFreeMap servers, not recorded tiles, so expect its
+numbers to vary more than a lab session's.
 
 1. **Build what was measured.** Each session's `notes.md` names the
    commit it was built from, and every row of its `results.jsonl`
