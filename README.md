@@ -158,7 +158,7 @@ under memory pressure, the static `VectorTileLayer.clearMemoryCache()`
 releases decoded tiles, raster-source images and finished tiles alike,
 leaving the disk cache untouched. It also trims the label text each open
 map keeps, which is held per map rather than shared, down to the labels
-on screen. Call it from a handler such as
+of the tiles it is showing. Call it from a handler such as
 `WidgetsBindingObserver.didHaveMemoryPressure`: visible maps keep their
 imagery and their labels, only tiles panned to afterwards are re-read
 from disk, and only labels met again are shaped again.
@@ -480,10 +480,10 @@ they inherit the limits of any pre-rendered tile:
 |---|---|---|
 | Per-frame label work | placed labels laid out and drawn every frame, a collision pass every `labelFadeDuration` (at most 300 ms) | none |
 | Collision | one pass across the whole screen | within each tile |
-| At tile seams | seamless | a label that would cross a tile edge is dropped, so labels thin out along tile seams |
+| At tile seams | seamless | a label that would cross a tile edge is dropped, so labels thin out along tile seams; a road name repeated along a road is thinned out only within a tile, so it can show on both sides of a seam |
 | Under rotation | text stays upright | text rotates with the map |
 | Between zoom levels | sized for the exact zoom | sized for the tile's zoom level, then scales with the map (up to twice the size) until the next level's tiles replace it |
-| `minzoom`/`maxzoom` | cut and ramped at the exact zoom | applied per tile zoom level |
+| `minzoom`/`maxzoom` | cut and ramped at the exact zoom | applied at the tile's zoom level: `minzoom: 12.2` shows from 13, `maxzoom: 16.5` until 17 |
 | Fades | per label, `labelFadeDuration` | with the tile, `tileFadeDuration` |
 | New tiles | geometry first: every queued tile's geometry before any tile's labels, with the previous level's labels covering the gap | each tile appears complete, labels included; the previous level covers it until then |
 
@@ -573,8 +573,10 @@ The full rendering model, and the reasoning behind each departure from
 ## 🆚 [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles)
 
 Compared with `9.0.0-beta.13`, the newest release that runs flutter_map 8
-on stable Flutter (the `10.0.0` betas need Flutter's main channel for
-`flutter_gpu`):
+on stable Flutter (the
+[`10.0.0` betas](https://pub.dev/packages/vector_map_tiles/versions) need
+Flutter's main channel for `flutter_gpu`, per
+[their README](https://github.com/greensopinion/flutter-vector-map-tiles#version-1000-beta)):
 
 | | vector_map_tiles 9.0.0-beta.13 | this package |
 |---|---|---|
@@ -642,7 +644,7 @@ runs a short version of the benchmark in your browser.
   label text cache keeps up to 8000 shaped labels; after a run through
   four dense cities that held 37–49 MB more than the 2500 it used to
   keep, and 117–119 MB more with `TileOffset.none`.
-  `VectorTileLayer.clearMemoryCache()` gives 25–48 MB of that back (see
+  `VectorTileLayer.clearMemoryCache()` gives 23–43 MB of that back (see
   the CHANGELOG).
 - **Label density.** At the same camera `vector_map_tiles` draws more
   labels, because it evaluates the style one zoom level deeper than

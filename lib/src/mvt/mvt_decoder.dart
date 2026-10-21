@@ -230,6 +230,7 @@ MvtFeature? _decodeGeometry(
   }
   flush();
   if (parts.isEmpty) return null;
+  if (type == MvtGeomType.polygon) _normalizeWinding(parts, areas);
   return MvtFeature(
     id: id,
     type: type,
@@ -241,6 +242,27 @@ MvtFeature? _decodeGeometry(
     maxX: maxX,
     maxY: maxY,
   );
+}
+
+/// Turns a polygon feature over whole when its first ring with an area
+/// winds the wrong way — a producer that writes exterior rings
+/// counter-clockwise writes all of them so — as MapLibre classifies
+/// rings by the first one. The rasterizer draws a one-colour extrusion
+/// layer as a single non-zero union of all its features, where two
+/// features winding opposite ways would cancel out where they overlap.
+void _normalizeWinding(List<Float32List> rings, List<double> areas) {
+  if (areas.firstWhere((area) => area != 0, orElse: () => 0) >= 0) return;
+  for (var r = 0; r < rings.length; r++) {
+    final ring = rings[r];
+    for (var a = 0, b = ring.length - 2; a < b; a += 2, b -= 2) {
+      final x = ring[a], y = ring[a + 1];
+      ring[a] = ring[b];
+      ring[a + 1] = ring[b + 1];
+      ring[b] = x;
+      ring[b + 1] = y;
+    }
+    areas[r] = -areas[r];
+  }
 }
 
 /// Shoelace area in y-down (screen) coordinates: positive for

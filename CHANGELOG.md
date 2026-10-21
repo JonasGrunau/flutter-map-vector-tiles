@@ -16,9 +16,11 @@ closer MapLibre parity for road shields, long words and buildings.
   records its roads. The same text engine draws them, curved road
   names and SDF icons included, but with the limits of a pre-rendered
   tile: collision is per tile and a label that would cross a tile edge
-  is dropped, text turns with the map, scales with the tile between
-  zoom levels, and fades in with its tile. Texture memory per tile is
-  unchanged. On a Nothing Phone (1) at 60 Hz, the map got a frame on
+  is dropped, a road name can repeat on both sides of a tile edge,
+  `minzoom` and `maxzoom` apply at the tile's zoom level, and text
+  turns with the map, scales with the tile between zoom levels, and
+  fades in with its tile. Texture memory per tile is unchanged. On a
+  Nothing Phone (1) at 60 Hz, the map got a frame on
   94–98% of display refreshes while zooming, panning, rotating and
   flinging, against
   78–86% with screen-space labels (rotating: 78–81% → 94–98%). On an
@@ -32,12 +34,13 @@ closer MapLibre parity for road shields, long words and buildings.
   translation once. The style's `resolved-locale` expression returns
   the language too; until now it always returned `en`.
 - ✨ `VectorTileLayer.clearMemoryCache()` now also trims the label text
-  every open map keeps down to the labels on screen. Each map keeps up
-  to 8000 shaped labels, so that zooming back to a level does not shape
-  them all again, and until now only closing the map released them.
+  every open map keeps down to the labels of the tiles it is showing.
+  Each map keeps up to 8000 shaped labels, so that zooming back to a
+  level does not shape them all again, and until now only closing the
+  map released them.
   Nothing on screen changes, and a label met again later is shaped
   again. On a Nothing Phone (1), after a run through four dense cities,
-  RSS fell by 25–30 MB within 3 s, and by 42–48 MB with
+  RSS fell by 23–30 MB within 3 s, and by 36–43 MB with
   `TileOffset.none`.
 - 🎨 `fill-extrusion` layers, such as the `building-3d` layer of
   OpenFreeMap's Liberty style, now follow MapLibre's opacity rules.
@@ -132,11 +135,22 @@ closer MapLibre parity for road shields, long words and buildings.
   between words, and so does this package now. The long word runs past
   the width on a line of its own, and the lines around it still break
   at `text-max-width`.
-- 🐛 A `fill` layer whose `fill-color` or `fill-opacity` reads only the
-  feature id (`["id"]`) or geometry type (`["geometry-type"]`), and no
-  feature property, now colours each feature by its own value. Every
+- 🐛 A `fill`, `fill-extrusion` or `line` layer whose paint reads only
+  the feature id (`["id"]`) or geometry type (`["geometry-type"]`), and
+  no feature property, now draws each feature with its own value. Every
   feature used to get the value for no feature at all, so a fill made
-  visible only for certain ids was not drawn.
+  visible only for certain ids was not drawn, and a building or road
+  coloured by its id took the fallback colour.
+- 🐛 Changing `VectorTileLayer.sprites` while a zoom was still
+  settling no longer leaves tiles drawn with the old sprites in the
+  finished-tile cache. Tiles of the level being zoomed away from
+  finished rendering with the old fill and line patterns after the
+  change, were cached under the new sprites, and came back with the
+  old patterns on a later visit.
+- 🐛 A tile that finished rendering just after the screen's pixel
+  ratio changed (a window moved to another monitor, a browser zoom) is
+  no longer kept in the finished-tile cache at the old resolution,
+  where it came back blurry on the next visit.
 - 📚 The README's comparison with `vector_map_tiles` now covers iOS,
   macOS and Chrome as well as Android. Android, macOS and Chrome were
   measured on one build from this release's development (c1dc45c),

@@ -235,7 +235,7 @@ void main() {
     await tester.pump();
   });
 
-  testWidgets('clearMemoryCache trims an open map to the labels on screen',
+  testWidgets('clearMemoryCache trims an open map to the labels of its tiles',
       (tester) async {
     tester.view.physicalSize = const Size(600, 600);
     tester.view.devicePixelRatio = 1;
@@ -280,6 +280,46 @@ void main() {
     expect(kept, lessThanOrEqualTo(held - first),
         reason: 'every label of the first place is released');
     expect(kept, greaterThan(0), reason: 'the labels on screen are kept');
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
+
+  testWidgets('clearMemoryCache keeps the text of the buffer ring',
+      (tester) async {
+    tester.view.physicalSize = const Size(600, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final provider = NamedTileProvider();
+    final controller = MapController();
+    await tester.pumpWidget(labelApp(controller, provider, showLabels: true));
+    await settleLoads(tester, provider, painted: false);
+    expect(await pumpUntil(tester, () => hasColor(tester, labelColor)), isTrue);
+    // Every tile of the grid, buffer ring included: the pump has shaped
+    // each one's label, though the last placing pass only looked up the
+    // ones near the screen.
+    final names = {
+      for (final key in provider.served) '${key.z}/${key.x}/${key.y}',
+    };
+    VectorTileLayer.clearMemoryCache();
+
+    final reshaped = <String>[];
+    void track(ObjectEvent event) {
+      if (event is! ObjectCreated || event.object is! TextPainter) return;
+      final text = (event.object as TextPainter).text?.toPlainText();
+      if (names.contains(text)) reshaped.add(text!);
+    }
+
+    FlutterMemoryAllocations.instance.addListener(track);
+    addTearDown(() => FlutterMemoryAllocations.instance.removeListener(track));
+    // Two tiles east: the ring's eastern column comes into view.
+    controller.move(const LatLng(48.1725, 11.7375 + 2 * 360 / (1 << 14)), 14);
+    await settleLoads(tester, provider, painted: false);
+    expect(await pumpUntil(tester, () => hasColor(tester, labelColor)), isTrue);
+    expect(reshaped, isEmpty,
+        reason: 'the trim dropped text of tiles the map still held, and '
+            'the label pass shaped it again in paint');
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump();

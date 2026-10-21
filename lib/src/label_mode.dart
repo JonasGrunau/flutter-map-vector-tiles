@@ -7,9 +7,10 @@
 /// | | [screen] (default) | [tile] |
 /// |---|---|---|
 /// | Per-frame label work | every placed label laid out and drawn each frame, a collision pass every `labelFadeDuration` | none — tiles are plain images |
-/// | Collision | global, across tile seams | within each tile; labels that cross a tile edge are dropped |
+/// | Collision | global, across tile seams | within each tile; labels that cross a tile edge are dropped, and a road name repeated along a road is thinned out only within a tile, so it can show on both sides of a seam |
 /// | Under rotation | text stays upright | text rotates with the map |
 /// | Between zoom levels | sized for the exact zoom | scales with the tile, up to 2× before the next level replaces it |
+/// | `minzoom`/`maxzoom` | cut at the exact zoom | applied at the tile's zoom level: `minzoom: 12.2` shows from 13, `maxzoom: 16.5` until 17 |
 /// | Fades | per label | with the tile |
 ///
 /// [tile] is what `vector_map_tiles` calls raster mode.

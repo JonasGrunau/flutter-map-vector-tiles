@@ -516,9 +516,10 @@ class TileRasterizer {
     final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
     if (opacity == 0) return false;
     final patternProp = layer.pattern;
-    final oneColour = patternProp == null &&
-        (layer.color.isConstant ||
-            (layer.referencedProperties?.isEmpty ?? false));
+    // Asked of the colour itself, as for fills: `["id"]` and
+    // `["geometry-type"]` read the feature without naming a property.
+    final oneColour =
+        patternProp == null && (layer.color.isConstant || layer.color.zoomOnly);
     if (oneColour) {
       final union = Path()..fillType = PathFillType.nonZero;
       var any = false;
@@ -578,11 +579,21 @@ class TileRasterizer {
     var painted = false;
     final patternProp = layer.pattern;
 
-    // A layer that never reads feature properties is zoom-only: its
-    // stroke style is constant across the whole tile, so resolve it
-    // once instead of re-evaluating 5-7 expressions per feature.
+    // A stroke style none of whose properties reads the feature is
+    // constant across the whole tile, so resolve it once instead of
+    // re-evaluating 5-7 expressions per feature. Asked of each property,
+    // as for fills: `["id"]` and `["geometry-type"]` read the feature
+    // without naming a property.
+    final dashProp = layer.dashArray;
     _LineStyle? shared;
-    if (patternProp == null && (layer.referencedProperties?.isEmpty ?? false)) {
+    if (patternProp == null &&
+        (layer.color.isConstant || layer.color.zoomOnly) &&
+        (layer.width.isConstant || layer.width.zoomOnly) &&
+        (layer.opacity.isConstant || layer.opacity.zoomOnly) &&
+        (layer.gapWidth.isConstant || layer.gapWidth.zoomOnly) &&
+        (dashProp == null || dashProp.isConstant || dashProp.zoomOnly) &&
+        (layer.cap.isConstant || layer.cap.zoomOnly) &&
+        (layer.join.isConstant || layer.join.zoomOnly)) {
       shared = _lineStyle(layer, EvalContext(zoom: styleZoom));
       if (shared == null) return false; // invisible at this zoom
     }

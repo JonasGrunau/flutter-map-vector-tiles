@@ -76,17 +76,26 @@ display tile of central Berlin at z16 took 16–28 ms to record, up to
 half of it. So the raster phase is resumable, like the symbol phase:
 `TileRasterizer.recordSlice` records layers until the pump's budget is
 spent and returns where to resume, the job keeps the slices it has
-(`_RenderJob.geometryParts`) and is requeued with its priority, and once
-the last layer is in, `compose` stacks the slices into exactly the
+(`_RenderJob.geometryParts`) and is requeued with its priority, ahead
+of the jobs it ties with — otherwise tiles of one priority, such as
+every tile a refresh re-renders, would take turns a slice each and none
+would finish until all had started — and once the last layer is in, `compose` stacks the slices into exactly the
 picture a single recording would have made. A layer is the smallest
 unit — each is drawn whole, in order, with its own paints, which is
 what keeps the slices stackable — so one frame can still carry the most
 expensive layer of a tile: 5–9 ms on those Berlin tiles, 22 ms for the
 buildings of the densest one. Nothing is published before the last
 slice: a tile halfway through its recording counts as loading, and
-whatever covered it keeps covering it. A slice taken under a different
-theme or pixel ratio than the ones before it starts the recording
-over, since it would not stack onto them.
+whatever covered it keeps covering it. A slice taken at a different
+pixel ratio than the ones before it starts the recording over, since
+it would not stack onto them; the other inputs cannot change under a
+job — a theme change empties the queue, and a change that re-renders
+the live tiles (sprites, `showLabels`, the label mode, the resume
+recovery) retires the outgoing level's queued jobs too. The symbol phase inherits
+the ratio the geometry was recorded at — `LabelMode.tile` draws the
+labels over that geometry at it — and a tile finished at a ratio the
+screen has since left is published but not cached, so the next visit
+renders it afresh.
 
 The budget depends on motion: 4 ms per frame while the camera moves,
 12 ms once it has stood still for 150 ms. While the map moves, every
@@ -592,7 +601,10 @@ every box must lie inside it, `*-allow-overlap` ones included: a label
 the layouter anchored in this tile but which runs over the edge would be
 cut off there, and the neighbour that would have to draw its other half
 never sees the candidate. Such labels are dropped, which leaves gaps
-along tile seams — the same behaviour as `vector_map_tiles`. MapLibre
+along tile seams — the same behaviour as `vector_map_tiles`. Repeat
+suppression stops at the tile edge for the same reason: two ways of
+one street meeting at a seam can each show its name, a few pixels
+apart, where the screen pass would keep one. MapLibre
 avoids it with cross-tile placement (labels placed once for the
 viewport, then assigned to the tiles they overlap); that is a possible
 follow-up, not something this mode attempts.
@@ -601,8 +613,12 @@ The other limits follow from the image. Text is evaluated at the tile's
 integer style zoom and drawn at that size, then scales with the tile
 (1× up to 2× before the next level replaces it), and turns with the map
 under rotation. A symbol layer's zoom range is applied per tile zoom
-level rather than at the exact fractional zoom, and the `maxzoom` ramp
-is evaluated at that level too. Labels fade in with their tile over
+level rather than at the exact fractional zoom — `minzoom: 12.2` shows
+from 13, `maxzoom: 16.5` until 17, as geometry layers already do in
+both modes — and the `maxzoom` ramp is evaluated at that level too. The
+layouter applies the same gate in this mode (`exact`), rather than the
+screen pass's band, so a layer the tile will not draw is neither laid
+out nor shaped. Labels fade in with their tile over
 `tileFadeDuration`; `labelFadeDuration` does nothing.
 
 Being a `toImageSync` like any other tile raster, the labelled image is
@@ -697,8 +713,14 @@ entry with the current placement pass, and the trim keeps only what is
 stamped with it: whatever was used since the last placing pass began.
 That is every candidate on screen, collision losers included, since a
 placing pass lays them all out, plus whatever the pump has shaped since
-then. In `LabelMode.tile` every `paintTile` call counts as a pass. A
-tile whose shaping straddles a pass loses the part shaped before it to
+then. In `LabelMode.tile` every `paintTile` call counts as a pass.
+A placing pass only looks up labels within 150 px of the screen and of
+layers in zoom range, though, while the pump shaped every published
+tile's, the buffer ring's included; trimmed, that text would be shaped
+again in paint as soon as the map moved toward it. So the layer first
+runs `prewarm` over the symbols of every tile it holds — cache hits,
+which stamp them — and the trim takes only text for places the map has
+left. A tile whose shaping straddles a pass loses the part shaped before it to
 a trim, so the layer's trim also rewinds every queued symbol job's
 shaping cursor: the pump goes over the batch again within its budget,
 a cache hit for what survived and a fresh shape for what did not,
@@ -709,8 +731,8 @@ its winners; keyed on that, the trim would drop on-screen losers, and
 the next pass would shape them again inside a frame. The evicted
 painters are disposed at once: memory pressure often comes in the
 background, where no next pass arrives to retire them. On that phone
-RSS fell 25–48 MB within 3 s of the trim, not all the way back to what
-2500 entries had held.
+RSS fell 23–43 MB within 3 s of the trim, not all the way back to what
+2500 entries had held (`compare/results/raw/2026-10-20-trim-android`).
 
 In `LabelMode.tile` the cached result is the labelled image with an
 empty symbol list, so a hit owes no shaping and is complete the moment
@@ -905,7 +927,10 @@ wrapping the field would drop what is shown beside the name (an
 elevation, a `({ref})`), and wrapping each reference would show the
 translation twice where a style stacks `name:latin` over
 `name:nonlatin`. Inside a `concat`, only the run of arguments spanning
-the names is wrapped, for the first reason. Only references whose value
+the names is wrapped, for the first reason; an expression that chooses
+between branches (`case`, `match`, `step`, `coalesce`, `string`) wraps
+each branch showing a name on its own, for the same reason, and the
+whole once only when every such branch is nothing but a name. Only references whose value
 can reach the label count, so `case` conditions, `match` inputs,
 comparisons and `has` are never touched. Legacy `{token}` templates and
 zoom stop functions are first turned into the `concat` or `step` they

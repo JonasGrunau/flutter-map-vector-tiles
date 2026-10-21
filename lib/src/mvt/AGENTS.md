@@ -14,7 +14,7 @@ package ships as a single dependency.
 
 | File | Description |
 |------|-------------|
-| `mvt_decoder.dart` | `decodeMvt(Uint8List)` — the whole decoder: `_Reader` (varint/float/double/string/submessage/skip over a byte range), layer and feature decoding, the geometry command loop (`MoveTo`/`LineTo`/`ClosePath` with zigzag deltas), and `_shoelace` ring-winding classification in y-down screen coordinates |
+| `mvt_decoder.dart` | `decodeMvt(Uint8List)` — the whole decoder: `_Reader` (varint/float/double/string/submessage/skip over a byte range), layer and feature decoding, the geometry command loop (`MoveTo`/`LineTo`/`ClosePath` with zigzag deltas), `_shoelace` ring-winding classification in y-down screen coordinates, and `_normalizeWinding` for features written the wrong way round |
 | `mvt_tile.dart` | The decoded model: `MvtTile` → `MvtLayer` → `MvtFeature` (including per-feature `minX/minY/maxX/maxY` bounds folded in during decode, which the renderer's overzoom culling depends on), plus `MvtGeomType` (unknown/point/lineString/polygon) |
 
 ## For AI Agents
@@ -27,6 +27,11 @@ package ships as a single dependency.
 - **Winding matters.** `_shoelace` returns positive area for exterior rings in
   y-down coordinates; polygon interior/exterior classification (and therefore
   holes) depends on that sign convention. Do not "fix" it to y-up.
+  `_normalizeWinding` turns a feature over whole (every ring reversed) when its
+  first ring with an area is negative, as MapLibre's `classifyRings` reads it,
+  so every decoded polygon winds the spec's way: the rasterizer draws a
+  one-colour `fill-extrusion` layer as a single non-zero union of all its
+  features, where opposite windings would cancel out at an overlap.
 - Malformed input must fail as a `FormatException` (`truncated varint`,
   `unsupported wire type`), which the pipeline turns into an empty tile — never
   let it become an unhandled async error.

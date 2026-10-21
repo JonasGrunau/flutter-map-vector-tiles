@@ -17,12 +17,15 @@ enum RenderPhase { raster, symbols }
 /// - [pop] is phase-major (all rasters before any symbols), then by
 ///   ascending priority (viewport centre first) — or, asked for
 ///   `tileMajor`, by priority alone, a tile's symbols ahead of rasters
-///   of equal priority. The linear scan is fine at queue sizes of a
+///   of equal priority. Within a phase, a `resumed` job (one the pump
+///   put back after it ran out of tick) wins a tie, so tiles of equal
+///   priority finish one after the other instead of taking turns a
+///   slice each. The linear scan is fine at queue sizes of a
 ///   zoom-level change (≤ ~50 entries).
 class RenderJobQueue<T, J> {
   final void Function(J job) onDrop;
-  final _raster = <T, ({int priority, J job})>{};
-  final _symbols = <T, ({int priority, J job})>{};
+  final _raster = <T, _Entry<J>>{};
+  final _symbols = <T, _Entry<J>>{};
 
   RenderJobQueue({required this.onDrop});
 
@@ -40,19 +43,22 @@ class RenderJobQueue<T, J> {
   /// Every queued symbols job, in no particular order.
   Iterable<J> get symbolJobs => _symbols.values.map((entry) => entry.job);
 
-  void enqueueRaster(T key, int priority, J job) {
+  /// [resumed] marks a job the pump started and is putting back
+  /// unfinished; it goes ahead of other jobs of equal priority.
+  void enqueueRaster(T key, int priority, J job, {bool resumed = false}) {
     final existingRaster = _raster.remove(key);
     if (existingRaster != null) onDrop(existingRaster.job);
     // Superseded: the accepted raster re-enqueues symbols itself.
     final existingSymbols = _symbols.remove(key);
     if (existingSymbols != null) onDrop(existingSymbols.job);
-    _raster[key] = (priority: priority, job: job);
+    _raster[key] = (priority: priority, resumed: resumed, job: job);
   }
 
-  void enqueueSymbols(T key, int priority, J job) {
+  /// [resumed] as for [enqueueRaster].
+  void enqueueSymbols(T key, int priority, J job, {bool resumed = false}) {
     final existing = _symbols.remove(key);
     if (existing != null) onDrop(existing.job);
-    _symbols[key] = (priority: priority, job: job);
+    _symbols[key] = (priority: priority, resumed: resumed, job: job);
   }
 
   /// The next job to run. [tileMajor] is for a pump whose tiles only
@@ -85,15 +91,22 @@ class RenderJobQueue<T, J> {
     return null;
   }
 
-  /// The key with the lowest priority in [map], or null when it is empty.
-  ({T key, int priority})? _best(Map<T, ({int priority, J job})> map) {
-    ({T key, int priority})? best;
+  /// The key with the lowest priority in [map], a resumed job first
+  /// among equals, or null when the map is empty.
+  ({T key, int priority})? _best(Map<T, _Entry<J>> map) {
+    T? bestKey;
+    _Entry<J>? best;
     map.forEach((key, entry) {
-      if (best == null || entry.priority < best!.priority) {
-        best = (key: key, priority: entry.priority);
+      if (best == null ||
+          entry.priority < best!.priority ||
+          (entry.priority == best!.priority &&
+              entry.resumed &&
+              !best!.resumed)) {
+        bestKey = key;
+        best = entry;
       }
     });
-    return best;
+    return best == null ? null : (key: bestKey as T, priority: best!.priority);
   }
 
   /// Drops the tile's jobs in both phases (tile disposed/cancelled).
@@ -114,3 +127,5 @@ class RenderJobQueue<T, J> {
     dropped.forEach(onDrop);
   }
 }
+
+typedef _Entry<J> = ({int priority, bool resumed, J job});

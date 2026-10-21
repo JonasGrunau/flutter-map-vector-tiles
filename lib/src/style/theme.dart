@@ -1,5 +1,7 @@
 import 'dart:ui' show Color;
 
+import 'package:meta/meta.dart';
+
 import 'expression.dart';
 
 /// A compiled map style: an ordered list of paintable layers.
@@ -60,7 +62,10 @@ sealed class ThemeLayer {
   /// the same features at every zoom and may be resolved once per
   /// prepared tile (see `MatchedFeatures`). Assigned by the theme
   /// reader; unknown means true, so a hand-built layer is always
-  /// evaluated per display tile.
+  /// evaluated per display tile. Not for use outside this package: false
+  /// on a filter that reads the zoom would draw, at every zoom, what the
+  /// filter selects at zoom 0.
+  @internal
   bool filterReadsZoom = true;
 
   ThemeLayer({

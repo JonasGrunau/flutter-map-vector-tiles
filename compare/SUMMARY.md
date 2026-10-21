@@ -132,8 +132,11 @@ tile. The screenshots are in [RESULTS.md](RESULTS.md).
 - The Android, Mac and Chrome sessions were built from one commit
   (c1dc45c). The iPhone session ran a week later on a newer build, with
   two label fixes and a change to how fill outlines are drawn.
-- The `vector_map_tiles` 10.0.0 betas are not included, because they
-  need Flutter's main channel.
+- The `vector_map_tiles` 10.0.0 betas
+  ([`10.0.0-beta.1` and `-beta.2`](https://pub.dev/packages/vector_map_tiles/versions),
+  October 2025) are not included, because
+  [their README](https://github.com/greensopinion/flutter-vector-map-tiles#version-1000-beta)
+  says they need `flutter_gpu` from Flutter's main channel.
 
 ## Check it yourself
 

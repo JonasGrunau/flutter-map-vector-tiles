@@ -20,7 +20,10 @@ It is not published to pub.dev and the package does not depend on it.
 
 `9.0.0-beta.13`, the newest release that supports flutter_map 8 on stable
 Flutter. The stable `8.0.0` requires flutter_map 7. The `10.0.0` betas
-render with `flutter_gpu`, which needs Flutter's main channel and the
+([`10.0.0-beta.1` and `-beta.2`](https://pub.dev/packages/vector_map_tiles/versions),
+October 2025) render with `flutter_gpu`, which
+[their README](https://github.com/greensopinion/flutter-vector-map-tiles#version-1000-beta)
+says needs Flutter's main channel and the
 `--enable-flutter-gpu` flag, and has no web support; they are not
 comparable on the same Flutter release, so they are not included.
 

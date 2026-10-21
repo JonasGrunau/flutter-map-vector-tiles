@@ -249,12 +249,12 @@ class VectorTileLayer extends StatefulWidget {
   /// their labels; only tiles panned to afterwards are re-read from disk,
   /// and only labels met again re-shaped.
   ///
-  /// The label text is held per open map, up to
-  /// [LabelPainter.textCacheEntries] shaped labels so a zoom round trip
-  /// comes back without re-shaping them. After a session through several
-  /// dense cities that is tens of MB, over a hundred with
+  /// The label text is held per open map, up to 8000 shaped labels so a
+  /// zoom round trip comes back without re-shaping them. After a session
+  /// through several dense cities that is tens of MB, over a hundred with
   /// `TileOffset.none`, and short of eviction at that cap this is the only
-  /// call that releases it while the map stays open.
+  /// call that releases it while the map stays open. The labels of the
+  /// tiles a map is showing stay.
   static void clearMemoryCache() {
     TileStore.clearMemoryCaches();
     RasterTileStore.clearMemoryCaches();
@@ -347,6 +347,16 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// its budget: what survived the trim costs a cache hit, the rest is
   /// shaped again.
   void _trimLabelCaches() {
+    // The trim keeps what the last placing pass looked up, which is only
+    // the labels near the screen of layers in zoom range. The pump shaped
+    // every published tile's, the buffer ring's included, so those are
+    // stamped again first — cache hits, short of what the LRU already
+    // let go. Trimmed, they would be shaped again in paint, outside every
+    // budget, as soon as the map moved toward them.
+    for (final tile in [..._tiles.values, ..._retained.values]) {
+      if (tile.symbols.isEmpty) continue;
+      _labelPainter.prewarm(tile.symbols, _styleZoomOf(tile.key.z.toDouble()));
+    }
     _labelPainter.trimCaches();
     for (final job in _renderQueue.symbolJobs) {
       job.shapeCursor = 0;
@@ -746,13 +756,6 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       _labelPainter.reset();
       _drawnLastFrame.clear();
       _ghostLabels.clear();
-      // A queued job decides at run time which kind of image to make,
-      // and would publish — and cache, under the new signature — the
-      // other kind for a tile it was built for. The live tiles' refresh
-      // retires theirs; the outgoing level's are retired here.
-      for (final tile in _retained.values) {
-        tile.loadGeneration++;
-      }
       refresh = true;
     }
     if (oldWidget.memoryCacheMaxBytes != widget.memoryCacheMaxBytes) {
@@ -786,16 +789,29 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   /// Re-rasterizes every live tile from already-decoded data — for
   /// widget changes that alter what is baked into the raster or the
-  /// symbol set (sprites, showLabels) without changing the data. The
-  /// old imagery stays on screen until its replacement is ready, and
-  /// nothing re-fades.
+  /// symbol set (sprites, showLabels, labelMode) without changing the
+  /// data, and for the resume recovery. The old imagery stays on screen
+  /// until its replacement is ready, and nothing re-fades.
   void _refreshTiles() {
     for (final tile in _tiles.values) {
       tile.renderedWith = null; // identical sources must still re-enqueue
       tile.loadGeneration++;
-      unawaited(_loadTile(tile, 0, fadeIn: false));
+      unawaited(_loadTile(tile, _priorityOf(tile), fadeIn: false));
+    }
+    // The outgoing level is not rendered again, but its queued jobs were
+    // built before the change — a recording half done with the old
+    // patterns, a tile-mode label job holding geometry drawn with them,
+    // a symbols job about to cache an image published before it — and
+    // would publish, and cache under the new signature, what the change
+    // replaced. Retiring the generation drops them.
+    for (final tile in _retained.values) {
+      tile.loadGeneration++;
     }
   }
+
+  /// The render priority of a live tile in the current grid: viewport
+  /// centre first, as for a fresh load.
+  int _priorityOf(_DisplayTile tile) => _lastLayout?.priorityOf(tile.key) ?? 0;
 
   /// A background revalidation replaced [refreshed]'s decoded content —
   /// re-rasterize the visible display tiles it serves. The new raster
@@ -813,7 +829,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       if (dataKeyOf(tile.key) != refreshed) continue;
       tile.renderedWith = null; // identical source set must still re-enqueue
       tile.loadGeneration++;
-      unawaited(_loadTile(tile, 0));
+      unawaited(_loadTile(tile, _priorityOf(tile)));
     }
     // Retained tiles are on their way out and are not worth re-rendering,
     // but their queued jobs still hold the replaced sources. Retiring
@@ -1480,7 +1496,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       widget.showLabels &&
       sources.isNotEmpty &&
       SymbolLayouter.anySymbolLayerCovers(
-          widget.theme, _styleZoomOf(tile.key.z.toDouble()));
+          widget.theme, _styleZoomOf(tile.key.z.toDouble()),
+          exact: _tileLabels);
 
   /// Wall-clock the render pump may spend per frame. Checked before
   /// every job, between the layers of a raster job's recording and
@@ -1560,7 +1577,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
               // must not be disposed here. Requeued for the same reason
               // as a symbols job below; a newer raster for this tile
               // supersedes it, slices and all.
-              _renderQueue.enqueueRaster(tile, job.priority, job);
+              _renderQueue.enqueueRaster(tile, job.priority, job,
+                  resumed: true);
               processed++;
               continue;
             }
@@ -1577,7 +1595,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
                   job.rasters.isEmpty && job.descendantRasters.isEmpty,
                   'a requeued symbols job must own no raster handles: the '
                   'pump skips dispose() for it');
-              _renderQueue.enqueueSymbols(tile, job.priority, job);
+              _renderQueue.enqueueSymbols(tile, job.priority, job,
+                  resumed: true);
               processed++;
               continue;
             }
@@ -1606,10 +1625,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         rasters: job.rasters,
         descendantSources: job.descendantSources,
         descendantRasters: job.descendantRasters);
-    if (!identical(job.recordedTheme, widget.theme) ||
-        job.recordedPixelRatio != _devicePixelRatio) {
+    // A theme change rebuilds the stores, which empties this queue, and
+    // a sprites change retires every queued job (see [_refreshTiles]):
+    // the pixel ratio is the one input that can change under a job
+    // between its slices.
+    if (job.recordedPixelRatio != _devicePixelRatio) {
       job.resetRecording();
-      job.recordedTheme = widget.theme;
       job.recordedPixelRatio = _devicePixelRatio;
     }
     final slice = TileRasterizer.recordSlice(
@@ -1650,7 +1671,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             complete: job.complete,
             generation: job.generation,
             geometry: geometry,
-          ));
+          )..recordedPixelRatio = job.recordedPixelRatio);
       return true;
     }
     final image = geometry == null
@@ -1680,7 +1701,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             fadeIn: job.fadeIn,
             complete: job.complete,
             generation: job.generation,
-          ));
+          )..recordedPixelRatio = job.recordedPixelRatio);
     } else {
       // Still a publish: a tile that finishes with no labels at all is
       // what releases the retained level's labels over it into their
@@ -1724,8 +1745,14 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // on a dense tile), so it runs whole rather than in slices.
       final data = DisplayTileData(
           displayKey: tile.key, sources: job.sources, rasters: const {});
+      // Drawn into the tile, the labels are gated at the tile's own
+      // zoom (`LabelPainter.paintTile`), so only those layers are laid
+      // out and shaped.
       symbols = job.symbols = SymbolLayouter.layout(
-          theme: widget.theme, data: data, styleZoom: styleZoom);
+          theme: widget.theme,
+          data: data,
+          styleZoom: styleZoom,
+          exact: _tileLabels);
     }
     job.shapeCursor = _labelPainter.prewarm(
       symbols,
@@ -1782,7 +1809,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       _RenderJob job, List<SymbolInstance> symbols, double styleZoom) {
     developer.Timeline.startSync('VT rasterize with labels');
     try {
-      final dpr = _devicePixelRatio;
+      // The ratio the geometry was recorded at, which the screen may
+      // have left since: the clip, the label scale and the image size
+      // have to match the picture.
+      final dpr = job.recordedPixelRatio ?? _devicePixelRatio;
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
       final geometry = job.geometry;
@@ -1819,6 +1849,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   void _cacheResult(
       _DisplayTile tile, _RenderJob job, List<SymbolInstance> symbols) {
     if (job.provisional || !job.complete || job.fromCache) return;
+    // An image rasterized at a pixel ratio the screen has since left
+    // would be stored under the new ratio's signature.
+    if (job.recordedPixelRatio case final dpr? when dpr != _devicePixelRatio) {
+      return;
+    }
     _resultCache?.put(
       tile.key,
       image: tile.image?.clone(),
@@ -1977,10 +2012,11 @@ class _RenderJob {
   int layerCursor = 0;
   final List<ui.Picture> geometryParts = [];
 
-  /// What the recorded slices were drawn with. A later slice under a
-  /// different theme or pixel ratio would not stack onto them, so the
-  /// recording starts over instead.
-  Theme? recordedTheme;
+  /// The pixel ratio the recorded slices were drawn at. A later slice at
+  /// a different one would not stack onto them, so the recording starts
+  /// over instead. The symbol phase inherits it: [LabelMode.tile]
+  /// rasterizes the recorded geometry at it, and a tile finished at a
+  /// ratio the screen has left is not cached.
   double? recordedPixelRatio;
 
   /// Drops the slices recorded so far, for a recording that has to

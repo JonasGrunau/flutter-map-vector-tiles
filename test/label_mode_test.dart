@@ -40,7 +40,8 @@ Uint8List labelledTile() => MvtTileBuilder()
     .done()
     .build();
 
-Theme labelTheme({bool allowOverlap = false}) => const ThemeReader().read({
+Theme labelTheme({bool allowOverlap = false, double? minzoom}) =>
+    const ThemeReader().read({
       'layers': [
         {
           'id': 'bg',
@@ -59,6 +60,7 @@ Theme labelTheme({bool allowOverlap = false}) => const ThemeReader().read({
           'type': 'symbol',
           'source': 's',
           'source-layer': 'poi',
+          if (minzoom != null) 'minzoom': minzoom,
           'layout': {
             'text-field': '{name}',
             'text-size': 40,
@@ -434,6 +436,30 @@ void main() {
       });
     }
 
+    for (final mode in LabelMode.values) {
+      testWidgets(
+          '${mode.name} mode: a layer starting halfway into the level '
+          '${mode == LabelMode.tile ? 'is not' : 'is'} laid out',
+          (tester) async {
+        tester.view.physicalSize = const Size(600, 600);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+
+        // The map is at 14: a tile of 14 draws its labels at 14 in tile
+        // mode, while the screen pass may show them from 14.5 on.
+        final provider = EverywhereProvider(labelledTile());
+        final layouts = SymbolLayouter.debugLayoutCount;
+        await tester.pumpWidget(labelModeApp(MapController(),
+            TileProviders({'s': provider}), labelTheme(minzoom: 14.5),
+            labelMode: mode));
+        await settleLabelled(tester, provider);
+        await settleRendering(tester);
+        expect(SymbolLayouter.debugLayoutCount > layouts,
+            mode == LabelMode.screen);
+        expect(await hasColor(tester, labelColor), isFalse);
+      });
+    }
+
     testWidgets('the finished-tile cache keeps the two modes apart',
         (tester) async {
       tester.view.physicalSize = const Size(600, 600);
@@ -637,6 +663,84 @@ void main() {
         expect(listEquals(sliced.pixels, whole.pixels), isTrue);
       });
     }
+
+    testWidgets('a refresh finishes each recording before it starts the next',
+        (tester) async {
+      tester.view.physicalSize = const Size(600, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      final provider = EverywhereProvider(labelledTile());
+      final controller = MapController();
+      final providers = TileProviders({'s': provider});
+      final theme = threeLayerTheme();
+      await tester.pumpWidget(labelModeApp(controller, providers, theme,
+          labelMode: LabelMode.tile));
+      await settleLabelled(tester, provider);
+      await settleRendering(tester);
+
+      // Re-renders every live tile at once. The tiles must come out one
+      // after the other, not take turns a layer each.
+      final rasterized = TileRasterizer.debugRasterizeCount;
+      final slices = TileRasterizer.debugSliceCount;
+      await tester.pumpWidget(labelModeApp(controller, providers, theme,
+          labelMode: LabelMode.tile, showLabels: false));
+      for (var frame = 0; frame < 200; frame++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        final started = TileRasterizer.debugRasterizeCount - rasterized;
+        final recorded = TileRasterizer.debugSliceCount - slices;
+        expect(recorded, greaterThan(3 * (started - 1)),
+            reason: 'a recording started before the one ahead finished');
+        if (started >= 4 && recorded == 3 * started) break;
+      }
+      expect(TileRasterizer.debugRasterizeCount - rasterized,
+          greaterThanOrEqualTo(4));
+      await settleLabelled(tester, provider);
+    });
+
+    testWidgets('tile mode: a pixel ratio change between the phases',
+        (tester) async {
+      tester.view.physicalSize = const Size(600, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      const background = Color(0xff0000ff);
+
+      final controller = MapController();
+      final provider = EverywhereProvider(labelledTile());
+      final rasterized = TileRasterizer.debugRasterizeCount;
+      final slices = TileRasterizer.debugSliceCount;
+      final painted = LabelPainter.debugTilePaintCount;
+      await tester.pumpWidget(labelModeApp(
+          controller, TileProviders({'s': provider}), labelTheme(),
+          labelMode: LabelMode.tile));
+      // Until a tile's geometry is recorded and its labels are still to
+      // be drawn over it.
+      expect(
+          await pumpUntil(tester, () async {
+            final recorded = TileRasterizer.debugRasterizeCount - rasterized;
+            return recorded > LabelPainter.debugTilePaintCount - painted &&
+                TileRasterizer.debugSliceCount - slices == 2 * recorded;
+          }),
+          isTrue);
+
+      // Same logical size, twice the pixels: the geometry recorded at
+      // the old ratio must still fill the tile it is drawn into.
+      tester.view.physicalSize = const Size(1200, 1200);
+      tester.view.devicePixelRatio = 2;
+      await settleLabelled(tester, provider);
+      await settleRendering(tester);
+      expect(await hasColor(tester, background), isFalse,
+          reason: 'a tile shows only part of its geometry');
+
+      // Nor may such a tile come back from the result cache.
+      controller.move(const LatLng(48.3, 11.9), 14);
+      await settleLabelled(tester, provider);
+      controller.move(const LatLng(48.1725, 11.7375), 14);
+      await settleLabelled(tester, provider);
+      await settleRendering(tester);
+      expect(await hasColor(tester, background), isFalse,
+          reason: 'the result cache served a tile with part of its geometry');
+    });
 
     testWidgets("tile mode places a tile's labels in a frame of their own",
         (tester) async {
