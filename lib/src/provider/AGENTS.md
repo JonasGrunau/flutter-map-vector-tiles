@@ -39,8 +39,10 @@ imagery.
   an in-flight map. `SingleFlight` joins every caller's cancellation token, so
   a shared request is cancelled only when *all* callers have cancelled; it also
   owns the `whenComplete`-must-stay-a-block-body footgun in one place.
-- API keys reach providers already substituted by `StyleReader`; when logging
-  URLs, keep them redacted (`StyleReader._redactKey` sets the precedent).
+- API keys reach providers already substituted by `StyleReader`, so tile
+  URLs carry them. Log them freely through `Logger`, which redacts every
+  message (`core/redact.dart`); an exception message built from a URL must
+  call `redactKeys` itself.
 
 ### Testing Requirements
 

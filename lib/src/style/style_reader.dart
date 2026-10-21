@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../cache/byte_cache.dart';
 import '../cache/cache_resolver.dart';
+import '../core/redact.dart';
 import '../logger.dart';
 import '../provider/network_vector_tile_provider.dart';
 import '../provider/pmtiles/pmtiles_vector_tile_provider.dart';
@@ -388,11 +389,11 @@ class StyleReader {
           return await padSpriteSheet(atlas);
         } catch (e) {
           // Unpadded still draws; icons may show their neighbours' edges.
-          logger.log('sprite sheet ${_redactKey(imageUri)} not repacked: $e');
+          logger.log('sprite sheet $imageUri not repacked: $e');
           return atlas;
         }
       } catch (e) {
-        logger.log('sprite sheet ${_redactKey(indexUri)} not usable: $e');
+        logger.log('sprite sheet $indexUri not usable: $e');
       }
     }
     return null;
@@ -447,10 +448,6 @@ class StyleReader {
     if (base == null) return url;
     return base.resolve(url).toString();
   }
-
-  /// Keeps API keys out of logs and exception messages.
-  static String _redactKey(String url) =>
-      url.replaceAll(RegExp(r'(key|api_key|access_token)=[^&]+'), r'$1=***');
 }
 
 /// Fetches style resources with stale-while-revalidate disk caching:
@@ -473,7 +470,8 @@ class _Loader {
     final text = utf8.decode(await loadBytes(url));
     final decoded = jsonDecode(text);
     if (decoded is! Map) {
-      throw StyleReaderException('expected JSON object from $url');
+      throw StyleReaderException('expected JSON object from '
+          '${redactKeys(url)}');
     }
     return decoded.cast<String, Object?>();
   }
@@ -503,8 +501,7 @@ class _Loader {
     try {
       await diskCache.put(url, await _fetch(url));
     } catch (e) {
-      logger.log(
-          'style revalidation failed for ${StyleReader._redactKey(url)}: $e');
+      logger.log('style revalidation failed for $url: $e');
     }
   }
 
@@ -512,7 +509,7 @@ class _Loader {
     final response = await client.get(Uri.parse(url), headers: headers);
     if (response.statusCode != 200) {
       throw StyleReaderException('HTTP ${response.statusCode} for '
-          '${StyleReader._redactKey(url)}');
+          '${redactKeys(url)}');
     }
     return response.bodyBytes;
   }
