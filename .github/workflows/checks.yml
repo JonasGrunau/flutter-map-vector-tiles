@@ -60,6 +60,13 @@ jobs:
       - name: Publish dry run
         run: dart pub publish --dry-run
 
+      # pana validates the pub.dev screenshots with libwebp's tools (webpinfo,
+      # cwebp, gif2webp), which the runner image lacks. Without them it scores
+      # "has an example and no issues with screenshots" 0/10.
+      - name: Install libwebp tools for pana
+        if: inputs.pana
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends webp
+
       # pana is pinned: a new release can change the scoring, and a release
       # should not fail on a scorer nobody chose. Bumping it is deliberate —
       # run the new version locally first.
