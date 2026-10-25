@@ -623,15 +623,6 @@ runs a short version of the benchmark in your browser.
 
 ### ⚖️ Trade-offs
 
-- **Revisits.** `vector_map_tiles` keeps every tile it has rendered as a
-  PNG on disk (IndexedDB on web), so a second pass over the same ground
-  decodes tiles instead of drawing them, even after the app restarts. On
-  the repeated pan on the Android phone it got 98.7% of frames, this
-  package 97.7% with baked labels; on the iPhone, on macOS and in Chrome
-  both got 99.7–100%.
-  This package keeps finished tiles as GPU textures in an LRU
-  sized to its screen and draws them again once they fall out; across
-  restarts it keeps the tile data, not the drawn tiles.
 - **Memory.** With baked labels this package uses a little less on the
   Android phone: 264 against 313 MB of GPU memory at the peak, 391
   against 401 MB RSS (336 against 387 MB on the iPhone, 495 against

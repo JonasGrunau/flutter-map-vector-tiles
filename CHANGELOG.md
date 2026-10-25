@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- 📚 The README's trade-offs with `vector_map_tiles` no longer list
+  revisits. The one gap measured there was a single point of frames on
+  the Android phone's repeated pan (97.7% against 98.7%, with the same
+  stalls and the same worst frame gap), and every other device tied.
+
 ## 2.10.1
 
 API keys kept out of log messages.
