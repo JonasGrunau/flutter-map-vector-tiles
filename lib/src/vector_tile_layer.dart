@@ -29,6 +29,7 @@ import 'render/fade.dart';
 import 'render/label_continuity.dart';
 import 'render/label_identity.dart';
 import 'render/label_painter.dart';
+import 'render/label_worker.dart';
 import 'render/pattern_resolver.dart';
 import 'render/symbol_layouter.dart';
 import 'render/tile_rasterizer.dart';
@@ -723,6 +724,30 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
     _generation++;
     _clearTiles();
+    _installLabelWorker();
+  }
+
+  /// Starts the placement worker the first time screen-space labels
+  /// paint, so a layer that never draws them — `LabelMode.tile`, labels
+  /// off — never spawns its isolate.
+  var _labelWorkerTried = false;
+  void _ensureLabelWorker() {
+    if (_labelWorkerTried) return;
+    _labelWorkerTried = true;
+    _labelPainter.worker = LabelPlacementWorker.create();
+    _installLabelWorker();
+  }
+
+  /// Hands the placement worker, once there is one, the theme and
+  /// sprites it places by. A new theme or sprite sheet drops the
+  /// worker's mirrors with any pass in flight, so the painter forgets
+  /// that pass too — but not its fades: a new sprite sheet changes no
+  /// label's identity.
+  void _installLabelWorker() {
+    final worker = _labelPainter.worker;
+    if (worker == null) return;
+    _labelPainter.dropPendingPass();
+    worker.install(widget.theme, widget.sprites?.sprites);
   }
 
   void _clearTiles() {
@@ -762,6 +787,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       _patterns?.dispose();
       _patterns = null;
       refresh = true;
+      _installLabelWorker();
     }
     // Symbols are laid out at rasterize time; the paint pass checks the
     // flag per frame, so disabling hides labels immediately but enabling
@@ -985,6 +1011,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
     _rasterStores.clear();
     _executor.dispose();
+    _labelPainter.worker?.dispose();
     _labelPainter.dispose();
     _patterns?.dispose();
     _repaint.dispose();
@@ -1862,6 +1889,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     } else {
       _setTileSymbols(tile, symbols, provisional: job.provisional);
       _cacheResult(tile, job, symbols);
+      _labelPainter.mirror(symbols);
     }
     _labelCandidatesChanged();
     _repaint.trigger();
@@ -2387,6 +2415,7 @@ class _VectorMapPainter extends CustomPainter {
     final sinR = math.sin(rotation);
     final now = DateTime.now();
     final placed = <PlacedSymbol>[];
+    final cohorts = <LabelCohortInput>[];
 
     // Takes the key and the list rather than a tile: labels fading out
     // can outlive the tile they were laid out for. Ghost-only symbols
@@ -2411,6 +2440,14 @@ class _VectorMapPainter extends CustomPainter {
         scale: tileScale,
         rotation: rotation,
       );
+      cohorts.add((
+        symbols: symbols,
+        ids: ids,
+        transform: transform,
+        ghostOnly: ghostOnly,
+        retained: retained,
+        order: placed.length,
+      ));
       for (var i = 0; i < symbols.length; i++) {
         final symbol = symbols[i];
         placed.add(PlacedSymbol(
@@ -2462,6 +2499,7 @@ class _VectorMapPainter extends CustomPainter {
       return;
     }
     state._labelPainter.rasterizeGlyphs = state._foregrounded;
+    state._ensureLabelWorker();
     final drawn = state._labelPainter.paint(
       canvas: canvas,
       screenSize: size,
@@ -2471,6 +2509,7 @@ class _VectorMapPainter extends CustomPainter {
       devicePixelRatio: devicePixelRatio,
       labelFadeDuration: state.widget.labelFadeDuration,
       placementGeneration: state._labelGeneration,
+      cohorts: cohorts,
       now: now,
     );
     // Recorded so the retention pin keeps what was actually on screen,

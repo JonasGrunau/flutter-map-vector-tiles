@@ -24,6 +24,7 @@ library;
 
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -39,6 +40,8 @@ import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart'
 import 'package:flutter_map_vector_tiles/src/render/tile_rasterizer.dart'
     show TileRasterizer;
 import 'package:latlong2/latlong.dart';
+
+import 'worker_stats.dart';
 
 /// Key-free by default so the harness is reproducible without a key. Any
 /// MapLibre style URL works; `{key}` is substituted from [_apiKey].
@@ -168,6 +171,20 @@ class _BenchPageState extends State<BenchPage>
 
   var _build = <int>[];
   var _raster = <int>[];
+
+  // BUILD split by whether the frame ran a label placement pass, matched
+  // to its FrameTiming by engine frame number — placing frames are where
+  // the label pass's jank concentrates, so their share of the slow frames
+  // is the number a placement change has to move. Plus the labels drawn
+  // per frame, which a placement change must not quietly cut.
+  var _buildPlacing = <int>[];
+  var _buildOther = <int>[];
+  final _framePlacing = <int, bool>{};
+  var _framePlacingCount = 0;
+  var _frameWorkerEvents = 0;
+  var _workerBefore = const <int>[];
+  var _drawnThisFrame = -1;
+  var _drawnCounts = <int>[];
   var _recording = false;
   var _interrupted = false;
   var _allFrames = 0;
@@ -225,6 +242,11 @@ class _BenchPageState extends State<BenchPage>
       });
     SchedulerBinding.instance.addTimingsCallback(_onTimings);
     SchedulerBinding.instance.addPostFrameCallback(_onFrameEnd);
+    if (_mode == 'bench') {
+      // Only the count: the stability matcher is not needed here.
+      LabelPainter.debugDrawnProbe =
+          (_, drawn) => _drawnThisFrame = drawn.length;
+    }
     if (_mode == 'stability' || _mode == 'manual') {
       LabelPainter.debugDrawnProbe = _onLabelsDrawn;
       LabelPainter.debugRejectProbe = (key, reason, replay) {
@@ -283,6 +305,20 @@ class _BenchPageState extends State<BenchPage>
     _frameShapeUs += shape;
     _frameSweepUs += sweep;
     _frameDrawUs += draw;
+    // A placing frame runs a pass in-frame or, with the placement worker,
+    // sends one or adopts one's answer.
+    final events = placementWorkerEvents() - _frameWorkerEvents;
+    _frameWorkerEvents += events;
+    final placing =
+        LabelPainter.debugPlacingFrames - _framePlacingCount + events;
+    _framePlacingCount += placing - events;
+    final drawn = _drawnThisFrame;
+    _drawnThisFrame = -1;
+    if (_recording) {
+      _framePlacing[PlatformDispatcher.instance.frameData.frameNumber] =
+          placing > 0;
+      if (drawn >= 0) _drawnCounts.add(drawn);
+    }
     if (!_recording || raster + layout + labels <= 6000) return;
     String ms(int us) => (us / 1000).toStringAsFixed(1);
     final zoom = _zoomNow();
@@ -324,6 +360,7 @@ class _BenchPageState extends State<BenchPage>
   /// while a window is recording; the frame-to-frame memory runs
   /// always, so a window never opens against an empty previous frame.
   void _onLabelsDrawn(double styleZoom, List<DrawnLabelRecord> drawn) {
+    _drawnThisFrame = drawn.length;
     if (!_mapReady.isCompleted) return;
     final camera = _controller.camera;
     final scale = math.pow(2.0, 20 - camera.zoom).toDouble();
@@ -536,6 +573,7 @@ class _BenchPageState extends State<BenchPage>
         _stab = _StabilityCounters();
         _build = <int>[];
         _raster = <int>[];
+        _resetSplit();
         _allFrames = 0;
         _interrupted = false;
         final layouts0 = SymbolLayouter.debugLayoutCount;
@@ -567,6 +605,14 @@ class _BenchPageState extends State<BenchPage>
     _say('stability done');
   }
 
+  void _resetSplit() {
+    _workerBefore = placementWorkerCounters();
+    _buildPlacing = <int>[];
+    _buildOther = <int>[];
+    _framePlacing.clear();
+    _drawnCounts = <int>[];
+  }
+
   void _onTimings(List<FrameTiming> timings) {
     _allFrames += timings.length;
     if (!_recording) return;
@@ -585,6 +631,13 @@ class _BenchPageState extends State<BenchPage>
       final raster = timing.rasterDuration.inMicroseconds;
       _build.add(build);
       _raster.add(raster);
+      switch (_framePlacing.remove(timing.frameNumber)) {
+        case true:
+          _buildPlacing.add(build);
+        case false:
+          _buildOther.add(build);
+        case null:
+      }
       // A frame past the 60 Hz budget is a hitch anyone can see; log it the
       // moment it happens so it lines up with what the finger just did.
       if (zoom != null && (build > 16667 || raster > 16667)) {
@@ -654,6 +707,7 @@ class _BenchPageState extends State<BenchPage>
     while (mounted) {
       _build = <int>[];
       _raster = <int>[];
+      _resetSplit();
       _allFrames = 0;
       _interrupted = false;
       _windowZoomLo = double.infinity;
@@ -737,6 +791,7 @@ class _BenchPageState extends State<BenchPage>
     _say('${phase.ms}ms · labels=${phase.labels} · cache=$cache ($kind)');
     _build = <int>[];
     _raster = <int>[];
+    _resetSplit();
     _allFrames = 0;
     _interrupted = false;
     final layouts0 = SymbolLayouter.debugLayoutCount;
@@ -841,6 +896,26 @@ class _BenchPageState extends State<BenchPage>
         'layouts=$layouts rasterizes=$rasters interrupted=$_interrupted');
     debugPrint('BENCH[$_label]   ${stats("BUILD ", _build)}');
     debugPrint('BENCH[$_label]   ${stats("RASTER", _raster)}');
+    // BUILD of the frames that ran a placement pass vs the rest, and how
+    // many of the slow (>16.7 ms) frames the placing ones are. Frames whose
+    // timing could not be matched to a post-frame record count in BUILD only.
+    debugPrint('BENCH[$_label]   ${stats("B-PLACE", _buildPlacing)}');
+    debugPrint('BENCH[$_label]   ${stats("B-OTHER", _buildOther)}');
+    final slowPlacing = _buildPlacing.where((x) => x > 16667).length;
+    final slowAll = _build.where((x) => x > 16667).length;
+    debugPrint('BENCH[$_label]   SLOW   >16.7=$slowAll placing=$slowPlacing '
+        '(${slowAll == 0 ? 0 : (100 * slowPlacing / slowAll).round()}%) '
+        'matched=${_buildPlacing.length + _buildOther.length}/${_build.length}');
+    final worker = placementWorkerLine(_workerBefore);
+    if (worker != null) debugPrint('BENCH[$_label]   $worker');
+    if (_drawnCounts.isNotEmpty) {
+      final sorted = [..._drawnCounts]..sort();
+      int at(double p) => sorted[((sorted.length - 1) * p).round()];
+      final mean = sorted.reduce((a, b) => a + b) / sorted.length;
+      debugPrint('BENCH[$_label]   DRAWN  frames=${sorted.length} '
+          'mean=${mean.toStringAsFixed(1)} p10=${at(0.1)} p50=${at(0.5)} '
+          'p90=${at(0.9)}');
+    }
     // Where the window's publish work went, in UI-thread wall time. The
     // remainder of BUILD (flutter_map, widget build, everything else) is
     // whatever these three do not account for.

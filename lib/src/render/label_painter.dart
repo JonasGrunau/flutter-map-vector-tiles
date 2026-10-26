@@ -15,6 +15,7 @@ import '../style/theme.dart';
 import 'fade.dart';
 import 'glyph_atlas.dart';
 import 'label_continuity.dart';
+import 'label_worker.dart';
 import 'symbol_layouter.dart';
 
 /// The affine transform from a display tile's logical coordinates to
@@ -121,6 +122,20 @@ typedef DrawnLabelRecord = ({
   bool alongLine,
 });
 
+/// One display tile's candidates as the layer offers them to
+/// [LabelPainter.paint], next to the flattened candidate list: what a
+/// placement worker needs to project them itself. [ids] are the label
+/// ids of [symbols], and [order] is the [PlacedSymbol.order] of the
+/// list's first candidate.
+typedef LabelCohortInput = ({
+  List<SymbolInstance> symbols,
+  Int32List ids,
+  TileTransform transform,
+  bool ghostOnly,
+  bool retained,
+  int order,
+});
+
 /// Draws all visible labels/icons in one screen-space pass per frame,
 /// with global collision detection across tile borders. Text stays
 /// crisp at fractional zoom and upright under rotation.
@@ -128,6 +143,37 @@ typedef DrawnLabelRecord = ({
 /// `LabelMode.tile` runs the same placement and drawing once per tile
 /// instead, into the tile's raster — see [paintTile].
 class LabelPainter {
+  LabelPainter() : _measured = null;
+
+  /// The painter a placement worker runs passes with: it never shapes
+  /// or draws, and places text by the metrics the UI's shaping measured,
+  /// mirrored with each symbol list ([adoptMirror]).
+  @internal
+  LabelPainter.worker() : _measured = Expando<_MeasuredText>();
+
+  /// Mirrored text metrics, per instance — set only in a worker.
+  final Expando<_MeasuredText>? _measured;
+
+  /// The sprite index a worker places icons by; the screen pass reads
+  /// it from the atlas it is handed instead.
+  Map<String, Sprite>? _workerSprites;
+
+  /// Where this painter's placement passes run, when not in-frame. Set
+  /// by the layer on platforms with isolates; see [LabelPlacementWorker].
+  LabelPlacementWorker? worker;
+
+  /// The pass request awaiting the worker's answer, and the answer once
+  /// it has arrived — adopted by the next [paint].
+  _PassInFlight? _inFlight;
+  LabelPassResult? _arrived;
+  var _requests = 0;
+  var _frames = 0;
+
+  /// The worker's per-winner choices, by label id, written into
+  /// [_memory] on the frame that adopts its pass so that the replay
+  /// reproduces them.
+  final _adopted = <int, (String?, bool)>{};
+
   /// Cache capacities. One dense-city screen of distinct labels is the
   /// floor (below it every frame evicts entries the same frame still
   /// needs), but the text cache must hold a zoom *round trip*: the
@@ -189,6 +235,11 @@ class LabelPainter {
   /// style asking for second-long fades should not also freeze
   /// collision for a second.
   static const Duration _maxPlacementInterval = Duration(milliseconds: 300);
+
+  /// How long a pass sent to the [worker] may go unanswered before the
+  /// painter places in-frame instead. A pass takes the worker a few
+  /// milliseconds; this only catches one that is not coming.
+  static const Duration _maxPassWait = Duration(seconds: 1);
 
   /// How far past vertical an along-line label's direction must swing
   /// before its reading direction flips, as a cosine of the on-screen
@@ -409,7 +460,8 @@ class LabelPainter {
   /// replayed a frozen decision. The widget keeps scheduling frames
   /// while this is true, so the decision taken during a gesture is
   /// re-evaluated once at the camera the gesture ended at.
-  bool get placementPending => _placement.deferred;
+  bool get placementPending =>
+      _placement.deferred || _inFlight != null || _arrived != null;
 
   /// Forgets all fade and placement state — for theme/provider swaps,
   /// where every symbol instance is replaced and layer indices change
@@ -422,6 +474,17 @@ class LabelPainter {
     _drawing.clear();
     _memory.clear();
     _placement.reset();
+    dropPendingPass();
+  }
+
+  /// Forgets a pass sent to the [worker] and not adopted yet — for a
+  /// worker that was handed a new theme or sprite sheet, which answers
+  /// nothing asked before. The next due pass asks again.
+  void dropPendingPass() {
+    if (_inFlight != null || _arrived != null) _placement.reset();
+    _inFlight = null;
+    _arrived = null;
+    _adopted.clear();
   }
 
   /// How often the collision pass re-runs at this fade duration.
@@ -465,6 +528,7 @@ class LabelPainter {
     double devicePixelRatio = 1,
     Duration labelFadeDuration = Duration.zero,
     required int placementGeneration,
+    List<LabelCohortInput>? cohorts,
     DateTime? now,
   }) {
     developer.Timeline.startSync('VT labels');
@@ -479,6 +543,7 @@ class LabelPainter {
           devicePixelRatio,
           labelFadeDuration,
           placementGeneration,
+          cohorts,
           now ?? DateTime.now());
     } finally {
       debugPaintMicros += stopwatch.elapsedMicroseconds;
@@ -495,9 +560,11 @@ class LabelPainter {
     double devicePixelRatio,
     Duration labelFadeDuration,
     int placementGeneration,
+    List<LabelCohortInput>? cohorts,
     DateTime now,
   ) {
     _disposeRetired();
+    _frames++;
     final fades = labelFadeDuration > Duration.zero;
     if (fades) {
       _fades.beginFrame(now, labelFadeDuration);
@@ -511,14 +578,53 @@ class LabelPainter {
     // Whether this frame decides placement afresh or replays the last
     // decision. Layout happens either way — only the winners move on a
     // replay frame, not the choice of who they are.
-    final placing = _placement.shouldPlace(
-      now: now,
-      interval: placementInterval(labelFadeDuration),
-      generation: placementGeneration,
-      screenSize: screenSize,
-    );
-    if (placing) _pass++;
-    _memory.beginFrame(prune: placing);
+    //
+    // With a placement worker, no frame decides: a due pass is sent to
+    // the worker, and the frame its answer arrives by adopts it — a
+    // replay of the new decision, with the authority of a pass (it may
+    // start fade-outs). Fades off place every frame, which the worker
+    // could only answer frames late; those stay in-frame.
+    final worker = this.worker;
+    // A pass the worker has not answered in [_maxPassWait] is given up
+    // (a stepped clock, too, makes the wait unmeasurable), and this frame
+    // places in-frame rather than leave the decision frozen.
+    final inFlight = _inFlight;
+    final stalled = inFlight != null &&
+        _arrived == null &&
+        (now.difference(inFlight.sentAt) > _maxPassWait ||
+            now.isBefore(inFlight.sentAt));
+    if (stalled) dropPendingPass();
+    final offload =
+        worker != null && worker.ready && fades && cohorts != null && !stalled;
+    var placing = false;
+    var adopting = false;
+    if (offload) {
+      final arrived = _arrived;
+      if (arrived != null) adopting = _adopt(arrived);
+      if (_inFlight == null &&
+          _placement.shouldPlace(
+            now: now,
+            interval: placementInterval(labelFadeDuration),
+            generation: placementGeneration,
+            screenSize: screenSize,
+          )) {
+        _request(worker, cohorts, screenSize, styleZoom, now);
+      }
+    } else {
+      // A worker that stopped answering (or fades just turned off)
+      // leaves nothing pending behind it.
+      _inFlight = null;
+      _arrived = null;
+      placing = _placement.shouldPlace(
+        now: now,
+        interval: placementInterval(labelFadeDuration),
+        generation: placementGeneration,
+        screenSize: screenSize,
+      );
+    }
+    final pass = placing || adopting;
+    if (pass) _pass++;
+    _memory.beginFrame(prune: pass);
     // Quantize the eval zoom to [_zoomStep] steps: the per-instance
     // memo and the zoom-only expression memos compare against the exact
     // zoom, so evaluating at the raw fractional zoom would miss every
@@ -601,6 +707,14 @@ class LabelPainter {
       // a crossing — already drew: one label draws once. Skipped before
       // any layout work.
       if (_drawing.containsKey(candidate.id)) continue;
+      if (adopting) {
+        final choice = _adopted[candidate.id];
+        if (choice != null) {
+          final sitting = _memory.sitting(candidate.id);
+          if (choice.$1 != null) sitting.anchor = choice.$1;
+          sitting.textDropped = choice.$2;
+        }
+      }
       final drawable =
           _prepare(candidate, zoom, styleZoom, collision, sprites, screenSize);
       if (drawable == null) {
@@ -688,12 +802,13 @@ class LabelPainter {
           // Replay frames hold: a winner missing mid-interval may only
           // be between copies (its tile gone, the successor not yet
           // published), and only a pass may start a fade-out.
-          hold: !placing);
+          hold: !pass);
       _fallbacks.clear();
     }
     final drawnCopy = _drawnCopy;
     _drawnCopy = _drawing;
     _drawing = drawnCopy..clear();
+    _adopted.clear();
     debugSweepMicros += sweepStopwatch.elapsedMicroseconds;
     final probe = debugDrawnProbe;
     if (probe != null) {
@@ -894,6 +1009,314 @@ class LabelPainter {
       debugTilePaintMicros += stopwatch.elapsedMicroseconds;
       developer.Timeline.finishSync();
     }
+  }
+
+  /// Mirrors [symbols] into the placement worker ahead of the first pass
+  /// that offers them. The layer calls this as a tile publishes, inside
+  /// the render pump's budget, so that a pass request finds every list
+  /// already there instead of packing it inside a frame.
+  void mirror(List<SymbolInstance> symbols) {
+    final worker = this.worker;
+    if (worker == null || !worker.ready || symbols.isEmpty) return;
+    worker.mirror(symbols, () => mirrorOf(symbols));
+  }
+
+  /// Sends the pass due this frame to [worker]: the cohorts on offer
+  /// (mirroring any list it does not hold yet) and the fade sittings it
+  /// recognises incumbents by. The frame itself replays the decision in
+  /// force; [_adopt] takes the answer on a later one.
+  void _request(LabelPlacementWorker worker, List<LabelCohortInput> cohorts,
+      Size screenSize, double styleZoom, DateTime now) {
+    final stopwatch = Stopwatch()..start();
+    final mirroring = LabelPlacementWorker.debugMirrorMicros;
+    final sent = <LabelCohort>[];
+    final offered = <LabelCohortInput>[];
+    final drawnCopies = <int>[];
+    for (final cohort in cohorts) {
+      if (cohort.ghostOnly || cohort.symbols.isEmpty) continue;
+      final symbols = cohort.symbols;
+      final transform = cohort.transform;
+      offered.add(cohort);
+      if (_drawnCopy.isNotEmpty) {
+        for (var i = 0; i < symbols.length; i++) {
+          if (identical(_drawnCopy[cohort.ids[i]], symbols[i])) {
+            drawnCopies.add(cohort.order + i);
+          }
+        }
+      }
+      sent.add((
+        mirror: worker.mirror(symbols, () => mirrorOf(symbols)),
+        ids: cohort.ids,
+        originX: transform.origin.dx,
+        originY: transform.origin.dy,
+        scale: transform.scale,
+        rotation: transform.rotation,
+        retained: cohort.retained,
+        order: cohort.order,
+      ));
+    }
+    final id = ++_requests;
+    _inFlight = _PassInFlight(id, offered, _frames, now);
+    worker.place((
+      id: id,
+      width: screenSize.width,
+      height: screenSize.height,
+      styleZoom: styleZoom,
+      cohorts: sent,
+      incumbents: Int32List.fromList(_winners.toList()),
+      drawnCopies: Int32List.fromList(drawnCopies),
+    ), (result) {
+      if (_inFlight?.id == result.id) _arrived = result;
+    });
+    LabelPlacementWorker.debugRequests++;
+    LabelPlacementWorker.debugRequestMicros += stopwatch.elapsedMicroseconds -
+        (LabelPlacementWorker.debugMirrorMicros - mirroring);
+  }
+
+  /// Takes the worker's answer as the decision in force: its winners —
+  /// label ids, so a winner whose tile republished since the request is
+  /// still a winner in its successor — and their choices, for this
+  /// frame's replay to reproduce. False when the answer is not to the
+  /// request in flight.
+  bool _adopt(LabelPassResult result) {
+    _arrived = null;
+    final request = _inFlight;
+    _inFlight = null;
+    if (request == null || request.id != result.id) return false;
+    _winners.clear();
+    _adopted.clear();
+    final winners = result.winners;
+    for (var w = 0; w < winners.length; w++) {
+      final id = winners[w];
+      _winners.add(id);
+      _adopted[id] = (result.anchors[w], result.textDropped[w] == 1);
+      // The copy the worker placed is the one to replay: another copy of
+      // the label may be the one the pass rejected.
+      final copy = request.copyAt(result.copies[w]);
+      if (copy != null) _drawnCopy[id] = copy;
+    }
+    LabelPlacementWorker.debugCommits++;
+    LabelPlacementWorker.debugCommitLatencyFrames += _frames - request.frame;
+    LabelPlacementWorker.debugWorkerMicros += result.micros;
+    return true;
+  }
+
+  /// [symbols] packed for a placement worker ([LabelMirror]), with the
+  /// metrics of the text this painter shaped for them — [prewarm] has
+  /// by the time a tile publishes: each label's extent, and the
+  /// clusters of the ones that may curve. A label whose text was never
+  /// shaped (its layer's opacity or size gated it out at the tile's
+  /// zoom) goes without, and the worker places only its icon.
+  @internal
+  LabelMirror mirrorOf(List<SymbolInstance> symbols) {
+    final count = symbols.length;
+    final ints = Int32List(count * LabelMirror.intsPerSymbol);
+    final reals = Float64List(count * LabelMirror.realsPerSymbol);
+    final texts = <String>[];
+    final icons = <String?>[];
+    final clusters = <Float32List?>[];
+    final paths = Map<SymbolPath, int>.identity();
+    final pathPoints = <Float32List>[];
+    final pathCumulative = <Float32List>[];
+    // Features by properties map (identity — `Map` keeps `Object.==`),
+    // geometry type and id: a feature's symbols share all three.
+    final features = <(Map<String, Object?>, String, Object?), int>{};
+    final properties = <Map<String, Object?>>[];
+    final geometryTypes = <String>[];
+    final featureIds = <Object?>[];
+    for (var i = 0; i < count; i++) {
+      final symbol = symbols[i];
+      final path = symbol.path;
+      final pathIndex = path == null
+          ? -1
+          : paths.putIfAbsent(path, () {
+              pathPoints.add(path.points);
+              pathCumulative.add(path.cumulative);
+              return pathPoints.length - 1;
+            });
+      final feature = features.putIfAbsent(
+          (symbol.properties, symbol.geometryType, symbol.featureId), () {
+        properties.add(symbol.properties);
+        geometryTypes.add(symbol.geometryType);
+        featureIds.add(symbol.featureId);
+        return properties.length - 1;
+      });
+      final o = i * LabelMirror.intsPerSymbol;
+      ints[o] = symbol.layerIndex;
+      ints[o + 1] = symbol.alongLine ? LabelMirror.flagAlongLine : 0;
+      ints[o + 2] = pathIndex;
+      ints[o + 3] = feature;
+      var width = -1.0;
+      var height = -1.0;
+      Float32List? glyphs;
+      final memo = symbol.textStyleMemo;
+      final text = memo == null || symbol.text.isEmpty
+          ? null
+          : _textCache.peek(memo.cacheKey);
+      if (text != null) {
+        width = text.size.width;
+        height = text.size.height;
+        if (symbol.alongLine && symbol.curveSafe && path != null) {
+          final shaped = text.clusters;
+          glyphs = Float32List(shaped.length * 2);
+          for (var c = 0; c < shaped.length; c++) {
+            glyphs[c * 2] = shaped[c].center;
+            glyphs[c * 2 + 1] = shaped[c].width;
+          }
+        }
+      }
+      final r = i * LabelMirror.realsPerSymbol;
+      reals[r] = symbol.anchor.dx;
+      reals[r + 1] = symbol.anchor.dy;
+      reals[r + 2] = symbol.angle;
+      reals[r + 3] = symbol.pathDistance;
+      reals[r + 4] = symbol.sortKey;
+      reals[r + 5] = width;
+      reals[r + 6] = height;
+      texts.add(symbol.text);
+      icons.add(symbol.iconName);
+      clusters.add(glyphs);
+    }
+    return LabelMirror(
+      ints: ints,
+      reals: reals,
+      texts: texts,
+      icons: icons,
+      clusters: clusters,
+      pathPoints: pathPoints,
+      pathCumulative: pathCumulative,
+      properties: properties,
+      geometryTypes: geometryTypes,
+      featureIds: featureIds,
+    );
+  }
+
+  /// A worker's side of [mirrorOf]: the instances again, on [theme] —
+  /// the worker's copy of the UI's — with their mirrored metrics standing
+  /// in for shaped text. An entry whose layer [theme] does not have as a
+  /// symbol layer (a mirror racing a theme swap) is null, so indices
+  /// still match the UI's list.
+  @internal
+  List<SymbolInstance?> adoptMirror(LabelMirror mirror, Theme theme) {
+    final measured = _measured!;
+    final paths = [
+      for (var p = 0; p < mirror.pathPoints.length; p++)
+        SymbolPath(mirror.pathPoints[p], mirror.pathCumulative[p]),
+    ];
+    final ints = mirror.ints;
+    final reals = mirror.reals;
+    return [
+      for (var i = 0; i < mirror.length; i++)
+        () {
+          final o = i * LabelMirror.intsPerSymbol;
+          final r = i * LabelMirror.realsPerSymbol;
+          final layerIndex = ints[o];
+          final layer = layerIndex < theme.layers.length
+              ? theme.layers[layerIndex]
+              : null;
+          if (layer is! SymbolThemeLayer) return null;
+          final feature = ints[o + 3];
+          final pathIndex = ints[o + 2];
+          final instance = SymbolInstance(
+            layer: layer,
+            layerIndex: layerIndex,
+            anchor: Offset(reals[r], reals[r + 1]),
+            angle: reals[r + 2],
+            alongLine: ints[o + 1] & LabelMirror.flagAlongLine != 0,
+            path: pathIndex < 0 ? null : paths[pathIndex],
+            pathDistance: reals[r + 3],
+            text: mirror.texts[i],
+            iconName: mirror.icons[i],
+            sortKey: reals[r + 4],
+            properties: mirror.properties[feature],
+            geometryType: mirror.geometryTypes[feature],
+            featureId: mirror.featureIds[feature],
+          );
+          final width = reals[r + 5];
+          if (width >= 0) {
+            final glyphs = mirror.clusters[i];
+            measured[instance] = _MeasuredText(Size(width, reals[r + 6]), [
+              if (glyphs != null)
+                for (var c = 0; c < glyphs.length ~/ 2; c++)
+                  _Cluster('', glyphs[c * 2], glyphs[c * 2 + 1]),
+            ]);
+          }
+          return instance;
+        }(),
+    ];
+  }
+
+  /// A worker's theme install: the sprites it places icons by, and none
+  /// of the previous theme's placement state.
+  @internal
+  void installWorker(Map<String, Sprite>? sprites) {
+    _workerSprites = sprites;
+    reset();
+  }
+
+  /// A placement worker's pass: decides which of [symbols] win space on
+  /// a [screenSize] screen at [styleZoom] exactly as a placing frame of
+  /// [paint] does — same priority, incumbents, one copy per label (the
+  /// one last drawn tried first), repeat suppression and placement
+  /// memory — and returns the winners in placement order. Nothing is
+  /// drawn and no fade runs. [incumbents] is the decision in force on
+  /// the UI, whose labels a same-layer newcomer must not evict, and
+  /// [drawnCopies] the [PlacedSymbol.order]s of the copies it drew.
+  @internal
+  List<PlacedSymbol> placeForWorker({
+    required Size screenSize,
+    required double styleZoom,
+    required List<PlacedSymbol> symbols,
+    required Iterable<int> incumbents,
+    Iterable<int> drawnCopies = const [],
+  }) {
+    _pass++;
+    _memory.beginFrame(prune: true);
+    final zoom = (styleZoom * _zoomStep).round() / _zoomStep;
+    final collision = _CollisionIndex(screenSize);
+    _winners
+      ..clear()
+      ..addAll(incumbents);
+    _drawnCopy.clear();
+    final drawn = drawnCopies.toSet();
+    if (drawn.isNotEmpty) {
+      for (final candidate in symbols) {
+        if (drawn.contains(candidate.order)) {
+          _drawnCopy[candidate.id] = candidate.instance;
+        }
+      }
+    }
+    _flagIncumbents(symbols);
+    symbols.sort(_byPlacementPriority);
+    _promoteDrawnCopies(symbols);
+    _winners.clear();
+    _repeatAnchors.clear();
+    final placed = <PlacedSymbol>[];
+    for (final candidate in symbols) {
+      if (candidate.ghostOnly || _winners.contains(candidate.id)) continue;
+      final drawable =
+          _prepare(candidate, zoom, styleZoom, collision, null, screenSize);
+      if (drawable == null) continue;
+      _winners.add(candidate.id);
+      final repeatKey = drawable.repeatKey;
+      if (repeatKey != null &&
+          drawable.drawsText &&
+          zoomRangeOpacity(candidate.instance.layer, styleZoom) > 0) {
+        (_repeatAnchors[repeatKey] ??= []).add(_RepeatAnchor(candidate));
+      }
+      placed.add(candidate);
+    }
+    return placed;
+  }
+
+  /// The choices [winner] was placed with at the last [placeForWorker].
+  @internal
+  ({String? anchor, bool textDropped}) decisionOf(PlacedSymbol winner) {
+    final sitting = _memory.lookup(winner.id);
+    return (
+      anchor: sitting?.anchor,
+      textDropped: sitting?.textDropped ?? false
+    );
   }
 
   /// Repeat suppression for `symbol-placement: line` text, rebuilt on
@@ -1170,7 +1593,7 @@ class LabelPainter {
     // space decision that changes what is drawn rather than where:
     // `text-optional` text that lost its box at the last pass stays
     // dropped until the next one.
-    _LaidOutText? text;
+    _TextShape? text;
     var fontSize = _shapeSize;
     var textScale = 1.0;
     final replaying = collision.permissive;
@@ -1182,14 +1605,17 @@ class LabelPainter {
       if (size >= _minVisibleTextSize) {
         fontSize = size.clamp(_minVisibleTextSize, 96.0);
         textScale = fontSize / _shapeSize;
-        text = _layoutText(instance, layer, ctx, fontSize);
+        text = _measured == null
+            ? _layoutText(instance, layer, ctx, fontSize)
+            : _measured[instance];
       }
     }
 
     _DrawableIcon? icon;
     final iconName = instance.iconName;
-    if (iconName != null && sprites != null) {
-      final sprite = sprites[iconName];
+    final spriteIndex = sprites?.sprites ?? _workerSprites;
+    if (iconName != null && spriteIndex != null) {
+      final sprite = spriteIndex[iconName];
       if (sprite != null) {
         final iconSize = layer.iconSize.eval(ctx);
         final opacity = layer.iconOpacity.eval(ctx).clamp(0.0, 1.0);
@@ -1357,8 +1783,8 @@ class LabelPainter {
   /// and its icon, centred on the anchor, within the line's ends.
   /// MapLibre's anchor test, with the label measured on screen and the
   /// line in tile-logical units, which [PlacedSymbol.transform] relates.
-  static bool _fitsLine(PlacedSymbol placed, _LaidOutText? text,
-      double textScale, _DrawableIcon? icon) {
+  static bool _fitsLine(PlacedSymbol placed, _TextShape? text, double textScale,
+      _DrawableIcon? icon) {
     final instance = placed.instance;
     final path = instance.path;
     final transform = placed.transform;
@@ -1385,7 +1811,7 @@ class LabelPainter {
     PlacedSymbol placed,
     SymbolThemeLayer layer,
     EvalContext ctx,
-    _LaidOutText text,
+    _TextShape text,
     double fontSize,
     double textScale,
     _DrawableIcon? icon,
@@ -1455,7 +1881,7 @@ class LabelPainter {
     PlacedSymbol placed,
     SymbolThemeLayer layer,
     EvalContext ctx,
-    _LaidOutText text,
+    _TextShape text,
     double fontSize,
     double textScale,
     _DrawableIcon? icon,
@@ -1643,7 +2069,9 @@ class LabelPainter {
     final glyphs = [
       for (final p in placements)
         _CurvedGlyph(
-          painters: _glyphPainters(p.grapheme, text),
+          // A worker only measures: there are no painters to draw with.
+          painters:
+              text is _LaidOutText ? _glyphPainters(p.grapheme, text) : null,
           position: p.pos,
           angle: p.angle,
         ),
@@ -1914,7 +2342,7 @@ class LabelPainter {
       final fills = <(GlyphAtlasCell, _CurvedGlyph, Offset)>[];
       var complete = true;
       for (final glyph in glyphs) {
-        final painters = glyph.painters;
+        final painters = glyph.painters!;
         for (final halo in const [true, false]) {
           final painter = halo ? painters.halo : painters.fill;
           if (painter == null) continue;
@@ -2145,13 +2573,61 @@ class LabelPainter {
   }
 }
 
-/// Text shaped at [LabelPainter._shapeSize]; every metric ([size],
-/// cluster positions/widths) is in reference-size units and is scaled
-/// by the evaluated `text-size / _shapeSize` at use sites.
-class _LaidOutText {
+/// A pass request the worker has not answered yet, with what it offered
+/// and the frame and time it was sent in.
+class _PassInFlight {
+  final int id;
+
+  /// The cohorts the request offered, in order: the answer names each
+  /// winner's copy by its [PlacedSymbol.order] among them.
+  final List<LabelCohortInput> cohorts;
+  final int frame;
+  final DateTime sentAt;
+
+  _PassInFlight(this.id, this.cohorts, this.frame, this.sentAt);
+
+  /// The instance at [order] among [cohorts], or null.
+  SymbolInstance? copyAt(int order) {
+    for (final cohort in cohorts) {
+      final index = order - cohort.order;
+      if (index >= 0 && index < cohort.symbols.length) {
+        return cohort.symbols[index];
+      }
+    }
+    return null;
+  }
+}
+
+/// What placement reads of a label's text: its extent and its grapheme
+/// clusters, at [LabelPainter._shapeSize]. Every metric is in
+/// reference-size units and is scaled by the evaluated
+/// `text-size / _shapeSize` at use sites.
+///
+/// [_LaidOutText] is the shaped text the screen pass draws; a placement
+/// worker, which cannot shape (text layout is root-isolate only), places
+/// [_MeasuredText] — the same metrics, copied from the UI's shaping.
+abstract class _TextShape {
+  Size get size;
+  List<_Cluster> get clusters;
+}
+
+/// Metrics-only text, mirrored into a placement worker. Its clusters
+/// carry no grapheme: the worker only measures with them.
+class _MeasuredText implements _TextShape {
+  @override
+  final Size size;
+  @override
+  final List<_Cluster> clusters;
+
+  _MeasuredText(this.size, this.clusters);
+}
+
+/// Text shaped at [LabelPainter._shapeSize]; see [_TextShape].
+class _LaidOutText implements _TextShape {
   final String text;
   final TextPainter fill;
   final TextPainter? halo;
+  @override
   final Size size;
   final String styleKey;
   final TextStyle fillStyle;
@@ -2177,6 +2653,7 @@ class _LaidOutText {
   /// laid-out string — spacing and kerning come from the full layout,
   /// so curved glyphs keep the string's metrics. Whitespace clusters
   /// are omitted (their advance still separates the neighbours).
+  @override
   List<_Cluster> get clusters => _clusters ??= _computeClusters();
 
   void dispose() {
@@ -2259,7 +2736,8 @@ class _SpriteBatch {
 }
 
 class _CurvedGlyph {
-  final _GlyphText painters;
+  /// Null in a placement worker, which never draws.
+  final _GlyphText? painters;
   final Offset position;
   final double angle;
 
@@ -2278,7 +2756,8 @@ class _DrawableIcon {
   static const double _sdfTexels = 8;
   static const double _sdfEdge = 6 / _sdfTexels;
 
-  final SpriteAtlas atlas;
+  /// Null in a placement worker, which never draws.
+  final SpriteAtlas? atlas;
   final Sprite sprite;
   final Rect rect;
   final double opacity;
@@ -2333,6 +2812,7 @@ class _DrawableIcon {
   }
 
   void _paint(Canvas canvas, double devicePixelRatio) {
+    final atlas = this.atlas!;
     final color = tint;
     if (color == null) {
       canvas.drawImageRect(
@@ -2405,7 +2885,7 @@ class _RepeatAnchor {
 class _DrawableSymbol {
   final PlacedSymbol symbol;
   final _DrawableIcon? icon;
-  final _LaidOutText? text;
+  final _TextShape? text;
   final Rect textRect;
   final double textAngle;
 
@@ -2470,7 +2950,8 @@ class _DrawableSymbol {
     final text = this.text;
     if (glyphs != null) {
       for (final glyph in glyphs) {
-        final painter = glyph.painters.halo ?? glyph.painters.fill;
+        final painters = glyph.painters!;
+        final painter = painters.halo ?? painters.fill;
         add(sweptCircle(glyph.position, painter.width, painter.height));
       }
     } else if (text != null) {
@@ -2499,7 +2980,8 @@ class _DrawableSymbol {
       // neighbour's fill.
       for (var pass = 0; pass < 2; pass++) {
         for (final glyph in glyphs) {
-          final painter = pass == 0 ? glyph.painters.halo : glyph.painters.fill;
+          final painters = glyph.painters!;
+          final painter = pass == 0 ? painters.halo : painters.fill;
           if (painter == null) continue;
           canvas.save();
           canvas.translate(glyph.position.dx, glyph.position.dy);
@@ -2512,7 +2994,7 @@ class _DrawableSymbol {
       }
       return;
     }
-    final t = text;
+    final t = text as _LaidOutText?;
     if (t == null) return;
     if (textAngle != 0) {
       canvas.save();
