@@ -2,10 +2,12 @@ import 'dart:ui' as ui;
 
 import '../cache/lru_cache.dart';
 import '../core/tile_key.dart';
+import '../render/heatmap_layouter.dart';
 import '../render/symbol_layouter.dart';
 
 /// A finished display tile: the rasterized geometry image plus the
-/// symbol candidates extracted at the same style zoom.
+/// symbol candidates and heatmap points extracted at the same style
+/// zoom.
 ///
 /// The [image] handle is the cache's master — consumers take their own
 /// `clone()` and never dispose the master; the cache disposes it on
@@ -16,6 +18,10 @@ class TileResult {
   final ui.Image? image;
   final List<SymbolInstance> symbols;
 
+  /// Shared by reference like [symbols]; its per-zoom memo is
+  /// idempotent too.
+  final List<HeatmapPoints> heatmap;
+
   /// The source ids baked into the raster — restored onto the display
   /// tile so refresh logic can tell recovered sources apart.
   final Set<String> renderedWith;
@@ -23,6 +29,7 @@ class TileResult {
   TileResult({
     required this.image,
     required this.symbols,
+    this.heatmap = const [],
     required this.renderedWith,
   });
 }
@@ -57,7 +64,12 @@ class TileResultCache {
           maxCost: maxBytes,
           costOf: (result) {
             final image = result.image;
-            return (image == null ? 0 : image.width * image.height * 4) + 64;
+            var cost =
+                (image == null ? 0 : image.width * image.height * 4) + 64;
+            for (final points in result.heatmap) {
+              cost += points.byteSize;
+            }
+            return cost;
           },
           onEvict: (_, result) => result.image?.dispose(),
         );
@@ -128,11 +140,16 @@ class TileResultCache {
     TileKey key, {
     required ui.Image? image,
     required List<SymbolInstance> symbols,
+    List<HeatmapPoints> heatmap = const [],
     required Set<String> renderedWith,
   }) {
     _cache.put(
       key,
-      TileResult(image: image, symbols: symbols, renderedWith: renderedWith),
+      TileResult(
+          image: image,
+          symbols: symbols,
+          heatmap: heatmap,
+          renderedWith: renderedWith),
     );
   }
 

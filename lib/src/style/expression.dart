@@ -19,12 +19,17 @@ class EvalContext {
   /// Bindings introduced by `let`.
   final Map<String, Object?>? vars;
 
+  /// The kernel density `["heatmap-density"]` reads — set only while a
+  /// heatmap layer's `heatmap-color` ramp is evaluated, 0 elsewhere.
+  final double heatmapDensity;
+
   const EvalContext({
     required this.zoom,
     this.properties = const {},
     this.geometryType = '',
     this.featureId,
     this.vars,
+    this.heatmapDensity = 0,
   });
 
   EvalContext withVars(Map<String, Object?> newVars) => EvalContext(
@@ -33,6 +38,7 @@ class EvalContext {
         geometryType: geometryType,
         featureId: featureId,
         vars: {...?vars, ...newVars},
+        heatmapDensity: heatmapDensity,
       );
 
   static const empty = EvalContext(zoom: 0);

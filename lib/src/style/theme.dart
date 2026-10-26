@@ -226,6 +226,53 @@ class CircleThemeLayer extends ThemeLayer {
   });
 }
 
+/// A `heatmap` layer: a kernel density estimate over the source layer's
+/// point features, coloured through [color]. Drawn in screen space over
+/// the whole viewport, not into the tile rasters — see
+/// `render/heatmap_painter.dart`.
+class HeatmapThemeLayer extends ThemeLayer {
+  /// `heatmap-radius`: the kernel radius in logical pixels.
+  final DoubleProp radius;
+
+  /// `heatmap-weight`: one point's contribution; 10 counts as ten points
+  /// of weight 1 in the same spot.
+  final DoubleProp weight;
+
+  /// `heatmap-intensity`: a global multiplier on every weight.
+  final DoubleProp intensity;
+
+  /// `heatmap-color`: the ramp, evaluated with `["heatmap-density"]`
+  /// (see [EvalContext.heatmapDensity]) as its input.
+  final ColorProp color;
+
+  /// `heatmap-opacity`: applied to the whole layer.
+  final DoubleProp opacity;
+
+  /// Whether [weight] / [radius] read the zoom. One that does not is
+  /// evaluated once per point when its tile is laid out; one that does
+  /// is evaluated again whenever a density pass runs at a new zoom.
+  /// Assigned by the theme reader; unknown means true, so a hand-built
+  /// layer is always re-evaluated.
+  @internal
+  bool weightReadsZoom = true;
+  @internal
+  bool radiusReadsZoom = true;
+
+  HeatmapThemeLayer({
+    required super.id,
+    required super.source,
+    required super.sourceLayer,
+    required super.minzoom,
+    required super.maxzoom,
+    required super.filter,
+    required this.radius,
+    required this.weight,
+    required this.intensity,
+    required this.color,
+    required this.opacity,
+  });
+}
+
 class SymbolThemeLayer extends ThemeLayer {
   // Layout
   final StringProp placement; // point | line | line-center

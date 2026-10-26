@@ -26,6 +26,8 @@ import 'pipeline/executor/executor.dart';
 import 'pipeline/prepared_tile.dart';
 import 'render/display_tile_data.dart';
 import 'render/fade.dart';
+import 'render/heatmap_layouter.dart';
+import 'render/heatmap_painter.dart';
 import 'render/label_continuity.dart';
 import 'render/label_painter.dart';
 import 'render/pattern_resolver.dart';
@@ -286,6 +288,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   final _repaint = _RepaintNotifier();
   final _labelPainter = LabelPainter();
+  late final _heatmapPainter = HeatmapPainter(onChanged: _repaint.trigger);
+
+  /// Bumped whenever the tiles offering heatmap points, or their points,
+  /// may have changed — with every change of label candidates, which
+  /// follows the same tile events. The heatmap painter reruns its
+  /// density pass on it; camera motion alone does not touch it.
+  var _heatmapGeneration = 0;
   PatternResolver? _patterns;
   late final Ticker _fadeTicker;
   late final Ticker _renderTicker;
@@ -318,10 +327,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     double rotation
   })? _labelCamera;
 
-  /// Invalidates everything memoized over the current label candidates.
+  /// Invalidates everything memoized over the current label candidates
+  /// — and the heatmap's density, which the same tile events change.
   void _labelCandidatesChanged() {
     _retainedSymbolKeys = null;
     _labelGeneration++;
+    _heatmapGeneration++;
   }
 
   void _updateLabelCamera(MapCamera camera) {
@@ -716,6 +727,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // placement or a stale drawn snapshot would pin the old theme's
     // expression graphs.
     _labelPainter.reset();
+    _heatmapPainter.reset();
     _drawnLastFrame.clear();
     _currentZoom = null;
     // Without this the next _updateGrid would see an unchanged grid and
@@ -957,6 +969,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _rasterStores.clear();
     _executor.dispose();
     _labelPainter.dispose();
+    _heatmapPainter.dispose();
     _patterns?.dispose();
     _repaint.dispose();
     super.dispose();
@@ -1187,6 +1200,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       final cached = _resultCache?.get(tile.key);
       if (cached != null) {
         tile.renderedWith = cached.renderedWith;
+        tile.heatmap = cached.heatmap;
         final owesShaping = cached.symbols.isNotEmpty;
         tile.setImage(
           image: cached.image?.clone(),
@@ -1687,6 +1701,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       fadeIn: job.fadeIn && widget.tileFadeDuration > Duration.zero,
       symbolsPending: symbolsFollow,
     );
+    tile.heatmap = _layoutHeatmap(data, styleZoom);
     if (symbolsFollow) {
       // The symbol phase reuses the prepared sources; the raster
       // handles are not carried over — they die with this job.
@@ -1782,6 +1797,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         fadeIn: job.fadeIn && widget.tileFadeDuration > Duration.zero,
         symbolsPending: false,
       );
+      tile.heatmap = _layoutHeatmap(
+          DisplayTileData(displayKey: tile.key, sources: job.sources),
+          styleZoom);
       tile.setSymbols(const [], provisional: job.provisional);
       _cacheResult(tile, job, const []);
     } else {
@@ -1858,8 +1876,65 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       tile.key,
       image: tile.image?.clone(),
       symbols: symbols,
+      heatmap: tile.heatmap ?? const [],
       renderedWith: tile.renderedWith ?? const {},
     );
+  }
+
+  /// The heatmap points of a tile whose image is being published —
+  /// nothing, and no work, for the styles without a heatmap layer.
+  List<HeatmapPoints> _layoutHeatmap(DisplayTileData data, double styleZoom) =>
+      HeatmapLayouter.any(widget.theme)
+          ? HeatmapLayouter.layout(
+              theme: widget.theme, data: data, styleZoom: styleZoom)
+          : const [];
+
+  /// The tiles offering points to a heatmap density pass at
+  /// [cameraZoom]: every current tile that has its points, and — while
+  /// a zoom crossing is in flight — the retained level's, but only
+  /// where no current tile has points yet. Both levels hold the same
+  /// points, so letting both count would double the density wherever
+  /// they overlap.
+  Iterable<HeatmapTile> _heatmapTiles(double cameraZoom) sync* {
+    for (final tile in _tiles.values) {
+      final heatmap = tile.heatmap;
+      if (heatmap != null) {
+        yield (key: tile.key, heatmap: heatmap, include: null);
+      }
+    }
+    final level = _currentZoom;
+    if (_retained.isEmpty || level == null) return;
+    bool covers(TileKey key) => _tiles[key]?.heatmap != null;
+    // A current tile's edge, in world pixels at [cameraZoom].
+    final size = displayTileSize * math.pow(2.0, cameraZoom - level);
+    for (final tile in _retained.values) {
+      final heatmap = tile.heatmap;
+      if (heatmap == null) continue;
+      final key = tile.key;
+      // The current tiles over this one: its ancestor on a zoom-out,
+      // its descendants on a zoom-in (a few, unless the jump was big).
+      final shift = level - key.z;
+      final overlapping = shift <= 0
+          ? [TileKey(level, key.x >> -shift, key.y >> -shift)]
+          : shift > 3
+              ? null
+              : [
+                  for (var dy = 0; dy < 1 << shift; dy++)
+                    for (var dx = 0; dx < 1 << shift; dx++)
+                      TileKey(
+                          level, (key.x << shift) + dx, (key.y << shift) + dy),
+                ];
+      final covered = overlapping?.where(covers).length;
+      if (covered == overlapping?.length) continue;
+      yield (
+        key: key,
+        heatmap: heatmap,
+        include: covered == 0
+            ? null
+            : (x, y) =>
+                !covers(TileKey(level, (x / size).floor(), (y / size).floor())),
+      );
+    }
   }
 
   /// Drops parked fade-out fallbacks whose fade window has passed — any
@@ -2082,6 +2157,10 @@ class _DisplayTile {
   ui.Image? underlay;
   List<SymbolInstance> symbols = const [];
 
+  /// The tile's heatmap points, per heatmap layer — null until its
+  /// image is first published (empty for a style without a heatmap).
+  List<HeatmapPoints>? heatmap;
+
   /// Whether [symbols] came from a provisional (ancestor-data) layout
   /// rather than this tile's own final data. Provisional labels bridge
   /// the screen but do not count as symbol coverage for the retention
@@ -2189,6 +2268,7 @@ class _DisplayTile {
     underlay?.dispose();
     underlay = null;
     symbols = const [];
+    heatmap = null;
     symbolsProvisional = false;
     symbolsPending = false;
   }
@@ -2243,9 +2323,26 @@ class _VectorMapPainter extends CustomPainter {
       _drawTileImage(canvas, tile,
           tile.fadeProgress(now, state.widget.tileFadeDuration), worldCenter);
     }
+
+    // 3. Heatmap layers, over all the geometry: their density spans
+    // tiles, so it cannot be drawn into the tile images.
+    if (HeatmapLayouter.any(state.widget.theme)) {
+      state._heatmapPainter.paint(
+        canvas,
+        theme: state.widget.theme,
+        cameraZoom: camera.zoom,
+        styleZoom: styleZoom,
+        worldCenter: worldCenter,
+        viewport: size,
+        rotation: camera.rotationRad,
+        devicePixelRatio: devicePixelRatio,
+        generation: state._heatmapGeneration,
+        tiles: state._heatmapTiles,
+      );
+    }
     canvas.restore();
 
-    // 3. Labels in screen space (upright, globally collision-checked) —
+    // 4. Labels in screen space (upright, globally collision-checked) —
     // unless they are already in the tile images.
     if (state._screenLabels) {
       _paintLabels(canvas, size, screenCenter, worldCenter, styleZoom);
