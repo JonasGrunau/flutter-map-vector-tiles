@@ -825,6 +825,10 @@ class TileRasterizer {
           gap
             ..strokeWidth = math.max(0.0, style.gapWidth - (ramp - aa))
             ..maskFilter = maskFilter;
+          // MapLibre blurs across a line, not along it. A blurred butt
+          // end of the gap would fade out where the casing's ends, and
+          // close it with a faint bar; a square one fades out past it.
+          if (gap.strokeCap == StrokeCap.butt) gap.strokeCap = StrokeCap.square;
         }
         canvas.drawPath(path, casing);
         if (gap.strokeWidth > 0) canvas.drawPath(path, gap);
@@ -904,13 +908,15 @@ class TileRasterizer {
 
   /// [run] mapped to logical pixels through [t] and shifted [offset]
   /// pixels to the right of its direction — `line-offset`, which on a
-  /// ring wound as MVT winds exteriors is an inset. Each vertex moves
-  /// along the bisector of its two segments' normals, as far as keeps
-  /// both segments [offset] away (a miter); where that would take it
-  /// more than two offsets out, at a sharp turn, it becomes two points,
-  /// one per segment, and the stroke's join closes the corner between
-  /// them, as MapLibre's do. Repeated points have no direction and are
-  /// dropped.
+  /// ring wound as MVT winds exteriors is an inset. Each vertex moves to
+  /// where its two segments, shifted, meet (a miter). Two cases keep the
+  /// vertex as two points instead, one per shifted segment: a turn whose
+  /// miter would reach more than two offsets out on its outer side
+  /// (beveled, by the stroke's join), and one whose inner meeting point
+  /// lies beyond either segment (the segments overlap there). MapLibre
+  /// draws those corners with gaps and crossings, the shifted lines
+  /// running past each other or stopping short. Repeated points have no
+  /// direction and are dropped.
   static Float32List _offsetRun(
       Float32List run, _TileTransform t, double offset,
       {required bool close}) {
@@ -934,11 +940,12 @@ class TileRasterizer {
     // its direction (dx, dy) turned a quarter clockwise, y pointing down.
     final nx = Float64List(segments);
     final ny = Float64List(segments);
+    final lengths = Float64List(segments);
     for (var s = 0; s < segments; s++) {
       final j = (s + 1) % n;
       final dx = xs[j] - xs[s];
       final dy = ys[j] - ys[s];
-      final length = math.sqrt(dx * dx + dy * dy);
+      final length = lengths[s] = math.sqrt(dx * dx + dy * dy);
       nx[s] = -dy / length;
       ny[s] = dx / length;
     }
@@ -956,9 +963,18 @@ class TileRasterizer {
       final bx = nx[prev] + nx[next];
       final by = ny[prev] + ny[next];
       // |n0 + n1| is twice the cosine of half the turn, and the miter
-      // point lies 2 / |n0 + n1| offsets out along it.
+      // point lies 2 / |n0 + n1| offsets out along it — tan(turn / 2)
+      // offsets back along each segment from the vertex.
       final b2 = bx * bx + by * by;
-      if (b2 >= 1) {
+      // The shift is on the inside of the turn when the next segment
+      // heads towards it: n_prev · d_next, with d = (n.y, −n.x).
+      final inner = offset * (nx[prev] * ny[next] - ny[prev] * nx[next]) > 0;
+      final miter = inner
+          ? b2 > 0 &&
+              offset.abs() * math.sqrt(4 - b2) / math.sqrt(b2) <=
+                  math.min(lengths[prev], lengths[next])
+          : b2 >= 1;
+      if (miter) {
         final k = 2 * offset / b2;
         out
           ..add(xs[i] + bx * k)
