@@ -179,7 +179,49 @@ class ThemeReader {
           iconHaloColor:
               _color(parser, paint['icon-halo-color'], const Color(0x00000000)),
           iconHaloWidth: _double(parser, paint['icon-halo-width'], 0),
+          textJustify: _string(parser, layout['text-justify'], 'center'),
+          textLineHeight: _double(parser, layout['text-line-height'], 1.2),
+          textRotate: _double(parser, layout['text-rotate'], 0),
+          textVariableAnchorOffset: layout['text-variable-anchor-offset'] ==
+                  null
+              ? null
+              : _anchorOffsets(parser, layout['text-variable-anchor-offset']),
+          textIgnorePlacement:
+              _bool(parser, layout['text-ignore-placement'], false),
+          iconIgnorePlacement:
+              _bool(parser, layout['icon-ignore-placement'], false),
+          textOverlap: layout['text-overlap'] == null
+              ? null
+              : _string(parser, layout['text-overlap'], 'never'),
+          iconOverlap: layout['icon-overlap'] == null
+              ? null
+              : _string(parser, layout['icon-overlap'], 'never'),
+          iconOptional: _bool(parser, layout['icon-optional'], false),
+          iconPadding: _padding(parser, layout['icon-padding'], const [2]),
+          iconTextFit: _string(parser, layout['icon-text-fit'], 'none'),
+          iconTextFitPadding: _numList(
+              parser, layout['icon-text-fit-padding'], const [0, 0, 0, 0]),
+          iconKeepUpright: _bool(parser, layout['icon-keep-upright'], false),
+          symbolZOrder: _string(parser, layout['symbol-z-order'], 'auto'),
+          symbolAvoidEdges: _bool(parser, layout['symbol-avoid-edges'], false),
+          textHaloBlur: _double(parser, paint['text-halo-blur'], 0),
+          textTranslate:
+              _numList(parser, paint['text-translate'], const [0, 0]),
+          textTranslateAnchor:
+              _string(parser, paint['text-translate-anchor'], 'map'),
+          iconTranslate:
+              _numList(parser, paint['icon-translate'], const [0, 0]),
+          iconTranslateAnchor:
+              _string(parser, paint['icon-translate-anchor'], 'map'),
+          iconHaloBlur: _double(parser, paint['icon-halo-blur'], 0),
         );
+        if (layout['text-writing-mode'] != null) {
+          // Vertical CJK layout needs per-glyph vertical metrics that
+          // Flutter's paragraph layout does not offer; the text is laid
+          // out horizontally, as for a style without the property.
+          logger.log('layer "$id": text-writing-mode not supported, '
+              'text is laid out horizontally');
+        }
       case 'raster':
         layer = RasterThemeLayer(
           id: id,
@@ -314,6 +356,37 @@ class ThemeReader {
     }
     final p = parser.parseForProperty(json);
     return NumListProp(p.expr, fallback, zoomOnly: p.zoomOnly);
+  }
+
+  /// `padding` properties: one to four numbers, and a bare number for
+  /// all four sides alike — literal or from an expression.
+  static NumListProp _padding(
+      ExpressionParser parser, Object? json, List<double> fallback) {
+    if (json is num) return NumListProp.constant([json.toDouble()]);
+    if (json == null || json is List && json.every((e) => e is num)) {
+      return _numList(parser, json, fallback);
+    }
+    final p = parser.parseForProperty(json);
+    final expr = p.expr;
+    return NumListProp((ctx) {
+      final v = expr(ctx);
+      return v is num ? [v] : v;
+    }, fallback, zoomOnly: p.zoomOnly);
+  }
+
+  /// `text-variable-anchor-offset`: a bare array whose head is an anchor
+  /// name rather than an operator is a literal collection.
+  static AnchorOffsetsProp _anchorOffsets(
+      ExpressionParser parser, Object? json) {
+    if (json is List &&
+        json.isNotEmpty &&
+        json.first is String &&
+        !ExpressionParser.operators.contains(json.first)) {
+      final literal = AnchorOffsetsProp.parse(json);
+      if (literal != null) return AnchorOffsetsProp.constant(literal);
+    }
+    final p = parser.parseForProperty(json);
+    return AnchorOffsetsProp(p.expr, zoomOnly: p.zoomOnly);
   }
 
   static BoolProp _bool(ExpressionParser parser, Object? json, bool fallback) {

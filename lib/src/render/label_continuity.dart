@@ -366,6 +366,10 @@ class SittingPlacement {
   /// back in for those frames.
   bool textDropped = false;
 
+  /// The same for the icon: it lost its space at the last placement and
+  /// only the text was drawn (`icon-optional`).
+  bool iconDropped = false;
+
   Offset _at;
   int _seen;
 
