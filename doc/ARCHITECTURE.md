@@ -585,17 +585,24 @@ never while one is in flight. `heatmap-opacity` and the layer's zoom
 range are applied per frame, so a style fading its heatmap out over a
 zoom band fades smoothly.
 
-The pass is split by what can leave the root isolate. Gathering the
-points needs the tiles, and turning pixels into a `ui.Image` needs
-`dart:ui`; both stay on the UI thread and are cheap — the points are
-laid out once per display tile (`HeatmapLayouter`, run where the
-tile's image publishes, kept with the finished tile in the result
-cache), and a pass only transforms them to the screen, culls them and
-evaluates a weight that reads the zoom. The density and its colouring
-are pure arithmetic over typed lists (`render/heatmap_density.dart`),
-so they run on a `HeatmapWorker` — one long-lived isolate on native
-platforms, the event loop on web — and the result comes back as
-`rgba8888` bytes for `decodeImageFromPixels`.
+The pass is split by what can leave the root isolate, which is
+everything per point. The points are laid out once per display tile
+(`HeatmapLayouter`, run where the tile's image publishes, kept with the
+finished tile in the result cache) as `Float32List`s, so the UI thread's
+share of a pass is a list of tiles: each one's offset and scale on the
+screen, its point and weight arrays, and — for a retained tile — a mask
+of the squares the arriving level already covers. Only weights and
+radii that read both the feature and the zoom are evaluated there,
+once per pass zoom, since expressions are closures and cannot travel.
+Placing, culling and bucketing the points, the density and its
+colouring are pure arithmetic over those lists
+(`render/heatmap_density.dart`), so they run on a `HeatmapWorker` — one
+long-lived isolate on native platforms, the event loop on web — and
+the result comes back as `rgba8888` bytes for `decodeImageFromPixels`,
+which needs `dart:ui` and stays. On the Nothing Phone (1), gathering
+on the UI thread cost a median 1.2 ms per pass for 2,400 points and
+10.7 ms for 40,000; listing the tiles costs a few hundredths of a
+millisecond, whatever the points.
 
 The density is sampled at σ/2 (σ = r/3) and never finer than
 MapLibre's quarter of the device resolution. Two ways of filling the
