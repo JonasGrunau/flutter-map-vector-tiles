@@ -7,6 +7,7 @@ import 'package:meta/meta.dart';
 import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
+import '../text/glyph_script.dart';
 import 'display_tile_data.dart';
 import 'matched_features.dart';
 import 'tile_rasterizer.dart';
@@ -103,6 +104,11 @@ class SymbolInstance {
   /// the label pass consults this per frame for along-line labels.
   late final bool curveSafe = _curveSafe(text);
 
+  /// Whether [text] can be drawn from glyph PBFs (see [isGlyphShapeable]).
+  /// Computed once — the render pump asks per tile which glyph ranges
+  /// its labels need.
+  late final bool glyphShapeable = isGlyphShapeable(text);
+
   /// Cross-zoom fade identity — see `labelContinuityKey` in
   /// `label_continuity.dart` for why it is this position-free record.
   /// Memoized here because the label pass needs it per candidate per
@@ -158,6 +164,9 @@ class TextStyleMemo {
   /// 0 when the halo is absent or fully transparent.
   final int haloRatioQ;
   final List<String> fonts;
+
+  /// [fonts] joined by commas: the glyph source's name for the stack.
+  late final String fontStack = fonts.join(',');
   final double letterSpacingEm;
   final double maxWidthEm;
 

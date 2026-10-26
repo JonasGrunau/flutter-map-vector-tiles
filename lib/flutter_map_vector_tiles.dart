@@ -23,6 +23,7 @@ export 'src/style/sprite_atlas.dart';
 export 'src/style/style_reader.dart';
 export 'src/style/theme.dart';
 export 'src/style/theme_reader.dart';
+export 'src/text/glyph_source.dart' show GlyphRangeLoader, GlyphSource;
 export 'src/tile_offset.dart';
 export 'src/tile_providers.dart';
 export 'src/vector_tile_layer.dart';

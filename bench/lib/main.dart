@@ -918,6 +918,7 @@ class _BenchPageState extends State<BenchPage>
                     // app leaves untouched.
                     rasterSources: _safenow ? const {} : style.rasterSources,
                     sprites: style.sprites,
+                    glyphs: style.glyphs,
                     showLabels: _showLabels,
                     memoryCacheMaxBytes: (_safenow ? 16 : 24) * 1024 * 1024,
                     diskCacheMaximumSizeInBytes:

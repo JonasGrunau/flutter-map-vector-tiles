@@ -14,6 +14,7 @@ import '../logger.dart';
 import '../provider/network_vector_tile_provider.dart';
 import '../provider/pmtiles/pmtiles_vector_tile_provider.dart';
 import '../provider/vector_tile_provider.dart';
+import '../text/glyph_source.dart';
 import '../tile_providers.dart';
 import 'attribution.dart';
 import 'label_language.dart';
@@ -22,8 +23,8 @@ import 'sprite_packer.dart';
 import 'theme.dart';
 import 'theme_reader.dart';
 
-/// A ready-to-render style: compiled theme, tile providers, sprites and
-/// the style's suggested initial camera.
+/// A ready-to-render style: compiled theme, tile providers, sprites,
+/// glyphs and the style's suggested initial camera.
 class Style {
   final Theme theme;
   final TileProviders providers;
@@ -32,6 +33,10 @@ class Style {
   /// layers. Pass to `VectorTileLayer.rasterSources`.
   final Map<String, RasterTileSource> rasterSources;
   final SpriteAtlas? sprites;
+
+  /// The style's `glyphs` — its fonts, as MapLibre draws labels with —
+  /// or null when it declares none. Pass to `VectorTileLayer.glyphs`.
+  final GlyphSource? glyphs;
   final LatLng? center;
   final double? zoom;
   final String name;
@@ -54,25 +59,27 @@ class Style {
     required this.providers,
     this.rasterSources = const {},
     this.sprites,
+    this.glyphs,
     this.center,
     this.zoom,
     this.name = '',
     this.attributions = const [],
   });
 
-  /// Releases providers and sprite images. Call after the map using this
-  /// style has been disposed.
+  /// Releases providers, sprite images and glyphs. Call after the map
+  /// using this style has been disposed.
   void dispose() {
     providers.dispose();
     for (final source in rasterSources.values) {
       source.dispose();
     }
     sprites?.dispose();
+    glyphs?.dispose();
   }
 }
 
 /// Loads a MapLibre/Mapbox GL style document and everything it
-/// references (TileJSON sources, sprites) into a [Style].
+/// references (TileJSON sources, sprites, glyphs) into a [Style].
 ///
 /// Handles the URI conventions of real-world providers — MapTiler,
 /// OpenFreeMap, Stadia, ArcGIS, Protomaps — including `{key}`
@@ -89,7 +96,7 @@ class StyleReader {
   /// `access_token`.
   final String? apiKey;
 
-  /// Extra HTTP headers sent with the style, TileJSON and sprite
+  /// Extra HTTP headers sent with the style, TileJSON, sprite and glyph
   /// requests, and forwarded to the created tile providers — for
   /// header-authenticated services (e.g. `Authorization`).
   final Map<String, String> headers;
@@ -97,8 +104,9 @@ class StyleReader {
   final Logger logger;
   final http.Client? httpClient;
 
-  /// Whether to cache the style bundle (style.json, TileJSON, sprites)
-  /// on disk. When a cached copy exists it is served instantly —
+  /// Whether to cache the style bundle (style.json, TileJSON, sprites,
+  /// and every glyph range a map has drawn) on disk. When a cached copy
+  /// exists it is served instantly —
   /// including with no network at all — and refreshed in the background
   /// once older than [refreshAfter], so the map starts offline at any
   /// place whose style was loaded before.
@@ -266,6 +274,9 @@ class StyleReader {
         }
       }
 
+      final glyphs =
+          _glyphSource(styleJson, styleUrl, client, ownsClient, styleCache);
+
       final centerJson = styleJson['center'];
       LatLng? center;
       if (centerJson is List && centerJson.length >= 2) {
@@ -279,6 +290,7 @@ class StyleReader {
         providers: TileProviders(providers),
         rasterSources: rasterSources,
         sprites: sprites,
+        glyphs: glyphs,
         center: center,
         zoom: (styleJson['zoom'] as num?)?.toDouble(),
         name: styleJson['name'] as String? ?? '',
@@ -295,6 +307,55 @@ class StyleReader {
         }));
       }
     }
+  }
+
+  /// The style's glyph source, or null when it declares no `glyphs`.
+  ///
+  /// Ranges go through the style cache like the rest of the bundle, so
+  /// labels keep the style's fonts offline wherever the map has been;
+  /// they are fetched on first use, and the first range (Basic Latin
+  /// and Latin-1) of every constant `text-font` is asked for right away,
+  /// while the tiles are still on their way.
+  ///
+  /// The source outlives [read], so it cannot share an owned client
+  /// that [read] closes: it gets one of its own, closed by
+  /// `GlyphSource.dispose`.
+  GlyphSource? _glyphSource(
+    Map<String, Object?> styleJson,
+    String styleUrl,
+    http.Client client,
+    bool ownsClient,
+    ByteCache? styleCache,
+  ) {
+    final declared = styleJson['glyphs'];
+    if (declared is! String || declared.isEmpty) return null;
+    final template =
+        _substitute(_resolveTemplate(expandMapboxUri(declared), styleUrl));
+    final glyphClient = ownsClient ? http.Client() : client;
+    final loader = _Loader(glyphClient, styleCache, logger, headers);
+    final source = GlyphSource(
+      load: (fontstack, start) => loader
+          .loadBytes(GlyphSource.glyphRangeUrl(template, fontstack, start)),
+      signature: template,
+      logger: logger,
+      onDispose: ownsClient ? glyphClient.close : null,
+    );
+    final stacks = <String>{};
+    final layers = styleJson['layers'];
+    if (layers is List) {
+      for (final layer in layers) {
+        if (layer is! Map) continue;
+        final layout = layer['layout'];
+        final fonts = layout is Map ? layout['text-font'] : null;
+        if (fonts is List &&
+            fonts.isNotEmpty &&
+            fonts.every((f) => f is String)) {
+          stacks.add(fonts.join(','));
+        }
+      }
+    }
+    unawaited(source.ensure([for (final stack in stacks) (stack, 0)]));
+    return source;
   }
 
   Future<_Source?> _createProvider(
@@ -411,7 +472,7 @@ class StyleReader {
   String _substitute(String url) => url.replaceAll('{key}', apiKey ?? '');
 
   /// Expands Mapbox's proprietary `mapbox://` scheme to api.mapbox.com
-  /// URLs: style ids, sprite bases and bare tileset ids (as sources
+  /// URLs: style ids, sprite bases, glyph templates and bare tileset ids (as sources
   /// reference them). The inserted `{key}` placeholder is filled by
   /// [apiKey] — Mapbox calls it the access token.
   static String expandMapboxUri(String url) {
@@ -424,6 +485,10 @@ class StyleReader {
     if (path.startsWith('sprites/')) {
       final id = path.substring('sprites/'.length);
       return 'https://api.mapbox.com/styles/v1/$id/sprite?access_token={key}';
+    }
+    if (path.startsWith('fonts/')) {
+      final glyphs = path.substring('fonts/'.length);
+      return 'https://api.mapbox.com/fonts/v1/$glyphs?access_token={key}';
     }
     // A bare tileset id (`mapbox://mapbox.mapbox-streets-v8`) — its
     // TileJSON lives under /v4/.

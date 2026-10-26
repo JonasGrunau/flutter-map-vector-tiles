@@ -95,6 +95,7 @@ class _VectorMapPageState extends State<VectorMapPage> {
                 tileProviders: style.providers,
                 rasterSources: style.rasterSources,
                 sprites: style.sprites,
+                glyphs: style.glyphs,
                 logger: const vt.Logger.console(),
               ),
               // Whatever the style's sources declare — never a hardcoded
