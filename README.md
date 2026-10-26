@@ -339,20 +339,48 @@ fetched one zoom deeper for the same visual scale.
 | Type | Support |
 |---|---|
 | `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, dashes and casing |
-| `symbol` | full, including curved line text and `text-variable-anchor` / `text-radial-offset`; see [Labels](#-labels) below |
+| `symbol` | every layout and paint property but `text-writing-mode` and the pitch alignments (flutter_map has no pitch), including curved line text, variable anchors and `icon-text-fit`; see *Symbol properties* and [Labels](#-labels) below |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity` and brightness/contrast/saturation/hue-rotate matching MapLibre's shader math |
 | `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, patterned ones included, so a building part over its outline does not draw darker; the alpha of `fill-extrusion-color` is ignored, as the spec says |
 | `hillshade`, `heatmap`, `sky` | skipped, with a log line |
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
-per `icon-color`, `icon-halo-color` and `icon-halo-width`; dark MapLibre
-styles ship their icons this way. Ordinary sprites are drawn with the
-colours baked into the sheet. `StyleReader` repacks the sheet with a
+per `icon-color`, `icon-halo-color`, `icon-halo-width` and
+`icon-halo-blur`; dark MapLibre styles ship their icons this way.
+Ordinary sprites are drawn with the colours baked into the sheet. `StyleReader` repacks the sheet with a
 transparent gutter around every icon, as MapLibre does, so a scaled icon
 never picks up the edge of its neighbour in the sheet. `icon-rotate` and
 `icon-rotation-alignment` follow MapLibre's viewport/map/line semantics,
 including camera bearing, icon anchor/offset rotation and rotated collision
 bounds.
+
+**Symbol properties.** Beyond text, icons and their anchors, offsets,
+sizes and colours, the label pass reads:
+
+- `text-halo-blur`, a soft halo edge as MapLibre draws it;
+- `icon-text-fit` and `icon-text-fit-padding`, honouring a sprite's
+  `stretchX`, `stretchY` and `content`, so a road shield stretches
+  where its designer said it may and frames its text;
+- `text-variable-anchor-offset`, and `text-offset` with
+  `text-variable-anchor` (taken as distances away from each anchor, as
+  in MapLibre);
+- `text-justify` (with `auto`) and `text-line-height` for multi-line
+  labels;
+- `text-optional` and `icon-optional`, `icon-padding`, `text-overlap` /
+  `icon-overlap` (`never`, `always`, `cooperative`), the older
+  `*-allow-overlap`, and `*-ignore-placement`;
+- `symbol-sort-key`, `symbol-z-order` and `symbol-avoid-edges`;
+- `text-rotate`, `text-rotation-alignment: map` for point labels,
+  `icon-keep-upright`, and `text-translate` / `icon-translate` with their
+  anchors.
+
+`text-writing-mode` is not supported: CJK text is laid out
+horizontally, and the reader logs the property. `text-rotate` turns
+point labels only, and text with an icon fitted around it is drawn
+straight even along a line. `text-font` picks the weight and style of the
+platform's fonts; the style's `glyphs` are not used, and a `format`
+expression's per-section fonts, scales and colours are dropped, its text
+kept.
 
 **Expressions.** The practical MapLibre set: `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,
@@ -387,6 +415,13 @@ mode](#choosing-a-label-mode) has what changes then.
   exempt, as in MapLibre. The fit is a placement decision, so it is
   judged when collision is (see *Collision is decided on a timer*
   below), not on every frame.
+- **Overlap as in MapLibre.** A symbol allowed to overlap
+  (`*-allow-overlap`, `*-overlap: always`) may be drawn over others but
+  still reserves its own space, so a later label that may not overlap
+  keeps clear of it; only `*-ignore-placement` gives the space away. A
+  symbol's text and icon are tested separately, each with its own
+  overlap setting, and `text-optional` / `icon-optional` decide whether
+  one may show without the other.
 - **Words stay whole.** `text-max-width` wraps between words; a single
   word wider than it gets a line of its own, as in MapLibre, rather
   than breaking where the width runs out, and the lines around it

@@ -47,6 +47,7 @@ lifecycle or painting is covered by widget tests that pump a real
 | `pmtiles_gunzip_web_test.dart` | Browser-only: `DecompressionStream` gunzip round-trip |
 | `mvt_decoder_test.dart` | MVT decoding against independently built fixtures, including a polygon written the wrong way round (exterior counter-clockwise) turned over whole |
 | `variable_anchor_test.dart` | Variable text anchors |
+| `symbol_properties_test.dart` | Every symbol property beyond the basics, through the real painter: parsing with spec defaults (bare-number `icon-padding`, interpolated anchor-offset collections, `text-writing-mode` logged), halo blur softening the text and SDF icon halo edges (and drawing the same on every frame), `icon-optional` keeping the text and a dropped icon staying dropped on replay frames, `icon-padding`, `text-ignore-placement`, overlap modes (an allow-overlap symbol still reserving its space, `cooperative`), `symbol-avoid-edges`, `icon-text-fit` with stretch zones and a content box (pixel spans), `text-justify` (incl. `auto` and variable anchors), `text-line-height`, anchor offsets, `text-rotate`, map-aligned point text, translation, `icon-keep-upright`, `symbol-z-order`, and `paintTile` drawing them in `LabelMode.tile`. The test font's glyphs are solid em squares, which makes text extents exact |
 | `tile_precision_test.dart` | Tile transform precision |
 | `grid_layout_test.dart` | Visible tile set, load ordering, tile rects |
 | `css_color_test.dart` | All CSS colour syntaxes |

@@ -200,12 +200,18 @@ unsnapped `text-size` ramp would hand it a new size at every eval-zoom
 step and re-rasterize every visible glyph and halo stroke on the raster
 thread. The shape-cache key
 therefore contains no font size; `text-opacity` (1/32 steps) and
-`text-halo-width` (1/128-em ratio steps) enter it quantized, so style
+`text-halo-width` and `text-halo-blur` (1/128-em ratio steps) enter it
+quantized, so style
 ramps re-shape a label a bounded number of times ever rather than per
 zoom step. Never put a font size — or an unquantized opacity or halo
 width — back into that key: it re-creates the full-screen re-shape per
 pinch that this design removed. Collision boxes and curved-text cluster
 metrics are the reference-size measurements multiplied by the scale.
+`text-line-height` and `text-justify` are layout inputs and part of the
+key too; a box is as wide as its longest line, as MapLibre's is, and
+`text-justify: auto` follows the anchor a label is placed at, so a
+multi-line label with variable anchors is laid out again only when a
+pass moves it to an anchor on another side.
 
 Symbol layout applies the same decode-time bounds culling before
 evaluating any expressions, and along-line anchors keep their full-line
@@ -257,6 +263,49 @@ icons include camera bearing; line-aligned icons add the projected line
 bearing. Rotation is about the symbol anchor, so `icon-anchor` and
 `icon-offset` rotate with the sprite, and the rotated extent is used for both
 collision and bounded fade layers.
+
+A symbol's text and icon are placed by MapLibre's rule (`_place` in
+`label_painter.dart`). Each is tested against the boxes placed so far
+with its own overlap mode — `text-overlap` / `icon-overlap`, else
+`*-allow-overlap` as `always`/`never` — and the collision index keeps
+`never` boxes apart from the rest, because a `cooperative` symbol
+collides only with the former. Then `text-optional` / `icon-optional`
+decide whether one half may show without the other, and whatever shows
+reserves its space unless `*-ignore-placement` says otherwise. A symbol
+allowed to overlap still reserves its space: it may be drawn over
+others, but a later symbol that may not overlap keeps clear of it. A
+half dropped by a pass is remembered with the sitting
+(`SittingPlacement.textDropped` / `iconDropped`), since replay frames
+decide no space and would otherwise draw it again. `icon-padding`
+widens the icon's box, `symbol-avoid-edges` confines every box to the
+screen bounds of the display tile the symbol was laid out in (every
+`PlacedSymbol` carries its tile's transform for this), and
+`symbol-z-order` orders a layer's symbols when drawn — by sort key,
+screen y or source order, as MapLibre resolves it.
+
+`icon-text-fit` sizes the icon once the text's box is known, wherever
+the variable anchors put it: the fitted axes span the text plus
+`icon-text-fit-padding`, and a sprite that declares `stretchX` /
+`stretchY` is drawn as slices, the stretch zones sharing whatever its
+fixed pixels leave of the span and its `content` box landing on the
+text. Text with a fitted icon is never curved; a shield stays a box.
+`text-rotate` turns point-placed text (and its collision box, as an
+axis-aligned bound) about its anchor, `text-rotation-alignment: map`
+turns it with the map, and `*-translate` moves text and icon apart —
+their boxes with them.
+
+Halo blur is a Gaussian mask filter on the halo's stroke paint, with a
+sigma matching the edge MapLibre's shader fades over ±1.19 × blur px.
+Painted as a paragraph, every blurred halo would cost Impeller an
+offscreen blur pass per label per frame: it reuses a blurred text draw
+across frames only for the very same text object, and a paragraph
+paint makes a new one each time. So a blurred halo is recorded into a
+`Picture` once per shaped text, and replaying that picture hands
+Impeller the same object every frame; it re-blurs only when the drawn
+scale changes. Curved glyphs take their blur into the glyph atlas,
+whose cells grow by three sigma. An SDF icon's halo blur needs no such
+care: it only widens the ramp of the colour matrix that thresholds the
+distance field.
 
 That shaping is the expensive half — several times a frame's whole
 render budget on a dense city tile, against sub-millisecond extraction —
@@ -948,7 +997,9 @@ every read.
 The sprite sheet is repacked once after decoding (`padSpriteSheet` in
 `style/sprite_packer.dart`): every distinct sprite rectangle is copied
 byte for byte into a new sheet with a 2 px transparent gutter, and the
-index is rewritten to the new positions. Published sheets pack icons
+index is rewritten to the new positions (each sprite keeps its
+`stretchX`, `stretchY` and `content`, which are relative to the image
+itself, for `icon-text-fit`). Published sheets pack icons
 edge to edge, and an icon drawn magnified or at a fractional position
 is sampled bilinearly half a texel past its rectangle, so without the
 gutter it shows a hairline of its neighbour. Two pixels rather than one

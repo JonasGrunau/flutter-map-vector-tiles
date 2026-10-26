@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- 🎨 **Symbol properties**: labels and icons now honour
+  `text-halo-blur` and `icon-halo-blur`, `icon-optional`,
+  `icon-padding`, `icon-text-fit` and `icon-text-fit-padding` (with a
+  sprite's `stretchX`, `stretchY` and `content`, so road shields stretch
+  where they are meant to), `text-justify`, `text-line-height`,
+  `text-overlap` / `icon-overlap`, `text-ignore-placement` /
+  `icon-ignore-placement`, `symbol-z-order`, `symbol-avoid-edges`,
+  `text-variable-anchor-offset`, `text-rotate`, `text-translate` /
+  `icon-translate` with their anchors, and `icon-keep-upright`. All of
+  them used to be ignored; Liberty's and Positron's place and POI labels
+  now get the soft halo the style asks for. `text-writing-mode` is
+  still unsupported and logged.
+- 🎨 Point labels with `text-rotation-alignment: map` turn with the map
+  instead of staying upright.
+- 🎨 Text lines are `text-line-height` apart (1.2 em by default, as in
+  MapLibre) instead of a fixed 1.15 em, so every label's box is a little
+  taller, and a wrapped label's box is as wide as its longest line
+  rather than as `text-max-width`.
+- 🐛 A symbol allowed to overlap (`text-allow-overlap` /
+  `icon-allow-overlap`) now reserves its space, as in MapLibre: labels
+  that may not overlap keep clear of it, where before they could be
+  placed on top of it. A symbol's icon is tested with its own
+  `icon-allow-overlap`; it used the text's.
+- 🐛 `text-offset` now applies to labels with `text-variable-anchor`
+  and no `text-radial-offset`, as distances away from each anchor the
+  way MapLibre takes them; it was ignored.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same

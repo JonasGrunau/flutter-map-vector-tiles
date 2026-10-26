@@ -2308,7 +2308,7 @@ class LabelPainter {
       haloStyle: haloStyle,
       haloBlurSigma: blurSigma,
       justify: memo.justify,
-    );
+    ).._haloPicture;
     _textCache.put(memo.cacheKey, laidOut);
     return laidOut;
   }
@@ -2662,13 +2662,21 @@ class _LaidOutText {
 
   List<_Cluster>? _clusters;
 
-  /// A blurred halo, recorded once. Impeller blurs text drawn with a
-  /// mask filter in an offscreen pass, and reuses the result on later
-  /// frames only for the very same text object at the same scale — a
-  /// paragraph paint makes a new one every time, a recorded picture
-  /// replays the one it holds. Painted directly, every blurred label
-  /// would cost its own offscreen pass on every frame.
-  ui.Picture? _haloPicture;
+  /// A blurred halo, recorded once, when the text is shaped. Impeller
+  /// blurs text drawn with a mask filter in an offscreen pass, and
+  /// reuses the result on later frames only for the very same text
+  /// object at the same scale — a paragraph paint makes a new one every
+  /// time, a recorded picture replays the one it holds. Painted
+  /// directly, every blurred label would cost its own offscreen pass on
+  /// every frame. Recorded with the shaping, so the render pump pays
+  /// for it, not the frame that first draws the label.
+  late final ui.Picture? _haloPicture = () {
+    final halo = this.halo;
+    if (halo == null || haloBlurSigma <= 0) return null;
+    final recorder = ui.PictureRecorder();
+    halo.paint(Canvas(recorder), Offset.zero);
+    return recorder.endRecording();
+  }();
 
   _LaidOutText({
     required this.text,
@@ -2686,15 +2694,11 @@ class _LaidOutText {
   void paintHalo(Canvas canvas, Offset topLeft) {
     final halo = this.halo;
     if (halo == null) return;
-    if (haloBlurSigma <= 0) {
+    final picture = _haloPicture;
+    if (picture == null) {
       halo.paint(canvas, topLeft);
       return;
     }
-    final picture = _haloPicture ??= () {
-      final recorder = ui.PictureRecorder();
-      halo.paint(Canvas(recorder), Offset.zero);
-      return recorder.endRecording();
-    }();
     canvas.save();
     canvas.translate(topLeft.dx, topLeft.dy);
     canvas.drawPicture(picture);
@@ -2710,7 +2714,7 @@ class _LaidOutText {
   void dispose() {
     fill.dispose();
     halo?.dispose();
-    _haloPicture?.dispose();
+    if (haloBlurSigma > 0) _haloPicture?.dispose();
   }
 
   List<_Cluster> _computeClusters() {
