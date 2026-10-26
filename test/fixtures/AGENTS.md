@@ -7,7 +7,8 @@
 
 Test data builders. There are no checked-in binary tile fixtures — test tiles
 are constructed programmatically so the input to a failing test is readable in
-the test itself.
+the test itself. The one style fixture is `liberty_layers.dart`: the layers of
+a real style reduced to what selects features.
 
 ## Key Files
 
@@ -15,6 +16,7 @@ the test itself.
 |------|-------------|
 | `mvt_builder.dart` | `MvtTileBuilder` / `MvtLayerBuilder` — a minimal MVT (protobuf) encoder: layers, features, tags, geometry commands, varint and tag writing |
 | `pmtiles_builder.dart` | `PmTilesArchiveBuilder` — a minimal PMTiles v3 archive writer: header, delta-varint directories, optional leaf splitting and pluggable compression. Web-safe (arithmetic only) so the same fixtures run in the browser suite |
+| `liberty_layers.dart` | `libertyLayersJson` — OpenFreeMap Liberty's layers (BSD-3-Clause, from OSM Liberty) reduced to id, type, source, source layer, zoom range and filter, fetched 2026-10-26; real-world filters for `tile_filters_test.dart` |
 | `lifecycle_harness.dart` | The widget-test harness: `app()` (a `FlutterMap` with one `VectorTileLayer` at a fixed 600×600), `CountingProvider` / `EverywhereProvider`, the pixel readers (`centrePixel`, `fullyPainted`) and the waits (`pumpUntil`, `settle`, `settleLoads`, `sampleDuring`) |
 
 ## For AI Agents
