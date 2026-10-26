@@ -240,7 +240,8 @@ native:
   Tiles and the style bundle rely on the in-memory caches plus the
   browser's HTTP cache instead.
 - **Decoding runs on the event loop.** A yielding queue replaces the
-  worker-isolate pool, and `concurrency` is ignored.
+  worker-isolate pool, and `concurrency` is ignored. A heatmap layer's
+  density is computed there too, after the frame that asked for it.
 - **CORS.** The browser fetches style.json, TileJSON, sprites and tiles
   directly, so every host involved must send
   `Access-Control-Allow-Origin`. MapTiler, OpenFreeMap and Stadia do;
@@ -342,7 +343,8 @@ fetched one zoom deeper for the same visual scale.
 | `symbol` | full, including curved line text and `text-variable-anchor` / `text-radial-offset`; see [Labels](#-labels) below |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity` and brightness/contrast/saturation/hue-rotate matching MapLibre's shader math |
 | `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, patterned ones included, so a building part over its outline does not draw darker; the alpha of `fill-extrusion-color` is ignored, as the spec says |
-| `hillshade`, `heatmap`, `sky` | skipped, with a log line |
+| `heatmap` | the kernel density MapLibre draws over a source layer's points, with `heatmap-radius`, `-weight`, `-intensity`, `-opacity` and a `heatmap-color` ramp over `["heatmap-density"]`, data-driven weight and radius included; drawn over all the tile geometry, see **Heatmaps** below |
+| `hillshade`, `sky` | skipped, with a log line |
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
 per `icon-color`, `icon-halo-color` and `icon-halo-width`; dark MapLibre
@@ -354,11 +356,32 @@ never picks up the edge of its neighbour in the sheet. `icon-rotate` and
 including camera bearing, icon anchor/offset rotation and rotated collision
 bounds.
 
+**Heatmaps.** A heatmap's density spans tiles — a kernel near
+a seam reaches into the neighbour — so it is drawn in screen space, like
+MapLibre: the points of every visible tile summed into one density at a
+quarter of the device resolution, coloured through `heatmap-color` and
+drawn as one image over the tiles. The density is recomputed when the
+zoom, the tiles or the screen change, at most every 100 ms, on a worker
+isolate (on the event loop on web); in between, the last image follows
+the camera, so panning and rotating are exact while a pinch scales the
+kernels with the map until the next pass catches up. Where it differs
+from MapLibre:
+
+- a heatmap layer draws above every `fill`, `line`, `circle`, `raster`
+  and `fill-extrusion` layer, wherever the style puts it, and below the
+  labels and icons. Most styles put their heatmap there anyway; one
+  sitting under roads or buildings covers them here. With
+  `LabelMode.tile` the labels are part of the tile images, so the
+  heatmap covers them too;
+- only point features count. MapLibre also takes every vertex of a line
+  or polygon as a point.
+
 **Expressions.** The practical MapLibre set: `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,
 exponential, cubic-bezier), math, string and color operators, `let`/`var`,
 legacy filters, legacy `{stops}` functions (with `{token}` templates in
-their `text-field` / `icon-image` outputs) and `{token}` templates.
+their `text-field` / `icon-image` outputs), `{token}` templates and
+`heatmap-density`.
 
 Unsupported layer types, paint properties and expressions are skipped per
 layer with a warning, so one weird layer never kills the whole style.
@@ -540,6 +563,7 @@ camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
    PreparedTile ─► rasterize once ─► GPU image ─► textured quad per frame
    symbols ─────► per-frame screen-space label pass (global collision)
            └────► or, LabelMode.tile: drawn into that GPU image, once
+   heatmap points ─► worker: density + colour ramp ─► one screen image
    finished tiles (image + symbols) ─► shared LRU ─► instant re-crossings
 ```
 
@@ -558,13 +582,15 @@ over a still map that is still loading tiles can drop frames until
 they are in.
 
 For profiling, the render pipeline emits DevTools timeline events:
-`VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`, and with
-`LabelMode.tile` `VT rasterize with labels` and `VT tile labels`. A
+`VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`, `VT
+heatmap` (a heatmap pass's UI-thread part), and with `LabelMode.tile`
+`VT rasterize with labels` and `VT tile labels`. A
 dense tile's `VT rasterize` and `VT symbols` repeat over several
 frames, one slice per frame.
 
-On web the disk cache tier is absent and decoding runs on a yielding
-event-loop queue instead of isolates. Everything else is identical.
+On web the disk cache tier is absent, and decoding and heatmap
+densities run on the event loop instead of isolates. Everything else
+is identical.
 
 The full rendering model, and the reasoning behind each departure from
 [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles), is in

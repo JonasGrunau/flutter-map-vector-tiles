@@ -28,12 +28,27 @@ for frames with no per-frame label work in them.
 | `glyph_atlas.dart` | `GlyphAtlas` — curved-text glyphs rasterized once per style, grapheme and snapped device size onto 1024² pages (shelf-packed, LRU page eviction that never evicts a page the current frame drew from, one `toImageSync` per touched page per frame), so `LabelPainter` draws a curved label with one `drawRawAtlas` per pass |
 | `symbol_layouter.dart` | `SymbolLayouter.layout()` — extracts label/icon placement candidates (`SymbolInstance`, with its `TextStyleMemo` label-pass memo; placement state deliberately lives in `PlacementMemory` instead, since instances are replaced under labels that stay on screen) from a prepared tile: polygon centroids, line midpoints, and spaced placements along lines via `SymbolPath` (precomputed cumulative lengths, `pointAt`/`angleAt`). Iterates the `MatchedFeatures` of zoom-free filters, as the rasterizer does, and bounds-culls features before any other expression evaluation; along-line targets are enumerated only within the tile window while keeping their full-line parametrization. Gates layers by zoom-band intersection (`coversZoomBand`) — the precise per-frame cut and repeat suppression are the label pass's job — or, with `exact` (`LabelMode.tile`, whose `paintTile` gates at the tile's own zoom), by `coversZoom` at that zoom. `anySymbolLayerCovers()` (same `exact` switch) lets the render pump skip the symbol phase when no symbol layer intersects the tile's band |
 | `display_tile_data.dart` | `DisplayTileData` — the prepared data backing one display tile, per style source, plus its raster tiles and any descendant tiles composing a provisional zoom-out cover (geometry only; the symbol layouter never sees descendants) |
+| `heatmap_layouter.dart` | `HeatmapLayouter.layout` — a display tile's points per heatmap layer (`HeatmapPoints`, logical tile coordinates), run where the tile's image publishes and cached with it. A point counts only inside its data tile's own extent and only in the display tile whose (half-open) window holds it, so each is summed exactly once per level. Weights and radii that read the feature but not the zoom are evaluated here; ones that read both are re-evaluated per pass zoom (`weightsAt`/`radiiAt`); point features only, like circle layers |
+| `heatmap_density.dart` | `HeatmapGrid` — the spec density (`weight·intensity·exp(−½(3d/r)²)/√(2π)`) sampled at cell centres, filled per batch by whichever is cheaper, a direct kernel sum or a bilinear splat plus separable Gaussian blur; `colorize` interpolates the density up to the output before the ramp lookup; `cellFor` picks σ/2 cells, never finer than a quarter of the device resolution. `HeatmapJob`/`renderHeatmap`: one layer's pass as plain typed data. Pure arithmetic, no `dart:ui` drawing |
+| `heatmap_worker.dart` (+ `_isolate`, `_inline`) | `HeatmapWorker.render(job)` — `renderHeatmap` on one long-lived isolate on native (spawned on the first job; spawn failure or a dead isolate falls back to / respawns on the event loop), inline after a yield on web. Null on dispose or failure, never an error |
+| `heatmap_painter.dart` | `HeatmapPainter` — screen-space heatmap layers between the tile images and the labels. A throttled *pass* (zoom, tiles or screen changed and 100 ms since the last, at once when the viewport left the image, never two in flight) gathers the points whose kernels reach the viewport + 64 px, sends the job to the worker and uploads the pixels via `decodeRgbaPixels`; every frame draws the last image under the camera transform with `heatmap-opacity`. `debugPassCount`/`debugPassMicros` count the UI-thread part |
 | `pattern_resolver.dart` | `PatternResolver` — crops `fill-pattern` / `line-pattern` sprites out of the atlas into standalone images suitable for a tiled `ImageShader` |
 
 ## For AI Agents
 
 ### Working In This Directory
 
+- **Heatmaps never go into the tile images.** A kernel reaches across
+  tile seams, so the density is summed over every visible tile's points
+  in screen space (`heatmap_painter.dart`), as MapLibre does; the
+  rasterizer skips heatmap layers before its budget check, like symbol
+  layers. Two things keep the sum right: a point is laid out by exactly
+  one display tile per level (never from a neighbour's buffer), and a
+  retained level contributes only where the current level has no
+  points yet — break either and the density doubles along seams or
+  across a crossing. The density arithmetic stays pure Dart over typed
+  lists, so it can run on the worker; anything needing `dart:ui` goes
+  in the painter.
 - **Labels never go through `tile_rasterizer.dart`.** Anything that must stay
   crisp under fractional zoom, stay upright under rotation, or participate in
   global collision belongs in `label_painter.dart`. `LabelMode.tile` does put

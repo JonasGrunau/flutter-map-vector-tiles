@@ -139,6 +139,15 @@ Extra arguments go to the lab server: `--arms fmvt,vmt-raster`,
 delay to every tile, to emulate a network), `--session <name>`,
 `--run-timeout <s>`.
 
+`STYLE=<name>` in the environment builds the app for another
+OpenFreeMap style than Liberty (`bright`, `positron`), and
+`tool/reference_shots.mjs` reads it too. The lab server also serves
+`<style>-heatmap`: that style with a heatmap of the OpenMapTiles `poi`
+points added above its last geometry layer — for measuring heatmap
+layers, which OpenFreeMap's styles do not use, on the same tiles and
+against MapLibre. `vector_map_tiles` skips heatmap layers, so only the
+`fmvt` arms draw it.
+
 - **One session, one directory.** The lab server refuses to start when
   the session's `results.jsonl` already exists, so a second session on
   the same day and platform needs its own `--session` name; it never

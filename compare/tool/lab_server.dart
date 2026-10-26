@@ -448,7 +448,11 @@ class _LabServer {
         'heatmap-weight': [
           'interpolate',
           ['linear'],
-          ['coalesce', ['get', 'rank'], 30],
+          [
+            'coalesce',
+            ['get', 'rank'],
+            30
+          ],
           1,
           1,
           30,

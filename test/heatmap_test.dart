@@ -1,12 +1,17 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'dart:ui' show Color;
+
+import 'package:flutter/painting.dart' show Canvas, Offset, Size;
 
 import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart';
 import 'package:flutter_map_vector_tiles/src/pipeline/prepared_tile.dart';
 import 'package:flutter_map_vector_tiles/src/render/display_tile_data.dart';
 import 'package:flutter_map_vector_tiles/src/render/heatmap_density.dart';
 import 'package:flutter_map_vector_tiles/src/render/heatmap_layouter.dart';
+import 'package:flutter_map_vector_tiles/src/render/heatmap_painter.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// The spec's density of one point at distance [d] from it.
@@ -50,6 +55,8 @@ PreparedTile tileOf(TileKey key, List<PreparedFeature> features) =>
     );
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('style', () {
     test('a heatmap layer compiles with the spec defaults', () {
       final layer = heatmapTheme().layers.single as HeatmapThemeLayer;
@@ -230,13 +237,17 @@ void main() {
           ).single;
           total += points.length;
           for (var i = 0; i < points.length; i++) {
-            seen.add('$dx$dy:${points.xy[i * 2]},${points.xy[i * 2 + 1]}');
+            // Fixed digits: on web a whole double prints without ".0".
+            seen.add('$dx$dy:${points.xy[i * 2].toStringAsFixed(3)},'
+                '${points.xy[i * 2 + 1].toStringAsFixed(3)}');
           }
         }
       }
       expect(total, 3);
       expect(
-          seen, containsAll(['00:0.0,0.0', '11:0.0,0.0', '00:255.875,12.5']));
+          seen,
+          containsAll(
+              ['00:0.000,0.000', '11:0.000,0.000', '00:255.875,12.500']));
     });
 
     test('lines and polygons are not heatmap points', () {
@@ -329,6 +340,92 @@ void main() {
           );
       expect(at(8), hasLength(1));
       expect(at(9), isEmpty);
+    });
+  });
+
+  group('painter', () {
+    // One point of weight 1 peaks at 0.399; the step ramp is white from
+    // 0.5 on — so one copy of the point stays clear and two turn white.
+    final theme = heatmapTheme({
+      'heatmap-color': [
+        'step',
+        ['heatmap-density'],
+        'rgba(0, 0, 0, 0)',
+        0.5,
+        '#ffffff',
+      ],
+    });
+    const key = TileKey(4, 8, 8);
+    HeatmapPoints pointsAtCentre() => HeatmapLayouter.layout(
+          theme: theme,
+          data: DisplayTileData(
+            displayKey: key,
+            sources: {
+              's': tileOf(key, [point(2048, 2048)]),
+            },
+          ),
+          styleZoom: 4,
+        ).single;
+
+    /// The alpha at the centre of a 200² canvas over that point, once
+    /// the painter's pass has landed.
+    Future<int> centreAlpha(List<HeatmapTile> tiles) async {
+      final landed = Completer<void>();
+      final painter = HeatmapPainter(onChanged: () {
+        if (!landed.isCompleted) landed.complete();
+      });
+      // The tile's centre, in world pixels at zoom 4.
+      const centre = Offset(8.5 * 256, 8.5 * 256);
+      ui.Image draw() {
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)..translate(100, 100);
+        painter.paint(
+          canvas,
+          theme: theme,
+          cameraZoom: 4,
+          styleZoom: 4,
+          worldCenter: centre,
+          viewport: const Size(200, 200),
+          rotation: 0,
+          devicePixelRatio: 1,
+          generation: 0,
+          tiles: (_) => tiles,
+        );
+        return recorder.endRecording().toImageSync(200, 200);
+      }
+
+      draw().dispose(); // starts the pass
+      await landed.future.timeout(const Duration(seconds: 10));
+      final image = draw();
+      final bytes = (await image.toByteData())!;
+      image.dispose();
+      painter.dispose();
+      return bytes.getUint8((100 * 200 + 100) * 4 + 3);
+    }
+
+    test('draws the density of every tile it is given', () async {
+      final points = pointsAtCentre();
+      expect(
+          await centreAlpha([
+            (key: key, heatmap: [points], include: null)
+          ]),
+          0);
+      expect(
+          await centreAlpha([
+            (key: key, heatmap: [points], include: null),
+            (key: key, heatmap: [points], include: null),
+          ]),
+          255);
+    });
+
+    test('a tile counts only the points its include admits', () async {
+      final points = pointsAtCentre();
+      expect(
+          await centreAlpha([
+            (key: key, heatmap: [points], include: null),
+            (key: key, heatmap: [points], include: (x, y) => false),
+          ]),
+          0);
     });
   });
 }

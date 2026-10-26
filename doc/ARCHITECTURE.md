@@ -26,11 +26,16 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │       features are culled — and at deep overzoom clipped — to the
      │       tile's window of the data tile
      │
-     └─ symbols: SymbolLayouter collects label/icon anchors per tile
-             ├─ LabelPainter: per-frame screen-space pass, global collision
-             │  grid across all tiles, upright text under rotation
-             └─ or, LabelMode.tile: LabelPainter.paintTile places them once
-                per tile and draws them into the tile's own image
+     ├─ symbols: SymbolLayouter collects label/icon anchors per tile
+     │       ├─ LabelPainter: per-frame screen-space pass, global collision
+     │       │  grid across all tiles, upright text under rotation
+     │       └─ or, LabelMode.tile: LabelPainter.paintTile places them once
+     │          per tile and draws them into the tile's own image
+     │
+     └─ heatmap points: HeatmapLayouter, per tile, when its image publishes
+             └─ HeatmapPainter: a throttled density pass over every tile's
+                points — summed and coloured on a worker isolate — into
+                one screen-space image, drawn over the tiles each frame
 ```
 
 Rasterization and symbol extraction are two separate jobs in a budgeted
@@ -551,6 +556,75 @@ repaint boundary. The painter applies the camera transform (translate ·
 rotate about the screen centre) itself; `MobileLayerTransformer` is not
 used.
 
+### Heatmaps
+
+A `heatmap` layer is a kernel density over a source layer's points:
+each adds `weight · intensity · exp(−½(3d/r)²) / √(2π)` at distance
+`d`, `r` being `heatmap-radius` in logical pixels, and `heatmap-color`
+is read at the sum through `["heatmap-density"]` — the spec's
+definition, and the density MapLibre accumulates into its offscreen
+texture. A kernel near a tile seam reaches into the neighbour, so the
+density cannot be drawn into the tile images the way geometry is; like
+MapLibre, it is computed in screen space over every visible tile's
+points.
+
+Unlike MapLibre, it is not recomputed every frame. MapLibre splats one
+textured quad per point into a half-float texture per frame on the
+GPU; here the only way to colour a density through an arbitrary ramp
+on every backend (Skia, Impeller, CanvasKit) without a custom shader
+is on the CPU, and an 8-bit offscreen layer would quantize every
+kernel's tail away. So a **pass** computes the density over the
+viewport plus a 64 px margin and colours it into one image, and the
+frames after it draw that image under the camera transform, exactly as
+the tile images are drawn: panning and rotating are exact, and a zoom
+scales the kernels with the map — as the tile rasters themselves scale
+between integer zooms — until the next pass. A pass runs when the zoom,
+the tile set or the screen changed and 100 ms have passed since the
+last one started, at once when the viewport has left the image, and
+never while one is in flight. `heatmap-opacity` and the layer's zoom
+range are applied per frame, so a style fading its heatmap out over a
+zoom band fades smoothly.
+
+The pass is split by what can leave the root isolate. Gathering the
+points needs the tiles, and turning pixels into a `ui.Image` needs
+`dart:ui`; both stay on the UI thread and are cheap — the points are
+laid out once per display tile (`HeatmapLayouter`, run where the
+tile's image publishes, kept with the finished tile in the result
+cache), and a pass only transforms them to the screen, culls them and
+evaluates a weight that reads the zoom. The density and its colouring
+are pure arithmetic over typed lists (`render/heatmap_density.dart`),
+so they run on a `HeatmapWorker` — one long-lived isolate on native
+platforms, the event loop on web — and the result comes back as
+`rgba8888` bytes for `decodeImageFromPixels`.
+
+The density is sampled at σ/2 (σ = r/3) and never finer than
+MapLibre's quarter of the device resolution. Two ways of filling the
+grid give the same sums at different costs, and each batch takes the
+cheaper: every point adding its kernel to the cells it reaches
+(`N·(2h+1)²` for a reach of h cells, exact), or the points splatted
+bilinearly onto the grid and blurred with the kernel along x and then
+along y — the Gaussian is separable — at `cells·2(2h+1)` whatever the
+number of points. The density is far smoother than the ramp drawn over
+it, so the output image is up to twice as fine as the grid, the
+density interpolated between cell centres before the ramp is looked
+up: interpolating colours instead would smear every ramp stop that
+falls between two cells.
+
+Each point counts once. Like MapLibre, a point is taken only from the
+data tile whose own extent holds it, never from the buffer a
+neighbouring tile also carries, and at overzoom only by the display
+tile whose window holds it; during a zoom crossing the retained level's
+points count only where the arriving level has none yet, or the two
+levels' copies would double the density where they overlap.
+
+The heatmap draws above every geometry layer and below the labels,
+whatever its position among the style's layers: it would otherwise
+have to split each tile image in two at the heatmap's position. That
+is where styles put their heatmaps — under the labels, over the map —
+and in `LabelMode.tile`, whose labels are part of the tile images, it
+covers them. Only point features count, as for circle layers;
+MapLibre takes the vertices of lines and polygons as points too.
+
 ### Labels in the tile image (`LabelMode.tile`)
 
 Everything above about labels buys its quality with UI-thread time on
@@ -652,13 +726,22 @@ to the event loop permanently.
 On web (no isolate support for this workload) the pool degrades to
 chunked event-loop execution.
 
+A style with a heatmap layer gets one more isolate, spawned on the
+first density pass and kept for the layer's lifetime
+(`render/heatmap_worker.dart`): a pass is a few milliseconds of
+arithmetic every 100 ms at most while the map zooms, and sharing the
+tile pool would queue it behind tile preparation exactly when a zoom
+crossing needs both. One pass is in flight at a time; a disposed layer
+completes it with null, never an error. If the isolate cannot be
+spawned the passes run on the event loop, as they do on web.
+
 ## Caching
 
 | layer | keyed by | bounded by |
 | --- | --- | --- |
 | memory: `PreparedTile` | data tile, per source (`provider.cacheKey`) and property keep-lists | entry count + bytes |
 | memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
-| memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprite *content*, labels, label mode) | GPU texture bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
+| memory: finished display tile (raster `ui.Image` + symbols + heatmap points) | display tile, per render signature (theme id, providers, dpr, sprite *content*, labels, label mode) | GPU texture bytes, plus the heatmap points' bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
 | disk: raw tile bytes | hash of `provider.cacheKey` + z/x/y | TTL + total size sweep |
 
 All caches are plain deterministic LRU implementations — no external

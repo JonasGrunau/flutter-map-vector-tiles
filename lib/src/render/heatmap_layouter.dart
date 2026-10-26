@@ -103,6 +103,17 @@ abstract final class HeatmapLayouter {
     return false;
   }
 
+  /// Whether [data] holds the source of any heatmap layer of [theme].
+  static bool hasSource(Theme theme, DisplayTileData data) {
+    for (final layer in theme.layers) {
+      if (layer is HeatmapThemeLayer &&
+          data.sources.containsKey(layer.source)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// The points of every heatmap layer of [theme] visible somewhere in
   /// the band [styleZoom, styleZoom + 1) — the density pass gates each
   /// layer at the exact zoom — in theme order; an entry for every such

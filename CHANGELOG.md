@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- ✨ **Heatmaps**: `heatmap` layers draw, where they were skipped with
+  a log line before. The density is MapLibre's — every point of the
+  source layer adds a Gaussian kernel of `heatmap-radius`, scaled by
+  `heatmap-weight` and `heatmap-intensity`, and `heatmap-color` is read
+  at the sum through `["heatmap-density"]` (until now a constant 0) —
+  with data-driven weights and radii, and `heatmap-opacity`. Like
+  MapLibre's it is summed in screen space across tile seams. It is
+  recomputed on a worker isolate (on the event loop on web) when the
+  zoom or the tiles change, at most every 100 ms, and follows the camera
+  in between. A heatmap draws over every geometry layer and under the
+  labels, wherever the style puts it, and counts point features only.
+  `HeatmapThemeLayer` joins the sealed `ThemeLayer` hierarchy, so a
+  `switch` over `ThemeLayer` that names every subtype needs a case for
+  it, and `EvalContext` gains `heatmapDensity`.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same

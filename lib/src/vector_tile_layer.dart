@@ -1882,12 +1882,16 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   }
 
   /// The heatmap points of a tile whose image is being published —
-  /// nothing, and no work, for the styles without a heatmap layer.
-  List<HeatmapPoints> _layoutHeatmap(DisplayTileData data, double styleZoom) =>
-      HeatmapLayouter.any(widget.theme)
-          ? HeatmapLayouter.layout(
-              theme: widget.theme, data: data, styleZoom: styleZoom)
-          : const [];
+  /// nothing, and no work, for the styles without a heatmap layer. Null
+  /// when the tile has none of its heatmap sources yet (a zoom-out's
+  /// provisional cover, drawn from descendants): the retained level's
+  /// points must keep counting there, which an empty list would stop.
+  List<HeatmapPoints>? _layoutHeatmap(DisplayTileData data, double styleZoom) {
+    if (!HeatmapLayouter.any(widget.theme)) return const [];
+    if (!HeatmapLayouter.hasSource(widget.theme, data)) return null;
+    return HeatmapLayouter.layout(
+        theme: widget.theme, data: data, styleZoom: styleZoom);
+  }
 
   /// The tiles offering points to a heatmap density pass at
   /// [cameraZoom]: every current tile that has its points, and — while
