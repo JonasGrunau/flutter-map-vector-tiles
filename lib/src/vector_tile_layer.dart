@@ -1183,14 +1183,15 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         widget.labelFadeDuration <= Duration.zero) {
       return;
     }
-    // The parked cohort takes over the tile's label ids: its labels are
-    // still on offer, as fade-out fallbacks.
+    // The parked cohort takes the tile's labels over, ids and all: they
+    // are still on offer, as fade-out fallbacks, and no longer the tile's.
     _ghostLabels.add((
       key: tile.key,
       symbols: tile.symbols,
       ids: tile.labelIds,
       since: DateTime.now(),
     ));
+    tile.symbols = const [];
     tile.labelIds = _DisplayTile._noIds;
     _ensureFadeTicker();
   }

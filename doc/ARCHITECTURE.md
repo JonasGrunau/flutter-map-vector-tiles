@@ -294,9 +294,12 @@ default `symbol-spacing`, so the repeats of a name along its street
 keep ids of their own. Two rules keep distinct labels apart: matching
 is one-to-one per publish (two labels of one tile never share an id),
 and within one zoom level a tile may share an id with a *different*
-tile only when the two anchors coincide (1 px) — the one feature on a
-seam that both neighbours lay out. A republishing tile prefers its own
-previous ids, so whatever was on screen from it stays the label it was.
+tile only when its anchor coincides (1 px) with the copy that tile
+holds — the one feature on a seam that both neighbours lay out. Each
+label keeps one position per tile holding it for that reason. Within a
+name the closest pairs match first, and a republishing tile's own
+previous ids ahead of anyone else's, so whatever was on screen from it
+stays the label it was.
 The holder that took ids hands them back when it stops offering them —
 replaced symbols, the retention pin, disposal, ghost expiry — so a
 label stays known exactly as long as something can draw it. The ids
@@ -342,10 +345,15 @@ fading at all, and a re-spaced street name teleported at full opacity
 instead of cross-fading. Direction changes resume rather than restart:
 a label re-placed mid-fade-out rises from where it is, so a label
 briefly unplaced (a lost frame of collision) dips at most one opacity
-step instead of blinking to zero. One copy per id draws in a frame —
-the first in priority order, skipped before any layout for the rest —
-so seam twins no longer rely on colliding with each other to draw once
-(in a layer that allows overlap, they used to draw twice).
+step instead of blinking to zero. One copy per id draws in a frame,
+the rest skipped before any layout, so seam twins no longer rely on
+colliding with each other to draw once (in a layer that allows overlap,
+they used to draw twice). Which copy is part of the decision, because
+copies of one label can sit up to the match radius apart with geometry
+of their own: the painter remembers the copy each label was drawn from,
+replay frames draw that copy, a pass tries it ahead of the label's other
+copies, and a fading label's ghost is drawn from it — another copy takes
+over only once it is gone.
 
 A third property joined them when placement became purely
 interval-paced: **only a placement pass may start a fade-out**. Between
@@ -521,7 +529,8 @@ an arbitrary tie-break used to move a label that had no reason to move:
   across the street. The two are different labels (different ids), and
   only the one on screen is an incumbent, so it keeps being tried first.
   The outgoing and arriving copy of *one* label at a zoom crossing share
-  an id and sit at one place, so whichever draws, nothing moves.
+  an id; the copy already drawn is tried first, so a rotation that
+  reorders the two does not move the label between them.
 * **Which `text-variable-anchor` it sits at.** Anchors are tried in
   style order, except the one the label is already at, which is tried
   first: a neighbour brushing past no longer pushes a label to its

@@ -356,10 +356,11 @@ class LabelPainter {
   @visibleForTesting
   LabelFadeTracker get debugFades => _fades;
 
-  /// Fallback drawables for the fade-out: per tracked label id, the
-  /// first unplaced copy on offer this frame. Every copy of one id sits
-  /// at the label's place (that is what the id means), so any of them
-  /// draws its ghost where the label was.
+  /// Fallback drawables for the fade-out: per tracked label id, one
+  /// unplaced copy on offer this frame — the copy the label was last
+  /// drawn from when it is still offered ([_drawnCopy]), else the first.
+  /// Copies of one id can sit up to the identity match radius apart, so
+  /// a ghost that switched copies would move.
   final _fallbacks = <int, PlacedSymbol>{};
 
   /// When the collision pass re-runs; between passes its decision is
@@ -371,12 +372,21 @@ class LabelPainter {
   /// (everything else is skipped before it is even laid out), and at the
   /// next pass they are the incumbents. Ids outlive instances, so a
   /// winner whose tile republished is still a winner in its successor.
-  var _winners = <int>{};
+  final _winners = <int>{};
 
-  /// The label ids drawn so far this frame: one copy per label draws,
-  /// the first in priority order. Swapped with [_winners] at the end of
-  /// a pass, which is what makes it the next frozen decision.
-  var _shown = <int>{};
+  /// Which copy of each label the last frame drew, placed or as a ghost.
+  /// One label can be on offer as several copies (seam twins, the two
+  /// levels' at a crossing), up to the identity match radius apart and
+  /// with geometry of their own, so the copy is part of the decision: a
+  /// replay draws this one, a pass tries it ahead of the label's other
+  /// copies, and a ghost is drawn from it — as long as it is still on
+  /// offer. Without it a replay redrew whichever copy sorted first,
+  /// which could be the one the pass had rejected.
+  var _drawnCopy = <int, SymbolInstance>{};
+
+  /// [_drawnCopy] for the frame being painted; also how a frame knows a
+  /// label already drew. Swapped in at the end of the frame.
+  var _drawing = <int, SymbolInstance>{};
 
   /// The placement choices each label is sitting on — kept here rather
   /// than on the instances, which are replaced under a label that never
@@ -408,6 +418,8 @@ class LabelPainter {
     _fades.clear();
     _fallbacks.clear();
     _winners.clear();
+    _drawnCopy.clear();
+    _drawing.clear();
     _memory.clear();
     _placement.reset();
   }
@@ -530,21 +542,39 @@ class LabelPainter {
     if (placing) {
       _flagIncumbents(symbols);
       candidates = symbols..sort(_byPlacementPriority);
+      _promoteDrawnCopies(candidates);
     } else {
       // Replaying: the frozen decision says only the last pass's
-      // winners are on screen, so only their copies are laid out — and
-      // only they need sorting, ~100 of a few thousand candidates on a
-      // dense screen. [_byPlacementPriority] is a total order (`order`
-      // is unique), so their relative order is exactly what a full sort
-      // gives. Everyone else is at most a fade-out fallback, recorded in
-      // input order instead of priority order — any copy of a label
-      // draws its ghost in the same place.
+      // winners are on screen, so only they are laid out — each from the
+      // copy it was drawn from, or, where that copy is gone (its tile
+      // republished), from its other copies — and only they need
+      // sorting, ~100 of a few thousand candidates on a dense screen.
+      // [_byPlacementPriority] is a total order (`order` is unique), so
+      // their relative order is exactly what a full sort gives. Everyone
+      // else is at most a fade-out fallback, recorded in input order
+      // instead of priority order.
       candidates = <PlacedSymbol>[];
+      List<PlacedSymbol>? otherCopies;
+      Set<int>? drawnCopyOffered;
       for (final candidate in symbols) {
         if (!candidate.ghostOnly && _winners.contains(candidate.id)) {
-          candidates.add(candidate);
+          if (identical(_drawnCopy[candidate.id], candidate.instance)) {
+            candidates.add(candidate);
+            (drawnCopyOffered ??= {}).add(candidate.id);
+          } else {
+            (otherCopies ??= []).add(candidate);
+          }
         } else if (fades) {
           _recordFallback(candidate);
+        }
+      }
+      if (otherCopies != null) {
+        for (final candidate in otherCopies) {
+          if (drawnCopyOffered?.contains(candidate.id) ?? false) {
+            if (fades) _recordFallback(candidate);
+          } else {
+            candidates.add(candidate);
+          }
         }
       }
       candidates.sort(_byPlacementPriority);
@@ -554,8 +584,10 @@ class LabelPainter {
 
     final toDraw = <_DrawableSymbol>[];
     var anyFading = false;
-    _shown.clear();
-    if (placing) _repeatAnchors.clear();
+    if (placing) {
+      _winners.clear();
+      _repeatAnchors.clear();
+    }
     final loopStopwatch = Stopwatch()..start();
     for (final candidate in candidates) {
       if (candidate.ghostOnly) {
@@ -566,9 +598,9 @@ class LabelPainter {
         continue;
       }
       // Another copy of this label — a seam twin, the other level's at
-      // a crossing — already drew: one label draws once, from its
-      // highest-priority copy. Skipped before any layout work.
-      if (_shown.contains(candidate.id)) continue;
+      // a crossing — already drew: one label draws once. Skipped before
+      // any layout work.
+      if (_drawing.containsKey(candidate.id)) continue;
       final drawable =
           _prepare(candidate, zoom, styleZoom, collision, sprites, screenSize);
       if (drawable == null) {
@@ -577,7 +609,8 @@ class LabelPainter {
         if (fades) _recordFallback(candidate);
         continue;
       }
-      _shown.add(candidate.id);
+      _drawing[candidate.id] = candidate.instance;
+      if (placing) _winners.add(candidate.id);
       // The label's fade and its layer's zoom-range ramp compound: a
       // label appearing near its layer's maxzoom is subject to both.
       final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
@@ -609,11 +642,6 @@ class LabelPainter {
       anyFading |= drawable.opacity < 1;
     }
     if (placing) {
-      // The pass's winners are what it drew: the frozen decision until
-      // the next one.
-      final previous = _winners;
-      _winners = _shown;
-      _shown = previous;
       debugPlaceMicros += loopStopwatch.elapsedMicroseconds;
     } else {
       debugReplayMicros += loopStopwatch.elapsedMicroseconds;
@@ -655,6 +683,7 @@ class LabelPainter {
         drawable.isGhost = true;
         toDraw.add(drawable);
         anyFading = true;
+        _drawing[id] = fallback.instance;
       },
           // Replay frames hold: a winner missing mid-interval may only
           // be between copies (its tile gone, the successor not yet
@@ -662,6 +691,9 @@ class LabelPainter {
           hold: !placing);
       _fallbacks.clear();
     }
+    final drawnCopy = _drawnCopy;
+    _drawnCopy = _drawing;
+    _drawing = drawnCopy..clear();
     debugSweepMicros += sweepStopwatch.elapsedMicroseconds;
     final probe = debugDrawnProbe;
     if (probe != null) {
@@ -938,13 +970,46 @@ class LabelPainter {
     }
   }
 
+  /// Moves the copy each label was last drawn from ahead of the label's
+  /// other copies, in place, so a pass keeps a label on the copy it is
+  /// on for as long as that copy still fits: which copy sorts first
+  /// depends on their screen y, and rotating the map reorders two copies
+  /// a few pixels apart.
+  ///
+  /// Only the order *inside* one label id changes: the label still
+  /// competes for space at the position its best copy earned, so this
+  /// can never let one label outrank another.
+  void _promoteDrawnCopies(List<PlacedSymbol> candidates) {
+    if (_drawnCopy.isEmpty) return;
+    Map<int, int>? firstCopy;
+    for (var i = 0; i < candidates.length; i++) {
+      final candidate = candidates[i];
+      if (candidate.ghostOnly) continue;
+      final drawn = _drawnCopy[candidate.id];
+      if (drawn == null) continue;
+      if (!identical(drawn, candidate.instance)) {
+        (firstCopy ??= {})[candidate.id] ??= i;
+        continue;
+      }
+      final first = firstCopy?.remove(candidate.id);
+      if (first == null) continue; // already first among its copies
+      candidates[i] = candidates[first];
+      candidates[first] = candidate;
+    }
+  }
+
   /// Remembers [candidate] as the drawable to fade its label out with,
-  /// should the sweep find that label unplaced this frame. Only tracked
-  /// labels can fade, and one copy per label is enough.
+  /// should the sweep find that label unplaced this frame — the copy it
+  /// was last drawn from if that is on offer, else the first one seen.
+  /// Only tracked labels can fade.
   void _recordFallback(PlacedSymbol candidate) {
     final id = candidate.id;
     if (!_fades.isTracked(id)) return;
-    _fallbacks.putIfAbsent(id, () => candidate);
+    if (identical(_drawnCopy[id], candidate.instance)) {
+      _fallbacks[id] = candidate;
+    } else {
+      _fallbacks.putIfAbsent(id, () => candidate);
+    }
   }
 
   /// Opacity [layer]'s zoom range gives a symbol at [styleZoom]: 1

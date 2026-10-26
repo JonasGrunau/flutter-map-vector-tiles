@@ -1148,6 +1148,110 @@ void main() {
     });
   });
 
+  group('which copy of a label draws', () {
+    // Copies of one label sit up to the identity match radius apart, with
+    // geometry of their own: the copy a label is drawn from is part of
+    // the decision, and has to hold between passes like the rest of it.
+    final (street, poi) = _streetAndPoiLayers();
+    const higher = Offset(200, 200);
+    const lower = Offset(200, 225);
+
+    test('a replay draws the copy the pass drew', () {
+      // The pass rejects the higher copy (it collides with a POI) and
+      // draws the lower one; replays used to draw whichever copy sorted
+      // first, so the label jumped between the two at every interval.
+      final painter = LabelPainter();
+      final blocker = _symbol(poi, text: 'Bäckerei', layerIndex: 1);
+      final blocked = _symbol(street, text: 'Hauptstr');
+      final free = _symbol(street, text: 'Hauptstr');
+      final id = labelIdOf(blocked);
+      List<Offset> drawnAt(int ms) => [
+            for (final p in _frame(
+                painter,
+                [
+                  _placedAt(blocker, anchor: higher),
+                  _placedAt(blocked, anchor: higher, order: 1),
+                  _placedAt(free, anchor: lower, order: 2, id: id),
+                ],
+                now: _at(ms)))
+              if (p.id == id) p.screenAnchor,
+          ];
+      expect(drawnAt(0), [lower], reason: 'the pass');
+      for (final ms in [16, 32, 48]) {
+        expect(drawnAt(ms), [lower], reason: 'replay at ${ms}ms');
+      }
+      painter.dispose();
+    });
+
+    test('a replay falls back to another copy when its own is gone', () {
+      final painter = LabelPainter();
+      final first = _symbol(street, text: 'Hauptstr');
+      final second = _symbol(street, text: 'Hauptstr');
+      final id = labelIdOf(first);
+      _frame(painter, [_placedAt(first, anchor: higher)], now: _at(0));
+      final drawn = _frame(painter, [_placedAt(second, anchor: lower, id: id)],
+          now: _at(16));
+      expect(drawn.map((p) => p.instance), [second],
+          reason: 'the label is still the winner, through its other copy');
+      painter.dispose();
+    });
+
+    test('a pass keeps the copy it is on when their order flips', () {
+      // Rotating the map reorders two copies a few pixels apart; the
+      // pass sorts by screen y, and without the drawn copy going first
+      // the label would hop between them at every pass.
+      final painter = LabelPainter();
+      final a = _symbol(street, text: 'Hauptstr');
+      final b = _symbol(street, text: 'Hauptstr');
+      final id = labelIdOf(a);
+      final first = _frame(
+          painter,
+          [
+            _placedAt(a, anchor: const Offset(200, 198)),
+            _placedAt(b, anchor: const Offset(200, 202), order: 1, id: id),
+          ],
+          now: _at(0));
+      expect(first.map((p) => p.instance), [a]);
+      final flipped = _frame(
+          painter,
+          [
+            _placedAt(b, anchor: const Offset(200, 198), id: id),
+            _placedAt(a, anchor: const Offset(200, 202), order: 1),
+          ],
+          now: _at(100));
+      expect(flipped.map((p) => p.instance), [a]);
+      painter.dispose();
+    });
+
+    test('a ghost is drawn from the copy the label was drawn from', () {
+      final painter = LabelPainter();
+      final blocker = _symbol(poi, text: 'Bäckerei', layerIndex: 1);
+      final blocked = _symbol(street, text: 'Hauptstr');
+      final free = _symbol(street, text: 'Hauptstr');
+      final id = labelIdOf(blocked);
+      List<PlacedSymbol> frame(int ms, {required bool gone}) => _frame(
+          painter,
+          [
+            _placedAt(blocker, anchor: higher),
+            _placedAt(blocked, anchor: higher, order: 1, ghostOnly: gone),
+            _placedAt(free, anchor: lower, order: 2, id: id, ghostOnly: gone),
+          ],
+          now: _at(ms));
+      frame(0, gone: false);
+      frame(100, gone: false);
+      // The label's tile goes; both copies remain only as fallbacks,
+      // through replay frames and then the pass that starts the fade.
+      for (final ms in [120, 150, 200, 230]) {
+        final ghosts = [
+          for (final p in frame(ms, gone: true))
+            if (p.id == id) p.screenAnchor,
+        ];
+        expect(ghosts, [lower], reason: 'at ${ms}ms');
+      }
+      painter.dispose();
+    });
+  });
+
   group('drawnLabels', () {
     test('keeps only what the last frame drew, in order', () {
       expect(drawnLabels(Int32List.fromList([1, 2, 3]), {3, 1}), [0, 2]);

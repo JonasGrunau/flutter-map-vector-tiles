@@ -31,12 +31,16 @@ import 'tile_rasterizer.dart';
 /// their own ids. MapLibre's `CrossTileSymbolIndex` matches the same
 /// way, for the same reason.
 ///
-/// Matching is one-to-one per publish, and within one zoom level it is
-/// reserved for twins: two labels of one tile never share an id, and a
-/// tile may only share an id with a *different* tile of its own level
-/// when the two anchors coincide ([twinRadius]) — the one feature on a
-/// seam that both neighbours lay out (the layouter lets both claim it
-/// rather than risk neither doing so). Without that rule two distinct
+/// Matching is one-to-one per publish, nearest pairs first, and within
+/// one zoom level it is reserved for twins: two labels of one tile never
+/// share an id, and a tile may only share an id with a *different* tile
+/// of its own level when its anchor coincides with the copy that tile
+/// holds ([twinRadius]) — the one feature on a seam that both
+/// neighbours lay out (the layouter lets both claim it rather than risk
+/// neither doing so). Every holding keeps its own copy's position for
+/// that reason: judged against whichever copy registered last (another
+/// level's, say), the rule would merge a neighbour's different label and
+/// miss a true twin. Without that rule two distinct
 /// same-named labels a few pixels apart on either side of a seam would
 /// merge into one, and only one of them would draw. Across levels, and
 /// against the tile's own previous layout, the full [matchRadius]
@@ -80,6 +84,11 @@ class LabelIdentityIndex {
   /// tile's previous ids, if it is republishing: they are matched first
   /// and released afterwards, so a label the new layout still carries
   /// keeps its id.
+  ///
+  /// Within one name, the closest pairs are matched first (the tile's
+  /// own previous labels ahead of everyone else's), so a label never
+  /// loses its nearest predecessor to a neighbour that merely came
+  /// first in layout order.
   Int32List assign(
     TileKey tile,
     List<SymbolInstance> symbols, {
@@ -90,92 +99,90 @@ class LabelIdentityIndex {
       return _none;
     }
     final batch = ++_batch;
-    final z = tile.z;
-    final unit = _unit(z);
+    final unit = _unit(tile.z);
     final ids = Int32List(symbols.length);
+    final xs = Float64List(symbols.length);
+    final ys = Float64List(symbols.length);
+    final byKey = <Object, List<int>>{};
     for (var i = 0; i < symbols.length; i++) {
-      final symbol = symbols[i];
-      final key = symbol.continuityKey;
-      final x =
-          (tile.x * TileRasterizer.logicalTileSize + symbol.anchor.dx) * unit;
-      final y =
-          (tile.y * TileRasterizer.logicalTileSize + symbol.anchor.dy) * unit;
-      final entries = _byKey[key] ??= <_LabelEntry>[];
-      var entry = _match(entries, tile, x, y, unit, batch);
-      if (entry == null) {
-        entry = _LabelEntry(_freshId(), key);
-        entries.add(entry);
-        _byId[entry.id] = entry;
-      }
-      entry
-        ..x = x
-        ..y = y
-        ..z = z
-        ..batch = batch
-        ..holders.add(tile);
-      ids[i] = entry.id;
+      final anchor = symbols[i].anchor;
+      xs[i] = (tile.x * TileRasterizer.logicalTileSize + anchor.dx) * unit;
+      ys[i] = (tile.y * TileRasterizer.logicalTileSize + anchor.dy) * unit;
+      (byKey[symbols[i].continuityKey] ??= <int>[]).add(i);
     }
+    byKey.forEach((key, group) {
+      final entries = _byKey[key] ??= <_LabelEntry>[];
+      if (entries.isNotEmpty) {
+        final pairs = <_Pair>[];
+        for (final i in group) {
+          for (final entry in entries) {
+            final pair = _pair(entry, tile, i, xs[i], ys[i], unit);
+            if (pair != null) pairs.add(pair);
+          }
+        }
+        pairs.sort(_Pair.compare);
+        for (final pair in pairs) {
+          final entry = pair.entry;
+          // One-to-one: a symbol takes one label, a label one symbol.
+          if (ids[pair.symbol] != 0 || entry.batch == batch) continue;
+          entry.batch = batch;
+          ids[pair.symbol] = entry.id;
+        }
+      }
+      for (final i in group) {
+        var entry = _byId[ids[i]];
+        if (entry == null) {
+          entry = _LabelEntry(_freshId(), key)..batch = batch;
+          entries.add(entry);
+          _byId[entry.id] = entry;
+          ids[i] = entry.id;
+        }
+        entry.holdings.add(_Holding(tile, xs[i], ys[i]));
+      }
+    });
     if (replacing != null) release(tile, replacing);
     return ids;
   }
 
-  /// The entry among [entries] that a symbol of [tile] at world
-  /// position ([x], [y]) is a copy of, or null. See the class comment
-  /// for the rules.
-  static _LabelEntry? _match(
-    List<_LabelEntry> entries,
-    TileKey tile,
-    double x,
-    double y,
-    double unit,
-    int batch,
-  ) {
-    _LabelEntry? best;
-    var bestOwn = false;
-    var bestDistance = double.infinity;
-    for (final entry in entries) {
-      // Already claimed by another symbol of this tile.
-      if (entry.batch == batch) continue;
-      final dx = entry.x - x;
-      final dy = entry.y - y;
-      final distance = dx * dx + dy * dy;
-      // The finer level's pixels: the tolerance a crossing is seen at.
-      final radius = matchRadius * math.min(unit, _unit(entry.z));
-      if (distance >= radius * radius) continue;
-      final own = entry.holders.contains(tile);
-      if (!own && !_twinOrOtherLevel(entry, tile, distance, unit)) continue;
-      if (best == null ||
-          (own && !bestOwn) ||
-          (own == bestOwn && distance < bestDistance)) {
-        best = entry;
-        bestOwn = own;
-        bestDistance = distance;
-      }
-    }
-    return best;
-  }
-
-  /// Whether [entry], held by tiles other than [tile], may be shared
-  /// with it: every holder on [tile]'s own level must be a seam twin.
-  static bool _twinOrOtherLevel(
-      _LabelEntry entry, TileKey tile, double distance, double unit) {
+  /// How symbol [symbol] of [tile], at world position ([x], [y]), would
+  /// match [entry] — or null when it may not. It may when one of the
+  /// entry's copies is within [matchRadius] (in the finer level's
+  /// pixels: the tolerance a crossing is seen at), and every copy on
+  /// [tile]'s own level that another tile holds is its twin. The
+  /// distance that ranks the pair is to the nearest copy.
+  static _Pair? _pair(_LabelEntry entry, TileKey tile, int symbol, double x,
+      double y, double unit) {
     final twin = twinRadius * unit;
-    for (final holder in entry.holders) {
-      if (holder.z == tile.z && holder != tile && distance >= twin * twin) {
-        return false;
+    var own = false;
+    var nearest = double.infinity;
+    for (final holding in entry.holdings) {
+      final dx = holding.x - x;
+      final dy = holding.y - y;
+      final distance = dx * dx + dy * dy;
+      final holder = holding.tile;
+      if (holder == tile) {
+        own = true;
+      } else if (holder.z == tile.z && distance >= twin * twin) {
+        return null;
       }
+      final radius = matchRadius * math.min(unit, _unit(holder.z));
+      if (distance < radius * radius && distance < nearest) nearest = distance;
     }
-    return true;
+    if (nearest == double.infinity) return null;
+    return _Pair(symbol, entry, own, nearest);
   }
 
-  /// [tile] stops offering the labels [ids]: each loses that holder, and
-  /// a label no holder offers any more is forgotten.
+  /// [tile] stops offering the labels [ids]: each loses that holding,
+  /// and a label no holder offers any more is forgotten.
   void release(TileKey tile, Int32List ids) {
     for (final id in ids) {
       final entry = _byId[id];
       if (entry == null) continue;
-      entry.holders.remove(tile);
-      if (entry.holders.isNotEmpty) continue;
+      final holdings = entry.holdings;
+      final at = holdings.indexWhere((holding) => holding.tile == tile);
+      if (at < 0) continue;
+      holdings.removeAt(at);
+      if (holdings.isNotEmpty) continue;
       _byId.remove(id);
       final entries = _byKey[entry.key];
       if (entries == null) continue;
@@ -212,17 +219,41 @@ class _LabelEntry {
   final int id;
   final Object key;
 
-  /// World position of the copy registered last (the world is 1 wide),
-  /// and the display level it was laid out at.
-  var x = 0.0;
-  var y = 0.0;
-  var z = 0;
-
   /// The [LabelIdentityIndex.assign] call that last claimed this label.
   var batch = 0;
 
-  /// The tiles offering this label, one entry per holding.
-  final holders = <TileKey>[];
+  /// One copy per tile offering this label, where that tile has it.
+  final holdings = <_Holding>[];
 
   _LabelEntry(this.id, this.key);
+}
+
+/// One tile's copy of a label: the tile, and the copy's world position
+/// (the world is 1 wide).
+class _Holding {
+  final TileKey tile;
+  final double x;
+  final double y;
+
+  _Holding(this.tile, this.x, this.y);
+}
+
+/// A candidate match between a symbol being assigned and a known label.
+class _Pair {
+  final int symbol;
+  final _LabelEntry entry;
+
+  /// Whether the label is one of the assigning tile's own previous ones.
+  final bool own;
+
+  /// Squared world distance to the label's nearest copy.
+  final double distance;
+
+  _Pair(this.symbol, this.entry, this.own, this.distance);
+
+  /// Own labels first, then nearest first.
+  static int compare(_Pair a, _Pair b) {
+    if (a.own != b.own) return a.own ? -1 : 1;
+    return a.distance.compareTo(b.distance);
+  }
 }

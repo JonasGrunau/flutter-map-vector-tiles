@@ -309,6 +309,57 @@ void main() {
     });
   });
 
+  group('the twin rule', () {
+    // Judged against each same-level holder's own copy, never against
+    // whichever copy happens to have registered last.
+    const a = TileKey(15, 16000, 10000);
+    const b = TileKey(15, 16001, 10000);
+    // A z16 tile over the a/b seam's east side.
+    const child = TileKey(16, 32002, 20000);
+
+    test('a neighbour\'s different label stays apart', () {
+      final index = LabelIdentityIndex();
+      final cafe = index.assign(a, [_label(const Offset(254, 100))]);
+      // The next level's copy, 5 z15-pixels off (z16 (6, 200) is z15
+      // world 16001·256 + 3, i.e. a-local 259).
+      final copy = index.assign(child, [_label(const Offset(6, 200))]);
+      expect(copy, cafe);
+      // A different café on b, 5.4 px from a's: next to the other
+      // level's copy, but no twin of the one a holds.
+      final other = index.assign(b, [_label(const Offset(3.4, 100))]);
+      expect(other.single, isNot(cafe.single));
+    });
+
+    test('a true seam twin joins, however far another level\'s copy is', () {
+      final index = LabelIdentityIndex();
+      final cafe = index.assign(a, [_label(const Offset(255.9, 100))]);
+      final copy = index.assign(child, [_label(const Offset(9.8, 200))]);
+      expect(copy, cafe);
+      final twin = index.assign(b, [_label(const Offset(-0.1, 100))]);
+      expect(twin, cafe);
+    });
+  });
+
+  group('nearest first', () {
+    test('a label keeps its nearest predecessor whatever the order', () {
+      // Greedy matching in layout order let the first symbol take the
+      // label 18 px away, leaving the one 2 px from it a fresh id.
+      final index = LabelIdentityIndex();
+      final before = index.assign(tile, [
+        _label(const Offset(100, 100)),
+        _label(const Offset(140, 100)),
+      ]);
+      final after = index.assign(
+          tile,
+          [
+            _label(const Offset(118, 100)),
+            _label(const Offset(98, 100)),
+          ],
+          replacing: before);
+      expect(after, [before[1], before[0]]);
+    });
+  });
+
   group('holders', () {
     test('a label lives as long as anything offers it', () {
       final index = LabelIdentityIndex();
