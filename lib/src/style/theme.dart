@@ -68,6 +68,15 @@ sealed class ThemeLayer {
   @internal
   bool filterReadsZoom = true;
 
+  /// The `FilterIds` id of a zoom-free [filter], under which a worker
+  /// isolate resolves it while preparing a tile, so the UI isolate only
+  /// looks the matches up. Assigned by the theme reader; null — resolve
+  /// on the UI isolate — for a zoom-reading filter and a hand-built
+  /// layer. Not for use outside this package: an id naming a different
+  /// filter would draw that filter's features.
+  @internal
+  int? filterId;
+
   ThemeLayer({
     required this.id,
     required this.source,

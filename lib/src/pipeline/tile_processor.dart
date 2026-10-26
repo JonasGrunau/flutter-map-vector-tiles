@@ -3,8 +3,10 @@ import 'dart:typed_data';
 import '../core/tile_key.dart';
 import '../mvt/mvt_decoder.dart';
 import '../mvt/mvt_tile.dart';
+import '../style/expression.dart';
 import 'prepare_gunzip_web.dart' if (dart.library.io) 'prepare_gunzip_io.dart';
 import 'prepared_tile.dart';
+import 'tile_filters.dart';
 
 /// Input for [prepareTileSync]; must remain isolate-transferable.
 class PrepareInput {
@@ -17,12 +19,19 @@ class PrepareInput {
   /// retain all. Source-layers absent from this map are dropped entirely.
   final Map<String, Set<String>?> layerProperties;
 
+  /// Per source-layer name: the `FilterIds` ids of the zoom-free layer
+  /// filters to resolve (see [TileFilterPlan]), or null for none. Only
+  /// an executor that hands [prepareTileSync] compiled filters resolves
+  /// them; the rest leave every filter to the UI isolate.
+  final Map<String, Int32List>? filterIds;
+
   const PrepareInput({
     required this.z,
     required this.x,
     required this.y,
     required this.bytes,
     required this.layerProperties,
+    this.filterIds,
   });
 }
 
@@ -31,7 +40,12 @@ class PrepareInput {
 /// arrive gzip-compressed (PMTiles blobs on native platforms, servers
 /// that compress without declaring it): inflation happens here, off the
 /// UI isolate.
-PreparedTile prepareTileSync(PrepareInput input) {
+///
+/// With [filters] — the worker's compiled filters — it also resolves the
+/// layer filters [PrepareInput.filterIds] asks for into
+/// [PreparedSourceLayer.matches], which takes that scan off the UI
+/// isolate's first use of the tile.
+PreparedTile prepareTileSync(PrepareInput input, {CompiledFilters? filters}) {
   final mvt = decodeMvt(maybeGunzip(input.bytes));
   final layers = <String, PreparedSourceLayer>{};
   var byteSize = 128;
@@ -73,12 +87,19 @@ PreparedTile prepareTileSync(PrepareInput input) {
         maxY: feature.maxY,
       ));
     }
-    if (features.isNotEmpty) {
-      layers[layer.name] = PreparedSourceLayer(
-        extent: layer.extent,
-        features: features,
-      );
+    if (features.isEmpty) continue;
+    final filterIds = input.filterIds?[layer.name];
+    final matches = filters == null || filterIds == null
+        ? const <int, Int32List?>{}
+        : _resolveFilters(filterIds, filters, features);
+    for (final indices in matches.values) {
+      byteSize += 16 + (indices?.lengthInBytes ?? 0);
     }
+    layers[layer.name] = PreparedSourceLayer(
+      extent: layer.extent,
+      features: features,
+      matches: matches,
+    );
   }
 
   return PreparedTile(
@@ -86,4 +107,38 @@ PreparedTile prepareTileSync(PrepareInput input) {
     layers: layers,
     byteSize: byteSize,
   );
+}
+
+/// The features each of [ids] selects, as `PreparedSourceLayer.matches`
+/// holds them. Evaluates exactly what `MatchedFeatures` would on the UI
+/// isolate, so the two agree.
+Map<int, Int32List?> _resolveFilters(
+  Int32List ids,
+  CompiledFilters filters,
+  List<PreparedFeature> features,
+) {
+  final matches = <int, Int32List?>{};
+  // One context per feature, shared by every filter: they are
+  // immutable, and the zoom is never read — the filters are zoom-free.
+  final contexts = [
+    for (final feature in features)
+      EvalContext(
+        zoom: 0,
+        properties: feature.properties,
+        geometryType: feature.geometryType,
+        featureId: feature.id,
+      ),
+  ];
+  final scratch = Int32List(features.length);
+  for (final id in ids) {
+    final filter = filters[id];
+    if (filter == null) continue;
+    var count = 0;
+    for (var i = 0; i < contexts.length; i++) {
+      if (toBoolean(filter(contexts[i]))) scratch[count++] = i;
+    }
+    // Every feature: null, so the UI shares the feature list itself.
+    matches[id] = count == features.length ? null : scratch.sublist(0, count);
+  }
+  return matches;
 }

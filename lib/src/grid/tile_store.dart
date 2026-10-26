@@ -10,6 +10,7 @@ import '../core/tile_zoom.dart';
 import '../logger.dart';
 import '../pipeline/executor/executor.dart';
 import '../pipeline/prepared_tile.dart';
+import '../pipeline/tile_filters.dart';
 import '../pipeline/tile_processor.dart';
 import '../provider/vector_tile_provider.dart';
 import 'tile_byte_loader.dart';
@@ -28,6 +29,14 @@ class TileStore {
 
   /// Per source-layer property keep-lists derived from the theme.
   final Map<String, Set<String>?> layerProperties;
+
+  /// The theme's zoom-free layer filters over this source, which the
+  /// executor's workers resolve while preparing a tile. Not part of the
+  /// memory cache's signature: match lists are keyed by filter, so a
+  /// tile prepared for another theme over the same source still serves
+  /// this one — every filter the two share is resolved, and the rest
+  /// fall back to the UI isolate.
+  final TileFilterPlan? filterPlan;
 
   /// Decoded tiles, shared process-wide between every store built on the
   /// same source *and* the same property keep-lists.
@@ -58,6 +67,7 @@ class TileStore {
     required this.provider,
     required this.executor,
     required this.layerProperties,
+    this.filterPlan,
     Future<ByteCache?>? diskCache,
     int memoryCacheMaxBytes = 32 * 1024 * 1024,
     this.logger = const Logger.noop(),
@@ -175,6 +185,7 @@ class TileStore {
             y: dataKey.y,
             bytes: bytes,
             layerProperties: layerProperties,
+            filterIds: filterPlan?.idsAt(dataKey.z),
           ),
           priority: priority,
           cancellation: cancellation,
@@ -270,6 +281,7 @@ class TileStore {
             y: dataKey.y,
             bytes: bytes,
             layerProperties: layerProperties,
+            filterIds: filterPlan?.idsAt(dataKey.z),
           ),
           priority: priority,
           cancellation: _lifetime,

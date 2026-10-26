@@ -161,6 +161,35 @@ void main() {
     }
   });
 
+  test('worker matches are read without evaluating the filter', () {
+    final features = _features();
+    final layer = _fillTheme([
+      '==',
+      ['get', 'class'],
+      'park'
+    ]).layers.single;
+    final everything = _fillTheme(['has', 'class']).layers.single;
+    final sourceLayer = PreparedSourceLayer(
+      extent: 4096,
+      features: features,
+      matches: {
+        layer.filterId!: Int32List.fromList([0, 2, 5]),
+        everything.filterId!: null,
+      },
+    );
+
+    expect(MatchedFeatures.of(layer, sourceLayer),
+        [features[0], features[2], features[5]]);
+    expect(MatchedFeatures.of(everything, sourceLayer), same(features),
+        reason: 'a null entry is every feature: the source list itself');
+    expect(_classReads, 0);
+
+    // A filter the worker did not resolve is scanned here, as before.
+    final other = _fillTheme(['==', 'class', 'wood']).layers.single;
+    expect(MatchedFeatures.of(other, sourceLayer), [features[1], features[6]]);
+    expect(_classReads, features.length);
+  });
+
   test('an unfiltered layer shares the source list instead of copying it', () {
     final sourceLayer = _tile(_features()).layers['landuse']!;
     final layer = _fillTheme(null).layers.single;

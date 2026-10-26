@@ -24,6 +24,7 @@ import 'label_mode.dart';
 import 'logger.dart';
 import 'pipeline/executor/executor.dart';
 import 'pipeline/prepared_tile.dart';
+import 'pipeline/tile_filters.dart';
 import 'render/display_tile_data.dart';
 import 'render/fade.dart';
 import 'render/label_continuity.dart';
@@ -664,6 +665,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         provider: provider,
         executor: _executor,
         layerProperties: layerProperties,
+        filterPlan: TileFilterPlan(
+          widget.theme.layers.where((layer) => layer.source == sourceId),
+          minimumZoom: provider.minimumZoom,
+          maximumZoom: provider.maximumZoom,
+        ),
         diskCache: _diskCache,
         memoryCacheMaxBytes: widget.memoryCacheMaxBytes,
         logger: widget.logger,

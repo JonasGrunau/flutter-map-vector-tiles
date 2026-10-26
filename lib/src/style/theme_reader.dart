@@ -3,6 +3,7 @@ import 'dart:ui' show Color;
 import '../logger.dart';
 import 'expression.dart';
 import 'expression_parser.dart';
+import 'filter_ids.dart';
 import 'theme.dart';
 
 /// Compiles a MapLibre/Mapbox GL style JSON document into a [Theme].
@@ -208,6 +209,9 @@ class ThemeReader {
       logger.warn('layer "$id": $warning');
     }
     layer.filterReadsZoom = filterReadsZoom;
+    if (!filterReadsZoom && layer.sourceLayer != null) {
+      layer.filterId = FilterIds.intern(json['filter']);
+    }
     if (layer is! BackgroundThemeLayer) {
       layer.referencedProperties =
           parser.referencesAllProperties ? null : parser.referencedProperties;
