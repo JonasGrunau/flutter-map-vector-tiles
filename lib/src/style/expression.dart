@@ -1,6 +1,37 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' show Color;
 
+import 'package:meta/meta.dart';
+
 import 'css_color.dart';
+
+/// The geometry of the feature being evaluated, in the data tile it was
+/// decoded from — what `within` and `distance` read. The renderer builds
+/// one only for layers whose expressions use them
+/// (`ThemeLayer.readsGeometry`); everywhere else [EvalContext.geometry]
+/// is null and those operators answer as for a feature without
+/// geometry.
+@internal
+final class FeatureGeometry {
+  /// The data tile, whose extent the coordinates in [parts] span.
+  final int z, x, y;
+  final int extent;
+
+  /// 'Point', 'LineString' or 'Polygon' — see `PreparedFeature.parts`
+  /// for how each lays out its runs.
+  final String type;
+  final List<Float32List> parts;
+
+  const FeatureGeometry({
+    required this.z,
+    required this.x,
+    required this.y,
+    required this.extent,
+    required this.type,
+    required this.parts,
+  });
+}
 
 /// Evaluation context for compiled style expressions.
 class EvalContext {
@@ -19,12 +50,18 @@ class EvalContext {
   /// Bindings introduced by `let`.
   final Map<String, Object?>? vars;
 
+  /// The feature's geometry, for `within` and `distance`; null unless
+  /// the layer being evaluated reads it.
+  @internal
+  final FeatureGeometry? geometry;
+
   const EvalContext({
     required this.zoom,
     this.properties = const {},
     this.geometryType = '',
     this.featureId,
     this.vars,
+    @internal this.geometry,
   });
 
   EvalContext withVars(Map<String, Object?> newVars) => EvalContext(
@@ -33,6 +70,7 @@ class EvalContext {
         geometryType: geometryType,
         featureId: featureId,
         vars: {...?vars, ...newVars},
+        geometry: geometry,
       );
 
   static const empty = EvalContext(zoom: 0);
@@ -81,8 +119,21 @@ String toStringValue(Object? v) {
     return 'rgba(${chan(v.r).round()},${chan(v.g).round()},'
         '${chan(v.b).round()},${v.a})';
   }
+  // Arrays and objects as JSON, as the style spec's `to-string` does.
+  if (v is List || v is Map) return _json(v);
   return v.toString();
 }
+
+String _json(Object? v) => switch (v) {
+      null => 'null',
+      final String s => jsonEncode(s),
+      num _ || bool _ => toStringValue(v),
+      final List<Object?> l => '[${l.map(_json).join(',')}]',
+      final Map<Object?, Object?> m => '{${m.entries.map(
+            (e) => '${jsonEncode('${e.key}')}:${_json(e.value)}',
+          ).join(',')}}',
+      _ => jsonEncode(toStringValue(v)),
+    };
 
 Color? toColor(Object? v) {
   if (v is Color) return v;

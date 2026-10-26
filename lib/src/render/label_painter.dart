@@ -1078,6 +1078,7 @@ class LabelPainter {
         properties: instance.properties,
         geometryType: instance.geometryType,
         featureId: instance.featureId,
+        geometry: instance.geometry,
       );
       if (layer.textOpacity.eval(ctx) <= 0) continue;
       final size = layer.textSize.eval(ctx);
@@ -1145,6 +1146,7 @@ class LabelPainter {
       properties: instance.properties,
       geometryType: instance.geometryType,
       featureId: instance.featureId,
+      geometry: instance.geometry,
     );
 
     // A label the style has faded out is skipped rather than laid out:
