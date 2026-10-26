@@ -68,6 +68,7 @@ FlutterMap(
       tileProviders: style.providers,
       rasterSources: style.rasterSources,
       sprites: style.sprites,
+      glyphs: style.glyphs, // labels in the style's own fonts
     ),
     // Show what the style's sources ask for; most providers require it.
     SimpleAttributionWidget(
@@ -88,7 +89,7 @@ tag they came from. Build from those when your provider's terms call for
 ```dart
 @override
 void dispose() {
-  style.dispose(); // releases HTTP clients & sprite images
+  style.dispose(); // releases HTTP clients, sprite images & glyphs
   super.dispose();
 }
 ```
@@ -123,6 +124,7 @@ vt.VectorTileLayer(
   tileProviders: style.providers,
   rasterSources: style.rasterSources,          // satellite/hybrid imagery
   sprites: style.sprites,
+  glyphs: style.glyphs,                        // the style's fonts
   tileOffset: vt.TileOffset.maplibre,          // 512px style convention (default)
   concurrency: 3,                              // decoding isolates
   diskCacheMaximumSizeInBytes: 50 * 1024 * 1024,
@@ -140,6 +142,7 @@ vt.VectorTileLayer(
 
 | Parameter | Default | What it does |
 |---|---|---|
+| `glyphs` | none | the style's `glyphs` (`style.glyphs`): labels drawn in the style's own fonts, laid out without the platform's text shaper. Without them every label uses the system font. See [Fonts](#fonts) |
 | `tileOffset` | `TileOffset.maplibre` | zoom relation between map and style, see below 👇 |
 | `concurrency` | `3` | worker isolates decoding tiles off the UI thread (ignored on web) |
 | `diskCacheMaximumSizeInBytes` | 50 MB | `0` disables disk caching (no effect on web) |
@@ -180,7 +183,7 @@ lost focus, the other half of an Android split screen) keeps rendering.
   style references. For `mapbox://` URIs (style ids, sprite bases and
   tileset sources, expanded to `api.mapbox.com` automatically) it is the
   access token.
-- `headers`, added to the style, TileJSON and sprite requests and
+- `headers`, added to the style, TileJSON, sprite and glyph requests and
   forwarded to the created tile providers, for header-authenticated
   services such as `Authorization`.
 - `httpClient`, your own `http.Client` for proxying, certificate pinning
@@ -205,8 +208,9 @@ authored against that convention.
 
 Everything you looked at recently keeps working without network:
 
-- **Style bundle.** `StyleReader` caches style.json, TileJSON and sprites
-  on disk, stale-while-revalidate: the cached copy is served instantly,
+- **Style bundle.** `StyleReader` caches style.json, TileJSON, sprites
+  and every glyph range a map has drawn with on disk,
+  stale-while-revalidate: the cached copy is served instantly,
   including fully offline, and refreshed in the background once older than
   `refreshAfter` (12 h default). Opt out with `StyleReader(cache: false)`.
 - **Tiles.** Served from disk while fresh. Past `diskCacheTtl` they still
@@ -241,8 +245,8 @@ native:
   browser's HTTP cache instead.
 - **Decoding runs on the event loop.** A yielding queue replaces the
   worker-isolate pool, and `concurrency` is ignored.
-- **CORS.** The browser fetches style.json, TileJSON, sprites and tiles
-  directly, so every host involved must send
+- **CORS.** The browser fetches style.json, TileJSON, sprites, glyphs and
+  tiles directly, so every host involved must send
   `Access-Control-Allow-Origin`. MapTiler, OpenFreeMap and Stadia do;
   self-hosted tile servers need it configured. PMTiles hosts additionally
   need range requests to pass CORS, meaning `Range` in
@@ -395,6 +399,8 @@ mode](#choosing-a-label-mode) has what changes then.
   Tibetan, written without spaces, stay on one line, as they do there.
   One difference: Korean may also break between two syllables of a
   word, where MapLibre breaks it only at spaces.
+  Labels drawn in the style's fonts (see [Fonts](#fonts)) are also
+  balanced as MapLibre balances them.
 - **Each line reads in its own direction.** Every line of the text
   field takes its direction from its first letter, as in MapLibre, and
   the lines `text-max-width` wraps it into keep that direction: an
@@ -469,6 +475,41 @@ mode](#choosing-a-label-mode) has what changes then.
   fades out instead of vanishing. An unchanged
   repaint creates no new placement work, so the animation ticker settles
   when the last real change has been placed.
+
+#### Fonts
+
+Pass `glyphs: style.glyphs` and labels are drawn in the style's own
+fonts, from the glyph PBFs its `glyphs` URL serves, as MapLibre draws
+them: Noto Sans for OpenFreeMap, whatever your MapTiler or self-hosted
+style was designed with. Without it every label uses the system font.
+
+- **Which labels.** Latin (with its accents and the letters of every
+  European language), Greek, Cyrillic, Armenian and Georgian, digits
+  and punctuation. A label with anything else keeps the system font
+  and the platform's text shaper, which handles what glyph PBFs can't:
+  right-to-left scripts, Indic and Southeast Asian scripts, combining
+  marks, emoji. So do CJK labels — MapLibre also draws those from a
+  local font by default, since their glyph ranges are large — and
+  labels whose glyphs the font lacks.
+- **Laid out like MapLibre.** Advances, `text-letter-spacing`,
+  `text-max-width` wrapping into balanced lines (a two-line name gets
+  two similar lines, not a full line and a dangling word), 1.2 em line
+  spacing, halos at MapLibre's distance-field threshold.
+- **Cheaper to lay out.** The text is laid out in Dart from the glyph
+  metrics, not by the platform's text shaper, which on a dense tile
+  was the largest single cost on the UI thread: 31–32 ms for one dense
+  Munich tile on a Nothing Phone (1), against 0.7–0.8 ms now.
+- **Loading.** Ranges of 256 characters are fetched on first use, about
+  75–135 KB each for the Latin ones; `StyleReader` asks for the first
+  range of every font while the style loads. A tile's labels wait for
+  the ranges they need rather than appearing in the system font and
+  switching — for up to 5 s, after which a slow connection gets them
+  in the system font until the range arrives. Ranges go through the
+  style cache, so they are there offline wherever the map has been; a
+  range that cannot be loaded leaves its labels in the system font.
+- **Your own glyphs.** `GlyphSource(load: …)` reads ranges from
+  anywhere, assets included, for a fully offline map with the style's
+  fonts.
 
 #### Choosing a label mode
 
@@ -693,7 +734,9 @@ runs a short version of the benchmark in your browser.
   Magenta from *decoded* images, meaning sprites and raster sources, is
   the same iOS bug one layer down and outside this package's reach
   ([flutter#166668](https://github.com/flutter/flutter/issues/166668),
-  fixed in 3.32), so keep your Flutter up to date.
+  fixed in 3.32), so keep your Flutter up to date. Glyph ranges are
+  decoded images too; one hit by it shows its labels as solid blocks in
+  the text colour.
 
 ## 🤝 Contributing
 

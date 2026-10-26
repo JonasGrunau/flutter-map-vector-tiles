@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- ✨ **Style fonts**: `VectorTileLayer.glyphs` takes the style's glyph
+  PBFs, which `StyleReader` now loads as `Style.glyphs` for every style
+  that declares `glyphs`. Labels in Latin, Greek, Cyrillic, Armenian and
+  Georgian are then drawn in the style's own fonts, as MapLibre draws
+  them, wrapped into balanced lines as MapLibre wraps them, and laid out
+  in Dart from the glyphs' metrics instead of by the platform's text
+  shaper. Text that needs complex shaping (right-to-left and Indic
+  scripts, Thai and its neighbours, combining marks, emoji), CJK, and
+  text whose glyphs are missing keep the system fonts. Glyph ranges load
+  on first use, go through the style cache (so they work offline where
+  the map has been), and a tile's labels wait for theirs instead of
+  switching fonts once they arrive. New public API: `GlyphSource`,
+  `GlyphRangeLoader`.
+- ⚡ With `glyphs`, laying out a tile's labels takes a small fraction
+  of the UI-thread time it did: the 222 label candidates of a dense
+  Munich tile took 31–32 ms of platform text shaping on a Nothing
+  Phone (1) and now take 0.7–0.8 ms, and the first labels of a session
+  no longer pay the ~20 ms of the platform's first shaping call. A
+  shaped label also keeps about a hundred bytes in the text cache
+  instead of two `TextPainter`s.
 - 🐛 An Arabic or Hebrew label holding a Latin word read from the left:
   labels were laid out left to right whatever their script, so
   "شارع King Fahd" drew the Arabic word first, on the left. Each line
