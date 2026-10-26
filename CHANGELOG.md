@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- 🐛 An Arabic or Hebrew label holding a Latin word read from the left:
+  labels were laid out left to right whatever their script, so
+  "شارع King Fahd" drew the Arabic word first, on the left. Each line
+  now takes its direction from its first letter, as in MapLibre, and a
+  line `text-max-width` wraps keeps the direction of the text it came
+  from.
+- 🐛 Chinese labels never wrapped at `text-max-width`: the text engine
+  reports a run of ideographs without a space as one unbreakable word,
+  so the whole name stayed on one line. Chinese and Japanese now break
+  between characters, as in MapLibre.
+- 🐛 A label with a word wider than `text-max-width` could split a
+  word across two lines: when a line began with a character made of
+  several code units (a Bengali or Devanagari syllable, an emoji, a
+  letter with a combining accent), that character stayed at the end of
+  the line above — "হযরত শা" over "হজালাল".
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same
