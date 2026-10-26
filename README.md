@@ -30,6 +30,7 @@ layers; this package only draws the map.
 | 💾 **Deterministic caching** | LRU memory caches with byte budgets, plus a size-capped disk cache with no index files to corrupt. Every `ui.Image` is disposed on eviction |
 | ✈️ **Works offline** | The style bundle and recently viewed tiles are cached on disk (native), so places you visited keep rendering with no network |
 | 🌐 **All six platforms** | Android, iOS, macOS, Linux, Windows and web. See [Web support](#-web-support) for the browser differences |
+| 👆 **Queries and feature state** | Ask what is drawn at a tap, labels included, with the style layer that drew it, and highlight features through `feature-state` in the style; a change re-renders only the tiles that draw the feature. See [Querying features and feature state](#-querying-features-and-feature-state) |
 | 🛡️ **Tolerant style reader** | Unknown layer types and exotic expressions degrade per layer with a warning, so one weird layer never kills your map |
 
 ## 🚀 Quick start
@@ -415,6 +416,13 @@ layer that reads state, ahead of other queued work and without a fade;
 labels keep their placement, and screen-space labels whose paint reads
 state follow on the next frame. STATE_COST. Feature ids come from the
 tiles, or from the property a source's `promoteId` names.
+
+A feature is whatever the tiles encode as one, and some tiles merge.
+OpenFreeMap's, for one, join neighbouring buildings with the same
+attributes into a single multipolygon with a single id (up to 1,563
+buildings in one feature in central Munich at z14), so a query returns
+that whole group and selecting it highlights all of it, as MapLibre
+would.
 
 ## 🎨 Style support
 
