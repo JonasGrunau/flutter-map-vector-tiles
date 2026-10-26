@@ -68,6 +68,15 @@ sealed class ThemeLayer {
   @internal
   bool filterReadsZoom = true;
 
+  /// Whether any of this layer's properties reads `feature-state`. Only
+  /// such a layer can draw a feature differently when its state changes,
+  /// so a state change re-renders just the display tiles that hold the
+  /// feature *and* are drawn by a layer that reads it. Assigned by the
+  /// theme reader. Not for use outside this package: false on a layer
+  /// that does read state would leave its tiles drawn with the old one.
+  @internal
+  bool readsFeatureState = false;
+
   ThemeLayer({
     required this.id,
     required this.source,

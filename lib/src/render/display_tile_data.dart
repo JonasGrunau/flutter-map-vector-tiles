@@ -1,6 +1,7 @@
 import '../core/tile_key.dart';
 import '../grid/raster_tile_store.dart';
 import '../pipeline/prepared_tile.dart';
+import '../style/feature_state.dart';
 
 /// The prepared data backing one *display* tile, per style source.
 ///
@@ -30,12 +31,17 @@ class DisplayTileData {
   /// as [descendantSources]. Borrowed like [rasters].
   final Map<String, List<RasterTile>> descendantRasters;
 
+  /// The feature state layers reading `feature-state` are drawn with;
+  /// null draws every feature stateless.
+  final FeatureStates? featureStates;
+
   const DisplayTileData({
     required this.displayKey,
     required this.sources,
     this.rasters = const {},
     this.descendantSources = const {},
     this.descendantRasters = const {},
+    this.featureStates,
   });
 
   bool get isEmpty =>

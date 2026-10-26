@@ -208,6 +208,7 @@ class ThemeReader {
       logger.warn('layer "$id": $warning');
     }
     layer.filterReadsZoom = filterReadsZoom;
+    layer.readsFeatureState = parser.readsFeatureState;
     if (layer is! BackgroundThemeLayer) {
       layer.referencedProperties =
           parser.referencesAllProperties ? null : parser.referencedProperties;

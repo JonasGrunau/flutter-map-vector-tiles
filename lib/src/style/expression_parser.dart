@@ -35,6 +35,13 @@ class ExpressionParser {
   bool get readsZoom => _readsZoom;
   bool _readsZoom = false;
 
+  /// Whether anything parsed so far reads `["feature-state", …]`. Sticky,
+  /// like [readsZoom]: the theme reader samples it once a layer's
+  /// properties are parsed, and only the display tiles of a layer that
+  /// reads state are rendered again when a feature's state changes.
+  bool get readsFeatureState => _readsFeatureState;
+  bool _readsFeatureState = false;
+
   /// Parses one style property, additionally reporting whether the
   /// compiled expression is zoom-only (reads no feature data). The
   /// typed property wrappers memoize zoom-only results against the
@@ -574,9 +581,18 @@ class ExpressionParser {
       case 'ln2':
         return (_) => math.ln2;
 
-      // --- feature state / heatmap — not applicable here ---
+      // --- feature state ---
       case 'feature-state':
-        return (_) => null;
+        // Feature data like any property: a property reading it is never
+        // memoized against the zoom.
+        _readsFeature = true;
+        _readsFeatureState = true;
+        final key = a.length > 1 ? a[1] : null;
+        if (key is String) return (ctx) => ctx.featureState?[key];
+        final keyExpr = parse(key);
+        return (ctx) => ctx.featureState?[toStringValue(keyExpr(ctx))];
+
+      // --- heatmap / line metrics — not applicable here ---
       case 'heatmap-density':
       case 'line-progress':
       case 'accumulated':

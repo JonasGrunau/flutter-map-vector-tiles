@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import '../cache/lru_cache.dart';
 import '../core/tile_key.dart';
+import '../render/hit_test.dart';
 import '../render/symbol_layouter.dart';
 
 /// A finished display tile: the rasterized geometry image plus the
@@ -20,10 +21,15 @@ class TileResult {
   /// tile so refresh logic can tell recovered sources apart.
   final Set<String> renderedWith;
 
+  /// `LabelMode.tile` only: the labels drawn into [image], for
+  /// rendered-feature queries.
+  final List<LabelHit> labelHits;
+
   TileResult({
     required this.image,
     required this.symbols,
     required this.renderedWith,
+    this.labelHits = const [],
   });
 }
 
@@ -129,10 +135,15 @@ class TileResultCache {
     required ui.Image? image,
     required List<SymbolInstance> symbols,
     required Set<String> renderedWith,
+    List<LabelHit> labelHits = const [],
   }) {
     _cache.put(
       key,
-      TileResult(image: image, symbols: symbols, renderedWith: renderedWith),
+      TileResult(
+          image: image,
+          symbols: symbols,
+          renderedWith: renderedWith,
+          labelHits: labelHits),
     );
   }
 

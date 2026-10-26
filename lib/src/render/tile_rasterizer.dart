@@ -10,6 +10,7 @@ import '../core/tile_zoom.dart';
 import '../grid/raster_tile_store.dart';
 import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
+import '../style/feature_state.dart';
 import '../style/theme.dart';
 import 'display_tile_data.dart';
 import 'geometry_clipper.dart';
@@ -297,6 +298,17 @@ class TileRasterizer {
     return (painted: painted, next: layers.length);
   }
 
+  /// The tile-extent → logical-pixel transform features of data tile
+  /// [data] are drawn into display tile [display] through, as
+  /// `(scale, dx, dy)`: logical = extent · scale + d. For rendered-
+  /// feature queries, which map the query into extent units with its
+  /// inverse rather than every feature into pixels.
+  static ({double scale, double dx, double dy}) displayTransform(
+      TileKey display, TileKey data, int extent) {
+    final t = _TileTransform.forDisplay(display, data, extent);
+    return (scale: t.scale, dx: t.offsetX, dy: t.offsetY);
+  }
+
   /// Iterates the features of [layer]'s source-layer, calling [visit]
   /// with the feature, its evaluation context (already used for the
   /// layer filter — visitors must not rebuild it), the
@@ -375,6 +387,12 @@ class TileRasterizer {
             ? ClipRect(cullMinX, cullMinY, cullMaxX, cullMaxY)
             : null;
 
+    // Fetched once per layer: an empty source layer — or a layer that
+    // never reads it — costs no lookup per feature.
+    final states = layer.readsFeatureState
+        ? data.featureStates?.sourceLayer(layer.source, sourceLayerName)
+        : null;
+
     // A zoom-free filter was resolved once for the whole prepared tile;
     // only a zoom-reading one is still tested here, per display tile.
     final matched = MatchedFeatures.of(layer, sourceLayer);
@@ -392,6 +410,7 @@ class TileRasterizer {
         properties: feature.properties,
         geometryType: feature.geometryType,
         featureId: feature.id,
+        featureState: FeatureStates.stateOf(states, feature.id),
       );
       if (matched == null && !layer.matches(ctx)) continue;
       // Fully-contained geometry takes the exact unclipped path.

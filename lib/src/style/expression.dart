@@ -16,6 +16,11 @@ class EvalContext {
 
   final Object? featureId;
 
+  /// The feature's state as set through
+  /// `VectorTileLayerController.setFeatureState`, read by the
+  /// `feature-state` expression; null when the feature has none.
+  final Map<String, Object?>? featureState;
+
   /// Bindings introduced by `let`.
   final Map<String, Object?>? vars;
 
@@ -24,6 +29,7 @@ class EvalContext {
     this.properties = const {},
     this.geometryType = '',
     this.featureId,
+    this.featureState,
     this.vars,
   });
 
@@ -32,6 +38,7 @@ class EvalContext {
         properties: properties,
         geometryType: geometryType,
         featureId: featureId,
+        featureState: featureState,
         vars: {...?vars, ...newVars},
       );
 
