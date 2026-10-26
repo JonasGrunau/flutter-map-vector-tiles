@@ -13,9 +13,12 @@ class Theme {
   const Theme({required this.id, required this.layers});
 
   /// Evaluates the background color at [zoom] (first background layer).
+  /// Null when that layer is patterned: a `background-pattern` replaces
+  /// the colour, per spec, so it is no colour to fill gaps with.
   Color? backgroundColor(double zoom) {
     for (final layer in layers) {
       if (layer is BackgroundThemeLayer && layer.coversZoom(zoom)) {
+        if (layer.pattern != null) return null;
         final ctx = EvalContext(zoom: zoom);
         final opacity = layer.opacity.eval(ctx).clamp(0.0, 1.0);
         final color = layer.color.eval(ctx);
@@ -102,6 +105,10 @@ class BackgroundThemeLayer extends ThemeLayer {
   final ColorProp color;
   final DoubleProp opacity;
 
+  /// Sprite name for `background-pattern`. When set (and the sprite
+  /// resolves), the pattern replaces the colour, per spec.
+  final StringProp? pattern;
+
   BackgroundThemeLayer({
     required super.id,
     required this.color,
@@ -109,6 +116,7 @@ class BackgroundThemeLayer extends ThemeLayer {
     required super.minzoom,
     required super.maxzoom,
     required super.filter,
+    this.pattern,
   }) : super(source: null, sourceLayer: null, referencedProperties: null);
 }
 
@@ -129,6 +137,17 @@ class FillThemeLayer extends ThemeLayer {
   /// colour is ignored, as the spec says.
   final bool extrusion;
 
+  /// `fill-translate` (or `fill-extrusion-translate`): the `[x, y]`
+  /// offset of the geometry in pixels, null when unset. The anchor
+  /// property is not read: a tile is drawn once and rotated with the
+  /// map, so `viewport` is drawn as `map`, which it equals while the map
+  /// is not rotated.
+  final NumListProp? translate;
+
+  /// `fill-sort-key`: features with a higher key are drawn above those
+  /// with a lower one. Null when unset, which keeps source order.
+  final DoubleProp? sortKey;
+
   FillThemeLayer({
     required super.id,
     required super.source,
@@ -142,6 +161,8 @@ class FillThemeLayer extends ThemeLayer {
     required this.antialias,
     this.pattern,
     this.extrusion = false,
+    this.translate,
+    this.sortKey,
   });
 }
 
@@ -158,6 +179,25 @@ class LineThemeLayer extends ThemeLayer {
   /// the pattern replaces the color stroke and dash array, per spec.
   final StringProp? pattern;
 
+  /// `line-translate`, as [FillThemeLayer.translate].
+  final NumListProp? translate;
+
+  /// `line-offset`: pixels to the right of the line's direction (an
+  /// inset for a polygon's outline), negative to the left. Null when
+  /// unset.
+  final DoubleProp? offset;
+
+  /// `line-blur`: pixels over which the line's edges fade out. Null
+  /// when unset.
+  final DoubleProp? blur;
+
+  /// `line-miter-limit`: the miter length, in line widths, past which a
+  /// miter join is drawn beveled. Null means the spec default, 2.
+  final DoubleProp? miterLimit;
+
+  /// `line-sort-key`, as [FillThemeLayer.sortKey].
+  final DoubleProp? sortKey;
+
   LineThemeLayer({
     required super.id,
     required super.source,
@@ -173,6 +213,11 @@ class LineThemeLayer extends ThemeLayer {
     required this.cap,
     required this.join,
     this.pattern,
+    this.translate,
+    this.offset,
+    this.blur,
+    this.miterLimit,
+    this.sortKey,
   });
 }
 
@@ -187,6 +232,11 @@ class RasterThemeLayer extends ThemeLayer {
   final DoubleProp saturation;
   final DoubleProp hueRotate; // degrees
 
+  /// `resampling` (or the older `raster-resampling`): `linear` or
+  /// `nearest`, how an overzoomed image is magnified. Null means
+  /// `linear`.
+  final StringProp? resampling;
+
   RasterThemeLayer({
     required super.id,
     required super.source,
@@ -199,6 +249,7 @@ class RasterThemeLayer extends ThemeLayer {
     required this.contrast,
     required this.saturation,
     required this.hueRotate,
+    this.resampling,
   }) : super(sourceLayer: null, referencedProperties: const {});
 }
 
@@ -207,8 +258,21 @@ class CircleThemeLayer extends ThemeLayer {
   final ColorProp color;
   final DoubleProp opacity;
   final ColorProp strokeColor;
+
+  /// `circle-stroke-width`: drawn outside [radius], per spec.
   final DoubleProp strokeWidth;
   final DoubleProp strokeOpacity;
+
+  /// `circle-blur`: the fraction of the circle's radius (stroke
+  /// included) over which it fades out; 1 leaves only the centre at
+  /// full opacity. Null when unset.
+  final DoubleProp? blur;
+
+  /// `circle-translate`, as [FillThemeLayer.translate].
+  final NumListProp? translate;
+
+  /// `circle-sort-key`, as [FillThemeLayer.sortKey].
+  final DoubleProp? sortKey;
 
   CircleThemeLayer({
     required super.id,
@@ -223,6 +287,9 @@ class CircleThemeLayer extends ThemeLayer {
     required this.strokeColor,
     required this.strokeWidth,
     required this.strokeOpacity,
+    this.blur,
+    this.translate,
+    this.sortKey,
   });
 }
 

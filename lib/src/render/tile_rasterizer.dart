@@ -270,24 +270,18 @@ class TileRasterizer {
         ..start();
       switch (layer) {
         case BackgroundThemeLayer():
-          final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
-          final color = _withOpacity(layer.color.eval(zoomCtx), opacity);
-          if (color.a == 0) continue;
-          canvas.drawRect(
-            const Rect.fromLTWH(
-                -4, -4, logicalTileSize + 8, logicalTileSize + 8),
-            Paint()..color = color,
-          );
-          painted = true;
+          painted |= _paintBackground(
+              canvas, layer, data.displayKey, zoomCtx, patterns);
         case FillThemeLayer():
           painted |=
               _paintFill(canvas, layer, data, styleZoom, patterns, pixelScale);
         case LineThemeLayer():
-          painted |= _paintLine(canvas, layer, data, styleZoom, patterns);
+          painted |=
+              _paintLine(canvas, layer, data, styleZoom, patterns, pixelScale);
         case RasterThemeLayer():
           painted |= _paintRaster(canvas, layer, data, zoomCtx);
         case CircleThemeLayer():
-          painted |= _paintCircle(canvas, layer, data, styleZoom);
+          painted |= _paintCircle(canvas, layer, data, styleZoom, pixelScale);
         case SymbolThemeLayer():
           break; // skipped above: the label pass, in screen or tile space
       }
@@ -297,12 +291,56 @@ class TileRasterizer {
     return (painted: painted, next: layers.length);
   }
 
+  static bool _paintBackground(
+    Canvas canvas,
+    BackgroundThemeLayer layer,
+    TileKey displayKey,
+    EvalContext zoomCtx,
+    PatternResolver? patterns,
+  ) {
+    final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
+    const rect =
+        Rect.fromLTWH(-4, -4, logicalTileSize + 8, logicalTileSize + 8);
+    final patternProp = layer.pattern;
+    if (patternProp != null && patterns != null) {
+      final name = patternProp.eval(zoomCtx);
+      final image = name.isEmpty ? null : patterns.imageFor(name);
+      if (image != null) {
+        if (opacity == 0) return false;
+        canvas.drawRect(
+            rect,
+            _patternPaint(
+                image, patterns.pixelRatio, opacity, displayKey, true));
+        // Per spec, background-pattern disables background-color.
+        return true;
+      }
+      // Sprite missing: fall through to the colour.
+    }
+    final color = _withOpacity(layer.color.eval(zoomCtx), opacity);
+    if (color.a == 0) return false;
+    canvas.drawRect(rect, Paint()..color = color);
+    return true;
+  }
+
+  /// The `[x, y]` pixel offset a `*-translate` property evaluates to at
+  /// [zoom], or [Offset.zero] when it is unset or malformed.
+  static Offset _translate(NumListProp? prop, double zoom) {
+    if (prop == null) return Offset.zero;
+    final value = prop.eval(EvalContext(zoom: zoom));
+    return value.length == 2 ? Offset(value[0], value[1]) : Offset.zero;
+  }
+
   /// Iterates the features of [layer]'s source-layer, calling [visit]
   /// with the feature, its evaluation context (already used for the
   /// layer filter — visitors must not rebuild it), the
   /// tile-to-logical-pixels transform, and — at overzoom, for features
   /// not fully inside the buffered display window — the clip window in
   /// tile-extent units.
+  ///
+  /// [translate] (logical px) is folded into the transform, so the
+  /// culling and clip windows, which are derived from it, follow the
+  /// geometry. Features come in source order, or in ascending order of
+  /// the layer's sort key when it has one that reads the feature.
   static void _eachFeature(
     ThemeLayer layer,
     DisplayTileData data,
@@ -310,15 +348,16 @@ class TileRasterizer {
     PreparedGeomType? typeFilter,
     void Function(PreparedFeature feature, EvalContext ctx,
             _TileTransform transform, ClipRect? clip)
-        visit,
-  ) {
+        visit, {
+    Offset translate = Offset.zero,
+  }) {
     final source = layer.source;
     final sourceLayerName = layer.sourceLayer;
     if (source == null || sourceLayerName == null) return;
     final tile = data.sources[source];
     if (tile != null) {
-      _eachFeatureIn(
-          layer, data, tile, sourceLayerName, styleZoom, typeFilter, visit);
+      _eachFeatureIn(layer, data, tile, sourceLayerName, styleZoom, typeFilter,
+          translate, visit);
       return;
     }
     // Zoom-out substitution: no tile of its own, but cached descendants
@@ -329,7 +368,7 @@ class TileRasterizer {
     if (descendants == null) return;
     for (final descendant in descendants) {
       _eachFeatureIn(layer, data, descendant, sourceLayerName, styleZoom,
-          typeFilter, visit);
+          typeFilter, translate, visit);
     }
   }
 
@@ -340,6 +379,7 @@ class TileRasterizer {
     String sourceLayerName,
     double styleZoom,
     PreparedGeomType? typeFilter,
+    Offset translate,
     void Function(PreparedFeature feature, EvalContext ctx,
             _TileTransform transform, ClipRect? clip)
         visit,
@@ -347,8 +387,9 @@ class TileRasterizer {
     final sourceLayer = tile.layers[sourceLayerName];
     if (sourceLayer == null) return;
 
-    final transform = _TileTransform.forDisplay(
-        data.displayKey, tile.key, sourceLayer.extent);
+    final transform =
+        _TileTransform.forDisplay(data.displayKey, tile.key, sourceLayer.extent)
+            .translated(translate);
 
     // The display tile's sub-rect in tile-extent units, expanded by
     // [cullBufferPx]. At overzoom each display tile shows a tiny window
@@ -378,7 +419,12 @@ class TileRasterizer {
     // A zoom-free filter was resolved once for the whole prepared tile;
     // only a zoom-reading one is still tested here, per display tile.
     final matched = MatchedFeatures.of(layer, sourceLayer);
-    for (final feature in matched ?? sourceLayer.features) {
+    var features = matched ?? sourceLayer.features;
+    final sortKey = _sortKeyOf(layer);
+    if (sortKey != null) {
+      features = _sortedFeatures(features, layer, sortKey, styleZoom);
+    }
+    for (final feature in features) {
       if (typeFilter != null && feature.type != typeFilter) continue;
       if (cull &&
           (feature.maxX < cullMinX ||
@@ -404,6 +450,56 @@ class TileRasterizer {
     }
   }
 
+  /// The sort key [layer] orders its features by, or null when it has
+  /// none or one that cannot tell features apart (constant, or reading
+  /// only the zoom), so source order stands.
+  static DoubleProp? _sortKeyOf(ThemeLayer layer) {
+    final key = switch (layer) {
+      FillThemeLayer(:final sortKey) => sortKey,
+      LineThemeLayer(:final sortKey) => sortKey,
+      CircleThemeLayer(:final sortKey) => sortKey,
+      _ => null,
+    };
+    return key == null || key.isConstant || key.zoomOnly ? null : key;
+  }
+
+  /// [features] stably sorted by [layer]'s [sortKey] at [zoom], as
+  /// MapLibre draws them: ascending, so a higher key lands on top.
+  ///
+  /// Every display tile cut from one data tile at one zoom draws the
+  /// same order, so it is computed once and kept against the list —
+  /// weakly, like `MatchedFeatures`, living as long as the prepared tile
+  /// and keyed by layer identity — and recomputed only for another zoom,
+  /// which a key is allowed to read.
+  static List<PreparedFeature> _sortedFeatures(List<PreparedFeature> features,
+      ThemeLayer layer, DoubleProp sortKey, double zoom) {
+    final byLayer = _sorted[features] ??= Expando();
+    final cached = byLayer[layer];
+    if (cached != null && cached.zoom == zoom) return cached.features;
+    final keys = Float64List(features.length);
+    for (var i = 0; i < features.length; i++) {
+      final feature = features[i];
+      keys[i] = sortKey.eval(EvalContext(
+        zoom: zoom,
+        properties: feature.properties,
+        geometryType: feature.geometryType,
+        featureId: feature.id,
+      ));
+    }
+    // List.sort is not stable: ties fall back to source order.
+    final order = List<int>.generate(features.length, (i) => i)
+      ..sort((a, b) {
+        final byKey = keys[a].compareTo(keys[b]);
+        return byKey != 0 ? byKey : a - b;
+      });
+    final sorted = [for (final i in order) features[i]];
+    byLayer[layer] = (zoom: zoom, features: sorted);
+    return sorted;
+  }
+
+  static final _sorted =
+      Expando<Expando<({double zoom, List<PreparedFeature> features})>>();
+
   static bool _paintFill(
     Canvas canvas,
     FillThemeLayer layer,
@@ -418,6 +514,7 @@ class TileRasterizer {
     var painted = false;
     final zoomCtx = EvalContext(zoom: styleZoom);
     final patternProp = layer.pattern;
+    final translate = _translate(layer.translate, styleZoom);
     // MapLibre's outline is its antialiasing pass, one device pixel wide
     // at any zoom, and `fill-antialias: false` turns it off.
     final outline = layer.antialias ? layer.outlineColor : null;
@@ -455,7 +552,8 @@ class TileRasterizer {
             canvas.drawPath(
               path,
               _patternPaint(image, patterns.pixelRatio, opacity,
-                  data.displayKey, layer.antialias),
+                  data.displayKey, layer.antialias,
+                  origin: translate),
             );
             painted = true;
           }
@@ -488,7 +586,7 @@ class TileRasterizer {
           painted = true;
         }
       }
-    });
+    }, translate: translate);
     return painted;
   }
 
@@ -516,6 +614,7 @@ class TileRasterizer {
     final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
     if (opacity == 0) return false;
     final patternProp = layer.pattern;
+    final translate = _translate(layer.translate, styleZoom);
     // Asked of the colour itself, as for fills: `["id"]` and
     // `["geometry-type"]` read the feature without naming a property.
     final oneColour =
@@ -526,7 +625,7 @@ class TileRasterizer {
       _eachFeature(layer, data, styleZoom, PreparedGeomType.polygon,
           (feature, ctx, transform, clip) {
         any |= _addPolygon(union, feature, transform, clip);
-      });
+      }, translate: translate);
       if (!any) return false;
       canvas.drawPath(
           union,
@@ -550,8 +649,9 @@ class TileRasterizer {
         if (image != null) {
           canvas.drawPath(
             path,
-            _patternPaint(image, patterns.pixelRatio, 1, data.displayKey,
-                layer.antialias),
+            _patternPaint(
+                image, patterns.pixelRatio, 1, data.displayKey, layer.antialias,
+                origin: translate),
           );
           painted = true;
           return;
@@ -564,7 +664,7 @@ class TileRasterizer {
             ..color = layer.color.eval(ctx).withValues(alpha: 1)
             ..isAntiAlias = layer.antialias);
       painted = true;
-    });
+    }, translate: translate);
     if (opacity < 1) canvas.restore();
     return painted;
   }
@@ -575,16 +675,21 @@ class TileRasterizer {
     DisplayTileData data,
     double styleZoom,
     PatternResolver? patterns,
+    double pixelScale,
   ) {
     var painted = false;
     final patternProp = layer.pattern;
+    final translate = _translate(layer.translate, styleZoom);
 
     // A stroke style none of whose properties reads the feature is
     // constant across the whole tile, so resolve it once instead of
-    // re-evaluating 5-7 expressions per feature. Asked of each property,
+    // re-evaluating 5-10 expressions per feature. Asked of each property,
     // as for fills: `["id"]` and `["geometry-type"]` read the feature
     // without naming a property.
     final dashProp = layer.dashArray;
+    final offsetProp = layer.offset;
+    final blurProp = layer.blur;
+    final miterProp = layer.miterLimit;
     _LineStyle? shared;
     if (patternProp == null &&
         (layer.color.isConstant || layer.color.zoomOnly) &&
@@ -593,8 +698,11 @@ class TileRasterizer {
         (layer.gapWidth.isConstant || layer.gapWidth.zoomOnly) &&
         (dashProp == null || dashProp.isConstant || dashProp.zoomOnly) &&
         (layer.cap.isConstant || layer.cap.zoomOnly) &&
-        (layer.join.isConstant || layer.join.zoomOnly)) {
-      shared = _lineStyle(layer, EvalContext(zoom: styleZoom));
+        (layer.join.isConstant || layer.join.zoomOnly) &&
+        (offsetProp == null || offsetProp.isConstant || offsetProp.zoomOnly) &&
+        (blurProp == null || blurProp.isConstant || blurProp.zoomOnly) &&
+        (miterProp == null || miterProp.isConstant || miterProp.zoomOnly)) {
+      shared = _lineStyle(layer, EvalContext(zoom: styleZoom), pixelScale);
       if (shared == null) return false; // invisible at this zoom
     }
 
@@ -602,6 +710,37 @@ class TileRasterizer {
       if (feature.type == PreparedGeomType.point) return;
 
       final closeRuns = feature.type == PreparedGeomType.polygon;
+
+      // Each run as drawn — clipped to the window at deep overzoom,
+      // shifted sideways by [offset] — with the transform that takes it
+      // to logical pixels and its distance from the un-clipped run's
+      // start, which dashes and stamps resume their pattern at.
+      void eachRun(
+          double offset,
+          void Function(
+                  Float32List run, _TileTransform t, bool close, double phase)
+              emit) {
+        void out(Float32List run, bool close, double phase) {
+          if (offset == 0) {
+            emit(run, transform, close, phase);
+          } else {
+            emit(_offsetRun(run, transform, offset, close: close),
+                _TileTransform.identity, close, phase);
+          }
+        }
+
+        for (final part in feature.parts) {
+          if (clip == null) {
+            out(part, closeRuns, 0);
+            continue;
+          }
+          final clipped = clipPolyline(part, clip, close: closeRuns);
+          for (var r = 0; r < clipped.runs.length; r++) {
+            out(clipped.runs[r], clipped.closed[r],
+                clipped.startDistances[r] * transform.scale);
+          }
+        }
+      }
 
       if (patternProp != null && patterns != null) {
         final width = layer.width.eval(ctx);
@@ -611,29 +750,19 @@ class TileRasterizer {
         final name = patternProp.eval(ctx);
         final image = name.isEmpty ? null : patterns.imageFor(name);
         if (image != null) {
-          if (clip == null) {
-            painted |= _stampLinePattern(
-                canvas, _linePath(feature, transform), image, width, opacity);
-          } else {
-            for (final part in feature.parts) {
-              final clipped = clipPolyline(part, clip, close: closeRuns);
-              for (var r = 0; r < clipped.runs.length; r++) {
-                final sub = Path();
-                _addRun(sub, clipped.runs[r], transform,
-                    close: clipped.closed[r]);
-                painted |= _stampLinePattern(canvas, sub, image, width, opacity,
-                    phaseLogicalPx:
-                        clipped.startDistances[r] * transform.scale);
-              }
-            }
-          }
+          eachRun(offsetProp?.eval(ctx) ?? 0, (run, t, close, phase) {
+            final sub = Path();
+            _addRun(sub, run, t, close: close);
+            painted |= _stampLinePattern(canvas, sub, image, width, opacity,
+                phaseLogicalPx: phase);
+          });
           // Per spec, line-pattern disables line-color and dashes.
           return;
         }
         // Sprite missing: fall through to the color stroke.
       }
 
-      final style = shared ?? _lineStyle(layer, ctx);
+      final style = shared ?? _lineStyle(layer, ctx, pixelScale);
       if (style == null) return;
 
       final dashArray = style.dash;
@@ -643,32 +772,14 @@ class TileRasterizer {
       final dashes = dash
           ?.map((d) => (d * style.width).clamp(0.01, 4096.0))
           .toList(growable: false);
-      Path path;
-      if (clip == null) {
+      final path = Path();
+      eachRun(style.offset, (run, t, close, phase) {
         if (dashes != null) {
-          path = Path();
-          for (final part in feature.parts) {
-            _dashRun(path, part, transform, dashes, close: closeRuns);
-          }
+          _dashRun(path, run, t, dashes, close: close, phaseLogicalPx: phase);
         } else {
-          path = _linePath(feature, transform);
+          _addRun(path, run, t, close: close);
         }
-      } else {
-        path = Path();
-        for (final part in feature.parts) {
-          final clipped = clipPolyline(part, clip, close: closeRuns);
-          for (var r = 0; r < clipped.runs.length; r++) {
-            if (dashes != null) {
-              _dashRun(path, clipped.runs[r], transform, dashes,
-                  close: clipped.closed[r],
-                  phaseLogicalPx: clipped.startDistances[r] * transform.scale);
-            } else {
-              _addRun(path, clipped.runs[r], transform,
-                  close: clipped.closed[r]);
-            }
-          }
-        }
-      }
+      });
 
       if (style.gapWidth > 0) {
         // Two parallel casing strokes: outer stroke minus inner gap.
@@ -678,57 +789,189 @@ class TileRasterizer {
         // survive, as in MapLibre), so each feature needs its own
         // layer — but bounded to the stroked path rather than the whole
         // tile: an unbounded saveLayer allocates a full-tile offscreen
-        // per casing feature. Inflate by 2·outer: miter joins reach up
-        // to miterLimit/2 (= 2) stroke widths past a vertex.
+        // per casing feature. Miter joins reach miterLimit/2 stroke
+        // widths past a vertex, so inflate by that (at least 2).
         final outer = style.gapWidth + 2 * style.width;
-        canvas.saveLayer(path.getBounds().inflate(outer * 2), Paint());
-        canvas.drawPath(
-          path,
-          Paint()
-            ..color = style.paint.color
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = outer
-            ..strokeCap = style.paint.strokeCap
-            ..strokeJoin = style.paint.strokeJoin,
-        );
-        canvas.drawPath(
-          path,
-          Paint()
-            ..blendMode = BlendMode.clear
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = style.gapWidth
-            ..strokeCap = style.paint.strokeCap
-            ..strokeJoin = style.paint.strokeJoin,
-        );
+        canvas.saveLayer(
+            path
+                .getBounds()
+                .inflate(outer * math.max(2.0, style.miterLimit / 2)),
+            Paint());
+        final casing = Paint()
+          ..color = style.paint.color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = outer
+          ..strokeCap = style.paint.strokeCap
+          ..strokeJoin = style.paint.strokeJoin
+          ..strokeMiterLimit = style.miterLimit;
+        final gap = Paint()
+          ..blendMode = BlendMode.clear
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = style.gapWidth
+          ..strokeCap = style.paint.strokeCap
+          ..strokeJoin = style.paint.strokeJoin
+          ..strokeMiterLimit = style.miterLimit;
+        if (style.blur > 0) {
+          // MapLibre fades both edges of a casing inwards from where
+          // they stand: the outer one into the casing, the inner one
+          // into the gap. Narrowing each stroke by the blur centres the
+          // ramps on them, as for a plain line (see [_lineStyle]).
+          final aa = 1 / pixelScale;
+          final ramp = math.min(style.blur + aa, style.width);
+          final maskFilter = _blurFilter(ramp, pixelScale);
+          casing
+            ..strokeWidth = outer - (ramp - aa)
+            ..maskFilter = maskFilter;
+          gap
+            ..strokeWidth = math.max(0.0, style.gapWidth - (ramp - aa))
+            ..maskFilter = maskFilter;
+        }
+        canvas.drawPath(path, casing);
+        if (gap.strokeWidth > 0) canvas.drawPath(path, gap);
         canvas.restore();
       } else {
         canvas.drawPath(path, style.paint);
       }
       painted = true;
-    });
+    }, translate: translate);
     return painted;
   }
 
   /// The resolved stroke style for one evaluation context, or null when
   /// nothing would be visible.
-  static _LineStyle? _lineStyle(LineThemeLayer layer, EvalContext ctx) {
+  static _LineStyle? _lineStyle(
+      LineThemeLayer layer, EvalContext ctx, double pixelScale) {
     final width = layer.width.eval(ctx);
     if (width <= 0) return null;
     final opacity = layer.opacity.eval(ctx).clamp(0.0, 1.0);
     if (opacity <= 0) return null;
     final color = _withOpacity(layer.color.eval(ctx), opacity);
     if (color.a == 0) return null;
+    final gapWidth = layer.gapWidth.eval(ctx);
+    final blur = math.max(0.0, layer.blur?.eval(ctx) ?? 0);
+    final miterLimit = layer.miterLimit?.eval(ctx) ?? 2;
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = width
+      ..strokeCap = _cap(layer.cap.eval(ctx))
+      ..strokeJoin = _join(layer.join.eval(ctx))
+      // Skia's default is 4; the spec's is 2.
+      ..strokeMiterLimit = miterLimit;
+    // A casing blurs its two strokes where it draws them.
+    if (blur > 0 && gapWidth <= 0) {
+      // MapLibre's `line-blur` widens the line's anti-aliasing ramp:
+      // alpha falls linearly from full, blur plus one device pixel
+      // inside the edge, to zero half a device pixel past it — so a
+      // line narrower than about twice its blur never reaches full
+      // alpha. That profile is a stroke narrower by the blur,
+      // convolved with the ramp; drawn, it is an anti-aliased stroke
+      // that narrow under a Gaussian for the rest of the ramp.
+      final aa = 1 / pixelScale;
+      final outset = (width + aa) / 2;
+      final ramp = math.min(blur + aa, outset);
+      paint
+        ..strokeWidth = width + aa - ramp
+        ..maskFilter = _blurFilter(ramp, pixelScale);
+      if (blur + aa > outset) {
+        paint.color = color.withValues(alpha: color.a * outset / (blur + aa));
+      }
+    }
     return _LineStyle(
       width: width,
-      gapWidth: layer.gapWidth.eval(ctx),
+      gapWidth: gapWidth,
       dash: layer.dashArray?.eval(ctx),
-      paint: Paint()
-        ..color = color
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = width
-        ..strokeCap = _cap(layer.cap.eval(ctx))
-        ..strokeJoin = _join(layer.join.eval(ctx)),
+      offset: layer.offset?.eval(ctx) ?? 0,
+      blur: blur,
+      miterLimit: miterLimit,
+      paint: paint,
     );
+  }
+
+  /// The Gaussian that, after anti-aliasing's own one-device-pixel
+  /// ramp, makes a linear alpha ramp [ramp] logical px wide: their
+  /// variances add up, a ramp's being its width² / 12. Null below half
+  /// a device pixel of σ: a blur that narrow is no wider than
+  /// anti-aliasing, and a mask filter costs an offscreen pass per path
+  /// on the GPU.
+  static MaskFilter? _blurFilter(double ramp, double pixelScale) {
+    final aa = 1 / pixelScale;
+    final sigma = math.sqrt(math.max(0.0, ramp * ramp - aa * aa) / 12);
+    return sigma * pixelScale < 0.5
+        ? null
+        : MaskFilter.blur(BlurStyle.normal, sigma);
+  }
+
+  /// [run] mapped to logical pixels through [t] and shifted [offset]
+  /// pixels to the right of its direction — `line-offset`, which on a
+  /// ring wound as MVT winds exteriors is an inset. Each vertex moves
+  /// along the bisector of its two segments' normals, as far as keeps
+  /// both segments [offset] away (a miter); where that would take it
+  /// more than two offsets out, at a sharp turn, it becomes two points,
+  /// one per segment, and the stroke's join closes the corner between
+  /// them, as MapLibre's do. Repeated points have no direction and are
+  /// dropped.
+  static Float32List _offsetRun(
+      Float32List run, _TileTransform t, double offset,
+      {required bool close}) {
+    final xs = <double>[];
+    final ys = <double>[];
+    for (var i = 0; i + 1 < run.length; i += 2) {
+      final x = t.mapX(run[i]);
+      final y = t.mapY(run[i + 1]);
+      if (xs.isNotEmpty && x == xs.last && y == ys.last) continue;
+      xs.add(x);
+      ys.add(y);
+    }
+    if (close && xs.length > 1 && xs.first == xs.last && ys.first == ys.last) {
+      xs.removeLast();
+      ys.removeLast();
+    }
+    final n = xs.length;
+    if (n < 2) return Float32List(0);
+    final segments = close ? n : n - 1;
+    // The right-hand unit normal of the segment from point s to s + 1:
+    // its direction (dx, dy) turned a quarter clockwise, y pointing down.
+    final nx = Float64List(segments);
+    final ny = Float64List(segments);
+    for (var s = 0; s < segments; s++) {
+      final j = (s + 1) % n;
+      final dx = xs[j] - xs[s];
+      final dy = ys[j] - ys[s];
+      final length = math.sqrt(dx * dx + dy * dy);
+      nx[s] = -dy / length;
+      ny[s] = dx / length;
+    }
+    final out = <double>[];
+    for (var i = 0; i < n; i++) {
+      final prev = i > 0 ? i - 1 : (close ? segments - 1 : -1);
+      final next = i < segments ? i : -1;
+      if (prev < 0 || next < 0) {
+        final s = prev < 0 ? next : prev;
+        out
+          ..add(xs[i] + nx[s] * offset)
+          ..add(ys[i] + ny[s] * offset);
+        continue;
+      }
+      final bx = nx[prev] + nx[next];
+      final by = ny[prev] + ny[next];
+      // |n0 + n1| is twice the cosine of half the turn, and the miter
+      // point lies 2 / |n0 + n1| offsets out along it.
+      final b2 = bx * bx + by * by;
+      if (b2 >= 1) {
+        final k = 2 * offset / b2;
+        out
+          ..add(xs[i] + bx * k)
+          ..add(ys[i] + by * k);
+      } else {
+        out
+          ..add(xs[i] + nx[prev] * offset)
+          ..add(ys[i] + ny[prev] * offset)
+          ..add(xs[i] + nx[next] * offset)
+          ..add(ys[i] + ny[next] * offset);
+      }
+    }
+    return Float32List.fromList(out);
   }
 
   /// Draws `line-pattern` by stamping the sprite along the path, scaled
@@ -806,8 +1049,11 @@ class TileRasterizer {
     if (tiles.isEmpty) return false;
     final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
     if (opacity <= 0) return false;
+    final nearest = layer.resampling?.eval(zoomCtx) == 'nearest';
     final paint = Paint()
-      ..filterQuality = FilterQuality.medium
+      // `nearest` magnifies an overzoomed image into blocks, as MapLibre
+      // samples it; `linear` (the default) smooths it.
+      ..filterQuality = nearest ? FilterQuality.none : FilterQuality.medium
       ..isAntiAlias = false
       ..color = Color.fromRGBO(255, 255, 255, opacity)
       ..colorFilter = _rasterColorFilter(layer, zoomCtx);
@@ -944,55 +1190,128 @@ class TileRasterizer {
     CircleThemeLayer layer,
     DisplayTileData data,
     double styleZoom,
+    double pixelScale,
   ) {
     var painted = false;
+    final blurProp = layer.blur;
     _eachFeature(layer, data, styleZoom, PreparedGeomType.point,
         (feature, ctx, transform, clip) {
       final radius = layer.radius.eval(ctx);
       if (radius <= 0) return;
       final fill = _withOpacity(
           layer.color.eval(ctx), layer.opacity.eval(ctx).clamp(0.0, 1.0));
-      final strokeWidth = layer.strokeWidth.eval(ctx);
+      final strokeWidth = math.max(0.0, layer.strokeWidth.eval(ctx));
       final stroke = strokeWidth > 0
           ? _withOpacity(layer.strokeColor.eval(ctx),
               layer.strokeOpacity.eval(ctx).clamp(0.0, 1.0))
           : null;
+      final visibleStroke = stroke != null && stroke.a > 0;
+      if (fill.a == 0 && !visibleStroke) return;
+      final blur = blurProp?.eval(ctx) ?? 0;
+      // The stroke lies outside the radius, per spec.
+      final outer = radius + strokeWidth;
       // One pair of paints per feature, not per point — multipoint
-      // features used to allocate two paints in the innermost loop.
-      final fillPaint = fill.a > 0 ? (Paint()..color = fill) : null;
-      final strokePaint = stroke != null && stroke.a > 0
-          ? (Paint()
+      // features used to allocate two paints in the innermost loop. A
+      // blurred circle takes a gradient centred on each point instead.
+      Paint? fillPaint;
+      Paint? strokePaint;
+      var fillRadius = radius;
+      if (blur <= 0) {
+        fillPaint = fill.a > 0 ? (Paint()..color = fill) : null;
+        if (visibleStroke) {
+          strokePaint = Paint()
             ..color = stroke
             ..style = PaintingStyle.stroke
-            ..strokeWidth = strokeWidth)
-          : null;
-      if (fillPaint == null && strokePaint == null) return;
+            ..strokeWidth = strokeWidth;
+          // Under an opaque stroke the fill may reach halfway into it,
+          // which hides the seam the anti-aliased edges of the two would
+          // otherwise leave between them.
+          if (stroke.a >= 1) fillRadius = radius + strokeWidth / 2;
+        }
+      }
       // Per-point rejection: a multipoint feature that straddles the
       // cull rect can still carry thousands of far-away points at deep
       // overzoom.
-      final reach = radius + strokeWidth;
       for (final part in feature.parts) {
         for (var i = 0; i + 1 < part.length; i += 2) {
           final center = transform.map(part[i], part[i + 1]);
           if (!debugDisableCulling &&
-              (center.dx < -reach ||
-                  center.dy < -reach ||
-                  center.dx > logicalTileSize + reach ||
-                  center.dy > logicalTileSize + reach)) {
+              (center.dx < -outer ||
+                  center.dy < -outer ||
+                  center.dx > logicalTileSize + outer ||
+                  center.dy > logicalTileSize + outer)) {
+            continue;
+          }
+          if (blur > 0) {
+            canvas.drawCircle(
+                center,
+                outer,
+                _blurredCircle(center, radius, strokeWidth, fill, stroke, blur,
+                    pixelScale));
+            painted = true;
             continue;
           }
           if (fillPaint != null) {
-            canvas.drawCircle(center, radius, fillPaint);
+            canvas.drawCircle(center, fillRadius, fillPaint);
             painted = true;
           }
           if (strokePaint != null) {
-            canvas.drawCircle(center, radius, strokePaint);
+            canvas.drawCircle(center, radius + strokeWidth / 2, strokePaint);
             painted = true;
           }
         }
       }
-    });
+    }, translate: _translate(layer.translate, styleZoom));
     return painted;
+  }
+
+  /// The paint of a circle with `circle-blur`, drawn as one disc of
+  /// [radius] plus [strokeWidth] around [center]: a radial gradient
+  /// sampling MapLibre's circle shader along the radius. Its opacity
+  /// eases (smoothstep) from full, [blur] of the way in from the edge,
+  /// to zero at the edge, and the fill eases into the stroke over the
+  /// same fraction just inside the radius.
+  static Paint _blurredCircle(Offset center, double radius, double strokeWidth,
+      Color fill, Color? stroke, double blur, double pixelScale) {
+    final outer = radius + strokeWidth;
+    // Never sharper than anti-aliasing: one device pixel.
+    final ramp = math.max(blur, 1 / (pixelScale * outer));
+    final strokeStart = stroke == null ? 1.0 : radius / outer;
+    double smoothstep(double t) {
+      final x = t.clamp(0.0, 1.0);
+      return x * x * (3 - 2 * x);
+    }
+
+    Color colorAt(double u) {
+      final alpha = smoothstep((1 - u) / ramp);
+      final t =
+          stroke == null ? 0.0 : smoothstep((u - strokeStart + ramp) / ramp);
+      final other = stroke ?? fill;
+      // Mixed premultiplied, as the shader mixes them.
+      double mix(double a, double b) => a + (b - a) * t;
+      final a = mix(fill.a, other.a);
+      if (a == 0) return const Color(0x00000000);
+      return Color.from(
+        alpha: a * alpha,
+        red: mix(fill.r * fill.a, other.r * other.a) / a,
+        green: mix(fill.g * fill.a, other.g * other.a) / a,
+        blue: mix(fill.b * fill.a, other.b * other.a) / a,
+      );
+    }
+
+    const samples = 8;
+    final stops = <double>{
+      0,
+      1,
+      for (var k = 0; k <= samples; k++) 1 - ramp + ramp * k / samples,
+      if (stroke != null)
+        for (var k = 0; k <= samples; k++)
+          strokeStart - ramp + ramp * k / samples,
+    }.where((u) => u >= 0 && u <= 1).toList()
+      ..sort();
+    return Paint()
+      ..shader = ui.Gradient.radial(
+          center, outer, [for (final u in stops) colorAt(u)], stops);
   }
 
   /// Builds the fill path, clipping each ring to [clip] when set.
@@ -1020,14 +1339,6 @@ class TileRasterizer {
       }
     }
     return any;
-  }
-
-  static Path _linePath(PreparedFeature feature, _TileTransform t) {
-    final path = Path();
-    for (final run in feature.parts) {
-      _addRun(path, run, t, close: feature.type == PreparedGeomType.polygon);
-    }
-    return path;
   }
 
   static void _addRun(Path path, Float32List run, _TileTransform t,
@@ -1126,20 +1437,22 @@ class TileRasterizer {
 
   /// A paint that tiles [image] as a repeating pattern, anchored to the
   /// world grid at the display zoom so patterns line up across tile
-  /// seams. The pattern keeps the sprite's logical size regardless of
-  /// overzoom.
+  /// seams — shifted by [origin], a layer's translate, so the pattern
+  /// moves with its geometry. The pattern keeps the sprite's logical
+  /// size regardless of overzoom.
   static Paint _patternPaint(
     ui.Image image,
     double pixelRatio,
     double opacity,
     TileKey displayKey,
-    bool antialias,
-  ) {
+    bool antialias, {
+    Offset origin = Offset.zero,
+  }) {
     final s = 1.0 / pixelRatio;
     final w = image.width * s;
     final h = image.height * s;
-    final tx = -((displayKey.x * logicalTileSize) % w);
-    final ty = -((displayKey.y * logicalTileSize) % h);
+    final tx = origin.dx - ((displayKey.x * logicalTileSize) % w);
+    final ty = origin.dy - ((displayKey.y * logicalTileSize) % h);
     final matrix = Float64List.fromList(
         [s, 0, 0, 0, 0, s, 0, 0, 0, 0, 1, 0, tx, ty, 0, 1]);
     return Paint()
@@ -1168,15 +1481,22 @@ class TileRasterizer {
 
 /// A per-layer or per-feature resolved line stroke.
 class _LineStyle {
+  /// `line-width`; [paint] may stroke narrower, to make room for a blur.
   final double width;
   final double gapWidth;
   final List<double>? dash;
+  final double offset;
+  final double blur;
+  final double miterLimit;
   final Paint paint;
 
   _LineStyle({
     required this.width,
     required this.gapWidth,
     required this.dash,
+    required this.offset,
+    required this.blur,
+    required this.miterLimit,
     required this.paint,
   });
 }
@@ -1211,6 +1531,15 @@ class _TileTransform {
       -frac.dy * TileRasterizer.logicalTileSize / frac.scale,
     );
   }
+
+  /// Logical pixels as they are: for geometry already mapped, such as
+  /// an offset line.
+  static final identity = _TileTransform(1, 0, 0);
+
+  /// This transform followed by a shift of [by] logical pixels.
+  _TileTransform translated(Offset by) => by == Offset.zero
+      ? this
+      : _TileTransform(scale, offsetX + by.dx, offsetY + by.dy);
 
   double mapX(double x) => x * scale + offsetX;
   double mapY(double y) => y * scale + offsetY;

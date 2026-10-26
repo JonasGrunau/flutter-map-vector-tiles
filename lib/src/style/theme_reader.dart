@@ -63,6 +63,9 @@ class ThemeReader {
           color: _color(
               parser, paint['background-color'], const Color(0xff000000)),
           opacity: _double(parser, paint['background-opacity'], 1),
+          pattern: paint['background-pattern'] == null
+              ? null
+              : _string(parser, paint['background-pattern'], ''),
         );
       case 'fill':
       case 'fill-extrusion':
@@ -88,6 +91,11 @@ class ThemeReader {
               ? null
               : _string(parser, paint['$prefix-pattern'], ''),
           extrusion: extrusion,
+          translate: _optionalNumList(parser, paint['$prefix-translate']),
+          // An extrusion has no sort key.
+          sortKey: extrusion
+              ? null
+              : _optionalDouble(parser, layout['fill-sort-key']),
         );
       case 'line':
         layer = LineThemeLayer(
@@ -109,6 +117,13 @@ class ThemeReader {
           pattern: paint['line-pattern'] == null
               ? null
               : _string(parser, paint['line-pattern'], ''),
+          translate: _optionalNumList(parser, paint['line-translate']),
+          offset: _optionalDouble(parser, paint['line-offset']),
+          blur: _optionalDouble(parser, paint['line-blur']),
+          miterLimit: layout['line-miter-limit'] == null
+              ? null
+              : _double(parser, layout['line-miter-limit'], 2),
+          sortKey: _optionalDouble(parser, layout['line-sort-key']),
         );
       case 'circle':
         layer = CircleThemeLayer(
@@ -125,6 +140,9 @@ class ThemeReader {
               parser, paint['circle-stroke-color'], const Color(0xff000000)),
           strokeWidth: _double(parser, paint['circle-stroke-width'], 0),
           strokeOpacity: _double(parser, paint['circle-stroke-opacity'], 1),
+          blur: _optionalDouble(parser, paint['circle-blur']),
+          translate: _optionalNumList(parser, paint['circle-translate']),
+          sortKey: _optionalDouble(parser, layout['circle-sort-key']),
         );
       case 'symbol':
         layer = SymbolThemeLayer(
@@ -193,6 +211,14 @@ class ThemeReader {
           contrast: _double(parser, paint['raster-contrast'], 0),
           saturation: _double(parser, paint['raster-saturation'], 0),
           hueRotate: _double(parser, paint['raster-hue-rotate'], 0),
+          // The generic `resampling` supersedes `raster-resampling`.
+          resampling:
+              paint['resampling'] == null && paint['raster-resampling'] == null
+                  ? null
+                  : _string(
+                      parser,
+                      paint['resampling'] ?? paint['raster-resampling'],
+                      'linear'),
         );
       case 'hillshade':
       case 'heatmap':
@@ -225,6 +251,15 @@ class ThemeReader {
     final p = parser.parseForProperty(json);
     return DoubleProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
+
+  /// A number property that is null when the style leaves it unset, for
+  /// properties whose default the renderer handles by doing nothing.
+  static DoubleProp? _optionalDouble(ExpressionParser parser, Object? json) =>
+      json == null ? null : _double(parser, json, 0);
+
+  /// [_optionalDouble] for the `[x, y]` translate properties.
+  static NumListProp? _optionalNumList(ExpressionParser parser, Object? json) =>
+      json == null ? null : _numList(parser, json, const [0, 0]);
 
   static ColorProp _color(
       ExpressionParser parser, Object? json, Color fallback) {
