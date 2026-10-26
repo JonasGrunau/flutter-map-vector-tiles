@@ -192,8 +192,9 @@ of a sharp turn and split where the inner meeting point lies beyond a
 segment — MapLibre leaves gaps and crossings at such turns.
 `line-blur` is MapLibre's linear alpha ramp drawn as a stroke narrowed
 by the blur under a Gaussian mask filter whose variance, with
-anti-aliasing's own, adds up to the ramp's: within a few percent of
-MapLibre's profile for blurs of a pixel or more. A mask filter costs a
+anti-aliasing's own, adds up to the ramp's: within about 0.05 alpha of
+MapLibre's profile for blurs of 2 px and more, with a steeper edge but
+the same ink, to 10 %, for narrower ones. A mask filter costs a
 render pass per path on the GPU, so a blur under half a device pixel of
 σ keeps only the narrowing. Circle strokes lie outside the radius, as
 the spec says, and `circle-blur` draws the circle as one disc whose
