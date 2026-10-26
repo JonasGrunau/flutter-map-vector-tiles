@@ -309,8 +309,42 @@ class PlacementMemory {
   /// which is why the clock is frames rather than wall time.
   static const _maxIdleFrames = 90;
 
+  PlacementMemory() : _parent = null;
+
+  PlacementMemory._fork(PlacementMemory parent)
+      : _parent = parent,
+        _frame = parent._frame;
+
   final _entries = <int, SittingPlacement>{};
   var _frame = 0;
+
+  /// The memory this one was [fork]ed from, or null.
+  final PlacementMemory? _parent;
+
+  /// A copy-on-write child, for a placement pass spread over frames: it
+  /// starts from what this memory holds, but keeps every choice the pass
+  /// makes to itself, so the frames drawn while the pass is in flight
+  /// replay the decision before it undisturbed. [mergeIntoParent] puts
+  /// the choices in force.
+  PlacementMemory fork() => PlacementMemory._fork(this);
+
+  /// Writes a [fork]'s choices into the memory it was forked from.
+  ///
+  /// [flip] too only when the parent has not moved on since the fork was
+  /// taken — in the frame it was taken. Otherwise the reading direction
+  /// the pass saw is a camera ago, and the frames since have been
+  /// keeping the parent's up to date with the screen.
+  void mergeIntoParent({required bool flip}) {
+    final parent = _parent!;
+    _entries.forEach((id, entry) {
+      final into = parent._entries[id] ??= SittingPlacement._(parent._frame);
+      into
+        ..anchor = entry.anchor
+        ..textDropped = entry.textDropped
+        .._seen = parent._frame;
+      if (flip) into.flip = entry.flip;
+    });
+  }
 
   /// Starts a frame. Expiry runs only on [prune] frames — the placement
   /// passes — since it walks every entry and nothing can go stale in
@@ -321,14 +355,29 @@ class PlacementMemory {
     _entries.removeWhere((_, entry) => _frame - entry._seen > _maxIdleFrames);
   }
 
-  /// The placement state of label [id], creating it on first sight.
+  /// The placement state of label [id], creating it on first sight —
+  /// in a [fork], as a copy of the parent's.
   SittingPlacement sitting(int id) =>
-      (_entries[id] ??= SittingPlacement._(_frame)).._seen = _frame;
+      (_entries[id] ??= _copyOf(id)).._seen = _frame;
+
+  SittingPlacement _copyOf(int id) {
+    final entry = SittingPlacement._(_frame);
+    final origin = _parent?._entries[id];
+    if (origin != null) {
+      entry
+        ..anchor = origin.anchor
+        ..flip = origin.flip
+        ..textDropped = origin.textDropped;
+      // Keeps it alive in the parent, whose frames do not see the pass.
+      origin._seen = _parent!._frame;
+    }
+    return entry;
+  }
 
   /// The placement state remembered for label [id], without creating
   /// one. For tests, and for callers that only want to know whether a
   /// label has been placed before.
-  SittingPlacement? lookup(int id) => _entries[id];
+  SittingPlacement? lookup(int id) => _entries[id] ?? _parent?._entries[id];
 
   /// Forgets everything — for theme/provider swaps, where layer indices
   /// change meaning and no remembered choice still applies.

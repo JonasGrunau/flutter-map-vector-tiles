@@ -619,6 +619,34 @@ void main() {
     setUp(() => VectorTileLayer.debugPumpBudgetMicros = 0);
     tearDown(() => VectorTileLayer.debugPumpBudgetMicros = null);
 
+    testWidgets('screen mode: a placement pass spread over frames lands',
+        (tester) async {
+      tester.view.physicalSize = const Size(600, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      // One candidate per frame: every pass with more than one label in
+      // it spans frames.
+      VectorTileLayer.debugPlacementBudgetMicros = 0;
+      addTearDown(() => VectorTileLayer.debugPlacementBudgetMicros = null);
+      final placingFrames = LabelPainter.debugPlacingFrames;
+      final passes = LabelPainter.debugPlacementPasses;
+
+      final provider = EverywhereProvider(labelledTile());
+      await tester.pumpWidget(labelModeApp(
+          MapController(), TileProviders({'s': provider}), labelTheme(),
+          labelMode: LabelMode.screen));
+      await settleLabelled(tester, provider);
+      expect(
+          await pumpUntil(tester, () => hasColor(tester, labelColor)), isTrue);
+      expect(LabelPainter.debugPlacementPasses, greaterThan(passes));
+      expect(LabelPainter.debugPlacingFrames - placingFrames,
+          greaterThan(LabelPainter.debugPlacementPasses - passes),
+          reason: 'a pass took more than one frame');
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+    });
+
     for (final mode in LabelMode.values) {
       testWidgets('${mode.name} mode: the map comes out the same',
           (tester) async {

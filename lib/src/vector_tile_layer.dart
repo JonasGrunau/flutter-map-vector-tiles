@@ -215,6 +215,12 @@ class VectorTileLayer extends StatefulWidget {
   @visibleForTesting
   static int? debugPumpBudgetMicros;
 
+  /// Replaces the label placement pass's per-frame time budget in
+  /// tests. Zero places one candidate per frame, which spreads every
+  /// pass over as many frames as it has candidates.
+  @visibleForTesting
+  static int? debugPlacementBudgetMicros;
+
   /// Whether the last render-pump tick counted the camera as still, and
   /// so ran on the larger budget — recorded whether or not
   /// [debugPumpBudgetMicros] then replaced it. Null before the first.
@@ -1600,6 +1606,20 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   static const int _movingPumpBudget = 4000;
   static const int _stillPumpBudget = 12000;
 
+  /// Wall-clock a label placement pass may take of one frame; the rest
+  /// of the pass waits for the next frame, while the decision before it
+  /// stays on screen (see `LabelPainter.paint`). Run whole, a pass took
+  /// 7 ms of a Nothing Phone (1)'s UI thread on Liberty and about 14 ms
+  /// on a denser style, in one frame; on the denser style those frames
+  /// were 51–83 % of the ones that missed 60 Hz while zooming. Counted
+  /// from the start of the label pass, so
+  /// whatever the pass does before its first candidate is part of its
+  /// first frame's share.
+  int get _placementBudget =>
+      VectorTileLayer.debugPlacementBudgetMicros ?? _placementSliceBudget;
+
+  static const int _placementSliceBudget = 3000;
+
   /// How long after its last move the camera counts as still: longer
   /// than the gap between two frames of a drag or a fling, even a late
   /// one.
@@ -2462,6 +2482,10 @@ class _VectorMapPainter extends CustomPainter {
       return;
     }
     state._labelPainter.rasterizeGlyphs = state._foregrounded;
+    // Without label fades every frame places afresh (there is no frozen
+    // decision to replay meanwhile), so a pass is never spread out.
+    final budget = state._placementBudget;
+    final passClock = Stopwatch()..start();
     final drawn = state._labelPainter.paint(
       canvas: canvas,
       screenSize: size,
@@ -2472,6 +2496,9 @@ class _VectorMapPainter extends CustomPainter {
       labelFadeDuration: state.widget.labelFadeDuration,
       placementGeneration: state._labelGeneration,
       now: now,
+      placementOutOfBudget: state.widget.labelFadeDuration > Duration.zero
+          ? () => passClock.elapsedMicroseconds >= budget
+          : null,
     );
     // Recorded so the retention pin keeps what was actually on screen,
     // rather than every candidate offered. Rebuilt in place with a

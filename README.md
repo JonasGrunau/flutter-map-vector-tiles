@@ -148,7 +148,7 @@ vt.VectorTileLayer(
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source. The caches are shared process-wide, so the most recently mounted layer's value wins |
 | `rasterCacheMaxBytes` | sized for the device | finished-tile budget: zooming back to a recent level, or reopening the same style, paints instantly instead of re-rendering. These are GPU texture bytes, roughly 1 MB per tile at devicePixelRatio 2 and 2.25 MB at 3, and a phone screenful is 25 to 35 tiles, so a *single* level costs about 80 MB on a large dpr-3 phone. The default measures your viewport and dpr and budgets 2.5 screenfuls, clamped to 64 to 256 MB, so a zoom round trip keeps the level it returns to. Pass a byte count to pin it, or `0` to disable |
 | `tileFadeDuration` | 150 ms | fade-in of newly rendered tiles. Tiles from the finished-tile cache fade only when retained imagery lies beneath to cross-fade over; with nothing beneath, as on a reopened map or in the ring a zoom-out exposes, ready imagery appears at once rather than fading over the background. `Duration.zero` disables |
-| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress; on a Nothing Phone (1) that took the peak GPU memory from 391–409 to 317–320 MB and cost frames ([compare/RESULTS.md](compare/RESULTS.md)). No effect with `LabelMode.tile`, where labels fade in with their tile |
+| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. Each such pass takes at most 3 ms of a frame, spread over as many frames as it needs, and shows its result in the frame it finishes. `Duration.zero` restores instant pops and per-frame collision, each pass whole in its frame, and immediately finishes a fade already in progress; on a Nothing Phone (1) that took the peak GPU memory from 391–409 to 317–320 MB and cost frames ([compare/RESULTS.md](compare/RESULTS.md)). No effect with `LabelMode.tile`, where labels fade in with their tile |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 | `labelMode` | `LabelMode.screen` | where labels and icons are drawn: every frame in screen space, or once into each tile's image (`LabelMode.tile`, what `vector_map_tiles` calls raster mode). Changing it re-renders the tiles already on screen. See [Choosing a label mode](#choosing-a-label-mode) |
 
@@ -467,7 +467,7 @@ The screen-space pass is what makes labels behave as above, and it is
 also the one part of a moving map that costs UI-thread time on every
 frame: every placed label laid out and drawn again, and, every
 `labelFadeDuration` (300 ms at most), a collision pass over every
-candidate. On a label-dense screen and a mid-range phone that cost
+candidate, at most 3 ms of it per frame. On a label-dense screen and a mid-range phone that cost
 decides whether panning, rotating and pinching hold the display's frame
 rate.
 
@@ -480,7 +480,7 @@ they inherit the limits of any pre-rendered tile:
 
 | | `LabelMode.screen` (default) | `LabelMode.tile` |
 |---|---|---|
-| Per-frame label work | placed labels laid out and drawn every frame, a collision pass every `labelFadeDuration` (at most 300 ms) | none |
+| Per-frame label work | placed labels laid out and drawn every frame, a collision pass every `labelFadeDuration` (at most 300 ms), at most 3 ms of it per frame | none |
 | Collision | one pass across the whole screen | within each tile |
 | At tile seams | seamless | a label that would cross a tile edge is dropped, so labels thin out along tile seams; a road name repeated along a road is thinned out only within a tile, so it can show on both sides of a seam |
 | Under rotation | text stays upright | text rotates with the map |

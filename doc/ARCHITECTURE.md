@@ -362,7 +362,9 @@ copies, and a fading label's ghost is drawn from it — another copy takes
 over only once it is gone.
 
 A third property joined them when placement became purely
-interval-paced: **only a placement pass may start a fade-out**. Between
+interval-paced: **only a placement pass may start a fade-out** — in the
+frame its decision takes effect, which for a pass spread over frames is
+the frame it finishes in. Between
 passes the winner set is frozen. A republished winner's successor
 carries its id and is drawn as the winner it is, but a winner can still
 be missing for a while — its tile gone before the successor published,
@@ -467,6 +469,31 @@ candidates; the rest go straight to the fade-out fallbacks. The
 priority order is total (insertion order breaks every tie), so the
 winners come out exactly as a full sort would order them; sorting
 everything cost 2.7 ms per frame on a phone during fast sweeps.
+
+**A pass is spread over frames.** Run whole, a pass is a spike: on the
+Nothing Phone (1) it cost 7 ms on Liberty and about 14 ms on a denser
+style, all in one frame, and on the denser style those frames were
+51–83 % of the frames that missed 60 Hz while zooming. So a pass works
+the way MapLibre's pauseable placement does. It takes the candidates
+and the camera of the frame it starts in, places them against its own
+collision index in slices of at most 3 ms per frame, and its decision
+takes effect all at once in the frame it finishes in. Until then
+nothing of it shows: the frames in between replay the decision before
+it, as frames between passes always have, and a label it drops starts
+fading only at the commit. What a pass remembers across candidates
+stays in the pass — its winners and the copy each was placed from, its
+repeat anchors, and the choices it
+makes for a label (variable anchor, dropped text), which it writes to a
+fork of the placement memory that is merged at the commit. The reading
+direction is the exception: frames keep it in step with the screen, so
+a pass that spanned frames does not hand back the one it saw a camera
+ago. Ordering is lazy too. The style layer is the order's first term,
+so candidates are grouped by layer and each layer is sorted when the
+pass reaches it; one sort of every candidate was 3–4 ms of the pass's
+first frame. The cost is latency: a decision lands a few frames after
+the camera it was taken at — the trade the replay frames already make,
+lengthened by the pass. Without label fades every frame places afresh,
+so there a pass still runs whole.
 
 Curved text draws from a glyph atlas (`glyph_atlas.dart`). Each
 grapheme is rasterized once per style and snapped device size onto a

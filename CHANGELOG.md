@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- ⚡ **Label placement spread over frames**: the collision pass that
+  re-decides which labels show (every `labelFadeDuration`, at most
+  300 ms) used to run whole in one frame — 7 ms on a phone with
+  Liberty, about twice that on denser styles, and on those most of the
+  frames that missed 60 Hz while zooming. It now takes at most 3 ms of a
+  frame and shows its result in the frame it finishes, a few frames
+  later; until then the labels on screen stay as they were, as they
+  always did between passes. With `labelFadeDuration: Duration.zero`
+  every frame still places whole.
 - ⚡ The label pass no longer searches for every label's previous place
   on screen each frame, which makes its sort and fade sweep cheaper. On
   the Nothing Phone (1), the compare harness's camera runs deliver 1 to

@@ -226,9 +226,14 @@ class LabelPainter {
   @visibleForTesting
   static int debugShapeMicros = 0;
 
-  /// Frames that ran a full placement pass, for spike-rate arithmetic.
+  /// Frames that did placement work — ran a whole pass, or a slice of
+  /// one spread over frames — for spike-rate arithmetic.
   @visibleForTesting
   static int debugPlacingFrames = 0;
+
+  /// Placement passes put in force, however many frames each took.
+  @visibleForTesting
+  static int debugPlacementPasses = 0;
 
   /// Bench-only observer: when set, every [paint] reports what it drew
   /// — ghosts included, zoom-retired invisible symbols excluded — after
@@ -367,8 +372,8 @@ class LabelPainter {
   /// replayed. See [PlacementThrottle].
   final _placement = PlacementThrottle();
 
-  /// The label ids that won space at the last full pass — the frozen
-  /// decision itself. Between passes only their copies compete
+  /// The label ids that won space at the last pass put in force — the
+  /// frozen decision itself. Between passes only their copies compete
   /// (everything else is skipped before it is even laid out), and at the
   /// next pass they are the incumbents. Ids outlive instances, so a
   /// winner whose tile republished is still a winner in its successor.
@@ -381,12 +386,18 @@ class LabelPainter {
   /// replay draws this one, a pass tries it ahead of the label's other
   /// copies, and a ghost is drawn from it — as long as it is still on
   /// offer. Without it a replay redrew whichever copy sorted first,
-  /// which could be the one the pass had rejected.
+  /// which could be the one the pass had rejected. A pass that spans
+  /// frames puts the copies it chose here when it commits.
   var _drawnCopy = <int, SymbolInstance>{};
 
   /// [_drawnCopy] for the frame being painted; also how a frame knows a
   /// label already drew. Swapped in at the end of the frame.
   var _drawing = <int, SymbolInstance>{};
+
+  /// The placement pass in flight while one is spread over frames — see
+  /// [_PlacementPass]. Null between passes, and at the end of every
+  /// frame whose pass ran whole.
+  _PlacementPass? _inFlight;
 
   /// The placement choices each label is sitting on — kept here rather
   /// than on the instances, which are replaced under a label that never
@@ -409,7 +420,8 @@ class LabelPainter {
   /// replayed a frozen decision. The widget keeps scheduling frames
   /// while this is true, so the decision taken during a gesture is
   /// re-evaluated once at the camera the gesture ended at.
-  bool get placementPending => _placement.deferred;
+  /// So does a pass in flight: its remaining slices need frames.
+  bool get placementPending => _placement.deferred || _inFlight != null;
 
   /// Forgets all fade and placement state — for theme/provider swaps,
   /// where every symbol instance is replaced and layer indices change
@@ -420,6 +432,7 @@ class LabelPainter {
     _winners.clear();
     _drawnCopy.clear();
     _drawing.clear();
+    _inFlight = null;
     _memory.clear();
     _placement.reset();
   }
@@ -435,9 +448,11 @@ class LabelPainter {
   ///
   /// Returns the symbols that survived collision and were drawn, in
   /// draw order — useful for tests and future hit-testing.
-  /// [symbols] is sorted in place into placement-priority order; the
-  /// caller rebuilds the list per frame, so a defensive copy here would
-  /// only add allocation to the hottest per-frame path.
+  /// The candidates in [symbols] are flagged in place (see
+  /// [PlacedSymbol.incumbent]) and may be held until a pass spread over
+  /// frames finishes; the caller builds a new list every frame and
+  /// never touches an old one again, so a defensive copy here would only
+  /// add allocation to the hottest per-frame path.
   /// [devicePixelRatio] only sharpens SDF icon edges; it does not scale
   /// anything, so 1 is a safe default.
   ///
@@ -456,6 +471,15 @@ class LabelPainter {
   /// Disabling fades with [Duration.zero] clears any tracked fade state
   /// immediately, so an in-flight fade cannot keep its caller scheduling
   /// animation frames.
+  ///
+  /// [placementOutOfBudget] spreads a placement pass over frames, the way
+  /// MapLibre pauses its placement: a pass decides from the candidates
+  /// and camera of the frame it starts in, places them in slices that
+  /// stop once the predicate says the frame's share is spent (always
+  /// placing at least one), and takes effect all at once in the frame it
+  /// finishes in. Every frame until then replays the previous decision,
+  /// as frames between passes always have. Null runs every pass whole in
+  /// the frame it starts in.
   List<PlacedSymbol> paint({
     required Canvas canvas,
     required Size screenSize,
@@ -466,6 +490,7 @@ class LabelPainter {
     Duration labelFadeDuration = Duration.zero,
     required int placementGeneration,
     DateTime? now,
+    bool Function()? placementOutOfBudget,
   }) {
     developer.Timeline.startSync('VT labels');
     final stopwatch = Stopwatch()..start();
@@ -479,7 +504,8 @@ class LabelPainter {
           devicePixelRatio,
           labelFadeDuration,
           placementGeneration,
-          now ?? DateTime.now());
+          now ?? DateTime.now(),
+          placementOutOfBudget);
     } finally {
       debugPaintMicros += stopwatch.elapsedMicroseconds;
       developer.Timeline.finishSync();
@@ -496,6 +522,7 @@ class LabelPainter {
     Duration labelFadeDuration,
     int placementGeneration,
     DateTime now,
+    bool Function()? outOfBudget,
   ) {
     _disposeRetired();
     final fades = labelFadeDuration > Duration.zero;
@@ -508,52 +535,118 @@ class LabelPainter {
       // fade ticker therefore never settles.
       _fades.clear();
     }
-    // Whether this frame decides placement afresh or replays the last
-    // decision. Layout happens either way — only the winners move on a
-    // replay frame, not the choice of who they are.
-    final placing = _placement.shouldPlace(
-      now: now,
-      interval: placementInterval(labelFadeDuration),
-      generation: placementGeneration,
-      screenSize: screenSize,
-    );
-    if (placing) _pass++;
-    _memory.beginFrame(prune: placing);
+    // A pass in flight for another screen size placed a layout this
+    // frame does not have. Dropped, the throttle places again at once.
+    if (_inFlight?.screenSize != screenSize) _inFlight = null;
+    // Whether this frame starts a placement pass. While one is in flight
+    // the throttle is not asked: that pass is the one it owes. Layout
+    // happens either way — only the winners move between passes, not the
+    // choice of who they are.
+    final starting = _inFlight == null &&
+        _placement.shouldPlace(
+          now: now,
+          interval: placementInterval(labelFadeDuration),
+          generation: placementGeneration,
+          screenSize: screenSize,
+        );
+    if (starting) _pass++;
+    _memory.beginFrame(prune: starting);
     // Quantize the eval zoom to [_zoomStep] steps: the per-instance
     // memo and the zoom-only expression memos compare against the exact
     // zoom, so evaluating at the raw fractional zoom would miss every
     // one of them on every frame of a pinch. Integer zooms are fixed
     // points of the rounding.
     final zoom = (styleZoom * _zoomStep).round() / _zoomStep;
-    // Replaying frames claim no space: the decision was taken at the
-    // last pass and holds until the next one. A real index here would
-    // re-decide the pairs the camera has drifted together since — which
-    // on a zoom-out is most of them, and re-deciding is the flicker
-    // this exists to remove. Slight overlap between passes is the trade
-    // MapLibre makes for the same reason.
-    final collision =
-        placing ? _CollisionIndex(screenSize) : _CollisionIndex.permissive();
-    // Placement priority, see [_byPlacementPriority]. Its incumbent
-    // term only matters on placing frames: the flags are freshly set
-    // there and default-false on every rebuilt candidate list in
-    // between.
-    final sortStopwatch = Stopwatch()..start();
-    final List<PlacedSymbol> candidates;
-    if (placing) {
+    if (starting) {
+      // Placement priority, see [_byPlacementPriority]. Its incumbent
+      // term only matters to a pass: the flags are freshly set here and
+      // default-false on every rebuilt candidate list in between.
+      final sortStopwatch = Stopwatch()..start();
       _flagIncumbents(symbols);
-      candidates = symbols..sort(_byPlacementPriority);
-      _promoteDrawnCopies(candidates);
+      debugSortMicros += sortStopwatch.elapsedMicroseconds;
+      _inFlight = _PlacementPass(
+        symbols,
+        order: _orderLayer,
+        zoom: zoom,
+        styleZoom: styleZoom,
+        screenSize: screenSize,
+        // A pass that may outlast this frame decides on a fork, so the
+        // frames in between replay the last decision undisturbed.
+        memory: outOfBudget == null ? null : _memory.fork(),
+      );
+    }
+
+    // The pass's slice comes first, so that a pass finishing here is
+    // drawn here.
+    final pass = _inFlight;
+    var placed = false;
+    if (pass != null) {
+      debugPlacingFrames++;
+      final loopStopwatch = Stopwatch()..start();
+      final sortMicros = debugSortMicros;
+      placed = _placeSlice(pass, sprites, outOfBudget);
+      // The slice orders each layer's candidates as it reaches them;
+      // that time is the sort's.
+      debugPlaceMicros +=
+          loopStopwatch.elapsedMicroseconds - (debugSortMicros - sortMicros);
+      if (placed) {
+        _inFlight = null;
+        _commit(pass, sameFrame: starting);
+      }
+    }
+
+    final toDraw = <_DrawableSymbol>[];
+    var anyFading = false;
+    // The label's fade and its layer's zoom-range ramp compound: a label
+    // appearing near its layer's maxzoom is subject to both.
+    void show(PlacedSymbol candidate, _DrawableSymbol drawable) {
+      _drawing[candidate.id] = candidate.instance;
+      final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
+      var fade = 1.0;
+      if (fades) {
+        // One fade per label id: every copy of a label resumes its
+        // state, while two POIs sharing a name, or a street name whose
+        // anchor the next level re-spaced, are different labels and
+        // fade on their own.
+        fade = _fades.show(candidate.id);
+        // A key on its first frame has no elapsed fade time yet; one
+        // step keeps it from starting invisible. Every placed label
+        // paints something, on every frame it is placed: a label held
+        // at zero while still winning collision space is a hole in the
+        // map that nothing else may fill, and one frame of missed
+        // placement sweeps it back out of the tracker entirely.
+        if (fade <= 0) fade = 1 / _opacitySteps;
+      }
+      drawable.opacity = ramp <= 0 ? 0 : _quantizeOpacity(fade * ramp);
+      toDraw.add(drawable);
+      anyFading |= drawable.opacity < 1;
+    }
+
+    if (placed && starting) {
+      // The pass ran whole in this frame, at this frame's camera: draw
+      // what it placed, as it placed it.
+      for (final (candidate, drawable) in pass!.outcomes!) {
+        if (drawable != null) {
+          show(candidate, drawable);
+        } else if (fades) {
+          // A candidate that lost (collision, zoom gate) — or a ghost-
+          // only one, which never competes — may still be the only copy
+          // around of a label mid-fade-out.
+          _recordFallback(candidate);
+        }
+      }
     } else {
-      // Replaying: the frozen decision says only the last pass's
-      // winners are on screen, so only they are laid out — each from the
-      // copy it was drawn from, or, where that copy is gone (its tile
-      // republished), from its other copies — and only they need
-      // sorting, ~100 of a few thousand candidates on a dense screen.
+      // Replaying: the decision in force says only its winners are on
+      // screen, so only they are laid out — each from the copy it was
+      // drawn from, or, where that copy is gone (its tile republished),
+      // from its other copies — and only they need sorting, ~100 of a
+      // few thousand candidates on a dense screen.
       // [_byPlacementPriority] is a total order (`order` is unique), so
       // their relative order is exactly what a full sort gives. Everyone
       // else is at most a fade-out fallback, recorded in input order
       // instead of priority order.
-      candidates = <PlacedSymbol>[];
+      final sortStopwatch = Stopwatch()..start();
+      final candidates = <PlacedSymbol>[];
       List<PlacedSymbol>? otherCopies;
       Set<int>? drawnCopyOffered;
       for (final candidate in symbols) {
@@ -578,72 +671,28 @@ class LabelPainter {
         }
       }
       candidates.sort(_byPlacementPriority);
-    }
-    debugSortMicros += sortStopwatch.elapsedMicroseconds;
-    if (placing) debugPlacingFrames++;
-
-    final toDraw = <_DrawableSymbol>[];
-    var anyFading = false;
-    if (placing) {
-      _winners.clear();
-      _repeatAnchors.clear();
-    }
-    final loopStopwatch = Stopwatch()..start();
-    for (final candidate in candidates) {
-      if (candidate.ghostOnly) {
-        // Never competes for placement — only remembered, in case its
-        // label is fading out and nothing else can draw it. (A replay
-        // frame recorded these while picking its winners.)
-        if (fades) _recordFallback(candidate);
-        continue;
-      }
-      // Another copy of this label — a seam twin, the other level's at
-      // a crossing — already drew: one label draws once. Skipped before
-      // any layout work.
-      if (_drawing.containsKey(candidate.id)) continue;
-      final drawable =
-          _prepare(candidate, zoom, styleZoom, collision, sprites, screenSize);
-      if (drawable == null) {
-        // A candidate that lost (collision, zoom gate) may still be the
-        // only copy around of a label mid-fade-out.
-        if (fades) _recordFallback(candidate);
-        continue;
-      }
-      _drawing[candidate.id] = candidate.instance;
-      if (placing) _winners.add(candidate.id);
-      // The label's fade and its layer's zoom-range ramp compound: a
-      // label appearing near its layer's maxzoom is subject to both.
-      final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
-      if (placing) {
-        final repeatKey = drawable.repeatKey;
-        // Only text that actually shows may suppress a repeat: a
-        // rejected or ramped-out candidate never hides a fallback.
-        if (repeatKey != null && drawable.drawsText && ramp > 0) {
-          (_repeatAnchors[repeatKey] ??= []).add(_RepeatAnchor(candidate));
+      debugSortMicros += sortStopwatch.elapsedMicroseconds;
+      // Replaying frames claim no space: the decision was taken at the
+      // last pass and holds until the next one. A real index here would
+      // re-decide the pairs the camera has drifted together since —
+      // which on a zoom-out is most of them, and re-deciding is the
+      // flicker this exists to remove. Slight overlap between passes is
+      // the trade MapLibre makes for the same reason.
+      final collision = _CollisionIndex.permissive();
+      final loopStopwatch = Stopwatch()..start();
+      for (final candidate in candidates) {
+        // Another copy of this label — a seam twin, the other level's
+        // at a crossing — already drew: one label draws once. Skipped
+        // before any layout work.
+        if (_drawing.containsKey(candidate.id)) continue;
+        final drawable = _prepare(
+            candidate, zoom, styleZoom, collision, sprites, screenSize);
+        if (drawable == null) {
+          if (fades) _recordFallback(candidate);
+          continue;
         }
+        show(candidate, drawable);
       }
-      var fade = 1.0;
-      if (fades) {
-        // One fade per label id: every copy of a label resumes its
-        // state, while two POIs sharing a name, or a street name whose
-        // anchor the next level re-spaced, are different labels and
-        // fade on their own.
-        fade = _fades.show(candidate.id);
-        // A key on its first frame has no elapsed fade time yet; one
-        // step keeps it from starting invisible. Every placed label
-        // paints something, on every frame it is placed: a label held
-        // at zero while still winning collision space is a hole in the
-        // map that nothing else may fill, and one frame of missed
-        // placement sweeps it back out of the tracker entirely.
-        if (fade <= 0) fade = 1 / _opacitySteps;
-      }
-      drawable.opacity = ramp <= 0 ? 0 : _quantizeOpacity(fade * ramp);
-      toDraw.add(drawable);
-      anyFading |= drawable.opacity < 1;
-    }
-    if (placing) {
-      debugPlaceMicros += loopStopwatch.elapsedMicroseconds;
-    } else {
       debugReplayMicros += loopStopwatch.elapsedMicroseconds;
     }
     final sweepStopwatch = Stopwatch()..start();
@@ -687,8 +736,9 @@ class LabelPainter {
       },
           // Replay frames hold: a winner missing mid-interval may only
           // be between copies (its tile gone, the successor not yet
-          // published), and only a pass may start a fade-out.
-          hold: !placing);
+          // published), and only a pass may start a fade-out — in the
+          // frame it takes effect in.
+          hold: !placed);
       _fallbacks.clear();
     }
     final drawnCopy = _drawnCopy;
@@ -734,6 +784,90 @@ class LabelPainter {
     final byY = a.screenAnchor.dy.compareTo(b.screenAnchor.dy);
     if (byY != 0) return byY;
     return a.order - b.order;
+  }
+
+  /// Puts one style layer's candidates of a pass into placement order —
+  /// see [_PlacementPass.next] for why a layer at a time.
+  /// Every copy of a label is in its layer (the layer is part of the
+  /// continuity key), so the drawn copies are promoted here too.
+  void _orderLayer(List<PlacedSymbol> candidates) {
+    final stopwatch = Stopwatch()..start();
+    candidates.sort(_byPlacementPriority);
+    _promoteDrawnCopies(candidates);
+    debugSortMicros += stopwatch.elapsedMicroseconds;
+  }
+
+  /// Places [pass]'s next candidates against its collision index until
+  /// [outOfBudget] says the frame's share is spent — after at least one,
+  /// so a pass always finishes — and returns whether the pass is done.
+  ///
+  /// Everything the placement remembers across candidates is the
+  /// pass's own while it runs: its winners, its repeat anchors, and, for
+  /// a pass that may span frames, a fork of the placement memory. What
+  /// it decides reaches the frames being drawn only through [_commit].
+  bool _placeSlice(
+      _PlacementPass pass, SpriteAtlas? sprites, bool Function()? outOfBudget) {
+    final screenMemory = _memory;
+    final screenRepeats = _repeatAnchors;
+    final memory = pass.memory;
+    if (memory != null) _memory = memory;
+    _repeatAnchors = pass.repeatAnchors;
+    var placed = 0;
+    var done = false;
+    try {
+      for (;;) {
+        if (pass.exhausted) return done = true;
+        if (placed++ > 0 && (outOfBudget?.call() ?? false)) return false;
+        final candidate = pass.next();
+        if (candidate.ghostOnly) {
+          // Never competes for placement — only remembered, in case its
+          // label is fading out and nothing else can draw it.
+          pass.outcomes?.add((candidate, null));
+          continue;
+        }
+        // Another copy of this label — a seam twin, the other level's at
+        // a crossing — already won: one label draws once. Skipped before
+        // any layout work.
+        if (pass.winners.containsKey(candidate.id)) continue;
+        final drawable = _prepare(candidate, pass.zoom, pass.styleZoom,
+            pass.collision, sprites, pass.screenSize);
+        // A candidate that lost (collision, zoom gate) may still be the
+        // only copy around of a label mid-fade-out.
+        pass.outcomes?.add((candidate, drawable));
+        if (drawable == null) continue;
+        pass.winners[candidate.id] = candidate.instance;
+        // Only text that actually shows may suppress a repeat: a
+        // rejected or ramped-out candidate never hides a fallback.
+        final repeatKey = drawable.repeatKey;
+        if (repeatKey != null &&
+            drawable.drawsText &&
+            zoomRangeOpacity(candidate.instance.layer, pass.styleZoom) > 0) {
+          (_repeatAnchors[repeatKey] ??= []).add(_RepeatAnchor(candidate));
+        }
+      }
+    } finally {
+      _memory = screenMemory;
+      _repeatAnchors = screenRepeats;
+      // A pass that outlasts its first frame is drawn by replay, at the
+      // camera of the frame it finishes in; the drawables it made here
+      // are for a camera that is gone, and hold text a later frame may
+      // dispose.
+      if (!done) pass.outcomes = null;
+    }
+  }
+
+  /// Puts a finished pass's decision in force: its winners become the
+  /// decision the frames replay until the next one, the copies it placed
+  /// them from the ones they draw from, and the choices it made for them
+  /// the ones their labels sit on. [sameFrame]: the pass started in this
+  /// frame, so its view of the screen is this frame's.
+  void _commit(_PlacementPass pass, {required bool sameFrame}) {
+    debugPlacementPasses++;
+    _winners
+      ..clear()
+      ..addAll(pass.winners.keys);
+    _drawnCopy.addAll(pass.winners);
+    pass.memory?.mergeIntoParent(flip: sameFrame);
   }
 
   /// Draws the placed symbols [toDraw] onto [canvas] and returns them in
@@ -2383,6 +2517,86 @@ class _DrawableIcon {
         0, 0, 0, 0, color.b * 255, //
         0, 0, 0, slope, shift * 255, //
       ]);
+  }
+}
+
+/// One placement pass: the frame's candidates in priority order, placed
+/// one after another against one collision index — in a single frame,
+/// or in slices over several (see [LabelPainter.paint]'s
+/// `placementOutOfBudget`). Everything here is the camera of the frame
+/// the pass started in: the candidates' screen positions, the zooms,
+/// the screen size.
+class _PlacementPass {
+  _PlacementPass(
+    List<PlacedSymbol> candidates, {
+    required this.order,
+    required this.zoom,
+    required this.styleZoom,
+    required this.screenSize,
+    required this.memory,
+  }) : collision = _CollisionIndex(screenSize) {
+    final byLayer = <int, List<PlacedSymbol>>{};
+    for (final candidate in candidates) {
+      (byLayer[candidate.instance.layerIndex] ??= []).add(candidate);
+    }
+    // Topmost style layer first, as [LabelPainter._byPlacementPriority]
+    // orders them.
+    _layers = [
+      for (final layer in byLayer.keys.toList()..sort((a, b) => b - a))
+        byLayer[layer]!,
+    ];
+  }
+
+  /// The candidates, one list per style layer, topmost first. The
+  /// candidates themselves are the caller's, which builds new ones every
+  /// frame and never touches old ones again.
+  late final List<List<PlacedSymbol>> _layers;
+  var _layer = 0;
+  var _next = 0;
+
+  /// Puts one layer's candidates into placement order.
+  final void Function(List<PlacedSymbol>) order;
+
+  final double zoom;
+  final double styleZoom;
+  final Size screenSize;
+  final _CollisionIndex collision;
+
+  /// The placement memory the pass decides on: a fork of the painter's
+  /// when the pass may span frames, null when it decides on the
+  /// painter's own (an unbudgeted pass, which starts and finishes in
+  /// one frame).
+  final PlacementMemory? memory;
+
+  /// The labels placed so far, each with the copy it was placed from:
+  /// the decision, once the pass is done.
+  final winners = <int, SymbolInstance>{};
+  final repeatAnchors = <Object, List<_RepeatAnchor>>{};
+
+  /// Every candidate taken so far, in order, with its drawable — null
+  /// for one that lost or never competed — while the pass is still in
+  /// the frame it started in; null once it has outlasted that frame.
+  List<(PlacedSymbol, _DrawableSymbol?)>? outcomes = [];
+
+  /// Whether every candidate has been taken.
+  bool get exhausted {
+    if (_layer < _layers.length && _next == _layers[_layer].length) {
+      _layer++;
+      _next = 0;
+    }
+    return _layer == _layers.length;
+  }
+
+  /// The next candidate in placement priority order; only while not
+  /// [exhausted].
+  ///
+  /// The style layer is the first term of that order, so each layer is
+  /// ordered only when the pass reaches it: sorting every candidate up
+  /// front was 3–4 ms on a phone, and no slice can split one sort.
+  PlacedSymbol next() {
+    final candidates = _layers[_layer];
+    if (_next == 0) order(candidates);
+    return candidates[_next++];
   }
 }
 
