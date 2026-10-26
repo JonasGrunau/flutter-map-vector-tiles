@@ -87,6 +87,10 @@ final _watchRe = _watch.isEmpty ? null : RegExp(_watch);
 /// app's style document and pass its key via `MAPTILER_KEY` on the command
 /// line — keys must never be committed to this repo.
 const _setup = String.fromEnvironment('BENCH_SETUP', defaultValue: 'default');
+
+/// `false` draws text halos crisp, ignoring `text-halo-blur`, to put a
+/// number on the blur's cost (A/B against the default).
+const _haloBlur = bool.fromEnvironment('BENCH_HALO_BLUR', defaultValue: true);
 const _safenow = _setup == 'safenow';
 
 /// Reporting cadence for `manual` mode.
@@ -116,7 +120,10 @@ const _hi = int.fromEnvironment('BENCH_HI', defaultValue: 177) / 10;
 const _lat = int.fromEnvironment('BENCH_LAT_E5', defaultValue: 4813720) / 1e5;
 const _lon = int.fromEnvironment('BENCH_LON_E5', defaultValue: 1157550) / 1e5;
 
-void main() => runApp(const BenchApp());
+void main() {
+  LabelPainter.debugHaloBlur = _haloBlur;
+  runApp(const BenchApp());
+}
 
 class BenchApp extends StatelessWidget {
   const BenchApp({super.key});

@@ -36,6 +36,7 @@ flutter run --profile -d "$DEVICE" \
   ${STYLE_URL:+--dart-define=STYLE_URL=$STYLE_URL} \
   ${MAPTILER_KEY:+--dart-define=MAPTILER_KEY=$MAPTILER_KEY} \
   ${BENCH_SETUP:+--dart-define=BENCH_SETUP=$BENCH_SETUP} \
+  ${BENCH_HALO_BLUR:+--dart-define=BENCH_HALO_BLUR=$BENCH_HALO_BLUR} \
   ${BENCH_MODE:+--dart-define=BENCH_MODE=$BENCH_MODE} \
   ${BENCH_LAT_E5:+--dart-define=BENCH_LAT_E5=$BENCH_LAT_E5} \
   ${BENCH_LON_E5:+--dart-define=BENCH_LON_E5=$BENCH_LON_E5} \

@@ -222,6 +222,12 @@ class LabelPainter {
   @visibleForTesting
   int debugShapedTextCount = 0;
 
+  /// False draws every text halo crisp, ignoring `text-halo-blur` — for
+  /// `bench/` to put a number on what the blur costs (`BENCH_HALO_BLUR`).
+  /// Set it before the first label is shaped: shaped text keeps its halo.
+  @visibleForTesting
+  static bool debugHaloBlur = true;
+
   /// Multi-line text laid out again aligned to another side for
   /// `text-justify: auto` (see `_LaidOutText.justified`), across all
   /// painters.
@@ -2280,7 +2286,7 @@ class LabelPainter {
     final haloRatioQ =
         haloColor.a <= 0 ? 0 : (haloWidth / fontSize * 128).round();
     // The blur is a font-size ratio like the width, for the same reason.
-    final haloBlurQ = haloRatioQ == 0
+    final haloBlurQ = haloRatioQ == 0 || !debugHaloBlur
         ? 0
         : (layer.textHaloBlur.eval(ctx).clamp(0.0, 8.0) / fontSize * 128)
             .round();
