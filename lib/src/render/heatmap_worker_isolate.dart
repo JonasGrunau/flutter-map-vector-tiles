@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:isolate';
-import 'dart:typed_data';
 
 import 'heatmap_density.dart';
 import 'heatmap_worker.dart';
@@ -14,12 +13,12 @@ class PlatformHeatmapWorker implements HeatmapWorker {
   Isolate? _isolate;
   ReceivePort? _results;
   ReceivePort? _exit;
-  final _pending = <int, Completer<Uint8List?>>{};
+  final _pending = <int, Completer<HeatmapResult?>>{};
   var _nextId = 0;
   var _disposed = false;
 
   @override
-  Future<Uint8List?> render(HeatmapJob job) async {
+  Future<HeatmapResult?> render(HeatmapJob job) async {
     if (_disposed) return null;
     final port = await (_port ??= _spawn());
     if (_disposed) return null;
@@ -31,7 +30,7 @@ class PlatformHeatmapWorker implements HeatmapWorker {
       }
     }
     final id = _nextId++;
-    final result = _pending[id] = Completer<Uint8List?>();
+    final result = _pending[id] = Completer<HeatmapResult?>();
     port.send((id, job));
     return result.future;
   }
@@ -60,9 +59,9 @@ class PlatformHeatmapWorker implements HeatmapWorker {
   }
 
   void _onResult(Object? message) {
-    if (message is! (int, TransferableTypedData?)) return;
-    final (id, data) = message;
-    _pending.remove(id)?.complete(data?.materialize().asUint8List());
+    if (message is! (int, _Rendered?)) return;
+    final (id, rendered) = message;
+    _pending.remove(id)?.complete(rendered?.result);
   }
 
   /// The isolate died under us (killed by the OS): fail what it held and
@@ -104,13 +103,45 @@ void _workerMain(SendPort startup) {
       results = message;
     } else if (message is (int, HeatmapJob)) {
       final (id, job) = message;
-      TransferableTypedData? pixels;
+      _Rendered? rendered;
       try {
-        pixels = TransferableTypedData.fromList([renderHeatmap(job)]);
+        final result = renderHeatmap(job);
+        if (result != null) rendered = _Rendered(result);
       } catch (_) {
-        pixels = null;
+        rendered = null;
       }
-      results?.send((id, pixels));
+      results?.send((id, rendered));
     }
   });
+}
+
+/// A [HeatmapResult] on its way back, its pixels moved rather than
+/// copied.
+class _Rendered {
+  final TransferableTypedData pixels;
+  final int width;
+  final int height;
+  final double left;
+  final double top;
+  final double coverWidth;
+  final double coverHeight;
+
+  _Rendered(HeatmapResult result)
+      : pixels = TransferableTypedData.fromList([result.pixels]),
+        width = result.width,
+        height = result.height,
+        left = result.left,
+        top = result.top,
+        coverWidth = result.coverWidth,
+        coverHeight = result.coverHeight;
+
+  HeatmapResult get result => HeatmapResult(
+        pixels: pixels.materialize().asUint8List(),
+        width: width,
+        height: height,
+        left: left,
+        top: top,
+        coverWidth: coverWidth,
+        coverHeight: coverHeight,
+      );
 }

@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import '../core/tile_zoom.dart';
+
 /// The kernel density estimate behind a heatmap layer, and its colouring.
 ///
 /// Pure arithmetic over typed lists — no `dart:ui` drawing — so it is
@@ -266,54 +268,209 @@ class HeatmapGrid {
   }
 }
 
-/// Points sharing one kernel radius, positioned in a [HeatmapJob]'s grid
-/// pixels.
-class HeatmapBatch {
+/// One tile's points for a [HeatmapJob].
+class HeatmapTileInput {
+  /// Where the tile's origin lands, in pass pixels from the top-left of
+  /// the job's cover, and how many pass pixels one tile pixel spans.
+  final double left;
+  final double top;
+  final double scale;
+
+  /// Interleaved x,y in logical tile pixels (0..256).
+  final Float32List xy;
+
+  /// Per point weights and radii, or null for one [weight] / [radius]
+  /// for every point.
+  final Float32List? weights;
+  final double weight;
+  final Float32List? radii;
   final double radius;
-  final Float32List xs;
-  final Float32List ys;
 
-  /// Each point's density peak: weight · intensity · [HeatmapGrid.peakFactor].
-  final Float32List peaks;
+  /// The tile cut into `side × side` squares, row-major, where `side²`
+  /// is the length: a point in a non-zero square does not count. Null
+  /// counts every point. A retained tile uses it to leave out the
+  /// squares the arriving level already covers.
+  final Uint8List? skip;
 
-  const HeatmapBatch(this.radius, this.xs, this.ys, this.peaks);
+  const HeatmapTileInput({
+    required this.left,
+    required this.top,
+    required this.scale,
+    required this.xy,
+    this.weights,
+    this.weight = 0,
+    this.radii,
+    this.radius = 0,
+    this.skip,
+  });
 }
 
-/// One heatmap layer's density pass as plain data — what a worker
-/// isolate takes, and [renderHeatmap] turns into pixels.
+/// One heatmap layer's density pass as plain data — what the worker
+/// isolate takes, and [renderHeatmap] turns into an image's pixels.
+/// Everything per point happens there: the UI thread only lists the
+/// tiles.
 class HeatmapJob {
-  /// The density grid: cells across and down, and the cell edge.
-  final int width;
-  final int height;
-  final double cell;
+  /// The rectangle the pass covers, in pass pixels (world pixels at the
+  /// pass's camera zoom).
+  final double coverLeft;
+  final double coverTop;
+  final double coverWidth;
+  final double coverHeight;
+  final double devicePixelRatio;
 
-  /// Output pixels across one cell.
-  final int upsampling;
+  /// `heatmap-intensity · peakFactor`: turns a weight into a peak.
+  final double peakScale;
 
   /// `heatmap-color` at densities 0, 1/255 … 1, packed as
   /// [HeatmapGrid.packRgba] does.
   final Uint32List ramp;
-  final List<HeatmapBatch> batches;
+  final List<HeatmapTileInput> tiles;
 
   const HeatmapJob({
-    required this.width,
-    required this.height,
-    required this.cell,
-    required this.upsampling,
+    required this.coverLeft,
+    required this.coverTop,
+    required this.coverWidth,
+    required this.coverHeight,
+    required this.devicePixelRatio,
+    required this.peakScale,
     required this.ramp,
-    required this.batches,
+    required this.tiles,
   });
-
-  int get outputWidth => width * upsampling;
-  int get outputHeight => height * upsampling;
 }
 
-/// [job]'s density, coloured into premultiplied `rgba8888` pixels.
-Uint8List renderHeatmap(HeatmapJob job) {
-  final grid = HeatmapGrid(job.width, job.height, job.cell);
-  for (final batch in job.batches) {
-    grid.accumulate(
-        batch.xs, batch.ys, batch.peaks, batch.xs.length, batch.radius);
+/// A rendered [HeatmapJob]: `rgba8888` pixels, and the rectangle they
+/// cover in pass pixels — the cover, widened to the density cells.
+class HeatmapResult {
+  final Uint8List pixels;
+  final int width;
+  final int height;
+  final double left;
+  final double top;
+  final double coverWidth;
+  final double coverHeight;
+
+  const HeatmapResult({
+    required this.pixels,
+    required this.width,
+    required this.height,
+    required this.left,
+    required this.top,
+    required this.coverWidth,
+    required this.coverHeight,
+  });
+}
+
+/// [job]'s density, coloured into premultiplied `rgba8888` pixels; null
+/// when no point's kernel reaches the cover.
+HeatmapResult? renderHeatmap(HeatmapJob job) {
+  final batches = <int, _PointBuffer>{};
+  _PointBuffer? last;
+  var minRadius = double.infinity;
+  final logStep = math.log(1.05);
+  // A data-driven radius is bucketed in 5 % steps, a difference no ramp
+  // shows: the separable blur takes one radius per batch.
+  _PointBuffer batchFor(double radius) {
+    if (last != null && last!.radius == radius) return last!;
+    if (radius < minRadius) minRadius = radius;
+    final bucket = (math.log(radius) / logStep).round();
+    return last = batches[bucket] ??= _PointBuffer(radius);
   }
-  return grid.colorize(job.ramp, job.upsampling);
+
+  final w = job.coverWidth;
+  final h = job.coverHeight;
+  for (final tile in job.tiles) {
+    final xy = tile.xy;
+    final weights = tile.weights;
+    final radii = tile.radii;
+    final skip = tile.skip;
+    final side = skip == null ? 0 : math.sqrt(skip.length).round();
+    final perSquare = side == 0 ? 0.0 : side / displayTileSize;
+    var batch = radii == null ? batchFor(tile.radius) : null;
+    var reach = HeatmapGrid.reachInRadii * tile.radius;
+    final n = xy.length >> 1;
+    for (var i = 0; i < n; i++) {
+      final weight = weights == null ? tile.weight : weights[i];
+      if (!(weight > 0)) continue;
+      if (radii != null) {
+        final radius = radii[i];
+        if (!(radius > 0)) continue;
+        batch = batchFor(radius);
+        reach = HeatmapGrid.reachInRadii * radius;
+      }
+      final tx = xy[i * 2];
+      final ty = xy[i * 2 + 1];
+      final x = tile.left + tx * tile.scale;
+      final y = tile.top + ty * tile.scale;
+      if (x < -reach || x > w + reach || y < -reach || y > h + reach) continue;
+      if (skip != null) {
+        final sx = (tx * perSquare).floor().clamp(0, side - 1);
+        final sy = (ty * perSquare).floor().clamp(0, side - 1);
+        if (skip[sy * side + sx] != 0) continue;
+      }
+      batch!.add(x, y, weight);
+    }
+  }
+  if (batches.isEmpty || batches.values.every((b) => b.length == 0)) {
+    return null;
+  }
+  final (:cell, :upsampling) =
+      HeatmapGrid.cellFor(minRadius, job.devicePixelRatio);
+  // Snapped to the cell lattice, so that passes at one zoom sample the
+  // density at the same places and a pan does not shimmer it.
+  final left = (job.coverLeft / cell).floorToDouble() * cell;
+  final top = (job.coverTop / cell).floorToDouble() * cell;
+  final dx = job.coverLeft - left;
+  final dy = job.coverTop - top;
+  final width = ((job.coverLeft + w - left) / cell).ceil();
+  final height = ((job.coverTop + h - top) / cell).ceil();
+  final grid = HeatmapGrid(width, height, cell);
+  for (final batch in batches.values) {
+    final n = batch.length;
+    if (n == 0) continue;
+    final xs = batch.xs;
+    final ys = batch.ys;
+    final peaks = batch.weights;
+    for (var i = 0; i < n; i++) {
+      xs[i] += dx;
+      ys[i] += dy;
+      peaks[i] *= job.peakScale;
+    }
+    grid.accumulate(xs, ys, peaks, n, batch.radius);
+  }
+  return HeatmapResult(
+    pixels: grid.colorize(job.ramp, upsampling),
+    width: width * upsampling,
+    height: height * upsampling,
+    left: left,
+    top: top,
+    coverWidth: width * cell,
+    coverHeight: height * cell,
+  );
+}
+
+/// Growable typed storage for one batch's points: a plain `List<double>`
+/// would box every coordinate.
+class _PointBuffer {
+  final double radius;
+  var xs = Float32List(256);
+  var ys = Float32List(256);
+  var weights = Float32List(256);
+  var length = 0;
+
+  _PointBuffer(this.radius);
+
+  void add(double x, double y, double weight) {
+    if (length == xs.length) {
+      xs = _grow(xs);
+      ys = _grow(ys);
+      weights = _grow(weights);
+    }
+    xs[length] = x;
+    ys[length] = y;
+    weights[length] = weight;
+    length++;
+  }
+
+  static Float32List _grow(Float32List list) =>
+      Float32List(list.length * 2)..setRange(0, list.length, list);
 }

@@ -1893,19 +1893,18 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         theme: widget.theme, data: data, styleZoom: styleZoom);
   }
 
-  /// The tiles offering points to a heatmap density pass at
-  /// [cameraZoom]: every current tile that has its points, and — while
+  /// The tiles offering points to a heatmap density pass: every current tile that has its points, and — while
   /// a zoom crossing is in flight — the retained level's, but only
   /// where no current tile has points yet. Both levels hold the same
   /// points, so letting both count would double the density wherever
   /// they overlap. For the same reason only one retained level takes
   /// part, the one nearest the current level, when a fast zoom has left
   /// several.
-  Iterable<HeatmapTile> _heatmapTiles(double cameraZoom) sync* {
+  Iterable<HeatmapTile> _heatmapTiles() sync* {
     for (final tile in _tiles.values) {
       final heatmap = tile.heatmap;
       if (heatmap != null) {
-        yield (key: tile.key, heatmap: heatmap, include: null);
+        yield (key: tile.key, heatmap: heatmap, skip: null);
       }
     }
     final level = _currentZoom;
@@ -1920,35 +1919,36 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
     }
     bool covers(TileKey key) => _tiles[key]?.heatmap != null;
-    // A current tile's edge, in world pixels at [cameraZoom].
-    final size = displayTileSize * math.pow(2.0, cameraZoom - level);
     for (final tile in _retained.values) {
       final heatmap = tile.heatmap;
-      if (heatmap == null || tile.key.z != nearest) continue;
       final key = tile.key;
-      // The current tiles over this one: its ancestor on a zoom-out,
-      // its descendants on a zoom-in (a few, unless the jump was big).
+      if (heatmap == null || key.z != nearest) continue;
       final shift = level - key.z;
-      final overlapping = shift <= 0
-          ? [TileKey(level, key.x >> -shift, key.y >> -shift)]
-          : shift > 3
-              ? null
-              : [
-                  for (var dy = 0; dy < 1 << shift; dy++)
-                    for (var dx = 0; dx < 1 << shift; dx++)
-                      TileKey(
-                          level, (key.x << shift) + dx, (key.y << shift) + dy),
-                ];
-      final covered = overlapping?.where(covers).length;
-      if (covered == overlapping?.length) continue;
-      yield (
-        key: key,
-        heatmap: heatmap,
-        include: covered == 0
-            ? null
-            : (x, y) =>
-                !covers(TileKey(level, (x / size).floor(), (y / size).floor())),
-      );
+      if (shift <= 0) {
+        // A zoom-out: one current tile lies over this one, whole.
+        if (!covers(TileKey(level, key.x >> -shift, key.y >> -shift))) {
+          yield (key: key, heatmap: heatmap, skip: null);
+        }
+        continue;
+      }
+      // A zoom-in: the current tiles over this one cut it into a
+      // side × side grid. Past three levels at once there is no
+      // fallback; the arriving tiles cover what they can.
+      if (shift > 3) continue;
+      final side = 1 << shift;
+      final skip = Uint8List(side * side);
+      var covered = 0;
+      for (var dy = 0; dy < side; dy++) {
+        for (var dx = 0; dx < side; dx++) {
+          if (covers(
+              TileKey(level, (key.x << shift) + dx, (key.y << shift) + dy))) {
+            skip[dy * side + dx] = 1;
+            covered++;
+          }
+        }
+      }
+      if (covered == side * side) continue;
+      yield (key: key, heatmap: heatmap, skip: covered == 0 ? null : skip);
     }
   }
 

@@ -18,23 +18,24 @@ import 'heatmap_worker.dart';
 
 /// A tile offering heatmap points to a density pass.
 ///
-/// [include], when set, is asked per point — with its position in world
-/// pixels at the pass's camera zoom — whether the point still counts: a
-/// tile of the level a zoom crossing is leaving counts only where the
-/// arriving level has no points yet, or the two would add up.
+/// [skip], when set, leaves out part of the tile — see
+/// [HeatmapTileInput.skip]: a tile of the level a zoom crossing is
+/// leaving counts only where the arriving level has no points yet, or
+/// the two would add up.
 typedef HeatmapTile = ({
   TileKey key,
   List<HeatmapPoints> heatmap,
-  bool Function(double worldX, double worldY)? include,
+  Uint8List? skip,
 });
 
 /// Draws `heatmap` layers in screen space, as MapLibre does: one density
 /// over every visible tile's points — a kernel reaches across tile seams
 /// — coloured through `heatmap-color`, over the tile rasters.
 ///
-/// The density is not recomputed per frame. A *pass* gathers the points
-/// whose kernels reach the viewport plus a margin, hands the density and
-/// its colouring to a [HeatmapWorker] (an isolate on native platforms),
+/// The density is not recomputed per frame. A *pass* lists the tiles
+/// and their points for a [HeatmapWorker] (an isolate on native
+/// platforms), which places, culls and sums every point whose kernel
+/// reaches the viewport plus a margin and colours the result; the pass
 /// uploads the pixels as an image, and the frames after it draw that
 /// image under the camera transform: panning and rotating are exact, and
 /// a zoom scales the kernels with the map until the next pass. A pass
@@ -57,9 +58,9 @@ class HeatmapPainter {
   /// so a pan has some way to go before it needs a pass of its own.
   static const double margin = 64;
 
-  /// Passes started, and the UI-thread time they took — gathering the
-  /// points and building the jobs; the density itself runs on the
-  /// worker. For tests and benchmarks.
+  /// Passes started, and the UI-thread time they took — listing the
+  /// tiles and evaluating weights that read the zoom; everything per
+  /// point runs on the worker. For tests and benchmarks.
   static int debugPassCount = 0;
   static int debugPassMicros = 0;
 
@@ -79,8 +80,7 @@ class HeatmapPainter {
   /// Paints every visible heatmap layer of [theme], after starting a
   /// density pass if one is due. [canvas] is in world pixels at
   /// [cameraZoom] relative to [worldCenter] — the tile rasters' space.
-  /// [tiles] is asked for the contributing tiles only when a pass runs,
-  /// with the camera zoom their [HeatmapTile.include] will be asked at.
+  /// [tiles] is asked for the contributing tiles only when a pass runs.
   /// [generation] changes whenever those tiles or their points do.
   void paint(
     Canvas canvas, {
@@ -92,7 +92,7 @@ class HeatmapPainter {
     required double rotation,
     required double devicePixelRatio,
     required int generation,
-    required Iterable<HeatmapTile> Function(double cameraZoom) tiles,
+    required Iterable<HeatmapTile> Function() tiles,
   }) {
     if (_disposed) return;
     final layers = [
@@ -157,7 +157,7 @@ class HeatmapPainter {
     required double rotation,
     required double devicePixelRatio,
     required int generation,
-    required Iterable<HeatmapTile> Function(double cameraZoom) tiles,
+    required Iterable<HeatmapTile> Function() tiles,
   }) {
     if (_inFlight > 0) return; // its landing repaints, and asks again
     final inputs = (
@@ -201,7 +201,7 @@ class HeatmapPainter {
     _sincePass
       ..reset()
       ..start();
-    _pass(layers, cameraZoom, styleZoom, devicePixelRatio, tiles(cameraZoom));
+    _pass(layers, cameraZoom, styleZoom, devicePixelRatio, tiles());
   }
 
   void _pass(List<HeatmapThemeLayer> layers, double cameraZoom,
@@ -213,50 +213,38 @@ class HeatmapPainter {
     final tileList = tiles.toList(growable: false);
     final zoomCtx = EvalContext(zoom: styleZoom);
     for (final layer in layers) {
-      final points = _gather(layer, tileList, cameraZoom, styleZoom, cover);
-      if (points.count == 0) {
-        _images.remove(layer)?.image.dispose();
-        continue;
-      }
-      final (:cell, :upsampling) = HeatmapGrid.cellFor(points.minRadius, dpr);
-      // Snapped to the cell lattice, so that passes at one zoom sample
-      // the density at the same places and a pan does not shimmer it.
-      final left = (cover.left / cell).floorToDouble() * cell;
-      final top = (cover.top / cell).floorToDouble() * cell;
-      final width = ((cover.right - left) / cell).ceil();
-      final height = ((cover.bottom - top) / cell).ceil();
       final job = HeatmapJob(
-        width: width,
-        height: height,
-        cell: cell,
-        upsampling: upsampling,
+        coverLeft: cover.left,
+        coverTop: cover.top,
+        coverWidth: cover.right - cover.left,
+        coverHeight: cover.bottom - cover.top,
+        devicePixelRatio: dpr,
+        peakScale: math.max(0.0, layer.intensity.eval(zoomCtx)) *
+            HeatmapGrid.peakFactor,
         ramp: _rampOf(layer, styleZoom),
-        batches: points.batches(
-          dx: cover.left - left,
-          dy: cover.top - top,
-          peakScale: math.max(0.0, layer.intensity.eval(zoomCtx)) *
-              HeatmapGrid.peakFactor,
-        ),
+        tiles: _inputs(layer, tileList, cameraZoom, styleZoom, cover),
       );
       _inFlight++;
-      unawaited(_render(job).then((image) {
+      unawaited(_render(job).then((rendered) {
         _inFlight--;
         if (_disposed || sequence != _sequence) {
-          image?.dispose();
+          rendered?.image.dispose();
           // A reset dropped this pass; the next paint owes a new one.
           if (!_disposed && _inFlight == 0) onChanged();
           return;
         }
-        if (image == null) return;
         _images.remove(layer)?.image.dispose();
-        _images[layer] = _HeatmapImage(
-          image,
-          zoom: cameraZoom,
-          left: left,
-          top: top,
-          width: width * cell,
-          height: height * cell,
-        );
+        if (rendered != null) {
+          final (:image, :result) = rendered;
+          _images[layer] = _HeatmapImage(
+            image,
+            zoom: cameraZoom,
+            left: result.left,
+            top: result.top,
+            width: result.coverWidth,
+            height: result.coverHeight,
+          );
+        }
         onChanged();
       }));
     }
@@ -271,14 +259,17 @@ class HeatmapPainter {
     developer.Timeline.finishSync();
   }
 
-  /// [job] rendered on the worker and uploaded; null if either failed.
-  /// The upload goes through [decodeRgbaPixels], not
-  /// `ImageDescriptor.raw` — see there.
-  Future<ui.Image?> _render(HeatmapJob job) async {
-    final pixels = await (_worker ??= HeatmapWorker()).render(job);
-    if (pixels == null || _disposed) return null;
+  /// [job] rendered on the worker and uploaded; null when no point
+  /// counted, or either step failed. The upload goes through
+  /// [decodeRgbaPixels], not `ImageDescriptor.raw` — see there.
+  Future<({ui.Image image, HeatmapResult result})?> _render(
+      HeatmapJob job) async {
+    final result = await (_worker ??= HeatmapWorker()).render(job);
+    if (result == null || _disposed) return null;
     try {
-      return await decodeRgbaPixels(pixels, job.outputWidth, job.outputHeight);
+      final image =
+          await decodeRgbaPixels(result.pixels, result.width, result.height);
+      return (image: image, result: result);
     } catch (_) {
       return null;
     }
@@ -298,62 +289,41 @@ class HeatmapPainter {
         return ramp;
       }();
 
-  /// Every point of [layer] whose kernel reaches into [cover], positioned
-  /// relative to its top-left corner.
-  static _GatheredPoints _gather(
+  /// [layer]'s points in each of [tiles], placed relative to [cover] —
+  /// one entry per tile, its weights and radii evaluated at [styleZoom].
+  static List<HeatmapTileInput> _inputs(
     HeatmapThemeLayer layer,
     List<HeatmapTile> tiles,
     double cameraZoom,
     double styleZoom,
     ({double left, double top, double right, double bottom}) cover,
   ) {
-    final out = _GatheredPoints();
     final zoomCtx = EvalContext(zoom: styleZoom);
-    final width = cover.right - cover.left;
-    final height = cover.bottom - cover.top;
+    final out = <HeatmapTileInput>[];
     for (final tile in tiles) {
       HeatmapPoints? points;
       for (final p in tile.heatmap) {
         if (identical(p.layer, layer)) points = p;
       }
       if (points == null || points.length == 0) continue;
-      final rect = displayTileRect(tile.key, cameraZoom);
-      final scale = rect.width / displayTileSize;
-      final ox = rect.left - cover.left;
-      final oy = rect.top - cover.top;
       final weights = points.weightsAt(styleZoom);
+      final weight = weights == null ? layer.weight.eval(zoomCtx) : 0.0;
+      if (weights == null && !(weight > 0)) continue;
       final radii = points.radiiAt(styleZoom);
-      final uniformWeight = weights == null ? layer.weight.eval(zoomCtx) : 0.0;
-      if (weights == null && !(uniformWeight > 0)) continue;
-      final uniformRadius = radii == null ? layer.radius.eval(zoomCtx) : 0.0;
-      if (radii == null && !(uniformRadius > 0)) continue;
-      final include = tile.include;
-      final xy = points.xy;
-      var batch = radii == null ? out.batchFor(uniformRadius) : null;
-      var reach = HeatmapGrid.reachInRadii * uniformRadius;
-      for (var i = 0; i < points.length; i++) {
-        final weight = weights == null ? uniformWeight : weights[i];
-        if (!(weight > 0)) continue;
-        if (radii != null) {
-          final radius = radii[i];
-          if (!(radius > 0)) continue;
-          batch = out.batchFor(radius);
-          reach = HeatmapGrid.reachInRadii * radius;
-        }
-        final x = ox + xy[i * 2] * scale;
-        final y = oy + xy[i * 2 + 1] * scale;
-        if (x < -reach ||
-            x > width + reach ||
-            y < -reach ||
-            y > height + reach) {
-          continue;
-        }
-        if (include != null && !include(x + cover.left, y + cover.top)) {
-          continue;
-        }
-        batch!.add(x, y, weight);
-        out.count++;
-      }
+      final radius = radii == null ? layer.radius.eval(zoomCtx) : 0.0;
+      if (radii == null && !(radius > 0)) continue;
+      final rect = displayTileRect(tile.key, cameraZoom);
+      out.add(HeatmapTileInput(
+        left: rect.left - cover.left,
+        top: rect.top - cover.top,
+        scale: rect.width / displayTileSize,
+        xy: points.xy,
+        weights: weights,
+        weight: weight,
+        radii: radii,
+        radius: radius,
+        skip: tile.skip,
+      ));
     }
     return out;
   }
@@ -396,76 +366,4 @@ class _HeatmapImage {
     required this.width,
     required this.height,
   });
-}
-
-/// A pass's points for one layer, in batches by kernel radius — the
-/// separable blur takes one radius per batch. A data-driven radius is
-/// bucketed in 5 % steps, a difference no ramp shows.
-class _GatheredPoints {
-  final _batches = <int, _PointBuffer>{};
-  _PointBuffer? _last;
-  var count = 0;
-  var minRadius = double.infinity;
-
-  static final _logStep = math.log(1.05);
-
-  _PointBuffer batchFor(double radius) {
-    final last = _last;
-    if (last != null && last.radius == radius) return last;
-    if (radius < minRadius) minRadius = radius;
-    final bucket = (math.log(radius) / _logStep).round();
-    return _last = _batches[bucket] ??= _PointBuffer(radius);
-  }
-
-  /// The batches for a grid whose origin lies ([dx], [dy]) pixels up and
-  /// left of the points' origin; [peakScale] turns a weight into the
-  /// kernel's peak.
-  List<HeatmapBatch> batches({
-    required double dx,
-    required double dy,
-    required double peakScale,
-  }) =>
-      [
-        for (final buffer in _batches.values)
-          if (buffer.length > 0) buffer.toBatch(dx, dy, peakScale),
-      ];
-}
-
-/// Growable typed storage for one batch's points: a plain `List<double>`
-/// would box every coordinate.
-class _PointBuffer {
-  final double radius;
-  var _xs = Float32List(256);
-  var _ys = Float32List(256);
-  var _weights = Float32List(256);
-  var length = 0;
-
-  _PointBuffer(this.radius);
-
-  void add(double x, double y, double weight) {
-    if (length == _xs.length) {
-      _xs = _grow(_xs);
-      _ys = _grow(_ys);
-      _weights = _grow(_weights);
-    }
-    _xs[length] = x;
-    _ys[length] = y;
-    _weights[length] = weight;
-    length++;
-  }
-
-  static Float32List _grow(Float32List list) =>
-      Float32List(list.length * 2)..setRange(0, list.length, list);
-
-  HeatmapBatch toBatch(double dx, double dy, double peakScale) {
-    final xs = Float32List(length);
-    final ys = Float32List(length);
-    final peaks = Float32List(length);
-    for (var i = 0; i < length; i++) {
-      xs[i] = _xs[i] + dx;
-      ys[i] = _ys[i] + dy;
-      peaks[i] = _weights[i] * peakScale;
-    }
-    return HeatmapBatch(radius, xs, ys, peaks);
-  }
 }

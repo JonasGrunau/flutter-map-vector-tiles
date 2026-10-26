@@ -215,6 +215,85 @@ void main() {
     });
   });
 
+  group('job', () {
+    // White from density 0.5 on, transparent below.
+    final ramp = Uint32List(256);
+    for (var i = 128; i < 256; i++) {
+      ramp[i] = 0xffffffff;
+    }
+    HeatmapJob job(List<HeatmapTileInput> tiles) => HeatmapJob(
+          coverLeft: 1000,
+          coverTop: 2000,
+          coverWidth: 256,
+          coverHeight: 256,
+          devicePixelRatio: 1,
+          peakScale: HeatmapGrid.peakFactor,
+          ramp: ramp,
+          tiles: tiles,
+        );
+    // Two points 2 · 0.399 apart from the 0.5 step: one alone stays
+    // clear, the pair at one spot turns white.
+    HeatmapTileInput tile(List<double> xy, {Uint8List? skip}) =>
+        HeatmapTileInput(
+          left: 0,
+          top: 0,
+          scale: 1,
+          xy: Float32List.fromList(xy),
+          weight: 1,
+          radius: 20,
+          skip: skip,
+        );
+    bool whiteAt(HeatmapResult result, double x, double y) {
+      final px =
+          ((x + 1000 - result.left) / result.coverWidth * result.width).floor();
+      final py = ((y + 2000 - result.top) / result.coverHeight * result.height)
+          .floor();
+      return result.pixels.buffer.asUint32List()[py * result.width + px] != 0;
+    }
+
+    test('no point that counts, no image', () {
+      expect(renderHeatmap(job(const [])), isNull);
+      expect(
+          renderHeatmap(job([
+            HeatmapTileInput(
+                left: 0,
+                top: 0,
+                scale: 1,
+                xy: Float32List.fromList([10, 10]),
+                weight: 0,
+                radius: 20),
+          ])),
+          isNull);
+    });
+
+    test('the result covers the cover, on the cell lattice', () {
+      final result = renderHeatmap(job([
+        tile([64, 64])
+      ]))!;
+      final cell = HeatmapGrid.cellFor(20, 1).cell;
+      expect(result.left, lessThanOrEqualTo(1000));
+      expect(result.top, lessThanOrEqualTo(2000));
+      expect(result.left + result.coverWidth, greaterThanOrEqualTo(1256));
+      expect(result.top + result.coverHeight, greaterThanOrEqualTo(2256));
+      expect((result.left / cell - (result.left / cell).round()).abs(),
+          lessThan(1e-6));
+    });
+
+    test('a skip mask leaves out its squares', () {
+      // Two points at each of (64, 64) and (192, 64): the top-left and
+      // top-right squares of a 2 × 2 mask.
+      final points = <double>[64, 64, 64, 64, 192, 64, 192, 64];
+      final both = renderHeatmap(job([tile(points)]))!;
+      expect(whiteAt(both, 64, 64), isTrue);
+      expect(whiteAt(both, 192, 64), isTrue);
+      final skipped = renderHeatmap(job([
+        tile(points, skip: Uint8List.fromList([0, 1, 0, 0]))
+      ]))!;
+      expect(whiteAt(skipped, 64, 64), isTrue);
+      expect(whiteAt(skipped, 192, 64), isFalse);
+    });
+  });
+
   group('layout', () {
     test('a point belongs to one display tile, seams and buffers included', () {
       final theme = heatmapTheme();
@@ -389,7 +468,7 @@ void main() {
           rotation: 0,
           devicePixelRatio: 1,
           generation: 0,
-          tiles: (_) => tiles,
+          tiles: () => tiles,
         );
         return recorder.endRecording().toImageSync(200, 200);
       }
@@ -407,23 +486,23 @@ void main() {
       final points = pointsAtCentre();
       expect(
           await centreAlpha([
-            (key: key, heatmap: [points], include: null)
+            (key: key, heatmap: [points], skip: null)
           ]),
           0);
       expect(
           await centreAlpha([
-            (key: key, heatmap: [points], include: null),
-            (key: key, heatmap: [points], include: null),
+            (key: key, heatmap: [points], skip: null),
+            (key: key, heatmap: [points], skip: null),
           ]),
           255);
     });
 
-    test('a tile counts only the points its include admits', () async {
+    test('a tile counts only the points its skip mask admits', () async {
       final points = pointsAtCentre();
       expect(
           await centreAlpha([
-            (key: key, heatmap: [points], include: null),
-            (key: key, heatmap: [points], include: (x, y) => false),
+            (key: key, heatmap: [points], skip: null),
+            (key: key, heatmap: [points], skip: Uint8List.fromList([1])),
           ]),
           0);
     });
