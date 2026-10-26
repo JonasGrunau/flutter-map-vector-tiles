@@ -43,6 +43,12 @@ class TolerantGoldenComparator extends LocalFileComparator {
           '${expected.width}x${expected.height}';
     } else {
       final patch = _largestPatch(actual, expected);
+      // Silent when the images agree, as on the machine that made them;
+      // elsewhere this shows how much room the rasterizers leave.
+      if (patch > 0) {
+        debugPrint('$golden: largest differing patch $patch device pixels '
+            '(at most $maxPatch may)');
+      }
       if (patch <= maxPatch) return true;
       verdict = 'a patch of $patch device pixels differs (at most $maxPatch '
           'may)';
