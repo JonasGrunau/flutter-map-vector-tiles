@@ -866,7 +866,9 @@ class TileRasterizer {
     if (color.a == 0) return null;
     final gapWidth = layer.gapWidth.eval(ctx);
     final blur = math.max(0.0, layer.blur?.eval(ctx) ?? 0);
-    final miterLimit = layer.miterLimit?.eval(ctx) ?? 2;
+    // Skia ignores a negative limit and keeps its own; every limit below
+    // 1 bevels every miter, in MapLibre as in Skia.
+    final miterLimit = math.max(0.0, layer.miterLimit?.eval(ctx) ?? 2);
     final paint = Paint()
       ..color = color
       ..style = PaintingStyle.stroke

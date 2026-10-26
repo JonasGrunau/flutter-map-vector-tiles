@@ -498,6 +498,11 @@ void main() {
       final pixels = await joined({'line-miter-limit': 4});
       expect(pixels.grey(128, 56), 0);
     });
+
+    test('a negative limit bevels, never falls back to a miter', () async {
+      final pixels = await joined({'line-miter-limit': -1});
+      expect(pixels.grey(128, 56), 255);
+    });
   });
 
   group('sort keys', () {
