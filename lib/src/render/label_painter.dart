@@ -1733,6 +1733,25 @@ class LabelPainter {
     final names = layer.textVariableAnchor?.eval(ctx);
     if (names == null || names.isEmpty) return null;
     final radial = layer.textRadialOffset.eval(ctx);
+    final offset = layer.textOffset.eval(ctx);
+    final ox = radial != 0 || offset.isEmpty ? 0.0 : offset[0].abs();
+    final oy = radial != 0 || offset.length < 2 ? 0.0 : offset[1].abs();
+    // A constant anchor list is the same object every time: its offsets
+    // are worked out once per distinct offset, not per label per frame.
+    final memo = _anchorOffsets[names];
+    if (memo != null && memo.$1 == radial && memo.$2 == ox && memo.$3 == oy) {
+      return memo.$4;
+    }
+    final anchors = _offsetsFor(names, radial, ox, oy);
+    _anchorOffsets[names] = (radial, ox, oy, anchors);
+    return anchors;
+  }
+
+  static final _anchorOffsets =
+      Expando<(double, double, double, List<AnchorOffset>)>();
+
+  static List<AnchorOffset> _offsetsFor(
+      List<String> names, double radial, double ox, double oy) {
     if (radial != 0) {
       return [
         for (final name in names)
@@ -1742,9 +1761,6 @@ class LabelPainter {
           }(),
       ];
     }
-    final offset = layer.textOffset.eval(ctx);
-    final ox = offset.isNotEmpty ? offset[0].abs() : 0.0;
-    final oy = offset.length > 1 ? offset[1].abs() : 0.0;
     return [
       for (final name in names)
         (
