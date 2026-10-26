@@ -94,9 +94,11 @@ void main() {
 
   test('emoji and combining marks', () async {
     await expectGolden('emoji_and_marks', [
+      // No flag: Noto Emoji draws tiny letters inside it, which CoreText
+      // and FreeType rasterize far enough apart (an 18 px patch) to fail
+      // on Linux. The rendering test checks it is one glyph.
       for (final (i, text) in [
         emojiFamily,
-        emojiFlag,
         emojiThumbsSkinTone,
         emojiInLatin,
       ].indexed)

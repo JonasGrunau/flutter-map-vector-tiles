@@ -60,6 +60,11 @@ the same change, which drawing it changes and why.
   them on Linux through `TolerantGoldenComparator`; if CI fails while
   macOS passes, the message gives the size of the differing patch —
   raise `maxPatch` only for anti-aliasing, never past what a mark is.
+- **Do not go back to `matchesGoldenFile` here.** Given a `ui.Image`,
+  it runs the comparator through `binding.runAsync`, which only parks
+  an error for `testWidgets` to report: in these plain `test`s every
+  mismatch passed (forcing every comparison to fail left all 25 green).
+  `script_goldens_test.dart` calls `goldenFileComparator` directly.
 - **The browser run uses the fonts too.** The web test environment
   forces the box-glyph test font on every family; `allowLoadedFonts`
   swaps in one that does not, with font fallback still off so no test
