@@ -586,13 +586,21 @@ class _BenchPageState extends State<BenchPage>
     _say('stability done');
   }
 
-  /// The style plus a fill over its buildings that is transparent until
-  /// a building's feature state says `selected` — the tap-to-highlight
-  /// the example app shows.
+  /// The style plus a fill over its buildings and a line over its roads,
+  /// each transparent until a feature's state says `selected` — the
+  /// tap-to-highlight the example app shows. Two kinds because they
+  /// cost differently: OpenMapTiles-schema tiles merge buildings into
+  /// multipolygons of hundreds, which reach many tiles, while a road is
+  /// one way.
   static vt.Theme _withSelection(vt.Theme theme) {
     final buildings =
         theme.layers.where((l) => l.sourceLayer == 'building').firstOrNull;
     if (buildings == null) return theme;
+    const selected = [
+      'boolean',
+      ['feature-state', 'selected'],
+      false
+    ];
     final selection = const vt.ThemeReader().read({
       'layers': [
         {
@@ -602,16 +610,18 @@ class _BenchPageState extends State<BenchPage>
           'source-layer': 'building',
           'paint': {
             'fill-color': '#e53935',
-            'fill-opacity': [
-              'case',
-              [
-                'boolean',
-                ['feature-state', 'selected'],
-                false
-              ],
-              0.7,
-              0,
-            ],
+            'fill-opacity': ['case', selected, 0.7, 0],
+          },
+        },
+        {
+          'id': 'selection-road',
+          'type': 'line',
+          'source': buildings.source,
+          'source-layer': 'transportation',
+          'paint': {
+            'line-color': '#e53935',
+            'line-width': 6,
+            'line-opacity': ['case', selected, 0.8, 0],
           },
         },
       ],
@@ -666,6 +676,7 @@ class _BenchPageState extends State<BenchPage>
     final pointUs = <int>[], rectUs = <int>[];
     var pointHits = 0, rectHits = 0;
     final buildings = <Object, vt.RenderedFeature>{};
+    final roads = <Object, vt.RenderedFeature>{};
     for (var iy = 0; iy < 20; iy++) {
       for (var ix = 0; ix < 12; ix++) {
         final p =
@@ -675,9 +686,9 @@ class _BenchPageState extends State<BenchPage>
         pointUs.add(watch.elapsedMicroseconds);
         pointHits += hits.length;
         for (final hit in hits) {
-          if (hit.sourceLayer == 'building' && hit.id != null) {
-            buildings[hit.id!] = hit;
-          }
+          if (hit.id == null) continue;
+          if (hit.sourceLayer == 'building') buildings[hit.id!] = hit;
+          if (hit.sourceLayer == 'transportation') roads[hit.id!] = hit;
         }
         watch
           ..reset()
@@ -693,12 +704,10 @@ class _BenchPageState extends State<BenchPage>
     debugPrint('BENCH[$_label] QUERY rect48 ${_dist(rectUs)} ms '
         'hits/query=${(rectHits / rectUs.length).toStringAsFixed(1)}');
 
-    // 2. One state change at a time: select a building, wait for the
-    // tiles it touches to be drawn again, clear it, wait again.
-    final setMs = <int>[], clearMs = <int>[];
-    final setFrames = <int>[], clearFrames = <int>[];
-    final setTiles = <int>[], clearTiles = <int>[];
-    final setRasterUs = <int>[];
+    // 2. One state change at a time: select a feature, wait for the
+    // tiles it touches to be drawn again, clear it, wait again — 20
+    // buildings, then 20 roads. A clear that rasterizes nothing was
+    // served from the finished-tile cache.
     _build = <int>[];
     _raster = <int>[];
     _interrupted = false;
@@ -709,45 +718,55 @@ class _BenchPageState extends State<BenchPage>
     final windowRasterUs0 = TileRasterizer.debugRasterizeMicros;
     final layoutUs0 = SymbolLayouter.debugLayoutMicros;
     final labelUs0 = LabelPainter.debugPaintMicros;
-    for (final building in buildings.values.take(20)) {
-      for (final select in [true, false]) {
-        final tiles0 = TileRasterizer.debugRasterizeCount;
-        final rasterUs0 = TileRasterizer.debugRasterizeMicros;
-        final frame0 = _frameNo;
-        final t0 = DateTime.now();
-        if (select) {
-          _features.setFeatureState(
-              source: building.source,
-              sourceLayer: building.sourceLayer,
-              id: building.id!,
-              state: {'selected': true});
-        } else {
-          _features.removeFeatureState(
-              source: building.source,
-              sourceLayer: building.sourceLayer,
-              id: building.id!);
-        }
-        final done = await _quiet();
-        final tiles = TileRasterizer.debugRasterizeCount - tiles0;
-        final ms = tiles == 0 ? 0 : done.at.difference(t0).inMilliseconds;
-        final frames = tiles == 0 ? 0 : done.frame - frame0;
-        (select ? setMs : clearMs).add(ms * 1000);
-        (select ? setFrames : clearFrames).add(frames * 1000);
-        (select ? setTiles : clearTiles).add(tiles * 1000);
-        if (select) {
-          setRasterUs.add(TileRasterizer.debugRasterizeMicros - rasterUs0);
+    for (final (kind, features) in [
+      ('building', buildings.values),
+      ('road', roads.values),
+    ]) {
+      final setMs = <int>[], clearMs = <int>[];
+      final setFrames = <int>[], clearFrames = <int>[];
+      final setTiles = <int>[], clearTiles = <int>[];
+      final setRasterUs = <int>[];
+      final kindLayouts0 = SymbolLayouter.debugLayoutCount;
+      for (final feature in features.take(20)) {
+        for (final select in [true, false]) {
+          final tiles0 = TileRasterizer.debugRasterizeCount;
+          final rasterUs0 = TileRasterizer.debugRasterizeMicros;
+          final frame0 = _frameNo;
+          final t0 = DateTime.now();
+          if (select) {
+            _features.setFeatureState(
+                source: feature.source,
+                sourceLayer: feature.sourceLayer,
+                id: feature.id!,
+                state: {'selected': true});
+          } else {
+            _features.removeFeatureState(
+                source: feature.source,
+                sourceLayer: feature.sourceLayer,
+                id: feature.id!);
+          }
+          final done = await _quiet();
+          final tiles = TileRasterizer.debugRasterizeCount - tiles0;
+          final ms = tiles == 0 ? 0 : done.at.difference(t0).inMilliseconds;
+          final frames = tiles == 0 ? 0 : done.frame - frame0;
+          (select ? setMs : clearMs).add(ms * 1000);
+          (select ? setFrames : clearFrames).add(frames * 1000);
+          (select ? setTiles : clearTiles).add(tiles * 1000);
+          if (select) {
+            setRasterUs.add(TileRasterizer.debugRasterizeMicros - rasterUs0);
+          }
         }
       }
+      debugPrint('BENCH[$_label] STATE $kind '
+          'n=${math.min(20, features.length)} '
+          'relayouts=${SymbolLayouter.debugLayoutCount - kindLayouts0}');
+      debugPrint('BENCH[$_label] STATE $kind set   ms ${_dist(setMs)} · '
+          'frames ${_dist(setFrames)} · tiles ${_dist(setTiles)} · '
+          'raster-ms ${_dist(setRasterUs)}');
+      debugPrint('BENCH[$_label] STATE $kind clear ms ${_dist(clearMs)} · '
+          'frames ${_dist(clearFrames)} · tiles ${_dist(clearTiles)}');
     }
     _recording = false;
-    debugPrint(
-        'BENCH[$_label] STATE buildings=${math.min(20, buildings.length)} '
-        'relayouts=${SymbolLayouter.debugLayoutCount - layouts0}');
-    debugPrint('BENCH[$_label] STATE set   ms ${_dist(setMs)} · '
-        'frames ${_dist(setFrames)} · tiles ${_dist(setTiles)} · '
-        'raster-ms ${_dist(setRasterUs)}');
-    debugPrint('BENCH[$_label] STATE clear ms ${_dist(clearMs)} · '
-        'frames ${_dist(clearFrames)} · tiles ${_dist(clearTiles)}');
     _report('query state changes',
         layouts: SymbolLayouter.debugLayoutCount - layouts0,
         rasters: TileRasterizer.debugRasterizeCount - rasters0,
