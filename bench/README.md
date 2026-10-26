@@ -122,6 +122,10 @@ BENCH[after]   RASTER n=961 p50=0.80 p90=1.08 p99=1.67 max=4.76 >8.3=0 (0.0%) �
 | `layouts` / `rasterizes` | Symbol extractions and tile rasterizations during the window. **Zero means the crossing was served entirely from the finished-tile cache** — the single clearest signal that caching is working. |
 | `WORK` | The window's publish work split into UI-thread wall time: `rasterize` (picture recording + `toImageSync`), `layout` (symbol extraction), `labels` (the per-frame label pass). Whatever BUILD holds beyond these three is flutter_map and widget overhead. A per-frame `WORK z=… tiles=N …` line fires whenever a single frame's split alone exceeds 6 ms — that is the attribution for an adjacent `JANK` line. |
 | `LAYERS` | The same rasterize time broken down by style layer id, worst first — names the culprit layer directly. |
+| `B-PLACE` / `B-OTHER` | BUILD of the frames that did placement work — an in-frame collision pass, or with the placement worker a pass request or the adoption of an answer — and of the rest, matched to their frame timings by engine frame number. |
+| `SLOW` | How many of the window's BUILD frames over 16.7 ms were placing frames — the share a placement change has to move. `matched` counts the timings tagged at all. |
+| `DRAWN` | Labels drawn per frame (ghosts included): mean and p10/p50/p90. A placement change that drops or doubles labels during a sweep shows here and nowhere in the frame times. |
+| `WORKER` | The label placement worker, when it ran: pass requests and the UI time each cost, adopted answers and how many frames after their request, the worker's own time per pass, and the symbol lists mirrored to it (KB, UI time, and the estimated KB it holds now). `bench/lib/worker_stats.dart` holds these; swap it for a stub returning nothing to run the same harness on a checkout without the worker. |
 | `>8.3` / `>16.7` | Frames over the 120 Hz and 60 Hz budgets. On a ProMotion device the 8.3 ms column is the one that matters; clearing 16.7 there is not "smooth". |
 | `fps` | Frames actually produced. Pinned at ~120 (or ~60) means nothing is stalling. |
 
