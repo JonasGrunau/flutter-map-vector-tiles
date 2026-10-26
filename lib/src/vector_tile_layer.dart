@@ -1898,7 +1898,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// a zoom crossing is in flight — the retained level's, but only
   /// where no current tile has points yet. Both levels hold the same
   /// points, so letting both count would double the density wherever
-  /// they overlap.
+  /// they overlap. For the same reason only one retained level takes
+  /// part, the one nearest the current level, when a fast zoom has left
+  /// several.
   Iterable<HeatmapTile> _heatmapTiles(double cameraZoom) sync* {
     for (final tile in _tiles.values) {
       final heatmap = tile.heatmap;
@@ -1908,12 +1910,21 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
     final level = _currentZoom;
     if (_retained.isEmpty || level == null) return;
+    int? nearest;
+    for (final key in _retained.keys) {
+      final d = (key.z - level).abs();
+      if (nearest == null ||
+          d < (nearest - level).abs() ||
+          (d == (nearest - level).abs() && key.z > nearest)) {
+        nearest = key.z;
+      }
+    }
     bool covers(TileKey key) => _tiles[key]?.heatmap != null;
     // A current tile's edge, in world pixels at [cameraZoom].
     final size = displayTileSize * math.pow(2.0, cameraZoom - level);
     for (final tile in _retained.values) {
       final heatmap = tile.heatmap;
-      if (heatmap == null) continue;
+      if (heatmap == null || tile.key.z != nearest) continue;
       final key = tile.key;
       // The current tiles over this one: its ancestor on a zoom-out,
       // its descendants on a zoom-in (a few, unless the jump was big).
