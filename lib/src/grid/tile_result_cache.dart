@@ -22,14 +22,15 @@ class TileResult {
   final Set<String> renderedWith;
 
   /// `LabelMode.tile` only: the labels drawn into [image], for
-  /// rendered-feature queries.
-  final List<LabelHit> labelHits;
+  /// rendered-feature queries — null when the layer that drew it had no
+  /// controller to ask, so none were recorded.
+  final List<LabelHit>? labelHits;
 
   TileResult({
     required this.image,
     required this.symbols,
     required this.renderedWith,
-    this.labelHits = const [],
+    this.labelHits,
   });
 }
 
@@ -135,7 +136,7 @@ class TileResultCache {
     required ui.Image? image,
     required List<SymbolInstance> symbols,
     required Set<String> renderedWith,
-    List<LabelHit> labelHits = const [],
+    List<LabelHit>? labelHits,
   }) {
     _cache.put(
       key,

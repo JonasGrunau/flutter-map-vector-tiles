@@ -395,6 +395,26 @@ void main() {
   });
 
   testWidgets(
+      'a tile-mode tile cached without a controller is drawn again for one',
+      (tester) async {
+    await _pumpMap(tester, controller: null, labelMode: LabelMode.tile);
+    expect(
+        await pumpUntil(
+            tester, () => _colorAt(tester, _onScreen(128, 128), _red)),
+        isTrue);
+    await _quiet(tester);
+    await tester.pumpWidget(const SizedBox());
+    // Reopened over the same style: the finished tiles are cached, but
+    // their labels were never recorded for a query.
+    final controller = VectorTileLayerController();
+    await _pumpMap(tester, controller: controller, labelMode: LabelMode.tile);
+    await _settle(tester, controller);
+    expect(_names(controller.queryRenderedFeatures(_onScreen(200, 200))),
+        ['label:3', 'poi:3', 'land:1']);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
       'feature state re-renders only the tiles that draw the feature, '
       'and keeps their labels', (tester) async {
     final controller = VectorTileLayerController();

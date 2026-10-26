@@ -1248,11 +1248,19 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     if (tile.renderedWith == null) {
       // A cached result was drawn without feature state: it cannot
       // stand in for a tile that may draw a feature that has some.
-      final cached =
+      var cached =
           _mayDrawFeatureState(tile.key) ? null : _resultCache?.get(tile.key);
+      // Labels drawn into a tile by a layer without a controller left no
+      // shapes to query; with one, the tile is drawn again instead.
+      if (cached != null &&
+          _tileLabels &&
+          widget.controller != null &&
+          cached.labelHits == null) {
+        cached = null;
+      }
       if (cached != null) {
         tile.renderedWith = cached.renderedWith;
-        tile.labelHits = cached.labelHits;
+        tile.labelHits = cached.labelHits ?? const [];
         final owesShaping = cached.symbols.isNotEmpty;
         tile.setImage(
           image: cached.image?.clone(),
@@ -1855,14 +1863,16 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // The tile's first publish: its geometry and labels in one image,
       // and no placement candidates — nothing is left for the
       // per-frame pass.
-      final labelHits = <LabelHit>[];
+      // Recorded only for a controller to query: a layer without one pays
+      // nothing for it.
+      final labelHits = widget.controller == null ? null : <LabelHit>[];
       tile.setImage(
         image: _rasterizeWithLabels(job, symbols, styleZoom, labelHits),
         provisional: job.provisional,
         fadeIn: job.fadeIn && widget.tileFadeDuration > Duration.zero,
         symbolsPending: false,
       );
-      tile.labelHits = labelHits;
+      tile.labelHits = labelHits ?? const [];
       tile.setSymbols(const [], provisional: job.provisional);
       _cacheResult(tile, job, const [], labelHits: labelHits);
     } else {
@@ -1887,10 +1897,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// pump, which the lifecycle gate parks, and the glyph-atlas pages
   /// it may add to are discarded with the rest on the way back in.
   ///
-  /// The drawn labels' hit shapes are added to [labelHits], for
-  /// rendered-feature queries.
+  /// The drawn labels' hit shapes are added to [labelHits], when given,
+  /// for rendered-feature queries.
   ui.Image? _rasterizeWithLabels(_RenderJob job, List<SymbolInstance> symbols,
-      double styleZoom, List<LabelHit> labelHits) {
+      double styleZoom, List<LabelHit>? labelHits) {
     developer.Timeline.startSync('VT rasterize with labels');
     try {
       // The ratio the geometry was recorded at, which the screen may
@@ -1937,7 +1947,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// layer's controller.
   void _cacheResult(
       _DisplayTile tile, _RenderJob job, List<SymbolInstance> symbols,
-      {List<LabelHit> labelHits = const []}) {
+      {List<LabelHit>? labelHits}) {
     if (job.provisional || !job.complete || job.fromCache) return;
     if (_drewFeatureState(tile.key, job.sources)) return;
     // An image rasterized at a pixel ratio the screen has since left
