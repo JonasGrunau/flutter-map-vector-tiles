@@ -196,7 +196,9 @@ for frames with no per-frame label work in them.
   a placement decides that is not a pure function of the current frame's
   geometry has to be remembered in the `SittingPlacement` `_prepare`
   looks up (`anchor`, `flip`, `textDropped`, `iconDropped`) and
-  replayed, because replay
+  replayed — written only by the first candidate placed at that sitting
+  in a pass (`_seatedThisPass`), since copies of one label share it and
+  a losing copy must not rewrite the winner's choices — because replay
   frames run against a permissive collision index. A new space-dependent
   choice added to `_prepare` without one shows up as that choice
   flickering at the placement interval. The converse holds for

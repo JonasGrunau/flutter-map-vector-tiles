@@ -208,10 +208,12 @@ width — back into that key: it re-creates the full-screen re-shape per
 pinch that this design removed. Collision boxes and curved-text cluster
 metrics are the reference-size measurements multiplied by the scale.
 `text-line-height` and `text-justify` are layout inputs and part of the
-key too; a box is as wide as its longest line, as MapLibre's is, and
-`text-justify: auto` follows the anchor a label is placed at, so a
-multi-line label with variable anchors is laid out again only when a
-pass moves it to an anchor on another side.
+key too; a box is as wide as its longest line, as MapLibre's is.
+`text-justify: auto` follows the anchor a label is placed at: the text
+is shaped centred, and multi-line text is laid out once more per side
+its anchors can ask for, inside `prewarm` and kept with the shaped text
+under the same key. Single-line text looks the same aligned anywhere
+and is never laid out twice.
 
 Symbol layout applies the same decode-time bounds culling before
 evaluating any expressions, and along-line anchors keep their full-line
@@ -276,7 +278,11 @@ allowed to overlap still reserves its space: it may be drawn over
 others, but a later symbol that may not overlap keeps clear of it. A
 half dropped by a pass is remembered with the sitting
 (`SittingPlacement.textDropped` / `iconDropped`), since replay frames
-decide no space and would otherwise draw it again. `icon-padding`
+decide no space and would otherwise draw it again. Copies of one label
+share a sitting (a zoom crossing's two levels, a seam's two tiles), so
+only the first one placed at a sitting in a pass writes it, and a later
+copy with variable anchors may only take the anchor the first took —
+never draw the label again at another. `icon-padding`
 widens the icon's box, `symbol-avoid-edges` confines every box to the
 screen bounds of the display tile the symbol was laid out in (every
 `PlacedSymbol` carries its tile's transform for this), and

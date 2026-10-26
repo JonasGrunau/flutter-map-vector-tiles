@@ -16,6 +16,10 @@
   still unsupported and logged.
 - 🎨 Point labels with `text-rotation-alignment: map` turn with the map
   instead of staying upright.
+- 🎨 Within a layer, symbols that may overlap (`*-allow-overlap`,
+  `*-ignore-placement`) draw the lower ones on screen on top, and a
+  feature-dependent `symbol-sort-key` orders drawing too, as
+  `symbol-z-order: auto` says; they used to draw in tile order.
 - 🎨 Text lines are `text-line-height` apart (1.2 em by default, as in
   MapLibre) instead of a fixed 1.15 em, so every label's box is a little
   taller, and a wrapped label's box is as wide as its longest line

@@ -118,6 +118,40 @@ Future<ByteData> _render(List<PlacedSymbol> symbols,
   return bytes!;
 }
 
+/// Paints one frame with fades on through [painter] at [now] and returns
+/// its pixels: the same [generation] at a later [now] replays the last
+/// placement pass, with every fade finished.
+Future<ByteData> _fadedFrame(LabelPainter painter, List<PlacedSymbol> symbols,
+    SpriteAtlas? sprites, int generation, DateTime now) async {
+  final recorder = ui.PictureRecorder();
+  painter.paint(
+    canvas: Canvas(recorder),
+    screenSize: _canvas,
+    styleZoom: 12,
+    symbols: symbols,
+    sprites: sprites,
+    labelFadeDuration: const Duration(milliseconds: 300),
+    placementGeneration: generation,
+    now: now,
+  );
+  final picture = recorder.endRecording();
+  final image = await picture.toImage(400, 400);
+  picture.dispose();
+  final bytes = await image.toByteData();
+  image.dispose();
+  return bytes!;
+}
+
+/// A sheet holding a red sprite `i` and a blue sprite `b`, 16 px each.
+Future<SpriteAtlas> _redAndBlue() async {
+  final sheet =
+      await _sheet(32, 16, (x, _) => x < 16 ? 0xffff0000 : 0xff0000ff);
+  return SpriteAtlas(image: sheet.image, pixelRatio: 1, sprites: {
+    'i': const Sprite(x: 0, y: 0, width: 16, height: 16, pixelRatio: 1),
+    'b': const Sprite(x: 16, y: 0, width: 16, height: 16, pixelRatio: 1),
+  });
+}
+
 ({int r, int g, int b, int a}) _pixel(ByteData data, int x, int y) {
   final i = (y * 400 + x) * 4;
   return (
@@ -545,17 +579,20 @@ void main() {
       final blocker = _symbol(
           _layer({'icon-image': 'b'}), const Offset(200, 200),
           icon: 'b', layerIndex: 1);
-      final poi = _symbol(
-          _layer({
-            'text-field': 'x',
-            'icon-image': 'i',
-            'icon-size': 2,
-            'text-offset': [0, 3],
-            'icon-optional': true,
-          }),
-          const Offset(200, 200),
-          text: 'Poi',
-          icon: 'i');
+      final poiLayer = _layer({
+        'text-field': 'x',
+        'icon-image': 'i',
+        'icon-size': 2,
+        'text-offset': [0, 3],
+        'icon-optional': true,
+      });
+      final poi = _symbol(poiLayer, const Offset(200, 200),
+          text: 'Poi', icon: 'i', order: 1);
+      // A second copy of the same label at the same sitting (the other
+      // level of a zoom crossing), which loses to the first: it must not
+      // wipe what the winner's pass decided.
+      final copy = _symbol(poiLayer, const Offset(202, 200),
+          text: 'Poi', icon: 'i', order: 2);
       final painter = LabelPainter();
       addTearDown(painter.dispose);
       Future<ByteData> frame(int generation, DateTime now) async {
@@ -564,7 +601,7 @@ void main() {
           canvas: Canvas(recorder),
           screenSize: _canvas,
           styleZoom: 12,
-          symbols: [blocker, poi],
+          symbols: [blocker, poi, copy],
           sprites: atlas,
           labelFadeDuration: const Duration(milliseconds: 300),
           placementGeneration: generation,
@@ -587,6 +624,62 @@ void main() {
       expect(_pixel(replay, 212, 200).r, 0, reason: 'no red icon');
       expect(_blue(_pixel(replay, 200, 200)), isTrue, reason: 'blocker');
       expect(_span(replay, 248, _black), isNotNull, reason: 'text drawn');
+    });
+
+    test('a label placed at one variable anchor is not drawn again at another',
+        () {
+      // Two copies of one POI at one sitting: the first takes "top", and
+      // the second, whose text collides there, must not take "bottom".
+      final layer = _layer({
+        'text-field': 'x',
+        'text-size': 14,
+        'icon-image': 'i',
+        'icon-optional': true,
+        'text-variable-anchor': ['top', 'bottom'],
+        'text-radial-offset': 1.5,
+      });
+      final drawn = _paint([
+        _symbol(layer, const Offset(200, 200),
+            text: 'Poi', icon: 'i', order: 0),
+        _symbol(layer, const Offset(201, 200),
+            text: 'Poi', icon: 'i', order: 1),
+      ], sprites: icon);
+      expect(drawn, hasLength(1));
+    });
+
+    test('a fitted icon whose text was dropped stays fitted on replay',
+        () async {
+      // The text's padded box reaches the blocker, the fitted icon's box
+      // does not: the pass keeps the icon alone, fitted to the text.
+      final atlas = await _redAndBlue();
+      addTearDown(atlas.dispose);
+      final blocker = _symbol(
+          _layer({'icon-image': 'b'}), const Offset(250, 200),
+          icon: 'b', layerIndex: 1);
+      final shield = _symbol(
+          _layer({
+            'text-field': 'x',
+            'text-size': 20,
+            'text-padding': 24,
+            'text-optional': true,
+            'icon-image': 'i',
+            'icon-padding': 0,
+            'icon-text-fit': 'both',
+          }, paint: {
+            'text-color': 'rgba(0,0,0,0)',
+          }),
+          const Offset(200, 200),
+          text: 'WW',
+          icon: 'i');
+      final painter = LabelPainter();
+      addTearDown(painter.dispose);
+      final generation = _generation++;
+      final start = DateTime(2026);
+      await _fadedFrame(painter, [blocker, shield], atlas, generation, start);
+      final replay = await _fadedFrame(painter, [blocker, shield], atlas,
+          generation, start.add(const Duration(seconds: 1)));
+      // "WW" is 40 × 24 around (200, 200).
+      expect(_span(replay, 200, _red), _about((180, 219)));
     });
 
     test('icon-padding widens the space an icon claims', () {
@@ -688,19 +781,22 @@ void main() {
 
   group('icon-text-fit', () {
     // "WWWW" at 20 px: 80 × 24 (line height 1.2), centred on (200, 200).
-    PlacedSymbol shield(String fit, {List<num>? padding}) => _symbol(
-        _layer({
-          'text-field': 'x',
-          'text-size': 20,
-          'icon-image': 'i',
-          'icon-text-fit': fit,
-          if (padding != null) 'icon-text-fit-padding': padding,
-        }, paint: {
-          'text-color': 'rgba(0,0,0,0)',
-        }),
-        const Offset(200, 200),
-        text: 'WWWW',
-        icon: 'i');
+    PlacedSymbol shield(String fit,
+            {List<num>? padding, Map<String, Object?> paint = const {}}) =>
+        _symbol(
+            _layer({
+              'text-field': 'x',
+              'text-size': 20,
+              'icon-image': 'i',
+              'icon-text-fit': fit,
+              if (padding != null) 'icon-text-fit-padding': padding,
+            }, paint: {
+              'text-color': 'rgba(0,0,0,0)',
+              ...paint,
+            }),
+            const Offset(200, 200),
+            text: 'WWWW',
+            icon: 'i');
 
     test('both: the icon spans the text plus its padding', () async {
       final atlas = await _redIcon();
@@ -729,6 +825,37 @@ void main() {
           if (_red(_pixel(data, 200, y))) y,
       ];
       expect((column.first, column.last), _about((192, 207)));
+    });
+
+    test('an axis not fitted centres on the text, padding aside', () async {
+      final atlas = await _redIcon();
+      addTearDown(atlas.dispose);
+      final data = await _render([
+        shield('width', padding: [0, 4, 10, 4]),
+      ], sprites: atlas);
+      expect(_span(data, 200, _red), _about((156, 243)));
+      final column = [
+        for (var y = 0; y < 400; y++)
+          if (_red(_pixel(data, 200, y))) y,
+      ];
+      expect((column.first, column.last), _about((192, 207)));
+    });
+
+    test('a fitted icon moves with icon-translate, not text-translate',
+        () async {
+      final atlas = await _redIcon();
+      addTearDown(atlas.dispose);
+      final data = await _render([
+        shield('both', paint: {
+          'icon-translate': [0, 40],
+          'text-translate': [0, -40],
+        }),
+      ], sprites: atlas);
+      final column = [
+        for (var y = 0; y < 400; y++)
+          if (_red(_pixel(data, 200, y))) y,
+      ];
+      expect((column.first, column.last), _about((228, 251)));
     });
 
     test('stretch zones stretch, the other pixels keep their size', () async {
@@ -796,6 +923,54 @@ void main() {
             'text-variable-anchor': ['right'],
           }),
           (180, 199));
+    });
+
+    test('text-justify auto shapes single-line text once, whatever the side',
+        () {
+      // Only "right" is free: a blocker covers "left". Single-line text
+      // looks the same aligned to either side, so moving it there must
+      // not shape it again inside the frame.
+      final layer = _layer({
+        'text-field': 'x',
+        'text-size': 14,
+        'text-justify': 'auto',
+        'text-variable-anchor': ['left', 'right'],
+      });
+      final label = _symbol(layer, const Offset(200, 200), text: 'Single');
+      final blocker = _symbol(
+          _layer({'text-field': 'x', 'text-size': 14}), const Offset(290, 200),
+          text: 'Blocker', layerIndex: 1);
+      final painter = LabelPainter();
+      addTearDown(painter.dispose);
+      final justified = LabelPainter.debugJustifiedLayouts;
+      painter.prewarm([label.instance, blocker.instance], 12);
+      final shaped = painter.debugShapedTextCount;
+      expect(_paint([blocker, label], painter: painter), hasLength(2));
+      expect(
+          painter.debugPlacement
+              .lookup(label.instance.continuityKey, label.screenAnchor)!
+              .anchor,
+          'right');
+      expect(painter.debugShapedTextCount, shaped);
+      expect(LabelPainter.debugJustifiedLayouts, justified);
+    });
+
+    test('text-justify auto lays multi-line text out per side in prewarm', () {
+      final layer = _layer({
+        'text-field': 'x',
+        'text-size': 14,
+        'text-justify': 'auto',
+        'text-variable-anchor': ['left', 'right'],
+      });
+      final label = _symbol(layer, const Offset(200, 200), text: 'Two\nlines');
+      final painter = LabelPainter();
+      addTearDown(painter.dispose);
+      final before = LabelPainter.debugJustifiedLayouts;
+      painter.prewarm([label.instance], 12);
+      expect(LabelPainter.debugJustifiedLayouts, before + 2);
+      expect(_paint([label], painter: painter), hasLength(1));
+      expect(LabelPainter.debugJustifiedLayouts, before + 2,
+          reason: 'nothing laid out inside the frame');
     });
 
     test('text-line-height sets the line pitch and the box height', () {

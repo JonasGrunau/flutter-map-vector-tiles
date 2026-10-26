@@ -375,7 +375,10 @@ sizes and colours, the label pass reads:
   anchors.
 
 `text-writing-mode` is not supported: CJK text is laid out
-horizontally, and the reader logs the property. `text-rotate` turns
+horizontally, and the reader logs the property. `symbol-avoid-edges`
+keeps a symbol inside the 256 px display tile it was laid out in, which
+past a source's maxzoom is smaller than the data tile MapLibre bounds it
+by, so more labels near seams give way. `text-rotate` turns
 point labels only, and text with an icon fitted around it is drawn
 straight even along a line. `text-font` picks the weight and style of the
 platform's fonts; the style's `glyphs` are not used, and a `format`
