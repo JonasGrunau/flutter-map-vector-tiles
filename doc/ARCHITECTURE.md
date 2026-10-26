@@ -176,6 +176,34 @@ matches. That cut rasterization time per tile by a third to almost
 half on a phone in the z15.5–17.5 band, where one z14 data tile serves
 up to 64 display tiles.
 
+The geometry paint properties beyond colour, width and opacity follow
+the same two rules: work that is the same for every display tile of a
+data tile is done once for it, and nothing per feature is paid by a
+layer that does not set the property. A `*-translate` is folded into
+the tile-to-pixel transform, so the cull and clip windows, which are
+derived from it, move with the geometry, and patterns are shifted with
+it. A `*-sort-key` that reads the feature reorders the layer's
+features once per data tile and zoom, held weakly against the feature
+list as the filter matches are; one that is constant or reads only the
+zoom cannot tell features apart and leaves source order alone.
+`line-offset` shifts each run in logical pixels after clipping, every
+vertex to where its two shifted segments meet, beveled on the outside
+of a sharp turn and split where the inner meeting point lies beyond a
+segment — MapLibre leaves gaps and crossings at such turns.
+`line-blur` is MapLibre's linear alpha ramp drawn as a stroke narrowed
+by the blur under a Gaussian mask filter whose variance, with
+anti-aliasing's own, adds up to the ramp's: within a few percent of
+MapLibre's profile for blurs of a pixel or more. A mask filter costs a
+render pass per path on the GPU, so a blur under half a device pixel of
+σ keeps only the narrowing. Circle strokes lie outside the radius, as
+the spec says, and `circle-blur` draws the circle as one disc whose
+radial gradient samples MapLibre's circle shader. Several properties
+are deliberately not drawn: `line-gradient` needs a GeoJSON source with
+`lineMetrics` (MapLibre rejects it on a vector source), `line-round-limit`
+changes nothing visible at its default, and a `*-translate-anchor` of
+`viewport` is drawn as `map`, since a tile is rasterized once and then
+rotated with the map.
+
 By default (`LabelMode.screen`) labels and icons are **not** baked into
 the tile images. They are drawn each frame in screen space:
 

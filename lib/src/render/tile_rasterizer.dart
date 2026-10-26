@@ -709,39 +709,6 @@ class TileRasterizer {
     _eachFeature(layer, data, styleZoom, null, (feature, ctx, transform, clip) {
       if (feature.type == PreparedGeomType.point) return;
 
-      final closeRuns = feature.type == PreparedGeomType.polygon;
-
-      // Each run as drawn — clipped to the window at deep overzoom,
-      // shifted sideways by [offset] — with the transform that takes it
-      // to logical pixels and its distance from the un-clipped run's
-      // start, which dashes and stamps resume their pattern at.
-      void eachRun(
-          double offset,
-          void Function(
-                  Float32List run, _TileTransform t, bool close, double phase)
-              emit) {
-        void out(Float32List run, bool close, double phase) {
-          if (offset == 0) {
-            emit(run, transform, close, phase);
-          } else {
-            emit(_offsetRun(run, transform, offset, close: close),
-                _TileTransform.identity, close, phase);
-          }
-        }
-
-        for (final part in feature.parts) {
-          if (clip == null) {
-            out(part, closeRuns, 0);
-            continue;
-          }
-          final clipped = clipPolyline(part, clip, close: closeRuns);
-          for (var r = 0; r < clipped.runs.length; r++) {
-            out(clipped.runs[r], clipped.closed[r],
-                clipped.startDistances[r] * transform.scale);
-          }
-        }
-      }
-
       if (patternProp != null && patterns != null) {
         final width = layer.width.eval(ctx);
         if (width <= 0) return;
@@ -750,10 +717,9 @@ class TileRasterizer {
         final name = patternProp.eval(ctx);
         final image = name.isEmpty ? null : patterns.imageFor(name);
         if (image != null) {
-          eachRun(offsetProp?.eval(ctx) ?? 0, (run, t, close, phase) {
-            final sub = Path();
-            _addRun(sub, run, t, close: close);
-            painted |= _stampLinePattern(canvas, sub, image, width, opacity,
+          _addLineRuns(null, feature, transform, clip,
+              offset: offsetProp?.eval(ctx) ?? 0, stamp: (run, phase) {
+            painted |= _stampLinePattern(canvas, run, image, width, opacity,
                 phaseLogicalPx: phase);
           });
           // Per spec, line-pattern disables line-color and dashes.
@@ -773,13 +739,8 @@ class TileRasterizer {
           ?.map((d) => (d * style.width).clamp(0.01, 4096.0))
           .toList(growable: false);
       final path = Path();
-      eachRun(style.offset, (run, t, close, phase) {
-        if (dashes != null) {
-          _dashRun(path, run, t, dashes, close: close, phaseLogicalPx: phase);
-        } else {
-          _addRun(path, run, t, close: close);
-        }
-      });
+      _addLineRuns(path, feature, transform, clip,
+          offset: style.offset, dashes: dashes);
 
       if (style.gapWidth > 0) {
         // Two parallel casing strokes: outer stroke minus inner gap.
@@ -839,6 +800,58 @@ class TileRasterizer {
       painted = true;
     }, translate: translate);
     return painted;
+  }
+
+  /// Adds [feature]'s runs to [path] as a line layer draws them: clipped
+  /// to [clip] at deep overzoom, shifted [offset] logical px sideways,
+  /// and dashed by [dashes] (logical px) when given — resuming the dash
+  /// pattern at each clipped run's distance from the un-clipped run's
+  /// start. With [stamp], each run is handed over as a path of its own,
+  /// with that distance, instead: line patterns stamp per run.
+  static void _addLineRuns(
+    Path? path,
+    PreparedFeature feature,
+    _TileTransform transform,
+    ClipRect? clip, {
+    required double offset,
+    List<double>? dashes,
+    void Function(Path run, double phase)? stamp,
+  }) {
+    final close = feature.type == PreparedGeomType.polygon;
+    for (final part in feature.parts) {
+      if (clip == null) {
+        _addLineRun(path, part, transform, close, 0, offset, dashes, stamp);
+        continue;
+      }
+      final clipped = clipPolyline(part, clip, close: close);
+      for (var r = 0; r < clipped.runs.length; r++) {
+        _addLineRun(path, clipped.runs[r], transform, clipped.closed[r],
+            clipped.startDistances[r] * transform.scale, offset, dashes, stamp);
+      }
+    }
+  }
+
+  static void _addLineRun(
+    Path? path,
+    Float32List run,
+    _TileTransform t,
+    bool close,
+    double phase,
+    double offset,
+    List<double>? dashes,
+    void Function(Path run, double phase)? stamp,
+  ) {
+    if (offset != 0) {
+      run = _offsetRun(run, t, offset, close: close);
+      t = _TileTransform.identity;
+    }
+    final target = stamp == null ? path! : Path();
+    if (dashes != null) {
+      _dashRun(target, run, t, dashes, close: close, phaseLogicalPx: phase);
+    } else {
+      _addRun(target, run, t, close: close);
+    }
+    stamp?.call(target, phase);
   }
 
   /// The resolved stroke style for one evaluation context, or null when

@@ -338,11 +338,22 @@ fetched one zoom deeper for the same visual scale.
 
 | Type | Support |
 |---|---|
-| `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, dashes and casing |
+| `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, `background-pattern`, dashes and casing, `line-offset`, `line-blur`, `line-miter-limit`, `circle-blur`, the `*-translate` and `*-sort-key` properties; see the notes below the table |
 | `symbol` | full, including curved line text and `text-variable-anchor` / `text-radial-offset`; see [Labels](#-labels) below |
-| `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity` and brightness/contrast/saturation/hue-rotate matching MapLibre's shader math |
+| `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity`, brightness/contrast/saturation/hue-rotate matching MapLibre's shader math, and `resampling` / `raster-resampling` |
 | `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, patterned ones included, so a building part over its outline does not draw darker; the alpha of `fill-extrusion-color` is ignored, as the spec says |
 | `hillshade`, `heatmap`, `sky` | skipped, with a log line |
+
+**Geometry properties not drawn.** `line-gradient` needs a GeoJSON
+source with `lineMetrics`, which this package does not read (MapLibre
+refuses the style when it sits on a vector source); the line keeps its
+`line-color`. `line-round-limit` is ignored: round joins stay round at
+every angle, a difference below a pixel at the default limit. A
+`*-translate-anchor` of `viewport` is drawn as `map`, which differs
+only while the map is rotated, because a tile is drawn once and rotated
+with the map. Where `line-offset` meets a sharp turn the shifted line
+is beveled on the outside, where MapLibre leaves a gap and its two
+segments cross.
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
 per `icon-color`, `icon-halo-color` and `icon-halo-width`; dark MapLibre

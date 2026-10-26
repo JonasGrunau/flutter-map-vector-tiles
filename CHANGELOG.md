@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- 🎨 **More of the style spec drawn on fills, lines, circles and
+  backgrounds.** `fill-translate`, `line-translate`, `circle-translate`
+  and `fill-extrusion-translate` move their geometry, patterns included
+  (Bright's and VersaTiles' raised building tops, OSM Bright's water
+  edge); `fill-sort-key`, `line-sort-key` and `circle-sort-key` order a
+  layer's features (Americana stacks its roads with them); `line-offset`
+  shifts a line sideways and insets a polygon's outline; `line-blur`
+  fades line edges over MapLibre's ramp (Americana's roads, the borders
+  of OpenFreeMap's dark and fiord styles, the MapLibre demo's
+  coastline); `circle-blur`, `background-pattern`, and `resampling` /
+  `raster-resampling: nearest` for blocky overzoomed rasters. Until now
+  all of these were parsed past and drawn as if unset. The compiled
+  `FillThemeLayer`, `LineThemeLayer`, `CircleThemeLayer`,
+  `BackgroundThemeLayer` and `RasterThemeLayer` carry them as new
+  optional fields, and `Theme.backgroundColor` is null under a
+  `background-pattern`, which replaces the colour. `line-gradient`
+  (which needs a GeoJSON source) and `line-round-limit` are still not
+  drawn; the README's style support section has the details.
+- 🐛 Sharp corners of miter-joined lines — `miter` is the spec's
+  default join — drew long spikes. Lines were stroked with Skia's miter
+  limit of 4 instead of the spec's `line-miter-limit` default of 2, so
+  turns leaving an angle between about 29° and 60° were mitered where
+  MapLibre bevels them. `line-miter-limit` is now read, and its default
+  applies.
+- 🐛 Circle strokes were centred on `circle-radius`, half of them over
+  the fill, so a stroked circle came out half a stroke width smaller
+  than in MapLibre. The stroke now lies outside the radius, as the spec
+  says.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same

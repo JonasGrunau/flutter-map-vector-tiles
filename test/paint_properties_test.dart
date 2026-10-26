@@ -753,7 +753,7 @@ void main() {
     /// the tile: each pixel becomes a 128 px block.
     RasterTile checker() {
       final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder)
+      Canvas(recorder)
         ..drawRect(const Rect.fromLTWH(0, 0, 2, 2), Paint()..color = _white)
         ..drawRect(const Rect.fromLTWH(0, 0, 1, 1), Paint()..color = _black);
       final picture = recorder.endRecording();

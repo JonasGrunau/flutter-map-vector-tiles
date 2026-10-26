@@ -75,6 +75,11 @@ explicit unsupported-input case proving the degradation path.
 
 - `isConstant` on typed props lets the renderer hoist evaluation out of
   per-feature loops — set it whenever an expression compiles to a literal.
+- A property whose default means "do nothing" — `*-translate`,
+  `line-offset`, `line-blur`, `circle-blur`, the `*-sort-key`s, the
+  patterns — is a nullable prop that stays null when the style leaves it
+  unset (`_optionalDouble` / `_optionalNumList`), so the renderer skips
+  its work with one null check instead of evaluating a zero per feature.
 - `zoomOnly` on typed props memoizes the coerced result against
   `ctx.zoom`: the parser proves per property (via `parseForProperty`)
   that the expression reads no feature data, so a whole tile pass (one
