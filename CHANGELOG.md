@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- ✨ **Rendered-feature queries**: a `VectorTileLayerController` passed
+  to `VectorTileLayer.controller` answers what the layer draws at a
+  point or in a rectangle of the map widget (`queryRenderedFeatures`,
+  `queryRenderedFeaturesInRect`, optionally limited to some style layer
+  ids), topmost first, as MapLibre's `queryRenderedFeatures` does: the
+  labels and icons the last frame drew, then fill, line and circle
+  features. Each `RenderedFeature` names the style layer that drew it,
+  its source, source layer, id, properties, geometry type and state.
+  Hits follow what is drawn, holes, line widths and casings, circle
+  radii, overzoom and map rotation included; a query on a dense z16
+  screen takes QUERY_COST_CL.
+- ✨ **Feature state**: `setFeatureState`, `removeFeatureState` and
+  `getFeatureState` on the controller, read in paint properties by the
+  `feature-state` expression, which used to evaluate to nothing. A change
+  re-renders only the display tiles that draw the feature from a layer
+  that reads state, labels kept in place; selecting a building
+  STATE_COST_CL.
+- ✨ Vector sources' `promoteId` is applied, so a property can stand in
+  for feature ids, in `["id"]`, feature state and query results.
+  `StyleReader` reads it; `TileProviders.promoteIds` carries it for
+  hand-built sources.
+- ✨ `VectorTileLayer.retainAllProperties` keeps every feature property
+  when tiles are decoded, so query results carry the properties the
+  style does not read too. RETAIN_COST_CL.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same

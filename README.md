@@ -134,6 +134,8 @@ vt.VectorTileLayer(
   labelFadeDuration: const Duration(milliseconds: 150),
   showLabels: true,
   labelMode: vt.LabelMode.screen,              // or .tile: labels baked into tiles
+  controller: myController,                    // queries + feature state, optional
+  retainAllProperties: false,                  // keep properties the style never reads
   logger: const vt.Logger.console(),           // see style warnings in debug
 )
 ```
@@ -151,6 +153,8 @@ vt.VectorTileLayer(
 | `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress; on a Nothing Phone (1) that took the peak GPU memory from 391–409 to 317–320 MB and cost frames ([compare/RESULTS.md](compare/RESULTS.md)). No effect with `LabelMode.tile`, where labels fade in with their tile |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 | `labelMode` | `LabelMode.screen` | where labels and icons are drawn: every frame in screen space, or once into each tile's image (`LabelMode.tile`, what `vector_map_tiles` calls raster mode). Changing it re-renders the tiles already on screen. See [Choosing a label mode](#choosing-a-label-mode) |
+| `controller` | none | a `VectorTileLayerController` to ask what is drawn where and to set feature state. See [Querying features and feature state](#-querying-features-and-feature-state) |
+| `retainAllProperties` | `false` | decode every feature property, not only those the style reads, so query results carry them all. Costs memory and decode time, see below |
 
 The memory caches are shared process-wide and outlive the layer, which is
 why reopening a map paints instantly. If those budgets are too generous
@@ -332,6 +336,86 @@ Raster imagery (satellite, hillshade) wires up the same way: pass
 MVT. `NetworkVectorTileProvider` works unchanged. 256px sources are
 fetched one zoom deeper for the same visual scale.
 
+A source's `promoteId` comes along from the style document; built by
+hand, pass it as `TileProviders(providers, promoteIds: {'openmaptiles':
+vt.PromoteId('osm_id')})` (or `PromoteId.bySourceLayer({...})` for one
+property per source layer).
+
+## 👆 Querying features and feature state
+
+A `VectorTileLayerController` answers what the layer draws at a point
+or in a rectangle (MapLibre's `queryRenderedFeatures`) and holds feature
+state that the style reads back through `["feature-state", key]`
+(MapLibre's `setFeatureState`). Tap to highlight a building:
+
+```dart
+final features = vt.VectorTileLayerController();
+
+FlutterMap(
+  options: MapOptions(
+    onTap: (tap, _) {
+      final hit = features
+          .queryRenderedFeatures(tap.relative!)
+          .where((f) => f.sourceLayer == 'building' && f.id != null)
+          .firstOrNull;
+      if (hit == null) return;
+      features.setFeatureState(
+        source: hit.source,
+        sourceLayer: hit.sourceLayer,
+        id: hit.id!,
+        state: {'selected': true},
+      );
+    },
+  ),
+  children: [
+    vt.VectorTileLayer(
+      controller: features,
+      theme: style.theme,
+      tileProviders: style.providers,
+    ),
+  ],
+)
+```
+
+**Queries** take a point or a `Rect` in the map widget's logical pixels
+(`TapPosition.relative`), optionally limited to some style layer ids,
+and return `RenderedFeature`s topmost first: the labels and icons the
+last frame drew, then fill, line and circle features, from the topmost
+style layer down. Each carries the **style layer id** that drew it,
+`source`, `sourceLayer`, `id`, `properties`, `geometryType` and its
+current `state`. A feature is hit where it is drawn: inside a polygon
+(holes excluded), within half a line's width (casing included) of a
+line, within a circle's radius plus stroke, on a label's text or icon
+box, with the map rotated or not. Paint opacity does not matter, as in
+MapLibre, so a transparent layer can serve as a wider tap target. A
+feature with an id is returned once per layer however many tiles it
+spans; one without an id may come back once per data tile. A query is
+synchronous and reads only what is already in memory; it costs QUERY_COST.
+
+Query results carry the properties the decoded tiles kept, which are
+only those the style reads. `retainAllProperties: true` keeps every
+property instead, at a cost that depends on the tiles: on OpenMapTiles
+data, which carries a name in dozens of languages for every place,
+RETAIN_COST. Decoded tiles stay within `memoryCacheMaxBytes` either
+way, so the cost shows as fewer tiles held in memory, not as unbounded
+growth.
+
+**Feature state** is per feature, keyed by source, source layer and id,
+and merged like MapLibre's: `setFeatureState` adds keys,
+`removeFeatureState` takes one key, one feature or a whole source layer,
+and `getFeatureState` reads it back. A number id and its decimal string
+name the same feature. The state lives in the controller, so it outlives
+a rebuilt or remounted layer. It changes what is drawn only where a
+paint property reads it, such as
+`"fill-color": ["case", ["boolean", ["feature-state", "selected"],
+false], "#e53935", "#d6d0c4"]`; hosted styles don't, so add a layer of
+your own (the example app appends one over the style's buildings).
+A change re-renders only the display tiles that draw the feature from a
+layer that reads state, ahead of other queued work and without a fade;
+labels keep their placement, and screen-space labels whose paint reads
+state follow on the next frame. STATE_COST. Feature ids come from the
+tiles, or from the property a source's `promoteId` names.
+
 ## 🎨 Style support
 
 **Layer types**
@@ -357,8 +441,11 @@ bounds.
 **Expressions.** The practical MapLibre set: `get`/`has`, comparisons,
 `all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,
 exponential, cubic-bezier), math, string and color operators, `let`/`var`,
-legacy filters, legacy `{stops}` functions (with `{token}` templates in
-their `text-field` / `icon-image` outputs) and `{token}` templates.
+`feature-state` (see [feature
+state](#-querying-features-and-feature-state)), legacy filters, legacy
+`{stops}` functions (with `{token}` templates in their `text-field` /
+`icon-image` outputs) and `{token}` templates. Sources' `promoteId` is
+applied, so `["id"]` and feature state see the promoted property.
 
 Unsupported layer types, paint properties and expressions are skipped per
 layer with a warning, so one weird layer never kills the whole style.

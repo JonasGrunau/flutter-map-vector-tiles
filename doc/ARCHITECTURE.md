@@ -631,6 +631,102 @@ rendered again and the outgoing level's queued jobs are retired — a job
 decides at run time which kind of image to make, and would otherwise
 publish, and cache, the wrong one.
 
+## Rendered-feature queries and feature state
+
+A `VectorTileLayerController` attached to the layer answers
+`queryRenderedFeatures` and holds feature state. Both are built from
+what the layer already keeps for drawing, so a layer without a
+controller pays nothing, and one with a controller pays only when it is
+asked something.
+
+A query has two halves, because the map is drawn in two. **Labels and
+icons** come from the label pass: the painter keeps the drawables its
+last frame drew (one reference per frame, nothing computed) and works
+out their shapes only when queried — the icon's rectangle turned about
+its pivot, the text's box turned with it, and for curved text one box
+per glyph, so a diagonal street name is not hit across the whole
+rectangle it spans. Those shapes read the frame's text painters, so
+everything that disposes painters between frames (`trimCaches`, the
+retirement `paintTile` runs, `reset`, `dispose`) drops the list first.
+Fading-out ghosts and symbols the zoom ramp has retired are not on
+screen as far as a query is concerned. In `LabelMode.tile` the labels
+are part of the tile image and the per-frame pass has none, so
+`paintTile` reports what it drew as packed quads in tile pixels, kept on
+the display tile and in its finished-tile cache entry (eight floats a
+quad, a few kilobytes a dense tile).
+
+**Geometry** comes from the decoded tiles, decided exactly as the
+rasterizer draws: the same layers at the tile's integer style zoom, the
+same filters through the same once-per-tile match lists, line widths
+(with `line-gap-width`, the outer edge of the casing) and circle radii
+evaluated at that zoom in the tile's logical pixels — which is what the
+tile image then scales between levels — and polygons filled by the same
+non-zero rule, so a hole is not a hit. The query is mapped through the
+inverse of the painter's translate · rotate into world pixels, into each
+display tile's logical pixels, clipped to the tile, and then into the
+data tile's extent units, rather than every candidate feature into
+pixels; features are rejected on their decode-time bounds before any
+expression runs. Clipping to the display tile is what makes overzoom
+answer for the window a tile shows and keeps a rectangle that crosses a
+seam from matching one tile's buffer geometry on the other side. Paint
+opacity is not consulted, as in MapLibre. A feature with an id is
+reported once per style layer across tiles; one without is reported
+once per decoded feature object, which every display tile cut from one
+data tile shares. A tile still loading answers from the data it is
+provisionally drawn from. The query is synchronous and reads only what
+is in memory: GPU picking (an id buffer rendered alongside) would need
+a second render of every tile for an answer the CPU gives in
+QUERY_COST_ARCH.
+
+Decoded tiles keep only the properties the theme reads (see
+Concurrency), so that is all a result carries unless the layer sets
+`retainAllProperties`, which decodes with every source layer's keep-list
+lifted. The keep-lists are part of the decoded-tile cache's signature,
+so the two never share entries.
+
+**Feature state** lives in the controller, keyed by source, source layer
+and id. Ids are normalized the way MapLibre matches them — it
+stringifies both sides; here integral numbers and canonical integer
+strings become an `int` — so the lookup for an MVT id is a map probe
+with no string built per feature. The parser compiles `feature-state`
+into a read of `EvalContext.featureState`, counts it as reading the
+feature (so the property is never memoized against the zoom), and
+records per layer that it reads state (`ThemeLayer.readsFeatureState`).
+The rasterizer fetches a source layer's state map once per layer and
+only for such layers, so a style that reads no state, or a source layer
+with none set, costs no lookup per feature.
+
+A state change redraws the least it can. Only layers reading state can
+draw a feature differently, so a change on a source layer none of them
+draws does nothing at all. Otherwise the display tiles that draw the
+feature are found through an index of each decoded source layer by id
+(built on first use, held weakly like the match lists) and the
+feature's bounds against each tile's window plus the cull buffer — at
+overzoom most display tiles cut from the data tile are not touched.
+Those are rendered again from the data already in memory, ahead of all
+queued work and without a fade, since the change is the point. A symbol
+layout cannot read state, so in the default label mode only the
+geometry is redone: the tile keeps its published symbols, and with them
+the placement, instead of handing the label pass a republish. Labels
+whose paint reads state need no redraw of anything — their text style
+memo carries the state version it was evaluated at, so the next frame
+re-evaluates them.
+
+The finished-tile cache is shared by every layer over the style, and
+state belongs to one controller, so the two are kept apart: a tile drawn
+with any feature's state is never cached, and a tile that may draw a
+feature with state is never served from the cache — "may" because a
+source whose decoded tile is no longer in memory cannot be checked, and
+counts as yes. Clearing the state makes the cached, stateless render
+valid again, which is how a cleared selection usually comes back
+without drawing anything.
+
+A source's `promoteId` is applied on the worker at decode: the named
+property's value (booleans as 1/0, anything but a number or string as
+no id) replaces the tile's own id, and the property is added to the
+keep-list so it can be read. It is part of the decoded-tile cache's
+signature and of the render signature, since `["id"]` sees it.
+
 ## Concurrency
 
 MVT decoding, and trimming each tile to the source layers and

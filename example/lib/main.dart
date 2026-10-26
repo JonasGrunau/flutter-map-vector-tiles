@@ -14,6 +14,9 @@ import 'package:latlong2/latlong.dart';
 ///
 /// `LANGUAGE` is optional: without it labels show the style's own text.
 ///
+/// Tap the map to see what is drawn there; a tapped building is
+/// highlighted through feature state.
+///
 /// On web (`flutter run -d chrome --dart-define=MAPTILER_KEY=yourKey`)
 /// the style and tile hosts must send CORS headers — MapTiler does.
 const _apiKey = String.fromEnvironment('MAPTILER_KEY');
@@ -45,6 +48,12 @@ class VectorMapPage extends StatefulWidget {
 class _VectorMapPageState extends State<VectorMapPage> {
   late final Future<vt.Style> _style;
 
+  /// Answers what is drawn where the map is tapped, and holds the
+  /// feature state the selection layer reads.
+  final _features = vt.VectorTileLayerController();
+  vt.RenderedFeature? _selected;
+  vt.Theme? _theme;
+
   @override
   void initState() {
     super.initState();
@@ -61,6 +70,83 @@ class _VectorMapPageState extends State<VectorMapPage> {
     // Release providers and sprites once the map is gone.
     _style.then((style) => style.dispose()).ignore();
     super.dispose();
+  }
+
+  /// The style's layers plus one that paints the selected building.
+  /// Hosted styles do not read feature state, so the example brings its
+  /// own layer for it: transparent until a building is `selected`.
+  vt.Theme _withSelection(vt.Theme theme) {
+    final buildings = theme.layers
+        .where((layer) => layer.sourceLayer == 'building')
+        .firstOrNull;
+    if (buildings == null) return theme;
+    final selection = const vt.ThemeReader().read({
+      'layers': [
+        {
+          'id': 'selection',
+          'type': 'fill',
+          'source': buildings.source,
+          'source-layer': 'building',
+          'paint': {
+            'fill-color': '#e53935',
+            'fill-opacity': [
+              'case',
+              [
+                'boolean',
+                ['feature-state', 'selected'],
+                false
+              ],
+              0.7,
+              0,
+            ],
+          },
+        },
+      ],
+    });
+    // A theme of its own id: finished tiles are cached by it.
+    return vt.Theme(
+      id: '${theme.id}+selection',
+      layers: [...theme.layers, ...selection.layers],
+    );
+  }
+
+  void _onTap(TapPosition tap, LatLng _) {
+    final point = tap.relative;
+    if (point == null) return;
+    final hits = _features
+        .queryRenderedFeatures(point)
+        .where((feature) => feature.layerId != 'selection')
+        .toList();
+    final previous = _selected;
+    if (previous != null) {
+      _features.removeFeatureState(
+        source: previous.source,
+        sourceLayer: previous.sourceLayer,
+        id: previous.id!,
+      );
+      _selected = null;
+    }
+    final building = hits
+        .where((f) => f.sourceLayer == 'building' && f.id != null)
+        .firstOrNull;
+    if (building != null) {
+      _features.setFeatureState(
+        source: building.source,
+        sourceLayer: building.sourceLayer,
+        id: building.id!,
+        state: {'selected': true},
+      );
+      _selected = building;
+    }
+    final top = hits.firstOrNull;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        duration: const Duration(seconds: 2),
+        content: Text(top == null
+            ? 'Nothing here'
+            : '${top.layerId} · ${top.properties['name'] ?? top.properties['class'] ?? top.geometryType}'),
+      ));
   }
 
   @override
@@ -88,10 +174,12 @@ class _VectorMapPageState extends State<VectorMapPage> {
               initialZoom: style.zoom ?? 12,
               maxZoom: 21,
               minZoom: 2,
+              onTap: _onTap,
             ),
             children: [
               vt.VectorTileLayer(
-                theme: style.theme,
+                controller: _features,
+                theme: _theme ??= _withSelection(style.theme),
                 tileProviders: style.providers,
                 rasterSources: style.rasterSources,
                 sprites: style.sprites,

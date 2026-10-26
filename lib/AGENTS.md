@@ -13,7 +13,7 @@ implementation detail.
 
 | File | Description |
 |------|-------------|
-| `flutter_map_vector_tiles.dart` | The public API barrel. Exports `VectorTileLayer`, `LabelMode`, `StyleReader`/`Style`, `Theme`/`ThemeReader`, the provider hierarchy (incl. `PmTilesVectorTileProvider` and the PMTiles format API: `PmTilesHeader`, `PmTilesDirectory`, `PmTilesEntry`, `PmTilesCompression`, `PmTilesException`, `zxyToTileId`, `pmTilesMaxAddressableZoom`), `TileKey`, `TileOffset`, `TileProviders`, `SpriteAtlas`, `StyleAttribution`/`AttributionSpan`, `Logger`, and the `show`-limited `CancellationToken` (from `src/core/cancellation.dart` — `JoinedCancellationToken` stays internal), `SingleFlight` (for third-party providers) and `EvalContext` (from `src/style/expression.dart`) |
+| `flutter_map_vector_tiles.dart` | The public API barrel. Exports `VectorTileLayer`, `LabelMode`, `StyleReader`/`Style`, `Theme`/`ThemeReader`, the provider hierarchy (incl. `PmTilesVectorTileProvider` and the PMTiles format API: `PmTilesHeader`, `PmTilesDirectory`, `PmTilesEntry`, `PmTilesCompression`, `PmTilesException`, `zxyToTileId`, `pmTilesMaxAddressableZoom`), `TileKey`, `TileOffset`, `TileProviders` (with `PromoteId`), `VectorTileLayerController` and `RenderedFeature` (`show`-limited: the `FeatureQueryHost` interface a layer attaches through stays internal), `SpriteAtlas`, `StyleAttribution`/`AttributionSpan`, `Logger`, and the `show`-limited `CancellationToken` (from `src/core/cancellation.dart` — `JoinedCancellationToken` stays internal), `SingleFlight` (for third-party providers) and `EvalContext` (from `src/style/expression.dart`) |
 
 ## Subdirectories
 
