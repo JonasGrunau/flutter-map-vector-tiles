@@ -122,6 +122,8 @@ BENCH[after]   RASTER n=961 p50=0.80 p90=1.08 p99=1.67 max=4.76 >8.3=0 (0.0%) �
 | `layouts` / `rasterizes` | Symbol extractions and tile rasterizations during the window. **Zero means the crossing was served entirely from the finished-tile cache** — the single clearest signal that caching is working. |
 | `WORK` | The window's publish work split into UI-thread wall time: `rasterize` (picture recording + `toImageSync`), `layout` (symbol extraction), `labels` (the per-frame label pass). Whatever BUILD holds beyond these three is flutter_map and widget overhead. A per-frame `WORK z=… tiles=N …` line fires whenever a single frame's split alone exceeds 6 ms — that is the attribution for an adjacent `JANK` line. |
 | `LAYERS` | The same rasterize time broken down by style layer id, worst first — names the culprit layer directly. |
+| `PLACE` | BUILD of the frames that ran placement work (`LabelPainter.debugPlacingFrames` moved during the frame), with `jank=a/b`: a of the window's b frames over 16.7 ms were such frames. Frames are matched to their timings by engine frame number; `unmatched` counts timings at the window's edges that no frame callback tagged. |
+| `DRAWN` | Labels drawn per frame at non-zero opacity (fade-out ghosts counted apart), as mean and p10/p50/p90, and the mean per fifth of a style zoom level (`byZoom`). Frame times say nothing about a placement change that drops or doubles labels mid-sweep; compare this line with the baseline's. |
 | `>8.3` / `>16.7` | Frames over the 120 Hz and 60 Hz budgets. On a ProMotion device the 8.3 ms column is the one that matters; clearing 16.7 there is not "smooth". |
 | `fps` | Frames actually produced. Pinned at ~120 (or ~60) means nothing is stalling. |
 
