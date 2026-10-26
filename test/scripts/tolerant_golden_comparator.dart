@@ -42,16 +42,16 @@ class TolerantGoldenComparator extends LocalFileComparator {
       verdict = 'size ${actual.width}x${actual.height}, golden '
           '${expected.width}x${expected.height}';
     } else {
-      final patch = _largestPatch(actual, expected);
+      final (patch, at) = _largestPatch(actual, expected);
       // Silent when the images agree, as on the machine that made them;
       // elsewhere this shows how much room the rasterizers leave.
       if (patch > 0) {
         debugPrint('$golden: largest differing patch $patch device pixels '
-            '(at most $maxPatch may)');
+            'at $at (at most $maxPatch may)');
       }
       if (patch <= maxPatch) return true;
-      verdict = 'a patch of $patch device pixels differs (at most $maxPatch '
-          'may)';
+      verdict = 'a patch of $patch device pixels at $at differs (at most '
+          '$maxPatch may)';
     }
     final result =
         await GoldenFileComparator.compareLists(imageBytes, goldenBytes);
@@ -62,8 +62,9 @@ class TolerantGoldenComparator extends LocalFileComparator {
   }
 
   /// The largest connected patch of mask pixels in one image with none
-  /// of the same mask within a pixel of it in the other.
-  static int _largestPatch(_Pixels a, _Pixels b) {
+  /// of the same mask within a pixel of it in the other: its size, and
+  /// the device pixel it starts at.
+  static (int, (int, int)) _largestPatch(_Pixels a, _Pixels b) {
     final width = a.width, height = a.height;
     final unmatched = Uint8List(width * height);
     for (final mask in [_Pixels.isDark, _Pixels.isLight]) {
@@ -78,6 +79,7 @@ class TolerantGoldenComparator extends LocalFileComparator {
       }
     }
     var largest = 0;
+    var at = (0, 0);
     final stack = <int>[];
     for (var start = 0; start < unmatched.length; start++) {
       if (unmatched[start] != 1) continue;
@@ -102,9 +104,12 @@ class TolerantGoldenComparator extends LocalFileComparator {
           }
         }
       }
-      if (size > largest) largest = size;
+      if (size > largest) {
+        largest = size;
+        at = (start % width, start ~/ width);
+      }
     }
-    return largest;
+    return (largest, at);
   }
 }
 

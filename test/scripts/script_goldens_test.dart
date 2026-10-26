@@ -1,6 +1,8 @@
 @TestOn('vm')
 library;
 
+import 'dart:ui' as ui;
+
 import 'package:flutter/painting.dart';
 import 'package:flutter_map_vector_tiles/src/render/label_painter.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -42,8 +44,18 @@ void main() {
     final (image, placed) =
         await paintLabels(labels, size: size, background: background);
     expect(placed, labels.length, reason: 'every label is placed');
-    await expectLater(image, matchesGoldenFile('goldens/$name.png'));
+    final png = await image.toByteData(format: ui.ImageByteFormat.png);
     image.dispose();
+    final bytes = png!.buffer.asUint8List();
+    final golden = Uri.parse('goldens/$name.png');
+    // Straight to the comparator: `matchesGoldenFile` hands an image to it
+    // through `runAsync`, whose errors only a `testWidgets` reports, so in
+    // a plain test a mismatch passed.
+    if (autoUpdateGoldenFiles) {
+      await goldenFileComparator.update(golden, bytes);
+    } else {
+      expect(await goldenFileComparator.compare(bytes, golden), isTrue);
+    }
   }
 
   for (final sample in scriptSamples) {
