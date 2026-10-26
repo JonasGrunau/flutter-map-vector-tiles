@@ -407,25 +407,27 @@ mode](#choosing-a-label-mode) has what changes then.
   it is inclusive, so one would leave a `minzoom: 14` layer invisible at
   exactly zoom 14.
 - **One fade state per label identity.** Beyond that ramp, every
-  appearance and disappearance is animated per label (layer, text, icon),
-  rising while the label is placed and falling once it is not, whatever
-  the reason: a feature the tileset drops at the next zoom, a label
-  crowded out by denser labelling, a whole layer cut at its `minzoom`.
-  Each eases out over `labelFadeDuration` instead of vanishing in one
-  frame. A departing label frees its space immediately, so its replacement
-  fades in over it: a crossfade, not a pop at the fade's end.
+  appearance and disappearance is animated per label (the same text or
+  icon on the same layer, at the same place, across tiles and zoom
+  levels), rising while the label is placed and falling once it is not,
+  whatever the reason: a feature the tileset drops at the next zoom, a
+  label crowded out by denser labelling, a whole layer cut at its
+  `minzoom`. Each eases out over `labelFadeDuration` instead of vanishing
+  in one frame. A departing label frees its space immediately, so its
+  replacement fades in over it: a crossfade, not a pop at the fade's end.
 - **A placed label always paints.** A label that has won its spot is never
   held invisible waiting on anything; it fades in from the frame it
   arrives. A zoom crossing delivers a screen's labels over tens of frames,
   since tiles finish one at a time, and each starts its fade as it lands
   rather than at some shared moment.
 - **No blink when a zoom level hands over.** A label that survives the
-  change keeps its opacity, because the two levels' copies share one fade
-  state; a crossing can neither blink a label nor fade it into itself. The
-  outgoing level also only ever *keeps* labels on screen and never
-  introduces ones that weren't already visible, so a label that had been
-  crowded out, a street name under a POI say, cannot flash up just as the
-  level departs.
+  change keeps its opacity, because the two levels' copies are one label
+  with one fade state; a crossing can neither blink a label nor fade it
+  into itself, and only one of the copies draws, as only one copy of a
+  label on a tile seam does. The outgoing level also only ever *keeps*
+  labels on screen and never introduces ones that weren't already
+  visible, so a label that had been crowded out, a street name under a
+  POI say, cannot flash up just as the level departs.
 - **Street names stay put across zoom levels.** Along-line labels are
   spaced out from the middle of their line, so the next level deeper
   keeps every position of the current one and only adds names in
@@ -433,18 +435,18 @@ mode](#choosing-a-label-mode) has what changes then.
   street name you are looking at doesn't move when a level hands over.
   Where the next level brings its own data tiles, the clipped lines
   differ, or where the style's `symbol-spacing` changes with the zoom, a
-  name can genuinely sit elsewhere on its road; each sitting
-  then fades on its own clock, the old position easing out while the new
-  one fades in, instead of the name teleporting at full opacity.
+  name can genuinely sit elsewhere on its road; the name at its new
+  position is then a label of its own, fading in while the old position
+  eases out, instead of the name teleporting at full opacity.
 - **Placement is remembered, not re-derived.** A label drawable from more
   than one feature, a street name on both carriageways or the same name
   from two zoom levels, stays on the one it is already on; a label at a
   `text-variable-anchor` stays at the anchor it took; a road label near
   vertical keeps reading the way it was reading. A slow pan therefore
   doesn't walk a street name across its street. Those choices are
-  remembered per label and position rather than per tile, so they survive
-  a level handing over or a tile re-rendering underneath a label that
-  never left the screen.
+  remembered per label, matched across tiles by its text and position,
+  rather than per tile, so they survive a level handing over or a tile
+  re-rendering underneath a label that never left the screen.
 - **Collision is decided on a timer.** Camera motion and changed label
   candidates are picked up at the next `labelFadeDuration` interval, at
   most 300 ms away, and the previous decision is held in between. Zooming

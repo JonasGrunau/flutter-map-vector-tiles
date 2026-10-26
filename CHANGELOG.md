@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- 🐛 A label two tiles laid out at once — the feature on a seam that
+  both neighbours claim, or the outgoing and arriving level's copy
+  during a zoom crossing — drew twice, one copy over the other, in a
+  layer with `text-allow-overlap` or `icon-allow-overlap`, where nothing
+  collided to remove the second copy. One label now draws once.
+- 🧹 Every label has an identity that outlives the tile it was laid out
+  for: when a tile publishes, its labels are matched to the ones already
+  on screen by name and position, and a republished tile, the next zoom
+  level and both sides of a seam carry the same label on. The label pass
+  keys its fades, its placement memory and the frozen decision between
+  collision passes on it, instead of matching every label by screen
+  position on every frame. Two same-named labels within 32 px of each
+  other no longer share one fade.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same

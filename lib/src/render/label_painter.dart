@@ -239,8 +239,10 @@ class LabelPainter {
   @visibleForTesting
 
   /// Debug hook: called with a candidate's continuity key and why it was
-  /// not drawn on a frame (`fit`, `angle`, `collision`, `repeat`), and
-  /// whether that frame was a replay. For the bench; null otherwise.
+  /// not drawn on a frame (`fit`, `angle`, `collision`, `repeat`, and the
+  /// `ghost:*` reasons of a fade-out), and whether that frame was a
+  /// replay. `ghost:none` has no candidate left to name, so it reports
+  /// the label id instead. For the bench; null otherwise.
   static void Function(Object key, String reason, bool replay)?
       debugRejectProbe;
 
