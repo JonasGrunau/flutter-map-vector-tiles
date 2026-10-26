@@ -678,6 +678,18 @@ is in memory: GPU picking (an id buffer rendered alongside) would need
 a second render of every tile for an answer the CPU gives in
 QUERY_COST_ARCH.
 
+So that "in memory" holds for everything on screen, a layer with a
+controller keeps, on each live display tile, the decoded data its image
+was drawn from (`_DisplayTile.sources`). The decoded-tile cache is
+bounded by bytes and the finished-tile cache by texture bytes, and the
+two forget independently: after `clearMemoryCache()`, under a small
+`memoryCacheMaxBytes`, or for a tile served from the finished-tile cache
+the decoded data may be gone while the image stays — a query would find
+no geometry there and a state change could not tell whether to redraw.
+A tile served from the finished-tile cache therefore fetches its data
+at the lowest priority. Without a controller nothing is held, so the
+decoded-tile budget means what it always meant.
+
 Decoded tiles keep only the properties the theme reads (see
 Concurrency), so that is all a result carries unless the layer sets
 `retainAllProperties`, which decodes with every source layer's keep-list
@@ -704,10 +716,14 @@ feature are found through an index of each decoded source layer by id
 feature's bounds against each tile's window plus the cull buffer — at
 overzoom most display tiles cut from the data tile are not touched.
 Those are rendered again from the data already in memory, ahead of all
-queued work and without a fade, since the change is the point. A symbol
-layout cannot read state, so in the default label mode only the
-geometry is redone: the tile keeps its published symbols, and with them
-the placement, instead of handing the label pass a republish. Labels
+queued work and without a fade, since the change is the point; a tile
+showing an image whose data cannot be checked is rendered again too,
+which fetches it. A symbol layout cannot read state, so in the default
+label mode only the geometry is redone: the tile keeps its published
+symbols, and with them the placement, instead of handing the label pass
+a republish — provided the tile's sources are the ones those labels
+were laid out from (a source that failed then and arrives now brings
+labels of its own). Labels
 whose paint reads state need no redraw of anything — their text style
 memo carries the state version it was evaluated at, so the next frame
 re-evaluates them.
@@ -717,9 +733,16 @@ state belongs to one controller, so the two are kept apart: a tile drawn
 with any feature's state is never cached, and a tile that may draw a
 feature with state is never served from the cache — "may" because a
 source whose decoded tile is no longer in memory cannot be checked, and
-counts as yes. Clearing the state makes the cached, stateless render
-valid again, which is how a cleared selection usually comes back
-without drawing anything.
+counts as yes. "Drawn with state" is judged when the result is cached,
+which is not when it was recorded: a job carries the state version it
+began under, and one that finishes under another is not cached at all.
+A zoom crossing that retains a tile mid-render, followed by a cleared
+selection, would otherwise cache the highlight as a stateless render.
+Only layers that draw into the image count — screen-space labels follow
+state every frame, so state only their paint reads blocks no caching.
+Clearing the state makes the cached, stateless render valid again,
+which is how a cleared selection usually comes back without drawing
+anything.
 
 A source's `promoteId` is applied on the worker at decode: the named
 property's value (booleans as 1/0, anything but a number or string as

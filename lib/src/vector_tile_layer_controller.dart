@@ -33,10 +33,12 @@ import 'vector_tile_layer.dart';
 /// )
 /// ```
 ///
-/// A controller drives one layer at a time. Feature state lives in the
-/// controller, not the layer, so it survives the layer being rebuilt or
-/// remounted with the same controller; queries need the layer mounted
-/// and return nothing before that.
+/// A controller drives one layer at a time: the one that mounted last,
+/// which is also how a layer remounted under a new key takes it over
+/// (Flutter mounts the new layer before it lets go of the old one).
+/// Feature state lives in the controller, not the layer, so it survives
+/// the layer being rebuilt or remounted with the same controller;
+/// queries need the layer mounted and return nothing before that.
 ///
 /// Feature state only changes what is drawn where the style reads it,
 /// through `["feature-state", key]` in a paint property — for example
@@ -136,13 +138,11 @@ class VectorTileLayerController {
   @internal
   FeatureStates get featureStates => _states;
 
-  /// Connects the layer [host]; called by the layer as it mounts.
+  /// Connects the layer [host]; called by the layer as it mounts. Takes
+  /// the controller over from a layer still attached: a layer remounted
+  /// under a new key mounts before the old one is deactivated.
   @internal
-  void attach(FeatureQueryHost host) {
-    assert(_host == null || identical(_host, host),
-        'A VectorTileLayerController drives one VectorTileLayer at a time.');
-    _host = host;
-  }
+  void attach(FeatureQueryHost host) => _host = host;
 
   /// Disconnects [host], if it is the attached one.
   @internal

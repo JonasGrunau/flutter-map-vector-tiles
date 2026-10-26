@@ -6,6 +6,7 @@ import 'package:flutter/material.dart' hide Theme;
 import 'package:flutter/rendering.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart';
+import 'package:flutter_map_vector_tiles/src/grid/tile_store.dart';
 import 'package:flutter_map_vector_tiles/src/render/label_painter.dart';
 import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart';
 import 'package:flutter_map_vector_tiles/src/render/tile_rasterizer.dart';
@@ -181,6 +182,22 @@ LatLng _centreOf(TileKey key) {
   return LatLng(lat, lon);
 }
 
+/// The two tiles, behind a cache key per configuration. Pass one
+/// instance to every pump of a test that rebuilds the map and must keep
+/// its layer — a new `TileProviders` rebuilds the stores.
+TileProviders _providers({
+  LabelMode labelMode = LabelMode.screen,
+  bool retainAllProperties = false,
+  Map<String, PromoteId> promoteIds = const {},
+}) =>
+    TileProviders({
+      's': MemoryVectorTileProvider(
+        tiles: {_centre: _centreTile(), _right: _rightTile()},
+        cacheKey: 'rendered-features-$labelMode-$retainAllProperties-'
+            '${promoteIds.isNotEmpty}',
+      ),
+    }, promoteIds: promoteIds);
+
 void _sizeView(WidgetTester tester) {
   if (tester.view.physicalSize == const Size(800, 600) &&
       tester.view.devicePixelRatio == 1) {
@@ -199,13 +216,10 @@ Future<void> _pumpMap(
   Map<String, PromoteId> promoteIds = const {},
   LabelMode labelMode = LabelMode.screen,
   bool retainAllProperties = false,
+  TileProviders? providers,
+  Key? layerKey,
 }) async {
   _sizeView(tester);
-  final provider = MemoryVectorTileProvider(
-    tiles: {_centre: _centreTile(), _right: _rightTile()},
-    cacheKey: 'rendered-features-$labelMode-$retainAllProperties-'
-        '${promoteIds.isNotEmpty}',
-  );
   await tester.pumpWidget(MaterialApp(
     home: RepaintBoundary(
       key: boundaryKey,
@@ -217,10 +231,14 @@ Future<void> _pumpMap(
         ),
         children: [
           VectorTileLayer(
+            key: layerKey,
             controller: controller,
             theme: theme ?? _theme(),
-            tileProviders:
-                TileProviders({'s': provider}, promoteIds: promoteIds),
+            tileProviders: providers ??
+                _providers(
+                    labelMode: labelMode,
+                    retainAllProperties: retainAllProperties,
+                    promoteIds: promoteIds),
             tileOffset: TileOffset.none,
             tileFadeDuration: Duration.zero,
             labelMode: labelMode,
@@ -521,6 +539,114 @@ void main() {
     expect(second.isAttached, isTrue);
     expect(
         await pumpUntil(tester, () => _colorAt(tester, _mid, _green)), isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('with the decoded tiles let go, queries and state still answer',
+      (tester) async {
+    final controller = VectorTileLayerController();
+    await _pumpMap(tester, controller: controller);
+    await _settle(tester, controller, label: false);
+    VectorTileLayer.clearMemoryCache();
+    expect(_names(controller.queryRenderedFeatures(_onScreen(30, 66))),
+        ['road:2', 'land:1']);
+    controller.setFeatureState(
+        source: 's', sourceLayer: 'land', id: 1, state: {'selected': true});
+    expect(
+        await pumpUntil(tester, () => _colorAt(tester, _mid, _green)), isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a tile served from the finished-tile cache answers queries',
+      (tester) async {
+    final providers = _providers();
+    await _pumpMap(tester, controller: null, providers: providers);
+    expect(await pumpUntil(tester, () => _colorAt(tester, _mid, _red)), isTrue);
+    await _quiet(tester);
+    await tester.pumpWidget(const SizedBox());
+    // The finished tiles stay cached; the decoded ones go.
+    TileStore.clearMemoryCaches();
+    final controller = VectorTileLayerController();
+    await _pumpMap(tester, controller: controller, providers: providers);
+    expect(
+        await pumpUntil(
+            tester,
+            () async =>
+                _names(controller.queryRenderedFeatures(_onScreen(30, 66)))
+                    .contains('road:2')),
+        isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a layer remounted with the same controller keeps it',
+      (tester) async {
+    final controller = VectorTileLayerController();
+    final providers = _providers();
+    await _pumpMap(tester,
+        controller: controller,
+        providers: providers,
+        layerKey: const ValueKey(1));
+    await _settle(tester, controller, label: false);
+    // A new key: the new layer mounts before the old one is disposed.
+    await _pumpMap(tester,
+        controller: controller,
+        providers: providers,
+        layerKey: const ValueKey(2));
+    expect(controller.isAttached, isTrue);
+    await _settle(tester, controller, label: false);
+    expect(_names(controller.queryRenderedFeatures(_onScreen(30, 66))),
+        ['road:2', 'land:1']);
+    await tester.pumpWidget(const SizedBox());
+    expect(controller.isAttached, isFalse);
+  });
+
+  testWidgets('a controller added to a tile-mode layer finds its labels',
+      (tester) async {
+    final providers = _providers(labelMode: LabelMode.tile);
+    await _pumpMap(tester,
+        controller: null, providers: providers, labelMode: LabelMode.tile);
+    expect(
+        await pumpUntil(
+            tester, () => _colorAt(tester, _onScreen(128, 128), _red)),
+        isTrue);
+    await _quiet(tester);
+    final controller = VectorTileLayerController();
+    await _pumpMap(tester,
+        controller: controller,
+        providers: providers,
+        labelMode: LabelMode.tile);
+    await _settle(tester, controller);
+    expect(_names(controller.queryRenderedFeatures(_onScreen(200, 200))),
+        ['label:3', 'poi:3', 'land:1']);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'a render that outlives a state change is not cached with the old '
+      'state', (tester) async {
+    final controller = VectorTileLayerController();
+    final mapController = MapController();
+    await _pumpMap(tester,
+        controller: controller, mapController: mapController);
+    await _settle(tester, controller, label: false);
+    await _quiet(tester);
+    // One layer per frame, so the state render is still recording when
+    // a zoom crossing retains its tile and the state is cleared.
+    VectorTileLayer.debugPumpBudgetMicros = 0;
+    addTearDown(() => VectorTileLayer.debugPumpBudgetMicros = null);
+    controller.setFeatureState(
+        source: 's', sourceLayer: 'land', id: 1, state: {'selected': true});
+    await tester.pump(const Duration(milliseconds: 16));
+    mapController.move(_centreOf(_centre), 15);
+    await tester.pump(const Duration(milliseconds: 16));
+    controller.removeFeatureState(source: 's', sourceLayer: 'land', id: 1);
+    VectorTileLayer.debugPumpBudgetMicros = null;
+    await _quiet(tester);
+    // Back: whatever the cache holds for the tile must be stateless.
+    mapController.move(_centreOf(_centre), 14);
+    expect(await pumpUntil(tester, () => _colorAt(tester, _mid, _red)), isTrue);
+    await _quiet(tester);
+    expect(await _colorAt(tester, _mid, _red), isTrue);
     await tester.pumpWidget(const SizedBox());
   });
 

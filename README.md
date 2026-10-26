@@ -406,7 +406,8 @@ and merged like MapLibre's: `setFeatureState` adds keys,
 `removeFeatureState` takes one key, one feature or a whole source layer,
 and `getFeatureState` reads it back. A number id and its decimal string
 name the same feature. The state lives in the controller, so it outlives
-a rebuilt or remounted layer. It changes what is drawn only where a
+a rebuilt or remounted layer; a controller drives the layer that mounted
+last. It changes what is drawn only where a
 paint property reads it, such as
 `"fill-color": ["case", ["boolean", ["feature-state", "selected"],
 false], "#e53935", "#d6d0c4"]`; hosted styles don't, so add a layer of

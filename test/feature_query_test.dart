@@ -164,6 +164,30 @@ void main() {
           isTrue);
     });
 
+    test('a rectangle with no area is a point, not the whole plane', () {
+      final rings = [
+        Float32List.fromList(_square(1000, 1000, 3000, 3000)),
+        Float32List.fromList(_hole(1400, 1400, 2600, 2600)),
+      ];
+      HitArea empty(double x, double y) => _rect(Rect.fromLTWH(x, y, 0, 0));
+      expect(empty(2000, 2000).hitsPolygon(rings), isFalse);
+      expect(empty(1200, 2000).hitsPolygon(rings), isTrue);
+      final far = [
+        Float32List.fromList([0, 0, 4000, 4000])
+      ];
+      expect(empty(1000, 3000).hitsLine(far, 5), isFalse);
+      expect(empty(2000, 2002).hitsLine(far, 5), isTrue);
+      // Zero height, clipped across a tile edge: still a segment.
+      final strip = _rect(const Rect.fromLTRB(200, 100, 300, 100))
+          .clipTo(const Rect.fromLTWH(0, 0, 256, 256));
+      expect(strip, isNotNull);
+      expect(
+          strip!.hitsLine([
+            Float32List.fromList([230, 0, 230, 200])
+          ], 1),
+          isTrue);
+    });
+
     test('clipping to a tile keeps what lies inside it', () {
       const tile = Rect.fromLTWH(0, 0, 256, 256);
       expect(_at(10, 10).clipTo(tile), isNotNull);

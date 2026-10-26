@@ -66,7 +66,9 @@ class HitArea {
       }
       poly = next;
     }
-    return poly.length < 3 ? null : HitArea(poly);
+    // A degenerate area — a zero-width or zero-height rectangle — clips
+    // to fewer than three points and still covers them.
+    return poly.isEmpty ? null : HitArea(poly);
   }
 
   static Offset _atX(Offset a, Offset b, double x) =>
@@ -250,6 +252,9 @@ int _windingNumber(List<Float32List> rings, double x, double y) {
   return winding;
 }
 
+/// Whether [p] lies inside the convex [polygon]. A polygon with no area
+/// — every vertex on one line — contains nothing: its edges, which the
+/// callers test as well, are all of it.
 bool _insideConvex(List<Offset> polygon, Offset p) {
   var sign = 0;
   for (var i = 0; i < polygon.length; i++) {
@@ -264,7 +269,7 @@ bool _insideConvex(List<Offset> polygon, Offset p) {
       return false;
     }
   }
-  return true;
+  return sign != 0;
 }
 
 /// Whether one of [a]'s edge normals separates the convex polygons.
