@@ -24,6 +24,7 @@ library;
 
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -173,6 +174,22 @@ class _BenchPageState extends State<BenchPage>
   var _allFrames = 0;
   DateTime? _recordStart;
 
+  // Placement attribution: which frames ran placement work, keyed by the
+  // engine's frame number — the one value both the post-frame callback
+  // (which sees the counters) and the timings callback (which sees the
+  // durations) know a frame by — and the BUILD samples of those frames,
+  // so a report can say how much of the jank the placement pass is.
+  final _placingByFrame = <int, bool>{};
+  var _framePlacing = 0;
+  var _buildPlacing = <int>[];
+  var _unmatchedTimings = 0;
+
+  // What each recorded frame drew (bench mode): labels at non-zero
+  // opacity, fade-out ghosts apart, with the style zoom it was drawn at.
+  // A change to placement that drops or doubles labels during a sweep
+  // shows up here and nowhere in the frame times.
+  var _drawnPerFrame = <({double zoom, int drawn, int ghosts})>[];
+
   // Manual mode: zoom band covered inside the current reporting window, and
   // the live zoom for the overlay. The notifier deliberately bypasses
   // setState — rebuilding the whole page on every frame of a pinch would put
@@ -225,6 +242,7 @@ class _BenchPageState extends State<BenchPage>
       });
     SchedulerBinding.instance.addTimingsCallback(_onTimings);
     SchedulerBinding.instance.addPostFrameCallback(_onFrameEnd);
+    if (_mode == 'bench') LabelPainter.debugDrawnProbe = _countDrawn;
     if (_mode == 'stability' || _mode == 'manual') {
       LabelPainter.debugDrawnProbe = _onLabelsDrawn;
       LabelPainter.debugRejectProbe = (key, reason, replay) {
@@ -283,6 +301,12 @@ class _BenchPageState extends State<BenchPage>
     _frameShapeUs += shape;
     _frameSweepUs += sweep;
     _frameDrawUs += draw;
+    final placing = LabelPainter.debugPlacingFrames - _framePlacing;
+    _framePlacing += placing;
+    if (_recording) {
+      _placingByFrame[PlatformDispatcher.instance.frameData.frameNumber] =
+          placing > 0;
+    }
     if (!_recording || raster + layout + labels <= 6000) return;
     String ms(int us) => (us / 1000).toStringAsFixed(1);
     final zoom = _zoomNow();
@@ -291,6 +315,31 @@ class _BenchPageState extends State<BenchPage>
         'raster=${ms(raster)}ms layout=${ms(layout)}ms '
         'labels=${ms(labels)}ms place=${ms(place)}ms shape=${ms(shape)}ms '
         'sweep=${ms(sweep)}ms draw=${ms(draw)}ms');
+  }
+
+  /// Starts a recording window: every per-frame sample list and counter a
+  /// report reads.
+  void _resetWindow() {
+    _build = <int>[];
+    _raster = <int>[];
+    _allFrames = 0;
+    _interrupted = false;
+    _buildPlacing = <int>[];
+    _placingByFrame.clear();
+    _unmatchedTimings = 0;
+    _drawnPerFrame = [];
+  }
+
+  /// Bench mode's drawn-label probe: counts only, so the harness's own
+  /// cost per frame stays a loop over the records.
+  void _countDrawn(double styleZoom, List<DrawnLabelRecord> drawn) {
+    if (!_recording) return;
+    var ghosts = 0;
+    for (final label in drawn) {
+      if (label.ghost) ghosts++;
+    }
+    _drawnPerFrame
+        .add((zoom: styleZoom, drawn: drawn.length - ghosts, ghosts: ghosts));
   }
 
   double? _zoomNow() => _mapReady.isCompleted ? _controller.camera.zoom : null;
@@ -534,10 +583,7 @@ class _BenchPageState extends State<BenchPage>
     for (final pass in ['cold', 'warm']) {
       for (final direction in ['in', 'out']) {
         _stab = _StabilityCounters();
-        _build = <int>[];
-        _raster = <int>[];
-        _allFrames = 0;
-        _interrupted = false;
+        _resetWindow();
         final layouts0 = SymbolLayouter.debugLayoutCount;
         final rasters0 = TileRasterizer.debugRasterizeCount;
         final rasterUs0 = TileRasterizer.debugRasterizeMicros;
@@ -585,6 +631,12 @@ class _BenchPageState extends State<BenchPage>
       final raster = timing.rasterDuration.inMicroseconds;
       _build.add(build);
       _raster.add(raster);
+      final placing = _placingByFrame.remove(timing.frameNumber);
+      if (placing == null) {
+        _unmatchedTimings++;
+      } else if (placing) {
+        _buildPlacing.add(build);
+      }
       // A frame past the 60 Hz budget is a hitch anyone can see; log it the
       // moment it happens so it lines up with what the finger just did.
       if (zoom != null && (build > 16667 || raster > 16667)) {
@@ -652,10 +704,7 @@ class _BenchPageState extends State<BenchPage>
     var drawUs = LabelPainter.debugDrawMicros;
     var placingFrames = LabelPainter.debugPlacingFrames;
     while (mounted) {
-      _build = <int>[];
-      _raster = <int>[];
-      _allFrames = 0;
-      _interrupted = false;
+      _resetWindow();
       _windowZoomLo = double.infinity;
       _windowZoomHi = double.negativeInfinity;
       _recordStart = DateTime.now();
@@ -735,10 +784,7 @@ class _BenchPageState extends State<BenchPage>
 
     final kind = phase.cold ? 'COLD measuring' : 'measuring';
     _say('${phase.ms}ms · labels=${phase.labels} · cache=$cache ($kind)');
-    _build = <int>[];
-    _raster = <int>[];
-    _allFrames = 0;
-    _interrupted = false;
+    _resetWindow();
     final layouts0 = SymbolLayouter.debugLayoutCount;
     final rasters0 = TileRasterizer.debugRasterizeCount;
     final rasterUs0 = TileRasterizer.debugRasterizeMicros;
@@ -841,19 +887,52 @@ class _BenchPageState extends State<BenchPage>
         'layouts=$layouts rasterizes=$rasters interrupted=$_interrupted');
     debugPrint('BENCH[$_label]   ${stats("BUILD ", _build)}');
     debugPrint('BENCH[$_label]   ${stats("RASTER", _raster)}');
+    // The frames that ran placement work, and their share of the jank:
+    // `jank=a/b` is a of the window's b BUILD frames over 16.7 ms that
+    // were placing frames. `unmatched` counts timings no post-frame
+    // callback tagged (frames outside the recording window's edges).
+    final jank = _build.where((us) => us > 16667).length;
+    final placingJank = _buildPlacing.where((us) => us > 16667).length;
+    debugPrint('BENCH[$_label]   ${stats("PLACE ", _buildPlacing)} '
+        'jank=$placingJank/$jank '
+        '(${jank == 0 ? 0 : (100 * placingJank / jank).round()}%) '
+        'unmatched=$_unmatchedTimings');
+    if (_drawnPerFrame.isNotEmpty) {
+      final drawn = [for (final f in _drawnPerFrame) f.drawn]..sort();
+      final ghosts = _drawnPerFrame.fold(0, (sum, f) => sum + f.ghosts);
+      int percentile(double p) => drawn[((drawn.length - 1) * p).round()];
+      final mean = drawn.fold(0, (a, b) => a + b) / drawn.length;
+      // Labels drawn by style zoom, in fifths of a level: a placement
+      // change that drops or doubles labels mid-sweep shows up as a
+      // band out of line with the baseline's.
+      final byZoom = <int, List<int>>{};
+      for (final f in _drawnPerFrame) {
+        (byZoom[(f.zoom * 5).floor()] ??= []).add(f.drawn);
+      }
+      final bands = (byZoom.keys.toList()..sort()).map((band) {
+        final counts = byZoom[band]!;
+        final mean = counts.fold(0, (a, b) => a + b) / counts.length;
+        return '${(band / 5).toStringAsFixed(1)}:${mean.round()}';
+      });
+      debugPrint('BENCH[$_label]   DRAWN  frames=${drawn.length} '
+          'mean=${mean.toStringAsFixed(1)} p10=${percentile(0.1)} '
+          'p50=${percentile(0.5)} p90=${percentile(0.9)} '
+          'ghosts/frame=${(ghosts / drawn.length).toStringAsFixed(1)} '
+          'byZoom ${bands.join(' ')}');
+    }
     // Where the window's publish work went, in UI-thread wall time. The
     // remainder of BUILD (flutter_map, widget build, everything else) is
     // whatever these three do not account for.
     String ms(int us) => (us / 1000).toStringAsFixed(1);
     debugPrint('BENCH[$_label]   WORK   rasterize=${ms(rasterUs)}ms '
         'layout=${ms(layoutUs)}ms labels=${ms(labelUs)}ms');
-    // The label pass split: full placement passes (and how many frames ran
-    // one), replayed frames, the per-frame candidate sort, and paragraph
+    // The label pass split: placement work (and how many frames did some:
+    // a whole pass each, or a slice of one), replayed frames, the per-frame candidate sort, and paragraph
     // shaping on cache misses. Whatever `labels` holds beyond these is
     // drawing the placed symbols.
     if (labelSplit != null) {
       debugPrint('BENCH[$_label]   LABELS-SPLIT '
-          'place=${ms(labelSplit.place)}ms/${labelSplit.placing}passes '
+          'place=${ms(labelSplit.place)}ms/${labelSplit.placing}frames '
           'replay=${ms(labelSplit.replay)}ms sort=${ms(labelSplit.sort)}ms '
           'shape=${ms(labelSplit.shape)}ms sweep=${ms(labelSplit.sweep)}ms '
           'draw=${ms(labelSplit.draw)}ms');
