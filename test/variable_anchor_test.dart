@@ -8,6 +8,8 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fixtures/label_ids.dart';
+
 /// Each paint models changed placement input; a constant would replay
 /// the first pass forever once fades are on.
 var _nextPlacementGeneration = 0;
@@ -52,6 +54,7 @@ PlacedSymbol _symbolAt(
         geometryType: 'Point',
         featureId: null,
       ),
+      id: labelIdOf((layerIndex, text)),
       screenAnchor: screenAnchor,
       screenAngle: 0,
     );
@@ -80,9 +83,7 @@ List<PlacedSymbol> _paint(
 
 /// The anchor [painter] remembers for [symbol]'s label.
 String? _anchorOf(LabelPainter painter, PlacedSymbol symbol) =>
-    painter.debugPlacement
-        .lookup(symbol.instance.continuityKey, symbol.screenAnchor)
-        ?.anchor;
+    painter.debugPlacement.lookup(symbol.id)?.anchor;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

@@ -43,6 +43,14 @@ class TileTransform {
 /// A symbol candidate projected to screen coordinates.
 class PlacedSymbol {
   final SymbolInstance instance;
+
+  /// The label this candidate is a copy of, as `LabelIdentityIndex`
+  /// assigned it. Every copy of one label — seam twins, the outgoing and
+  /// arriving level's at a crossing, a republished tile's successor —
+  /// carries the same id, so the painter's winners, fades and placement
+  /// memory follow the label rather than the instance, and at most one
+  /// copy per id draws in a frame. Distinct labels never share one.
+  final int id;
   final Offset screenAnchor;
 
   /// Screen-space map angle for point symbols, or map plus local line
@@ -90,6 +98,7 @@ class PlacedSymbol {
 
   PlacedSymbol({
     required this.instance,
+    required this.id,
     required this.screenAnchor,
     required this.screenAngle,
     this.transform,
@@ -100,11 +109,12 @@ class PlacedSymbol {
 }
 
 /// One label a paint actually drew, as reported to
-/// [LabelPainter.debugDrawnProbe]: its continuity key, its screen
-/// anchor, the opacity it drew at, whether it was a fade-out ghost,
-/// and whether it is an along-line label.
+/// [LabelPainter.debugDrawnProbe]: its continuity key, its label id,
+/// its screen anchor, the opacity it drew at, whether it was a fade-out
+/// ghost, and whether it is an along-line label.
 typedef DrawnLabelRecord = ({
   Object key,
+  int id,
   Offset position,
   double opacity,
   bool ghost,
@@ -336,40 +346,35 @@ class LabelPainter {
     _retired.clear();
   }
 
-  /// Per-label fade state — one opacity per continuity key, advanced
-  /// every painted frame. See [LabelFadeTracker].
+  /// Per-label fade state — one opacity per label id, advanced every
+  /// painted frame. See [LabelFadeTracker].
   final _fades = LabelFadeTracker();
 
   /// The fade tracker, for tests that assert fade state across frames.
   @visibleForTesting
   LabelFadeTracker get debugFades => _fades;
 
-  /// Fallback drawables for the fade-out, keeping *every* unplaced
-  /// candidate of a tracked key: fades are matched by position (see
-  /// [LabelFadeTracker.showAt]), so the sweep draws each fading sitting
-  /// from the candidate nearest it, instead of the priority-first one —
-  /// which for a street with several repeats, or a key several POIs
-  /// share, could be a different label entirely, teleporting the ghost.
-  final _sittingFallbacks = <Object, List<PlacedSymbol>>{};
-
-  /// How far from a fading sitting its ghost's stand-in candidate may
-  /// be. Beyond this, drawing the "nearest" candidate would move the
-  /// label — the artefact the positional fades remove — so the sitting
-  /// finishes its fade undrawn instead.
-  static const double _ghostRadius = LabelFadeTracker.matchRadius * 2;
+  /// Fallback drawables for the fade-out: per tracked label id, the
+  /// first unplaced copy on offer this frame. Every copy of one id sits
+  /// at the label's place (that is what the id means), so any of them
+  /// draws its ghost where the label was.
+  final _fallbacks = <int, PlacedSymbol>{};
 
   /// When the collision pass re-runs; between passes its decision is
   /// replayed. See [PlacementThrottle].
   final _placement = PlacementThrottle();
 
-  /// The instances that won space at the last full pass — the frozen
-  /// decision itself. Between passes only these compete (everything
-  /// else is skipped before it is even laid out), and at the next pass
-  /// they are tried ahead of the other candidates of their own label,
-  /// so a label that can be drawn from two instances keeps the one it
-  /// already occupies. `SymbolInstance` does not override `==`, so this
-  /// is an identity set.
-  final _winners = <SymbolInstance>{};
+  /// The label ids that won space at the last full pass — the frozen
+  /// decision itself. Between passes only their copies compete
+  /// (everything else is skipped before it is even laid out), and at the
+  /// next pass they are the incumbents. Ids outlive instances, so a
+  /// winner whose tile republished is still a winner in its successor.
+  var _winners = <int>{};
+
+  /// The label ids drawn so far this frame: one copy per label draws,
+  /// the first in priority order. Swapped with [_winners] at the end of
+  /// a pass, which is what makes it the next frozen decision.
+  var _shown = <int>{};
 
   /// The placement choices each label is sitting on — kept here rather
   /// than on the instances, which are replaced under a label that never
@@ -399,7 +404,7 @@ class LabelPainter {
   /// meaning.
   void reset() {
     _fades.clear();
-    _sittingFallbacks.clear();
+    _fallbacks.clear();
     _winners.clear();
     _memory.clear();
     _placement.reset();
@@ -521,24 +526,20 @@ class LabelPainter {
     final sortStopwatch = Stopwatch()..start();
     final List<PlacedSymbol> candidates;
     if (placing) {
-      _flagIncumbents(symbols, fades);
+      _flagIncumbents(symbols);
       candidates = symbols..sort(_byPlacementPriority);
     } else {
       // Replaying: the frozen decision says only the last pass's
-      // winners are on screen, so only they are laid out — and only
-      // they need sorting, ~100 of a few thousand candidates on a dense
-      // screen. [_byPlacementPriority] is a total order (`order` is
-      // unique), so
-      // their relative order is exactly what a full sort gives.
-      // Everyone else is at most a fade-out fallback, recorded in input
-      // order instead of priority order. That order only settles exact
-      // distance ties in [_nearestCandidate], between candidates of one
-      // key and so of one layer — which at a shared anchor already fell
-      // through to `order`, the input order, unless their sort keys
-      // differ.
+      // winners are on screen, so only their copies are laid out — and
+      // only they need sorting, ~100 of a few thousand candidates on a
+      // dense screen. [_byPlacementPriority] is a total order (`order`
+      // is unique), so their relative order is exactly what a full sort
+      // gives. Everyone else is at most a fade-out fallback, recorded in
+      // input order instead of priority order — any copy of a label
+      // draws its ghost in the same place.
       candidates = <PlacedSymbol>[];
       for (final candidate in symbols) {
-        if (!candidate.ghostOnly && _winners.contains(candidate.instance)) {
+        if (!candidate.ghostOnly && _winners.contains(candidate.id)) {
           candidates.add(candidate);
         } else if (fades) {
           _recordFallback(candidate);
@@ -548,36 +549,37 @@ class LabelPainter {
     }
     debugSortMicros += sortStopwatch.elapsedMicroseconds;
     if (placing) debugPlacingFrames++;
-    if (placing && _winners.isNotEmpty) _promoteIncumbents(candidates);
 
     final toDraw = <_DrawableSymbol>[];
     var anyFading = false;
-    if (placing) {
-      _winners.clear();
-      _repeatAnchors.clear();
-    }
+    _shown.clear();
+    if (placing) _repeatAnchors.clear();
     final loopStopwatch = Stopwatch()..start();
     for (final candidate in candidates) {
       if (candidate.ghostOnly) {
         // Never competes for placement — only remembered, in case its
-        // key is fading out and nothing else can draw it. (A replay
+        // label is fading out and nothing else can draw it. (A replay
         // frame recorded these while picking its winners.)
         if (fades) _recordFallback(candidate);
         continue;
       }
+      // Another copy of this label — a seam twin, the other level's at
+      // a crossing — already drew: one label draws once, from its
+      // highest-priority copy. Skipped before any layout work.
+      if (_shown.contains(candidate.id)) continue;
       final drawable =
           _prepare(candidate, zoom, styleZoom, collision, sprites, screenSize);
       if (drawable == null) {
         // A candidate that lost (collision, zoom gate) may still be the
-        // only instance around of a key mid-fade-out.
+        // only copy around of a label mid-fade-out.
         if (fades) _recordFallback(candidate);
         continue;
       }
+      _shown.add(candidate.id);
       // The label's fade and its layer's zoom-range ramp compound: a
       // label appearing near its layer's maxzoom is subject to both.
       final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
       if (placing) {
-        _winners.add(candidate.instance);
         final repeatKey = drawable.repeatKey;
         // Only text that actually shows may suppress a repeat: a
         // rejected or ramped-out candidate never hides a fallback.
@@ -587,14 +589,11 @@ class LabelPainter {
       }
       var fade = 1.0;
       if (fades) {
-        // Fades are per sitting — one state per (key, position). Two
-        // POIs sharing a name or an icon fade independently instead of
-        // popping while the other holds their key's opacity; an
-        // along-line label whose anchors are re-spaced per display
-        // layout fades in at the new position while the old one fades
-        // out, instead of inheriting its opacity and teleporting.
-        fade = _fades.showAt(
-            candidate.instance.continuityKey, candidate.screenAnchor);
+        // One fade per label id: every copy of a label resumes its
+        // state, while two POIs sharing a name, or a street name whose
+        // anchor the next level re-spaced, are different labels and
+        // fade on their own.
+        fade = _fades.show(candidate.id);
         // A key on its first frame has no elapsed fade time yet; one
         // step keeps it from starting invisible. Every placed label
         // paints something, on every frame it is placed: a label held
@@ -608,61 +607,58 @@ class LabelPainter {
       anyFading |= drawable.opacity < 1;
     }
     if (placing) {
+      // The pass's winners are what it drew: the frozen decision until
+      // the next one.
+      final previous = _winners;
+      _winners = _shown;
+      _shown = previous;
       debugPlaceMicros += loopStopwatch.elapsedMicroseconds;
     } else {
       debugReplayMicros += loopStopwatch.elapsedMicroseconds;
     }
     final sweepStopwatch = Stopwatch()..start();
     if (fades) {
-      // Keys placed until recently but not this frame fade out, drawing
-      // one ghost each: laid out (the zoom gate bypassed — a departing
-      // label is often departing *because* the gate just cut its layer)
-      // but claiming no collision space, so whatever takes the spot
-      // fades in over the ghost instead of waiting for it to expire and
-      // popping.
+      // Labels placed until recently but not this frame fade out,
+      // drawing one ghost each: laid out (the zoom gate bypassed — a
+      // departing label is often departing *because* the gate just cut
+      // its layer) but claiming no collision space, so whatever takes
+      // the spot fades in over the ghost instead of waiting for it to
+      // expire and popping.
       _CollisionIndex? permissive;
-      _fades.sweep((key, position, opacity) {
-        // Each fading sitting takes the candidate nearest its position,
-        // and only within [_ghostRadius] — a farther stand-in would
-        // move the fading label, which is the artefact the positional
-        // fades exist to remove.
-        final fallback = _nearestCandidate(_sittingFallbacks[key], position);
+      _fades.sweep((id, opacity) {
+        final fallback = _fallbacks[id];
         if (fallback == null) {
-          debugRejectProbe?.call(key, 'ghost:none', true);
-          return null;
+          debugRejectProbe?.call(id, 'ghost:none', true);
+          return;
         }
+        final key = fallback.instance.continuityKey;
         final ramp = zoomRangeOpacity(fallback.instance.layer, styleZoom);
         if (ramp <= 0) {
           debugRejectProbe?.call(key, 'ghost:ramp', true);
-          return null;
+          return;
         }
         // Floored, mirroring the fade-in's implicit ceil: a departing
         // label reaches zero instead of lingering one step above it.
         final ghostOpacity =
             (opacity * ramp * _opacitySteps).floor() / _opacitySteps;
-        if (ghostOpacity <= 0) return null;
+        if (ghostOpacity <= 0) return;
         final drawable = _prepare(fallback, zoom, styleZoom,
             permissive ??= _CollisionIndex.permissive(), sprites, screenSize,
             gateZoom: false);
         if (drawable == null) {
           debugRejectProbe?.call(key, 'ghost:prepare', true);
-          return null;
+          return;
         }
         drawable.opacity = ghostOpacity;
         drawable.isGhost = true;
         toDraw.add(drawable);
         anyFading = true;
-        // The tracker moves the sitting to where its ghost was drawn,
-        // so the fade keeps tracking the camera.
-        return fallback.screenAnchor;
       },
-          // Replay frames hold: an un-shown key mid-interval usually
-          // means its instance was replaced (republish, level swap), and
-          // the successor is only picked up at the next due pass —
-          // decaying through that window fades a label into itself.
-          // Only a pass may start a fade-out.
+          // Replay frames hold: a winner missing mid-interval may only
+          // be between copies (its tile gone, the successor not yet
+          // published), and only a pass may start a fade-out.
           hold: !placing);
-      _sittingFallbacks.clear();
+      _fallbacks.clear();
     }
     debugSweepMicros += sweepStopwatch.elapsedMicroseconds;
     final probe = debugDrawnProbe;
@@ -674,6 +670,7 @@ class LabelPainter {
           if (drawable.opacity > 0)
             (
               key: drawable.symbol.instance.continuityKey,
+              id: drawable.symbol.id,
               position: drawable.symbol.screenAnchor,
               opacity: drawable.opacity,
               ghost: drawable.isGhost,
@@ -830,6 +827,9 @@ class LabelPainter {
         for (var i = 0; i < symbols.length; i++)
           PlacedSymbol(
             instance: symbols[i],
+            // One tile, one layout: every candidate is its own label,
+            // and nothing carries over to another call to need more.
+            id: i + 1,
             screenAnchor: symbols[i].anchor,
             screenAngle: symbols[i].angle,
             transform: symbols[i].alongLine ? _tileSpace : null,
@@ -916,85 +916,33 @@ class LabelPainter {
     return false;
   }
 
-  /// Marks the candidates whose label is steadily visible on screen, so
-  /// the priority sort tries them ahead of same-layer newcomers — see
-  /// [PlacedSymbol.incumbent]. Placing frames only; the flag defaults
-  /// to false on every rebuilt candidate list in between.
+  /// Marks the candidates whose label is steadily visible on screen —
+  /// the last pass's winners — so the priority sort tries them ahead of
+  /// same-layer newcomers; see [PlacedSymbol.incumbent]. Placing frames
+  /// only; the flag defaults to false on every rebuilt candidate list in
+  /// between.
   ///
-  /// Two recognisers, because each covers the other's blind spot. The
-  /// winner set matches by instance identity — exact, but instances are
-  /// replaced wholesale by every republish and level swap, precisely
-  /// when incumbency matters most. The fade tracker matches by key and
-  /// position at full opacity — which survives instance replacement,
-  /// but exists only while fades are enabled.
-  void _flagIncumbents(List<PlacedSymbol> candidates, bool fades) {
+  /// By label id, so incumbency survives the instance replacement every
+  /// republish and level swap performs, precisely when it matters most.
+  /// It also settles which of a label's *own* rivals draws: a street
+  /// name repeated on the parallel carriageway is another label of the
+  /// same name, and since only the one on screen is an incumbent, a slow
+  /// pan that reorders their screen y no longer walks the name across
+  /// the street.
+  void _flagIncumbents(List<PlacedSymbol> candidates) {
     for (final candidate in candidates) {
-      candidate.incumbent = !candidate.ghostOnly &&
-          (_winners.contains(candidate.instance) ||
-              (fades &&
-                  _fades.isVisibleAt(candidate.instance.continuityKey,
-                      candidate.screenAnchor)));
+      candidate.incumbent =
+          !candidate.ghostOnly && _winners.contains(candidate.id);
     }
   }
 
-  /// Moves each label's sitting tenant ahead of its rivals *within its
-  /// own continuity key*, in place.
-  ///
-  /// One label often has several candidates on screen: a street name
-  /// repeats along its road and again on the parallel carriageway, and
-  /// a zoom crossing puts the outgoing and arriving level's copies up
-  /// at once. Which of them the priority sort puts first depends on the
-  /// anchors' screen y, so a slow pan reorders them and the name jumps
-  /// across the street and back. Trying the one already drawn first
-  /// pins it there for as long as it still fits.
-  ///
-  /// Only the order *inside* a key changes: the key still competes for
-  /// space at the position its best candidate earned, so this can never
-  /// let one label outrank another. Each key is promoted at most once —
-  /// with two candidates, which is the case that matters, that is
-  /// exactly right, and with more it still puts a tenant first.
-  void _promoteIncumbents(List<PlacedSymbol> candidates) {
-    Map<Object, int>? firstRival;
-    for (var i = 0; i < candidates.length; i++) {
-      final candidate = candidates[i];
-      if (candidate.ghostOnly) continue;
-      final key = candidate.instance.continuityKey;
-      if (!_winners.contains(candidate.instance)) {
-        (firstRival ??= {})[key] ??= i;
-        continue;
-      }
-      final rival = firstRival?.remove(key);
-      if (rival == null) continue; // already first among its key
-      candidates[i] = candidates[rival];
-      candidates[rival] = candidate;
-    }
-  }
-
-  /// Remembers [candidate] as a drawable to fade its key out with,
-  /// should the sweep find one of that key's sittings unplaced this
-  /// frame. Only tracked keys can fade. Every candidate is kept: the
-  /// sweep picks the one nearest each fading sitting.
+  /// Remembers [candidate] as the drawable to fade its label out with,
+  /// should the sweep find that label unplaced this frame. Only tracked
+  /// labels can fade, and one copy per label is enough.
   void _recordFallback(PlacedSymbol candidate) {
-    final key = candidate.instance.continuityKey;
-    if (!_fades.isTracked(key)) return;
-    (_sittingFallbacks[key] ??= []).add(candidate);
-  }
-
-  /// The candidate in [candidates] nearest [position], within
-  /// [_ghostRadius]; null when none is (or the list is).
-  static PlacedSymbol? _nearestCandidate(
-      List<PlacedSymbol>? candidates, Offset position) {
-    if (candidates == null) return null;
-    PlacedSymbol? best;
-    var bestDistance = _ghostRadius * _ghostRadius;
-    for (final candidate in candidates) {
-      final distance = (candidate.screenAnchor - position).distanceSquared;
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        best = candidate;
-      }
-    }
-    return best;
+    final id = candidate.id;
+    if (!_fades.isTracked(id)) return;
+    _fallbacks.putIfAbsent(id, () => candidate);
   }
 
   /// Opacity [layer]'s zoom range gives a symbol at [styleZoom]: 1
@@ -1135,10 +1083,10 @@ class LabelPainter {
     // a level away from the threshold the style declares.
     if (gateZoom && !layer.coversZoom(styleZoom)) return null;
 
-    // What this label decided last time it was placed — by position, so
+    // What this label decided last time it was placed — by label id, so
     // the instance that arrives with a new zoom level inherits what the
     // one it replaces was sitting on.
-    final sitting = _memory.sitting(instance.continuityKey, anchor);
+    final sitting = _memory.sitting(placed.id);
 
     final ctx = EvalContext(
       zoom: evalZoom,

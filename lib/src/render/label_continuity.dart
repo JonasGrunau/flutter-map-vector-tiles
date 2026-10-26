@@ -1,33 +1,30 @@
 import 'dart:math' as math;
-import 'dart:ui' show Offset, Size;
+import 'dart:typed_data';
+import 'dart:ui' show Size;
 
 import 'symbol_layouter.dart';
 
-/// Identity of a label for cross-zoom continuity: the same text (or the
-/// same icon) on the same style layer.
+/// What a label *is*, across layouts: the same text (or the same icon)
+/// on the same style layer.
 ///
-/// Deliberately position-free. Geometry simplification differs per zoom
-/// level, so the same feature's anchor lands a fraction of a pixel apart
-/// at two levels and a position-sensitive *key* would miss the match —
-/// and a missed match re-fades a label that is already on screen, the
-/// blink this whole mechanism exists to prevent. Position still takes
-/// part, but *inside* the key: [LabelFadeTracker] keeps one fade per
-/// sitting — states matched by screen position within a radius (see
-/// [LabelFadeTracker.showAt]) — which tolerates that noise where an
-/// exact key cannot. The split is what lets two same-named POIs, every
-/// housenumber "12" and every parking icon on a layer fade
-/// independently instead of sharing one opacity, and what keeps an
-/// along-line label from teleporting when the next zoom level re-spaces
-/// its street's anchors.
+/// Deliberately position-free: it is the first half of a label's
+/// identity, and `LabelIdentityIndex` supplies the second — it matches
+/// copies of one key by world position, within a tolerance, and hands
+/// each distinct label an integer id. Splitting it that way is what
+/// tolerates the noise between two layouts of one label (a coarser
+/// level simplifies differently, so the same feature's anchor lands a
+/// fraction of a pixel apart), where an exact positional key would miss
+/// and re-fade a label that never left — while two same-named POIs,
+/// every housenumber "12" and every parking icon still get ids of their
+/// own.
 ///
-/// A record, not an `Object.hash` value: set membership must compare the
+/// A record, not an `Object.hash` value: grouping must compare the
 /// actual triple, or a hash collision between unrelated labels would
-/// silently conflate them. Memoized on the instance — the label pass
-/// looks it up per candidate per frame.
+/// silently conflate them. Memoized on the instance.
 Object labelContinuityKey(SymbolInstance symbol) => symbol.continuityKey;
 
-/// The subset of [symbols] that was actually on screen, per [drawn] —
-/// the identity set of the symbols the last label pass drew.
+/// The indices of a cohort whose label [ids] the last label pass drew,
+/// in order — or null when it drew every one of them.
 ///
 /// A cohort is pinned to this subset the moment its level is replaced:
 /// an outgoing level exists to *keep* what was visible until the new
@@ -35,72 +32,48 @@ Object labelContinuityKey(SymbolInstance symbol) => symbol.continuityKey;
 /// would otherwise pop in mid-transition the instant a zoom-range cut
 /// removes whatever was suppressing them — street names flashing up
 /// just before a level with sparser labelling arrives, only to be faded
-/// straight back out by the new level. Returns [symbols] itself when
-/// nothing is filtered out.
-List<SymbolInstance> drawnLabels(
-  List<SymbolInstance> symbols,
-  Set<SymbolInstance> drawn,
-) {
-  if (symbols.isEmpty) return symbols;
-  if (drawn.isEmpty) return const [];
-  final result = [
-    for (final symbol in symbols)
-      if (drawn.contains(symbol)) symbol,
+/// straight back out by the new level. Membership is by label id, so a
+/// label counts as drawn whichever copy of it the pass drew.
+List<int>? drawnLabels(Int32List ids, Set<int> drawn) {
+  if (ids.isEmpty) return null;
+  final kept = <int>[
+    for (var i = 0; i < ids.length; i++)
+      if (drawn.contains(ids[i])) i,
   ];
-  return result.length == symbols.length ? symbols : result;
+  return kept.length == ids.length ? null : kept;
 }
 
-/// Per-label fade state, keyed by [labelContinuityKey] *and* screen
-/// position: one opacity per *sitting* — a label identity at the place
-/// it is on screen, whatever instance happens to draw it there.
+/// Per-label fade state, keyed by label id (see `LabelIdentityIndex`):
+/// one opacity per label, whatever instance happens to draw it.
 ///
-/// Every frame the label pass marks the sittings it placed ([showAt]);
-/// the [sweep] then walks every other tracked state downward. Opacity
-/// moves toward "placed ? 1 : 0" by the fraction of a fade one frame
-/// spans, so any appearance eases in and any disappearance eases out — a
-/// tile arriving, a level handing over, a collision won or lost, a zoom
-/// cut — all through the same mechanism, with no per-cause bookkeeping.
+/// Every frame the label pass marks the labels it placed ([show]); the
+/// [sweep] then walks every other tracked state downward. Opacity moves
+/// toward "placed ? 1 : 0" by the fraction of a fade one frame spans,
+/// so any appearance eases in and any disappearance eases out — a tile
+/// arriving, a level handing over, a collision won or lost, a zoom cut —
+/// all through the same mechanism, with no per-cause bookkeeping.
 ///
-/// Three properties carry the anti-blink guarantees:
+/// Two properties carry the anti-blink guarantees:
 ///
-/// * One opacity per sitting, matched loosely. A sitting is the state
-///   nearest the shown anchor within [matchRadius], so the outgoing and
-///   the arriving level's copies of one label — whose anchors differ
-///   only by simplification noise — resume one shared state: a crossing
-///   can never cross-fade a label against itself. The *key* stays
-///   position-free; position lives in the match, because an exact
-///   positional key would miss on that same noise and re-fade a label
-///   that never left.
-/// * Position splits what position genuinely separates. Two same-named
-///   POIs, every housenumber "12", every parking icon on a layer share
-///   one key but sit far apart; per-sitting state lets each fade in and
-///   out on its own. One state per key held every such copy at the
-///   key's opacity while *any* of them was placed — so the others
-///   appeared and vanished as hard pops, never fading at all. Along-line
-///   labels need the same split for a different reason: their anchors
-///   are re-derived from `symbol-spacing` per display layout, so the
-///   arriving level's copy genuinely sits somewhere else on its street
-///   and must cross-fade there instead of teleporting at full opacity.
-/// * Direction changes resume, never restart. A sitting re-placed mid
+/// * One opacity per label id. The outgoing and the arriving level's
+///   copies of a label, seam twins and a republished tile's successor
+///   all carry the label's id, so they resume one shared state: a
+///   crossing can never cross-fade a label against itself. Labels the
+///   index keeps apart fade apart: two same-named POIs, every
+///   housenumber "12", every parking icon on a layer, and a street name
+///   whose next level re-spaced its anchor (it cross-fades from the old
+///   position to the new one instead of teleporting).
+/// * Direction changes resume, never restart. A label re-placed mid
 ///   fade-out rises from its current opacity, so a label briefly
-///   unplaced — a tile republish, a lost frame of collision — dips at
-///   most a step instead of blinking to zero.
+///   unplaced — a lost frame of collision — dips at most a step instead
+///   of blinking to zero.
 ///
 /// The tracker is self-pruning: a state that stays unplaced fades to
 /// zero and is dropped, so the map holds roughly the set of recently
 /// visible labels. Pure Dart and clock-agnostic — the caller supplies
 /// `now` — which is what makes it unit-testable.
 class LabelFadeTracker {
-  /// How far a label's anchor may move between sightings and still be
-  /// the same sitting, in screen pixels. Deliberately the same value as
-  /// `PlacementMemory._radius`, for the same reason: well inside the
-  /// default `symbol-spacing`, so the repeats of one name along a
-  /// street keep their own fades, and comfortably above the per-frame
-  /// camera drift plus cross-level simplification noise.
-  static const double matchRadius = 32.0;
-
-  /// Fade states: per key, one entry per sitting position.
-  final _sittings = <Object, List<_SittingFade>>{};
+  final _fades = <int, _LabelFade>{};
   var _frame = 0;
   DateTime? _lastFrameAt;
 
@@ -112,26 +85,12 @@ class LabelFadeTracker {
   /// scheduling frames while true.
   bool get anyActive => _anyActive;
 
-  /// Whether [key] currently holds fade state (visible or fading out).
-  bool isTracked(Object key) => _sittings.containsKey(key);
+  /// Whether label [id] currently holds fade state (visible or fading
+  /// out).
+  bool isTracked(int id) => _fades.containsKey(id);
 
-  /// The tracked opacity of the sitting of [key] nearest [position]
-  /// (within [matchRadius]), or null when none is.
-  double? opacityNear(Object key, Offset position) {
-    final entries = _sittings[key];
-    return entries == null ? null : _nearest(entries, position)?.opacity;
-  }
-
-  /// Whether [key] is steadily visible at [position] right now: a
-  /// sitting within [matchRadius] at full opacity. The placement pass
-  /// reads this to recognise incumbents — candidates whose label is on
-  /// screen here, which a same-layer newcomer must not evict — across
-  /// the instance replacement every republish and level swap brings.
-  bool isVisibleAt(Object key, Offset position) {
-    final entries = _sittings[key];
-    if (entries == null) return false;
-    return (_nearest(entries, position)?.opacity ?? 0) >= 1;
-  }
+  /// The tracked opacity of label [id], or null when it has none.
+  double? opacityOf(int id) => _fades[id]?.opacity;
 
   /// Starts a frame at [now]. The step is derived from the elapsed
   /// wall-clock time, so fades are frame-rate independent; a long gap
@@ -147,116 +106,73 @@ class LabelFadeTracker {
     _anyActive = false;
   }
 
-  /// Marks the sitting of [key] at [position] as placed this frame and
-  /// returns its opacity, risen by this frame's step.
-  ///
-  /// The sitting is the state nearest [position] within [matchRadius],
-  /// created at 0 when none is — the caller's quantization keeps a new
-  /// sitting's first frame one step above invisible. So a label whose
-  /// anchor genuinely moved (the next zoom level re-spaced its street)
-  /// fades in at the new position while the old one sweeps out, and a
-  /// label that only drifted a few pixels resumes its state. The
-  /// matched entry's position is refreshed on every sighting, which is
-  /// what lets it follow the camera: between two painted frames a label
-  /// moves only as far as the gesture does, always well inside the
-  /// radius. Idempotent within a frame: seam twins and the retained
-  /// copy of a carried-over label match one sitting and share its state.
-  double showAt(Object key, Offset position) {
-    final entries = _sittings[key] ??= <_SittingFade>[];
-    final match = _nearest(entries, position);
-    if (match == null) {
-      entries.add(_SittingFade(position)..stamp = _frame);
+  /// Marks label [id] as placed this frame and returns its opacity,
+  /// risen by this frame's step — created at 0 on first sight (the
+  /// caller's quantization keeps a new label's first frame one step
+  /// above invisible). Idempotent within a frame.
+  double show(int id) {
+    final fade = _fades[id];
+    if (fade == null) {
+      _fades[id] = _LabelFade()..stamp = _frame;
       _anyActive = true;
       return 0;
     }
-    if (match.stamp == _frame) return match.opacity;
-    match.stamp = _frame;
-    match.position = position;
-    match.fading = false;
-    if (match.opacity < 1) {
-      match.opacity = math.min(1, match.opacity + _step);
-      if (match.opacity < 1) _anyActive = true;
+    if (fade.stamp == _frame) return fade.opacity;
+    fade.stamp = _frame;
+    fade.fading = false;
+    if (fade.opacity < 1) {
+      fade.opacity = math.min(1, fade.opacity + _step);
+      if (fade.opacity < 1) _anyActive = true;
     }
-    return match.opacity;
+    return fade.opacity;
   }
 
   /// Advances every state *not* shown this frame toward zero, reporting
   /// the ones still visible to [fadingOut] so the caller can draw their
   /// ghosts; states that reached zero are dropped. Call once per frame,
-  /// after all [show]/[showAt] calls.
+  /// after all [show] calls.
   ///
   /// With [hold], a state that no pass has yet confirmed gone keeps its
   /// opacity instead of decaying — it is still reported, so its ghost
   /// keeps drawing. Replay frames pass this: only a placement pass has
-  /// the authority to start a fade-out, because between passes an
-  /// un-shown key usually means its instance was *replaced*, not that
-  /// the label left — a tile republish or a level swap re-creates every
-  /// instance, and the throttled pass picks the successor up later.
-  /// Decaying through that window made a label dim and rise again at
-  /// every crossing: fading into itself, the exact artefact the
-  /// one-opacity-per-key design exists to prevent. A fade-out a pass
-  /// *has* started keeps advancing on every frame, held or not — one
-  /// step per pass would stretch a 150ms fade across minutes.
+  /// the authority to start a fade-out, because between passes a winner
+  /// may simply be unavailable — its tile gone before the successor
+  /// arrived, say — and the throttled pass decides later. A fade-out a
+  /// pass *has* started keeps advancing on every frame, held or not —
+  /// one step per pass would stretch a 150ms fade across minutes.
   ///
-  /// [fadingOut] receives the sitting's screen position and returns
-  /// where it actually drew the ghost (or null when it drew nothing) —
-  /// the sitting's position is refreshed to that, so a ghost keeps
-  /// tracking the camera through its fade-out and a re-appearance still
-  /// matches it. [fadingOut] must not touch the tracker beyond that
-  /// return value.
-  void sweep(
-      Offset? Function(Object key, Offset position, double opacity) fadingOut,
+  /// [fadingOut] must not touch the tracker.
+  void sweep(void Function(int id, double opacity) fadingOut,
       {bool hold = false}) {
-    _sittings.removeWhere((key, entries) {
-      entries.removeWhere((entry) {
-        if (entry.stamp == _frame) return false;
-        if (!hold) entry.fading = true;
-        if (entry.fading) entry.opacity -= _step;
-        if (entry.opacity <= 0) return true;
-        _anyActive = true;
-        final drawnAt = fadingOut(key, entry.position, entry.opacity);
-        if (drawnAt != null) entry.position = drawnAt;
-        return false;
-      });
-      return entries.isEmpty;
+    _fades.removeWhere((id, fade) {
+      if (fade.stamp == _frame) return false;
+      if (!hold) fade.fading = true;
+      if (fade.fading) fade.opacity -= _step;
+      if (fade.opacity <= 0) return true;
+      _anyActive = true;
+      fadingOut(id, fade.opacity);
+      return false;
     });
   }
 
-  /// Forgets everything — for theme/provider swaps, where every symbol
-  /// instance is replaced and layer indices change meaning.
+  /// Forgets everything — for theme/provider swaps, where every label
+  /// is replaced and layer indices change meaning.
   void clear() {
-    _sittings.clear();
+    _fades.clear();
     _lastFrameAt = null;
     _anyActive = false;
   }
-
-  static _SittingFade? _nearest(List<_SittingFade> entries, Offset position) {
-    _SittingFade? best;
-    var bestDistance = matchRadius * matchRadius;
-    for (final entry in entries) {
-      final distance = (entry.position - position).distanceSquared;
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        best = entry;
-      }
-    }
-    return best;
-  }
 }
 
-/// One sitting's fade: its opacity, where on screen it is (so
-/// [LabelFadeTracker.showAt] can match it by position), the frame it
-/// was last shown in ([LabelFadeTracker.sweep] fades everything whose
-/// stamp is stale), and whether a placement pass has confirmed its
-/// disappearance — until one has, a held sweep keeps the opacity where
-/// it is (see [LabelFadeTracker.sweep]).
-class _SittingFade {
-  Offset position;
+/// One label's fade: its opacity, the frame it was last shown in
+/// ([LabelFadeTracker.sweep] fades everything whose stamp is stale), and
+/// whether a placement pass has confirmed its disappearance — until one
+/// has, a held sweep keeps the opacity where it is (see
+/// [LabelFadeTracker.sweep]).
+class _LabelFade {
   var opacity = 0.0;
   var stamp = 0;
   var fading = false;
-
-  _SittingFade(this.position);
 }
 
 /// Decides which frames re-run the label collision pass.
@@ -366,55 +282,34 @@ class SittingPlacement {
   /// back in for those frames.
   bool textDropped = false;
 
-  Offset _at;
   int _seen;
 
-  SittingPlacement._(this._at, this._seen);
+  SittingPlacement._(this._seen);
 }
 
-/// Where each label's [SittingPlacement] lives: keyed by continuity key
-/// *and* screen position, so a decision outlives the instance that took
+/// Where each label's [SittingPlacement] lives: keyed by label id (see
+/// `LabelIdentityIndex`), so a decision outlives the instance that took
 /// it.
 ///
 /// A `SymbolInstance` is built per display-tile layout, so every zoom
 /// crossing, provisional→final swap and re-layout hands the painter a
 /// brand-new object for a street that never left the screen. State kept
 /// on the instance dies with it: the arriving copy picks its anchor and
-/// its reading direction cold, and since its continuity key is unchanged
-/// the fade tracker already holds it at full opacity — so the new choice
-/// lands instantly, with no crossfade to cover it. That is a name
-/// jumping to the other side of its street at the exact moment a zoom
-/// level hands over.
-///
-/// Position is part of the key here, unlike [labelContinuityKey], and
-/// deliberately so: the two are keys for different questions, whose
-/// failure directions point opposite ways. Missing a match costs a
-/// *fade* the blink it exists to prevent, so that key errs loose. For a
-/// *decision*, a loose key is what does the damage — every "Hauptstraße"
-/// on screen would share one side-of-the-street — while a missed match
-/// merely decides cold, which is the behaviour we already have. This is
-/// the useful core of MapLibre's `CrossTileSymbolIndex`, which matches
-/// symbols across zoom levels by position for much the same reason; the
-/// index proper exists to give MapLibre's per-tile placement an identity
-/// our screen-space pass already has.
-///
-/// Entries are matched to the nearest sighting within [_radius] and
-/// refreshed on every painted frame, so between two frames a label moves
-/// only as far as the camera does. [_radius] stays well inside the
-/// default `symbol-spacing`, so the repeats of one name along a single
-/// street keep their own entries.
+/// its reading direction cold, and since its fade carries over at full
+/// opacity, the new choice lands instantly, with no crossfade to cover
+/// it. That is a name jumping to the other side of its street at the
+/// exact moment a zoom level hands over. The label id is what the
+/// arriving copy shares with the one it replaces, and it is specific to
+/// one label: every "Hauptstraße" on screen gets its own, so they never
+/// share one side of the street.
 class PlacementMemory {
-  /// How far a label may move between sightings and still be recognised
-  /// as the same one, in logical pixels.
-  static const _radius = 32.0;
-
   /// Frames an entry survives unseen. Passes are the slow clock here
   /// (one per fade duration, capped at 300ms), so this has to span
   /// several of them; a map that is not painting is not moving either,
   /// which is why the clock is frames rather than wall time.
   static const _maxIdleFrames = 90;
 
-  final _entries = <Object, List<SittingPlacement>>{};
+  final _entries = <int, SittingPlacement>{};
   var _frame = 0;
 
   /// Starts a frame. Expiry runs only on [prune] frames — the placement
@@ -423,49 +318,17 @@ class PlacementMemory {
   void beginFrame({required bool prune}) {
     _frame++;
     if (!prune) return;
-    _entries.removeWhere((key, entries) {
-      entries.removeWhere((entry) => _frame - entry._seen > _maxIdleFrames);
-      return entries.isEmpty;
-    });
+    _entries.removeWhere((_, entry) => _frame - entry._seen > _maxIdleFrames);
   }
 
-  /// The placement state for the label [key] sitting at [position],
-  /// creating it on first sight. Refreshes the entry's position, so it
-  /// follows the camera.
-  SittingPlacement sitting(Object key, Offset position) {
-    final entries = _entries[key] ??= <SittingPlacement>[];
-    final match = _nearest(entries, position);
-    if (match == null) {
-      final entry = SittingPlacement._(position, _frame);
-      entries.add(entry);
-      return entry;
-    }
-    match._at = position;
-    match._seen = _frame;
-    return match;
-  }
+  /// The placement state of label [id], creating it on first sight.
+  SittingPlacement sitting(int id) =>
+      (_entries[id] ??= SittingPlacement._(_frame)).._seen = _frame;
 
-  /// The placement state remembered for [key] near [position], without
-  /// creating one. For tests, and for callers that only want to know
-  /// whether a label has been placed before.
-  SittingPlacement? lookup(Object key, Offset position) {
-    final entries = _entries[key];
-    return entries == null ? null : _nearest(entries, position);
-  }
-
-  static SittingPlacement? _nearest(
-      List<SittingPlacement> entries, Offset position) {
-    SittingPlacement? best;
-    var bestDistance = _radius * _radius;
-    for (final entry in entries) {
-      final distance = (entry._at - position).distanceSquared;
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        best = entry;
-      }
-    }
-    return best;
-  }
+  /// The placement state remembered for label [id], without creating
+  /// one. For tests, and for callers that only want to know whether a
+  /// label has been placed before.
+  SittingPlacement? lookup(int id) => _entries[id];
 
   /// Forgets everything — for theme/provider swaps, where layer indices
   /// change meaning and no remembered choice still applies.
