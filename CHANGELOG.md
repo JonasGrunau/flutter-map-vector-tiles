@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 🐛 During a fast zoom, a label the last collision pass had placed
+  could stop drawing until the next pass once its tile was replaced
+  under it (a republish, the next zoom level arriving), because the
+  label pass no longer recognised it. It now keeps drawing from the new
+  tile's copy: the bench's fastest sweep draws about half as many
+  labels again per frame.
+- 🐛 One-way arrows just past a zoom crossing could vanish at full
+  opacity instead of fading out. They fade now.
 - 🐛 A label two tiles laid out at once — the feature on a seam that
   both neighbours claim, or the outgoing and arriving level's copy
   during a zoom crossing — drew twice, one copy over the other, in a
