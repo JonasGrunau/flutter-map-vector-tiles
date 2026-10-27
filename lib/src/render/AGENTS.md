@@ -278,12 +278,17 @@ for frames with no per-frame label work in them.
   for the removal condition.
 - **A mask filter is a render pass per path.** `line-blur` draws
   through `MaskFilter.blur`, which the GPU backends implement as an
-  offscreen pass for every `drawPath` it is on; `_blurFilter` leaves it
-  off below half a device pixel of σ, where it is no wider than
-  anti-aliasing, and the stroke keeps only the narrowing that makes its
-  ink match MapLibre's. Do not put a mask filter on the per-tile path of
-  something drawn per feature without measuring the raster thread
-  (`bench/` RASTER, on a phone).
+  offscreen pass for every `drawPath` it is on — Liberty with every road
+  blurred, drawn per feature, fell from 56 to 20 fps on the Nothing Phone
+  while tiles rasterized, and the pass never shows in a frame's RASTER
+  time, only in frames missing. So `_paintLine` draws a layer's shared,
+  opaque blurred stroke as one batched path, and `_blurFilter` takes the
+  smallest σ worth a pass: half a device pixel for a batched layer,
+  three quarters for a stroke drawn per feature (Americana's 0.5 px road
+  blurs fall under it). Below it the stroke keeps only the narrowing
+  that makes its ink match MapLibre's. Do not put a mask filter on
+  something drawn per feature without measuring frames delivered on a
+  phone (`bench/` fps, `compare/`).
 - **SDF icons need the SDF paint path** (`_sdfPaint` with an edge threshold
   scaled by device pixel ratio); tinting an SDF sprite as a normal image
   produces dark blobs, a bug this code has already been fixed for once.

@@ -353,7 +353,12 @@ every angle, a difference below a pixel at the default limit. A
 only while the map is rotated, because a tile is drawn once and rotated
 with the map. Where `line-offset` meets a sharp turn the shifted line
 is beveled on the outside, where MapLibre leaves a gap and its two
-segments cross.
+segments cross. A `line-blur` under about 0.6 px on a 3× screen (0.9 px on
+a 2× one) on a line whose stroke reads the feature (its width, colour or
+opacity) only narrows the line by what the blur takes, without softening
+its edges: a blur there is
+one GPU pass per road, which cost a phone most of its frames while
+tiles were drawn.
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
 per `icon-color`, `icon-halo-color` and `icon-halo-width`; dark MapLibre

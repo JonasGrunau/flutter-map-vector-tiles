@@ -11,7 +11,8 @@
   shifts a line sideways and insets a polygon's outline; `line-blur`
   fades line edges over MapLibre's ramp (Americana's roads, the borders
   of OpenFreeMap's dark and fiord styles, the MapLibre demo's
-  coastline); `circle-blur`, `background-pattern`, and `resampling` /
+  coastline) — a sub-pixel blur on a line styled per feature only thins
+  it, since a blur there costs a GPU pass per road; `circle-blur`, `background-pattern`, and `resampling` /
   `raster-resampling: nearest` for blocky overzoomed rasters. Until now
   all of these were parsed past and drawn as if unset. The compiled
   `FillThemeLayer`, `LineThemeLayer`, `CircleThemeLayer`,

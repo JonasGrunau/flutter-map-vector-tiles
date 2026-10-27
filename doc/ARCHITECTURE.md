@@ -195,8 +195,14 @@ by the blur under a Gaussian mask filter whose variance, with
 anti-aliasing's own, adds up to the ramp's: within about 0.05 alpha of
 MapLibre's profile for blurs of 2 px and more, with a steeper edge but
 the same ink, to 10 %, for narrower ones. A mask filter costs a
-render pass per path on the GPU, so a blur under half a device pixel of
-σ keeps only the narrowing. Circle strokes lie outside the radius, as
+render pass per path on the GPU: blurring each road of Liberty by
+0.5 px, as Americana does, cut the Nothing Phone from 56 to 20 frames a
+second while tiles were rasterized. So a layer whose blurred stroke is
+the same for every feature and opaque draws all its features as one
+path, a pass per layer and tile, with a mask filter from half a device
+pixel of σ; a stroke drawn per feature gets one only from three
+quarters of a device pixel, so sub-pixel road blurs keep just the
+narrowing — edges about a device pixel sharper than MapLibre's. Circle strokes lie outside the radius, as
 the spec says, and `circle-blur` draws the circle as one disc whose
 radial gradient samples MapLibre's circle shader. Several properties
 are deliberately not drawn: `line-gradient` needs a GeoJSON source with
