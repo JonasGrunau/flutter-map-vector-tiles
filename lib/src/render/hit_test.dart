@@ -90,38 +90,51 @@ class HitArea {
   }
 
   /// The polygon's edges as segments; a point area is one degenerate
-  /// segment, so distance tests treat both alike.
-  Iterable<(Offset, Offset)> get _edges sync* {
-    if (points.length == 1) {
-      yield (points.first, points.first);
-      return;
-    }
-    for (var i = 0; i < points.length; i++) {
-      yield (points[i], points[(i + 1) % points.length]);
-    }
-  }
+  /// segment, so distance tests treat both alike. Built once: the tests
+  /// above walk it for every nearby edge of every candidate feature.
+  late final List<(Offset, Offset)> _edges = points.length == 1
+      ? [(points.first, points.first)]
+      : [
+          for (var i = 0; i < points.length; i++)
+            (points[i], points[(i + 1) % points.length]),
+        ];
 
   /// Whether this area overlaps the polygon [rings] (interleaved x,y
   /// runs, closed implicitly), filled with the non-zero rule as the
   /// rasterizer fills it.
   bool hitsPolygon(List<Float32List> rings) {
-    for (final p in points) {
-      if (_windingNumber(rings, p.dx, p.dy) != 0) return true;
+    if (points.length < 3) {
+      for (final p in points) {
+        if (_windingNumber(rings, p.dx, p.dy) != 0) return true;
+      }
+      return false;
     }
-    if (points.length < 3) return false;
+    final box = bounds;
     for (final ring in rings) {
       final n = ring.length ~/ 2;
       for (var i = 0; i < n; i++) {
-        final a = Offset(ring[i * 2], ring[i * 2 + 1]);
+        final j = i + 1 == n ? 0 : i + 1;
+        final ax = ring[i * 2], ay = ring[i * 2 + 1];
+        final bx = ring[j * 2], by = ring[j * 2 + 1];
+        // An edge wholly beside the area's bounds can neither cross the
+        // area nor end inside it — most of a large polygon's edges.
+        if ((ax < box.left && bx < box.left) ||
+            (ax > box.right && bx > box.right) ||
+            (ay < box.top && by < box.top) ||
+            (ay > box.bottom && by > box.bottom)) {
+          continue;
+        }
+        final a = Offset(ax, ay);
         if (contains(a)) return true;
-        final j = (i + 1) % n;
-        final b = Offset(ring[j * 2], ring[j * 2 + 1]);
+        final b = Offset(bx, by);
         for (final (c, d) in _edges) {
           if (_segmentsIntersect(a, b, c, d)) return true;
         }
       }
     }
-    return false;
+    // No edge enters the area, so all of it lies on one side of the
+    // outline: one vertex decides.
+    return _windingNumber(rings, points.first.dx, points.first.dy) != 0;
   }
 
   /// Whether this area comes within [halfWidth] of the polylines
@@ -129,6 +142,7 @@ class HitArea {
   bool hitsLine(List<Float32List> runs, double halfWidth,
       {bool close = false}) {
     final limit = halfWidth * halfWidth;
+    final box = bounds.inflate(halfWidth);
     for (final run in runs) {
       final n = run.length ~/ 2;
       if (n == 0) continue;
@@ -138,9 +152,19 @@ class HitArea {
       }
       final segments = close ? n : n - 1;
       for (var i = 0; i < segments; i++) {
-        final j = (i + 1) % n;
-        final a = Offset(run[i * 2], run[i * 2 + 1]);
-        final b = Offset(run[j * 2], run[j * 2 + 1]);
+        final j = i + 1 == n ? 0 : i + 1;
+        final ax = run[i * 2], ay = run[i * 2 + 1];
+        final bx = run[j * 2], by = run[j * 2 + 1];
+        // Farther than the half width from the area along one axis is
+        // farther from it, full stop.
+        if ((ax < box.left && bx < box.left) ||
+            (ax > box.right && bx > box.right) ||
+            (ay < box.top && by < box.top) ||
+            (ay > box.bottom && by > box.bottom)) {
+          continue;
+        }
+        final a = Offset(ax, ay);
+        final b = Offset(bx, by);
         if (contains(a)) return true;
         for (final (c, d) in _edges) {
           if (_segmentDistanceSq(a, b, c, d) <= limit) return true;
@@ -237,16 +261,21 @@ int _windingNumber(List<Float32List> rings, double x, double y) {
   var winding = 0;
   for (final ring in rings) {
     final n = ring.length ~/ 2;
+    if (n == 0) continue;
+    // Edge by edge from the closing one, (n-1 → 0), on; only an edge
+    // spanning y can count, so the cross product waits for that.
+    var ax = ring[n * 2 - 2], ay = ring[n * 2 - 1];
     for (var i = 0; i < n; i++) {
-      final j = (i + 1) % n;
-      final ax = ring[i * 2], ay = ring[i * 2 + 1];
-      final bx = ring[j * 2], by = ring[j * 2 + 1];
-      final side = (bx - ax) * (y - ay) - (x - ax) * (by - ay);
+      final bx = ring[i * 2], by = ring[i * 2 + 1];
       if (ay <= y) {
-        if (by > y && side > 0) winding++;
-      } else if (by <= y && side < 0) {
+        if (by > y && (bx - ax) * (y - ay) - (x - ax) * (by - ay) > 0) {
+          winding++;
+        }
+      } else if (by <= y && (bx - ax) * (y - ay) - (x - ax) * (by - ay) < 0) {
         winding--;
       }
+      ax = bx;
+      ay = by;
     }
   }
   return winding;

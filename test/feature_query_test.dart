@@ -103,6 +103,18 @@ void main() {
       expect(area.hitsPolygon(rings), isFalse);
       expect(HitArea([const Offset(1200, 2000)]).hitsPolygon(rings), isTrue);
       expect(HitArea([const Offset(3200, 2000)]).hitsPolygon(rings), isFalse);
+      // A rectangle wholly in the hole touches no edge and misses; one
+      // in the ring, also clear of every edge, hits; one spanning the
+      // hole's edge hits.
+      expect(
+          _rect(const Rect.fromLTRB(1800, 1800, 2200, 2200)).hitsPolygon(rings),
+          isFalse);
+      expect(
+          _rect(const Rect.fromLTRB(1100, 1800, 1300, 2200)).hitsPolygon(rings),
+          isTrue);
+      expect(
+          _rect(const Rect.fromLTRB(1300, 1800, 1500, 2200)).hitsPolygon(rings),
+          isTrue);
     });
 
     test('a rectangle hits a polygon it only crosses an edge of', () {
