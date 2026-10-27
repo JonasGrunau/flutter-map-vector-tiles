@@ -25,7 +25,8 @@
   hand-built sources.
 - ✨ `VectorTileLayer.retainAllProperties` keeps every feature property
   when tiles are decoded, so query results carry the properties the
-  style does not read too. RETAIN_COST_CL.
+  style does not read too. On OpenMapTiles data the decoded tiles grow
+  by about 27%, inside the same memory cap.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same
