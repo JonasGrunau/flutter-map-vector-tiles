@@ -1,5 +1,7 @@
 import 'dart:ui' show Color;
 
+import 'package:meta/meta.dart';
+
 import 'css_color.dart';
 
 /// Evaluation context for compiled style expressions.
@@ -16,11 +18,6 @@ class EvalContext {
 
   final Object? featureId;
 
-  /// The feature's state as set through
-  /// `VectorTileLayerController.setFeatureState`, read by the
-  /// `feature-state` expression; null when the feature has none.
-  final Map<String, Object?>? featureState;
-
   /// Bindings introduced by `let`.
   final Map<String, Object?>? vars;
 
@@ -29,7 +26,6 @@ class EvalContext {
     this.properties = const {},
     this.geometryType = '',
     this.featureId,
-    this.featureState,
     this.vars,
   });
 
@@ -38,12 +34,66 @@ class EvalContext {
         properties: properties,
         geometryType: geometryType,
         featureId: featureId,
-        featureState: featureState,
         vars: {...?vars, ...newVars},
       );
 
   static const empty = EvalContext(zoom: 0);
 }
+
+/// An [EvalContext] that also carries the feature's state, as set
+/// through `VectorTileLayerController.setFeatureState`, for the
+/// `feature-state` expression; in any other context it reads null. Only
+/// a feature that has state gets one, through [featureContext]: a
+/// context is allocated per feature evaluated, and a field more on every
+/// one made filter matching on a fresh tile measurably slower on a phone.
+@internal
+final class FeatureStateEvalContext extends EvalContext {
+  final Map<String, Object?> featureState;
+
+  const FeatureStateEvalContext({
+    required super.zoom,
+    super.properties,
+    super.geometryType,
+    super.featureId,
+    super.vars,
+    required this.featureState,
+  });
+
+  @override
+  EvalContext withVars(Map<String, Object?> newVars) => FeatureStateEvalContext(
+        zoom: zoom,
+        properties: properties,
+        geometryType: geometryType,
+        featureId: featureId,
+        vars: {...?vars, ...newVars},
+        featureState: featureState,
+      );
+}
+
+/// The context to evaluate one feature in: a [FeatureStateEvalContext]
+/// when [featureState] is given, a plain [EvalContext] otherwise.
+@internal
+EvalContext featureContext({
+  required double zoom,
+  Map<String, Object?> properties = const {},
+  String geometryType = '',
+  Object? featureId,
+  Map<String, Object?>? featureState,
+}) =>
+    featureState == null
+        ? EvalContext(
+            zoom: zoom,
+            properties: properties,
+            geometryType: geometryType,
+            featureId: featureId,
+          )
+        : FeatureStateEvalContext(
+            zoom: zoom,
+            properties: properties,
+            geometryType: geometryType,
+            featureId: featureId,
+            featureState: featureState,
+          );
 
 /// A compiled style expression.
 typedef Expr = Object? Function(EvalContext ctx);

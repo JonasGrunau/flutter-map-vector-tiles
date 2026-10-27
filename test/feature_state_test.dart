@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart';
+import 'package:flutter_map_vector_tiles/src/style/expression.dart';
 import 'package:flutter_map_vector_tiles/src/style/expression_parser.dart';
 import 'package:flutter_map_vector_tiles/src/style/feature_state.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -105,7 +106,7 @@ void main() {
 
   group('feature-state expression', () {
     Object? eval(Object json, Map<String, Object?>? state) =>
-        ExpressionParser().parse(json)(EvalContext(
+        ExpressionParser().parse(json)(featureContext(
           zoom: 10,
           featureState: state,
         ));
@@ -208,8 +209,8 @@ void main() {
       final line = theme.layers[1] as LineThemeLayer;
       expect(line.width.zoomOnly, isFalse);
       expect(
-          line.width.eval(
-              const EvalContext(zoom: 10, featureState: {'selected': true})),
+          line.width.eval(const FeatureStateEvalContext(
+              zoom: 10, featureState: {'selected': true})),
           4);
       expect(line.width.eval(const EvalContext(zoom: 10)), 1);
     });

@@ -709,12 +709,16 @@ and id. Ids are normalized the way MapLibre matches them — it
 stringifies both sides; here integral numbers and canonical integer
 strings become an `int` — so the lookup for an MVT id is a map probe
 with no string built per feature. The parser compiles `feature-state`
-into a read of `EvalContext.featureState`, counts it as reading the
-feature (so the property is never memoized against the zoom), and
-records per layer that it reads state (`ThemeLayer.readsFeatureState`).
-The rasterizer fetches a source layer's state map once per layer and
-only for such layers, so a style that reads no state, or a source layer
-with none set, costs no lookup per feature.
+into a read of the state a `FeatureStateEvalContext` carries (null in a
+plain `EvalContext`), counts it as reading the feature (so the property
+is never memoized against the zoom), and records per layer that it
+reads state (`ThemeLayer.readsFeatureState`). The rasterizer fetches a
+source layer's state map once per layer and only for such layers, so a
+style that reads no state, or a source layer with none set, costs no
+lookup per feature. Only a feature that has state is evaluated in the
+larger subclass: a context is allocated per feature, and one field more
+on every one made fresh-tile filter matching measurably slower on the
+Android phone.
 
 A state change redraws the least it can. Only layers reading state can
 draw a feature differently, so a change on a source layer none of them

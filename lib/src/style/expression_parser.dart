@@ -588,9 +588,14 @@ class ExpressionParser {
         _readsFeature = true;
         _readsFeatureState = true;
         final key = a.length > 1 ? a[1] : null;
-        if (key is String) return (ctx) => ctx.featureState?[key];
+        if (key is String) {
+          return (ctx) =>
+              ctx is FeatureStateEvalContext ? ctx.featureState[key] : null;
+        }
         final keyExpr = parse(key);
-        return (ctx) => ctx.featureState?[toStringValue(keyExpr(ctx))];
+        return (ctx) => ctx is FeatureStateEvalContext
+            ? ctx.featureState[toStringValue(keyExpr(ctx))]
+            : null;
 
       // --- heatmap / line metrics — not applicable here ---
       case 'heatmap-density':

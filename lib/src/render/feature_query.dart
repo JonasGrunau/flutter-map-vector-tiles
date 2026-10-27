@@ -128,7 +128,7 @@ abstract final class FeatureQuery {
           feature.minY > maxY) {
         continue;
       }
-      final ctx = EvalContext(
+      final ctx = featureContext(
         zoom: styleZoom,
         properties: feature.properties,
         geometryType: feature.geometryType,

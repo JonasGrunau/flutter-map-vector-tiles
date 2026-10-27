@@ -405,7 +405,7 @@ class TileRasterizer {
               feature.minY > cullMaxY)) {
         continue;
       }
-      final ctx = EvalContext(
+      final ctx = featureContext(
         zoom: styleZoom,
         properties: feature.properties,
         geometryType: feature.geometryType,
