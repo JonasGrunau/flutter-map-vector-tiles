@@ -453,23 +453,29 @@ class _BenchPageState extends State<BenchPage>
 
     current.forEach((key, list) {
       final prev = _labelsPrev[key];
-      for (final label in list) {
-        _SeenLabel? match;
-        var best = contR2;
-        if (prev != null) {
+      // Closest pairs first, so the order labels are drawn in cannot
+      // decide which one continues a label from the last frame: matched
+      // in list order, a newcomer drawn ahead of a label of the same name
+      // next to it took that label's predecessor, and the label that had
+      // not moved counted as a pop-in.
+      final continued = Set<_SeenLabel>.identity();
+      if (prev != null) {
+        final pairs = <(double, _SeenLabel, _SeenLabel)>[];
+        for (final label in list) {
           for (final p in prev) {
-            if (p.matched) continue;
             final d = (p.world - label.world).distanceSquared;
-            if (d < best) {
-              best = d;
-              match = p;
-            }
+            if (d < contR2) pairs.add((d, label, p));
           }
         }
-        if (match != null) {
-          match.matched = true;
-          continue;
+        pairs.sort((a, b) => a.$1.compareTo(b.$1));
+        for (final (_, label, p) in pairs) {
+          if (p.matched || continued.contains(label)) continue;
+          p.matched = true;
+          continued.add(label);
         }
+      }
+      for (final label in list) {
+        if (continued.contains(label)) continue;
         // A ghost never starts a life: an unmatched one is the tail of a
         // fade whose start this tracker missed.
         if (label.ghost || !_recording || !onScreen(label.world)) continue;
