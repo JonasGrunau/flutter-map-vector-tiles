@@ -372,17 +372,21 @@ void main() {
     // zero half a device px past it. Compared row by row at a device
     // pixel ratio of 3, down the middle of a horizontal line.
     Future<({double maxError, double ink, double expectedInk, double peak})>
-        compare(double width, double blur) async {
+        compare(double width, double blur, {bool perFeature = false}) async {
       const dpr = 3.0;
       final pixels = await _render(
         _theme([
           {
             'type': 'line',
-            'paint': {'line-width': width, 'line-blur': blur},
+            'paint': {
+              'line-width': width,
+              // Read from the feature, the stroke is drawn per feature.
+              'line-blur': perFeature ? ['get', 'b'] : blur,
+            },
           },
         ]),
         _tile([
-          _line([20, 128, 236, 128]),
+          _line([20, 128, 236, 128], properties: {'b': blur}),
         ]),
         devicePixelRatio: dpr,
       );
@@ -427,6 +431,11 @@ void main() {
       final r = await compare(3, 0.5);
       expect(r.ink, closeTo(r.expectedInk, 0.2));
       expect(r.maxError, lessThan(0.2));
+      // Drawn per feature (Americana's widths read the feature), it is
+      // under the per-feature threshold: no mask filter, the same ink.
+      final perFeature = await compare(3, 0.5, perFeature: true);
+      expect(perFeature.ink, closeTo(perFeature.expectedInk, 0.2));
+      expect(perFeature.maxError, lessThan(0.3));
     });
 
     test('a layer-wide opaque blur drawn as one path matches per feature',

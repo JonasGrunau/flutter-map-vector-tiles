@@ -702,23 +702,27 @@ class TileRasterizer {
         (offsetProp == null || offsetProp.isConstant || offsetProp.zoomOnly) &&
         (blurProp == null || blurProp.isConstant || blurProp.zoomOnly) &&
         (miterProp == null || miterProp.isConstant || miterProp.zoomOnly)) {
-      shared = _lineStyle(layer, EvalContext(zoom: styleZoom), pixelScale);
+      final zoomCtx = EvalContext(zoom: styleZoom);
+      shared = _lineStyle(layer, zoomCtx, pixelScale,
+          minBlurSigmaPx: _batchedBlurSigmaPx);
       if (shared == null) return false; // invisible at this zoom
+      if (shared.paint.maskFilter != null && !_batchable(shared)) {
+        // Drawn per feature after all, under the per-feature threshold.
+        shared = _lineStyle(layer, zoomCtx, pixelScale)!;
+      }
     }
-    // A mask filter is an offscreen pass per draw on the GPU: a blurred
-    // stroke drawn per feature made a tile of Liberty, every line
-    // blurred by 0.5 px as Americana blurs its roads, cost the Nothing
-    // Phone a third of its frames whenever tiles were rasterized. When
-    // the stroke is the same for every feature and opaque, one path for
-    // the whole layer draws what the features would — overlaps differ
-    // only inside the soft edges — for one pass per layer and tile.
+    // A mask filter is an offscreen pass per draw on the GPU: Liberty
+    // with every line blurred by 0.5 px, as Americana blurs its roads,
+    // drew 20 frames a second instead of 56 on the Nothing Phone while
+    // tiles were rasterized, a pass per road. When the stroke is the same
+    // for every feature and opaque, one path for the whole layer draws
+    // what the features would — overlaps differ only inside the soft
+    // edges — for one pass per layer and tile.
     final blurred = shared?.paint;
-    final batch = blurred != null &&
-            blurred.maskFilter != null &&
-            blurred.color.a >= 1 &&
-            shared!.gapWidth <= 0
-        ? Path()
-        : null;
+    final batch =
+        blurred != null && blurred.maskFilter != null && _batchable(shared!)
+            ? Path()
+            : null;
 
     _eachFeature(layer, data, styleZoom, null, (feature, ctx, transform, clip) {
       if (feature.type == PreparedGeomType.point) return;
@@ -793,7 +797,8 @@ class TileRasterizer {
           // ramps on them, as for a plain line (see [_lineStyle]).
           final aa = 1 / pixelScale;
           final ramp = math.min(style.blur + aa, style.width);
-          final maskFilter = _blurFilter(ramp, pixelScale);
+          final maskFilter =
+              _blurFilter(ramp, pixelScale, _perFeatureBlurSigmaPx);
           casing
             ..strokeWidth = outer - (ramp - aa)
             ..maskFilter = maskFilter;
@@ -872,7 +877,8 @@ class TileRasterizer {
   /// The resolved stroke style for one evaluation context, or null when
   /// nothing would be visible.
   static _LineStyle? _lineStyle(
-      LineThemeLayer layer, EvalContext ctx, double pixelScale) {
+      LineThemeLayer layer, EvalContext ctx, double pixelScale,
+      {double minBlurSigmaPx = _perFeatureBlurSigmaPx}) {
     final width = layer.width.eval(ctx);
     if (width <= 0) return null;
     final opacity = layer.opacity.eval(ctx).clamp(0.0, 1.0);
@@ -906,7 +912,7 @@ class TileRasterizer {
       final ramp = math.min(blur + aa, outset);
       paint
         ..strokeWidth = width + aa - ramp
-        ..maskFilter = _blurFilter(ramp, pixelScale);
+        ..maskFilter = _blurFilter(ramp, pixelScale, minBlurSigmaPx);
       if (blur + aa > outset) {
         paint.color = color.withValues(alpha: color.a * outset / (blur + aa));
       }
@@ -922,16 +928,32 @@ class TileRasterizer {
     );
   }
 
+  /// Whether a layer-wide [style] may draw all its features as one
+  /// path: an opaque plain stroke, where one path paints what many would.
+  static bool _batchable(_LineStyle style) =>
+      style.paint.color.a >= 1 && style.gapWidth <= 0;
+
+  /// The smallest σ, in device pixels, worth a mask filter on a layer
+  /// drawn as one path (one GPU pass per layer and tile): below it a
+  /// blur is no wider than anti-aliasing.
+  static const _batchedBlurSigmaPx = 0.5;
+
+  /// The same for strokes drawn per feature, a pass per path: higher, so
+  /// that sub-pixel road blurs (Americana's 0.5 px, σ ≈ 0.6 device px on
+  /// a dpr-2.6 phone) keep only their narrowing — edges a device pixel
+  /// or so sharper than MapLibre's, for no pass at all.
+  static const _perFeatureBlurSigmaPx = 0.75;
+
   /// The Gaussian that, after anti-aliasing's own one-device-pixel
   /// ramp, makes a linear alpha ramp [ramp] logical px wide: their
-  /// variances add up, a ramp's being its width² / 12. Null below half
-  /// a device pixel of σ: a blur that narrow is no wider than
-  /// anti-aliasing, and a mask filter costs an offscreen pass per path
-  /// on the GPU.
-  static MaskFilter? _blurFilter(double ramp, double pixelScale) {
+  /// variances add up, a ramp's being its width² / 12. Null below
+  /// [minSigmaPx] device pixels of σ (see [_batchedBlurSigmaPx] and
+  /// [_perFeatureBlurSigmaPx]).
+  static MaskFilter? _blurFilter(
+      double ramp, double pixelScale, double minSigmaPx) {
     final aa = 1 / pixelScale;
     final sigma = math.sqrt(math.max(0.0, ramp * ramp - aa * aa) / 12);
-    return sigma * pixelScale < 0.5
+    return sigma * pixelScale < minSigmaPx
         ? null
         : MaskFilter.blur(BlurStyle.normal, sigma);
   }
