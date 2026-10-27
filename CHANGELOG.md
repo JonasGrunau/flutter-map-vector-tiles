@@ -89,9 +89,21 @@
   `join`, `split` and `semiliteral`. `elevation` is null, since no
   terrain is drawn. Before, a layer using any of these got the
   property's default and logged a warning. Checked against the 583
-  expression fixtures of `maplibre-style-spec`, 324 of the 425 that
+  expression fixtures of `maplibre-style-spec`, 381 of the 425 that
   MapLibre evaluates now give its result, up from 203. The rest are
   listed with reasons in the test suite.
+- 🎨 Expressions are as strict about types as MapLibre's. Where an
+  operand has the wrong type — a numeric string compared with a number
+  or fed to `+`, a `case` condition that is not a boolean, an array
+  index out of bounds, an `rgb` channel above 255 — the property now
+  falls back to its default and a filter leaves the feature out. Before,
+  the value was converted and drawn, so a style could look different
+  here than in MapLibre. Number, boolean and array properties take only
+  values of their type, legacy property functions need a number rather
+  than a numeric string, and a legacy identity function falls back to
+  its own `default` for a value of the wrong type. The OpenFreeMap
+  styles and six older OpenMapTiles styles evaluate exactly as before
+  on real tiles.
 - 🎨 **More of the style spec drawn on fills, lines, circles and
   backgrounds.** `fill-translate`, `line-translate`, `circle-translate`
   and `fill-extrusion-translate` move their geometry, patterns included
@@ -170,6 +182,15 @@
   6 ms to under 0.5 ms. The isolates spend about 16 ms (Android) and
   4 ms (iPhone) more per such tile. Web, whose tile preparation already
   runs on the UI thread, is unchanged.
+- ⚡ Evaluating the style's filters over a fresh tile takes about
+  2.7 ms less on a mid-range Android phone (OpenFreeMap Liberty, 13–16%
+  of the work), most of it now on the background isolates that resolve
+  zoom-free filters, the rest on the UI thread for filters that read
+  the zoom and on web. Ordering comparisons such as
+  `[">=", ["get", "rank"], 5]` are now compiled per operator and
+  compare as doubles — an integer tile value against a decimal limit
+  used to take a slow path in the Dart VM — and `all` / `any` no longer
+  create an iterator per feature.
 - ⚡ The label pass spends less of the UI thread on bookkeeping. On
   every frame that drew a curved label it built a `style#character`
   string per glyph just to find that glyph's cached painters, and it

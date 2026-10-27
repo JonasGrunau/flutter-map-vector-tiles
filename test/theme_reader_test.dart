@@ -509,4 +509,72 @@ void main() {
     });
     expect(theme.layers.map((l) => l.readsGeometry), [true, false]);
   });
+
+  test('a property takes values of its own type', () {
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'labels',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'place',
+          'layout': {
+            // A single font written without brackets is a one-font stack.
+            'text-font': 'Noto Sans Regular',
+            'text-size': ['get', 'size'],
+            'text-offset': ['get', 'offset'],
+            'text-anchor': {
+              'type': 'identity',
+              'property': 'anchor',
+              'default': 'top',
+            },
+            'text-justify': {
+              'type': 'identity',
+              'property': 'justify',
+              'default': 'left',
+            },
+            'icon-text-fit-padding': ['get', 'fit'],
+          },
+          'paint': {
+            'text-translate': ['get', 'offset'],
+          },
+        },
+      ],
+    });
+    final labels = theme.layers.single as SymbolThemeLayer;
+    EvalContext feature(Map<String, Object?> properties) =>
+        EvalContext(zoom: 10, properties: properties);
+    expect(labels.textFont.eval(feature({})), ['Noto Sans Regular']);
+    expect(labels.textSize.eval(feature({'size': 20})), 20);
+    expect(labels.textSize.eval(feature({'size': '20'})), 16);
+    expect(
+        labels.textOffset.eval(feature({
+          'offset': [1, 2]
+        })),
+        [1, 2]);
+    expect(
+        labels.textOffset.eval(feature({
+          'offset': [1, 2, 3]
+        })),
+        [0, 0]);
+    expect(labels.textAnchor.eval(feature({'anchor': 'left'})), 'left');
+    expect(labels.textAnchor.eval(feature({'anchor': 'middle'})), 'top');
+    expect(labels.textJustify.eval(feature({'justify': 'right'})), 'right');
+    expect(labels.textJustify.eval(feature({'justify': 'middle'})), 'left');
+    expect(
+        labels.textTranslate.eval(feature({
+          'offset': [1, 2, 3]
+        })),
+        [0, 0]);
+    expect(
+        labels.iconTextFitPadding.eval(feature({
+          'fit': [1, 2, 3, 4]
+        })),
+        [1, 2, 3, 4]);
+    expect(
+        labels.iconTextFitPadding.eval(feature({
+          'fit': [1, 2]
+        })),
+        [0, 0, 0, 0]);
+  });
 }
