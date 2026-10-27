@@ -72,7 +72,12 @@ final class FeatureStateEvalContext extends EvalContext {
 
 /// The context to evaluate one feature in: a [FeatureStateEvalContext]
 /// when [featureState] is given, a plain [EvalContext] otherwise.
+///
+/// Inlined, so a call site compiles to the constructor it replaced plus
+/// a null check: left to the inliner, it cost the screen pass enough
+/// UI time on a fresh zoom level to drop frames on the Android phone.
 @internal
+@pragma('vm:prefer-inline')
 EvalContext featureContext({
   required double zoom,
   Map<String, Object?> properties = const {},

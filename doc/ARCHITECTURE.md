@@ -719,7 +719,9 @@ style that reads no state, or a source layer with none set, costs no
 lookup per feature. Only a feature that has state is evaluated in the
 larger subclass: a context is allocated per feature, and one field more
 on every one made fresh-tile filter matching measurably slower on the
-Android phone.
+Android phone. The builder that picks between the two is forced inline
+for the same reason: as a plain call it cost the screen pass dropped
+frames whenever the zoom reached a level not drawn yet.
 
 A state change redraws the least it can. Only layers reading state can
 draw a feature differently, so a change on a source layer none of them
