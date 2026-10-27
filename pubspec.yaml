@@ -54,4 +54,7 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
-flutter: {}
+flutter:
+  shaders:
+    - shaders/hillshade_prepare.frag
+    - shaders/hillshade.frag
