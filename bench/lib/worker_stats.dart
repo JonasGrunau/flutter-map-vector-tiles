@@ -12,6 +12,10 @@ import 'package:flutter_map_vector_tiles/src/render/label_worker.dart'
 int placementWorkerEvents() =>
     LabelPlacementWorker.debugRequests + LabelPlacementWorker.debugCommits;
 
+/// Answers adopted so far: a change between two label passes means the
+/// later one adopted a worker pass.
+int placementWorkerCommits() => LabelPlacementWorker.debugCommits;
+
 /// The worker's counters, for diffing over a window.
 List<int> placementWorkerCounters() => [
       LabelPlacementWorker.debugRequests,

@@ -184,7 +184,10 @@ class _BenchPageState extends State<BenchPage>
   var _frameWorkerEvents = 0;
   var _workerBefore = const <int>[];
   var _drawnThisFrame = -1;
+  var _ghostsThisFrame = 0;
   var _drawnCounts = <int>[];
+  var _ghostCounts = <int>[];
+  var _lastCommits = 0;
   var _recording = false;
   var _interrupted = false;
   var _allFrames = 0;
@@ -244,8 +247,7 @@ class _BenchPageState extends State<BenchPage>
     SchedulerBinding.instance.addPostFrameCallback(_onFrameEnd);
     if (_mode == 'bench') {
       // Only the count: the stability matcher is not needed here.
-      LabelPainter.debugDrawnProbe =
-          (_, drawn) => _drawnThisFrame = drawn.length;
+      LabelPainter.debugDrawnProbe = (_, drawn) => _countDrawn(drawn);
     }
     if (_mode == 'stability' || _mode == 'manual') {
       LabelPainter.debugDrawnProbe = _onLabelsDrawn;
@@ -317,7 +319,10 @@ class _BenchPageState extends State<BenchPage>
     if (_recording) {
       _framePlacing[PlatformDispatcher.instance.frameData.frameNumber] =
           placing > 0;
-      if (drawn >= 0) _drawnCounts.add(drawn);
+      if (drawn >= 0) {
+        _drawnCounts.add(drawn - _ghostsThisFrame);
+        _ghostCounts.add(_ghostsThisFrame);
+      }
     }
     if (!_recording || raster + layout + labels <= 6000) return;
     String ms(int us) => (us / 1000).toStringAsFixed(1);
@@ -359,8 +364,20 @@ class _BenchPageState extends State<BenchPage>
   /// (blink — the visible→hidden→visible twitch). Counters only move
   /// while a window is recording; the frame-to-frame memory runs
   /// always, so a window never opens against an empty previous frame.
-  void _onLabelsDrawn(double styleZoom, List<DrawnLabelRecord> drawn) {
+  void _countDrawn(List<DrawnLabelRecord> drawn) {
     _drawnThisFrame = drawn.length;
+    _ghostsThisFrame = 0;
+    for (final label in drawn) {
+      if (label.ghost) _ghostsThisFrame++;
+    }
+  }
+
+  void _onLabelsDrawn(double styleZoom, List<DrawnLabelRecord> drawn) {
+    _countDrawn(drawn);
+    // Whether this label pass adopted a placement worker's answer.
+    final commits = placementWorkerCommits();
+    final adopted = commits != _lastCommits;
+    _lastCommits = commits;
     if (!_mapReady.isCompleted) return;
     final camera = _controller.camera;
     final scale = math.pow(2.0, 20 - camera.zoom).toDouble();
@@ -444,6 +461,14 @@ class _BenchPageState extends State<BenchPage>
         label.alongLine ? _stab.appearLn++ : _stab.appearPt++;
         if (label.opacity >= 1) {
           label.alongLine ? _stab.popInLn++ : _stab.popInPt++;
+          var nearest = double.infinity;
+          for (final p in prev ?? const <_SeenLabel>[]) {
+            nearest = math.min(nearest, (p.world - label.world).distance);
+          }
+          debugPrint('BENCH[$_label] POPIN z=${camera.zoom.toStringAsFixed(2)} '
+              'adopt=$adopted '
+              'prev-same-key=${nearest.isFinite ? (nearest / scale).toStringAsFixed(0) : '-'}px '
+              'key=$key');
         }
         var explained = false;
         for (var i = 0; i < _labelsGone.length; i++) {
@@ -611,6 +636,7 @@ class _BenchPageState extends State<BenchPage>
     _buildOther = <int>[];
     _framePlacing.clear();
     _drawnCounts = <int>[];
+    _ghostCounts = <int>[];
   }
 
   void _onTimings(List<FrameTiming> timings) {
@@ -912,9 +938,12 @@ class _BenchPageState extends State<BenchPage>
       final sorted = [..._drawnCounts]..sort();
       int at(double p) => sorted[((sorted.length - 1) * p).round()];
       final mean = sorted.reduce((a, b) => a + b) / sorted.length;
+      final ghosts = _ghostCounts.isEmpty
+          ? 0.0
+          : _ghostCounts.reduce((a, b) => a + b) / _ghostCounts.length;
       debugPrint('BENCH[$_label]   DRAWN  frames=${sorted.length} '
           'mean=${mean.toStringAsFixed(1)} p10=${at(0.1)} p50=${at(0.5)} '
-          'p90=${at(0.9)}');
+          'p90=${at(0.9)} ghosts=${ghosts.toStringAsFixed(1)}');
     }
     // Where the window's publish work went, in UI-thread wall time. The
     // remainder of BUILD (flutter_map, widget build, everything else) is
