@@ -583,7 +583,7 @@ class ExpressionParser {
         // An input besides the zoom, like feature data: a ramp over it
         // must not be memoized against the zoom alone.
         _readsFeature = true;
-        return (ctx) => ctx.heatmapDensity;
+        return (ctx) => ctx is HeatmapEvalContext ? ctx.heatmapDensity : 0.0;
 
       // --- feature state / line progress — not applicable here ---
       case 'feature-state':

@@ -1,5 +1,7 @@
 import 'dart:ui' show Color;
 
+import 'package:meta/meta.dart';
+
 import 'css_color.dart';
 
 /// Evaluation context for compiled style expressions.
@@ -19,17 +21,12 @@ class EvalContext {
   /// Bindings introduced by `let`.
   final Map<String, Object?>? vars;
 
-  /// The kernel density `["heatmap-density"]` reads — set only while a
-  /// heatmap layer's `heatmap-color` ramp is evaluated, 0 elsewhere.
-  final double heatmapDensity;
-
   const EvalContext({
     required this.zoom,
     this.properties = const {},
     this.geometryType = '',
     this.featureId,
     this.vars,
-    this.heatmapDensity = 0,
   });
 
   EvalContext withVars(Map<String, Object?> newVars) => EvalContext(
@@ -38,10 +35,32 @@ class EvalContext {
         geometryType: geometryType,
         featureId: featureId,
         vars: {...?vars, ...newVars},
-        heatmapDensity: heatmapDensity,
       );
 
   static const empty = EvalContext(zoom: 0);
+}
+
+/// An [EvalContext] that also carries the kernel density
+/// `["heatmap-density"]` reads; in any other context it reads 0. Only a
+/// heatmap layer's `heatmap-color` ramp is evaluated in one: a context
+/// is allocated per feature evaluated, and a field more on every one
+/// made filter matching on a fresh tile measurably slower on a phone.
+@internal
+final class HeatmapEvalContext extends EvalContext {
+  final double heatmapDensity;
+
+  const HeatmapEvalContext({
+    required super.zoom,
+    super.vars,
+    required this.heatmapDensity,
+  });
+
+  @override
+  EvalContext withVars(Map<String, Object?> newVars) => HeatmapEvalContext(
+        zoom: zoom,
+        vars: {...?vars, ...newVars},
+        heatmapDensity: heatmapDensity,
+      );
 }
 
 /// A compiled style expression.

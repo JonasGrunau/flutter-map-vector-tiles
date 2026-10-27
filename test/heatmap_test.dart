@@ -12,6 +12,8 @@ import 'package:flutter_map_vector_tiles/src/render/display_tile_data.dart';
 import 'package:flutter_map_vector_tiles/src/render/heatmap_density.dart';
 import 'package:flutter_map_vector_tiles/src/render/heatmap_layouter.dart';
 import 'package:flutter_map_vector_tiles/src/render/heatmap_painter.dart';
+import 'package:flutter_map_vector_tiles/src/style/expression.dart'
+    show HeatmapEvalContext;
 import 'package:flutter_test/flutter_test.dart';
 
 /// The spec's density of one point at distance [d] from it.
@@ -65,8 +67,8 @@ void main() {
       expect(layer.weight.eval(ctx), 1);
       expect(layer.intensity.eval(ctx), 1);
       expect(layer.opacity.eval(ctx), 1);
-      Color at(double density) =>
-          layer.color.eval(EvalContext(zoom: 10, heatmapDensity: density));
+      Color at(double density) => layer.color
+          .eval(HeatmapEvalContext(zoom: 10, heatmapDensity: density));
       expect(at(0).a, 0, reason: 'transparent where there is no density');
       expect(at(1), const Color(0xffff0000));
       expect(at(0.5), const Color(0xff00ff00)); // lime
@@ -88,8 +90,8 @@ void main() {
         ],
       }).layers.single as HeatmapThemeLayer;
       final low = layer.color.eval(const EvalContext(zoom: 5));
-      final high =
-          layer.color.eval(const EvalContext(zoom: 5, heatmapDensity: 1));
+      final high = layer.color
+          .eval(const HeatmapEvalContext(zoom: 5, heatmapDensity: 1));
       expect(low, const Color(0xff000000));
       expect(high, const Color(0xffffffff));
     });

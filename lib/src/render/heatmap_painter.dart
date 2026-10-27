@@ -282,8 +282,8 @@ class HeatmapPainter {
       _ramps[layer] ??= () {
         final ramp = Uint32List(256);
         for (var i = 0; i < 256; i++) {
-          final c = layer.color
-              .eval(EvalContext(zoom: styleZoom, heatmapDensity: i / 255));
+          final c = layer.color.eval(
+              HeatmapEvalContext(zoom: styleZoom, heatmapDensity: i / 255));
           ramp[i] = HeatmapGrid.packRgba(c.r, c.g, c.b, c.a);
         }
         return ramp;

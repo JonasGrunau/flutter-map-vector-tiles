@@ -242,7 +242,7 @@ class HeatmapThemeLayer extends ThemeLayer {
   final DoubleProp intensity;
 
   /// `heatmap-color`: the ramp, evaluated with `["heatmap-density"]`
-  /// (see [EvalContext.heatmapDensity]) as its input.
+  /// (see `HeatmapEvalContext`) as its input.
   final ColorProp color;
 
   /// `heatmap-opacity`: applied to the whole layer.

@@ -15,7 +15,7 @@
   labels, wherever the style puts it, and counts point features only.
   `HeatmapThemeLayer` joins the sealed `ThemeLayer` hierarchy, so a
   `switch` over `ThemeLayer` that names every subtype needs a case for
-  it, and `EvalContext` gains `heatmapDensity`.
+  it.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same
