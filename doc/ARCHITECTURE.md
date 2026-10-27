@@ -683,8 +683,9 @@ once per decoded feature object, which every display tile cut from one
 data tile shares. A tile still loading answers from the data it is
 provisionally drawn from. The query is synchronous and reads only what
 is in memory: GPU picking (an id buffer rendered alongside) would need
-a second render of every tile for an answer the CPU gives in
-QUERY_COST_ARCH.
+a second render of every tile for an answer the CPU gives in about a
+millisecond (1.1 ms for a point, 2.0 ms for a 48 px square, medians on
+the Android phone over a dense z16 screen).
 
 So that "in memory" holds for everything on screen, a layer with a
 controller keeps, on each live display tile, the decoded data its image

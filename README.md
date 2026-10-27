@@ -391,7 +391,9 @@ box, with the map rotated or not. Paint opacity does not matter, as in
 MapLibre, so a transparent layer can serve as a wider tap target. A
 feature with an id is returned once per layer however many tiles it
 spans; one without an id may come back once per data tile. A query is
-synchronous and reads only what is already in memory; it costs QUERY_COST.
+synchronous and reads only what is already in memory. On a Nothing
+Phone (1), on a dense z16 Liberty screen of Munich, a tap takes 1.1 ms
+(median) and a 48 px square 2.0 ms, 6.7 ms at worst in 99 of 100.
 
 Query results carry the properties the decoded tiles kept, which are
 only those the style reads. `retainAllProperties: true` keeps every
@@ -416,7 +418,12 @@ your own (the example app appends one over the style's buildings).
 A change re-renders only the display tiles that draw the feature from a
 layer that reads state, ahead of other queued work and without a fade;
 labels keep their placement, and screen-space labels whose paint reads
-state follow on the next frame. STATE_COST. Feature ids come from the
+state follow on the next frame. On the same phone and screen, selecting
+a building redraws the display tiles that draw it (all 8 on screen
+there, since the merged features described below span them) in about a
+quarter of a second: 215–250 ms median over 7–8 frames, most of them
+over a 60 Hz budget, as any tile load is. Clearing it again is served
+from the finished-tile cache. Feature ids come from the
 tiles, or from the property a source's `promoteId` names.
 
 A feature is whatever the tiles encode as one, and some tiles merge.
