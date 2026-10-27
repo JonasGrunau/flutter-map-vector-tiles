@@ -92,7 +92,9 @@ map behaviour. Monotonic sweeps are the point: a zoom gate
 fires at most once per direction, so every blink is a genuine placement
 flip-flop rather than the style re-crossing its thresholds. Labels are
 matched frame-to-frame in zoom-20 world space (48 px continuation radius,
-64 px blink radius, 4 s blink window) from a painter probe
+closest pairs first, so a newcomer drawn next to a label of the same name
+never takes that label's place; 64 px blink radius, 4 s blink window)
+from a painter probe
 (`LabelPainter.debugDrawnProbe`) that costs one skipped null-check outside
 this mode and `manual` mode — which appends the same `STABILITY` line to
 each of its windows.
