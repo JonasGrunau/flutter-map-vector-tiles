@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- ⚡ The label pass no longer searches for every label's previous place
+  on screen each frame, which makes its sort and fade sweep cheaper. On
+  the Nothing Phone (1), the compare harness's camera runs deliver 1 to
+  2 points more frames, with a UI-thread p90 1 to 2 ms lower.
 - 🐛 During a fast zoom, a label the last collision pass had placed
   could stop drawing until the next pass once its tile was replaced
   under it (a republish, the next zoom level arriving), because the
