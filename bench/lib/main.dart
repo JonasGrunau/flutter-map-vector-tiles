@@ -409,8 +409,8 @@ class _BenchPageState extends State<BenchPage>
         twin.opacity = math.max(twin.opacity, record.opacity);
         twin.ghost = twin.ghost && record.ghost;
       } else {
-        list.add(
-            _SeenLabel(world, record.opacity, record.ghost, record.alongLine));
+        list.add(_SeenLabel(
+            world, record.opacity, record.ghost, record.alongLine, record.id));
       }
     }
 
@@ -461,14 +461,18 @@ class _BenchPageState extends State<BenchPage>
         label.alongLine ? _stab.appearLn++ : _stab.appearPt++;
         if (label.opacity >= 1) {
           label.alongLine ? _stab.popInLn++ : _stab.popInPt++;
-          var nearest = double.infinity;
-          for (final p in prev ?? const <_SeenLabel>[]) {
-            nearest = math.min(nearest, (p.world - label.world).distance);
-          }
+          // The same key's labels around this one, last frame and now:
+          // which id drew here before, and what else draws here now.
+          final near = 64 * scale;
+          String around(List<_SeenLabel>? labels) => [
+                for (final l in labels ?? const <_SeenLabel>[])
+                  if (!identical(l, label) &&
+                      (l.world - label.world).distance < near)
+                    l.describe(label.world, scale),
+              ].join(', ');
           debugPrint('BENCH[$_label] POPIN z=${camera.zoom.toStringAsFixed(2)} '
-              'adopt=$adopted '
-              'prev-same-key=${nearest.isFinite ? (nearest / scale).toStringAsFixed(0) : '-'}px '
-              'key=$key');
+              'adopt=$adopted ${label.describe(label.world, scale)} '
+              'before=[${around(prev)}] now=[${around(list)}] key=$key');
         }
         var explained = false;
         for (var i = 0; i < _labelsGone.length; i++) {
@@ -1064,9 +1068,17 @@ class _SeenLabel {
   double opacity;
   bool ghost;
   final bool alongLine;
+
+  /// The label id of the copy drawn here (the first one, for merged
+  /// seam twins); for the `POPIN` line.
+  final int id;
   bool matched = false;
 
-  _SeenLabel(this.world, this.opacity, this.ghost, this.alongLine);
+  _SeenLabel(this.world, this.opacity, this.ghost, this.alongLine, this.id);
+
+  String describe(Offset from, double scale) =>
+      '#$id@${((world - from).distance / scale).toStringAsFixed(0)}px'
+      '${ghost ? ' ghost' : ''} ${opacity.toStringAsFixed(2)}';
 }
 
 /// A label that stopped drawing, kept for [_blinkWindow] so a
