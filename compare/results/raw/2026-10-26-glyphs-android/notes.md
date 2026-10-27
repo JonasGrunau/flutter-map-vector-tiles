@@ -48,3 +48,13 @@ map, memory and raster-thread figures above.
 MapLibre GL JS 4.7.1 side by side at three of the fidelity cameras (the
 MapLibre column rendered at the phone's 411×914 viewport and pixel ratio
 through the lab server).
+
+`showcase.webp` and `showcase-detail.webp` (2026-10-27) are a page of
+names in 24 scripts, one label each, drawn by a profile build on the
+phone: `main` (f794e0b), the branch (d978e3d) with OpenFreeMap's Noto
+Sans glyph ranges served by the lab server over `adb reverse`, and
+MapLibre GL JS 4.7.1 with the same glyphs and no RTL plugin. Latin,
+Greek, Cyrillic, Armenian and Georgian come from the glyphs and wrap as
+MapLibre wraps them; every other script is drawn by the platform, as on
+`main`. The same branch build with no network drew every label in the
+system font once its glyph requests failed.
