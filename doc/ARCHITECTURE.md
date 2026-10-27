@@ -299,7 +299,13 @@ holds — the one feature on a seam that both neighbours lay out. Each
 label keeps one position per tile holding it for that reason. Within a
 name the closest pairs match first, and a republishing tile's own
 previous ids ahead of anyone else's, so whatever was on screen from it
-stays the label it was.
+stays the label it was. Most names are rare and are simply scanned;
+icon-only labels all share an empty text, though, so a city centre
+offers hundreds of one-way arrows under one key, and scanning them for
+every symbol made a publish cost milliseconds on a phone. A name with
+more than 16 labels is therefore also filed in a per-level grid of
+32 px cells, and only the labels with a copy in the cells around a
+symbol are compared.
 The holder that took ids hands them back when it stops offering them —
 replaced symbols, the retention pin, disposal, ghost expiry — so a
 label stays known exactly as long as something can draw it. The ids

@@ -121,12 +121,102 @@ Offset _world(TileKey tile, SymbolInstance symbol, int z) {
 }
 
 void main() {
+  // Every case runs both ways a name's labels are searched: scanned
+  // (rare names, the common case) and looked up by position (names with
+  // hundreds of labels, see LabelIdentityIndex.gridFrom). Both must
+  // match exactly the same.
+  for (final (way, newIndex) in [
+    ('scanning names', LabelIdentityIndex.new),
+    ('looking names up by position', () => LabelIdentityIndex(gridFrom: 0)),
+  ]) {
+    group(way, () => _cases(newIndex));
+  }
+
+  group('a common name', () {
+    // Hundreds of icon-only labels share one key (an empty text): a
+    // one-way arrow every few pixels. Laid out on a jittered lattice,
+    // republished jittered again, carried across a zoom crossing and
+    // across a seam, scanning and looking up by position must hand out
+    // the same ids, every one.
+    const tile = TileKey(14, 8000, 5000);
+    List<SymbolInstance> lattice(double shift, {int step = 9}) => [
+          for (var y = 4; y < 252; y += step)
+            for (var x = 4; x < 252; x += step)
+              _label(
+                Offset(x + shift * ((x * 7 + y * 3) % 5 - 2),
+                    y + shift * ((x * 3 + y * 7) % 5 - 2)),
+                text: '',
+              ),
+        ];
+    // The parent's labels as child tile [child] lays them out: its
+    // quarter, a pixel of buffer, and every anchor 2 px off.
+    List<SymbolInstance> child(TileKey child, List<SymbolInstance> parent) {
+      final origin = Offset(
+          (child.x - tile.x * 2) * 256.0, (child.y - tile.y * 2) * 256.0);
+      return [
+        for (final s in parent)
+          if (s.anchor * 2 - origin case final at
+              when at.dx >= -1 && at.dx <= 257 && at.dy >= -1 && at.dy <= 257)
+            _label(at + const Offset(1.5, -1.5), text: ''),
+      ];
+    }
+
+    test('scanning and looking up agree on every id', () {
+      final scan = LabelIdentityIndex(gridFrom: 1 << 30);
+      final grid = LabelIdentityIndex();
+      final first = lattice(0);
+      expect(first.length, greaterThan(500));
+      final runs = <List<Int32List>>[];
+      for (final index in [scan, grid]) {
+        final ids = <Int32List>[];
+        var held = index.assign(tile, first);
+        ids.add(held);
+        held = index.assign(tile, lattice(1.5), replacing: held);
+        ids.add(held);
+        final children = [
+          for (final (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)])
+            TileKey(15, tile.x * 2 + dx, tile.y * 2 + dy),
+        ];
+        final childIds = [
+          for (final c in children) index.assign(c, child(c, lattice(1.5))),
+        ];
+        ids.addAll(childIds);
+        // The neighbour's copies of the labels on the seam.
+        const east = TileKey(14, 8001, 5000);
+        ids.add(index.assign(east, [
+          for (final s in lattice(1.5))
+            if (s.anchor.dx > 240)
+              _label(s.anchor - const Offset(256, 0), text: ''),
+        ]));
+        index.release(tile, held);
+        for (var i = 0; i < children.length; i++) {
+          index.release(children[i], childIds[i]);
+        }
+        index.release(east, ids.last);
+        expect(index.length, 0, reason: 'everything handed back');
+        runs.add(ids);
+      }
+      for (var i = 0; i < runs[0].length; i++) {
+        expect(runs[1][i], runs[0][i], reason: 'publish $i');
+      }
+      // And the lookup did its job: the republish kept every id, the
+      // crossing found most of them.
+      expect(runs[1][1], runs[1][0]);
+      final parent = runs[1][1].toSet();
+      final crossed = [for (final c in runs[1].sublist(2, 6)) ...c];
+      expect(crossed.where(parent.contains).length,
+          greaterThan(crossed.length * 0.9));
+    });
+  });
+}
+
+void _cases(LabelIdentityIndex Function() newIndex) {
   const tile = TileKey(14, 8000, 5000);
   const east = TileKey(14, 8001, 5000);
 
   group('a republished tile', () {
     test('keeps every id, and holds nothing twice', () {
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final first = index.assign(tile, [
         _label(const Offset(40, 40)),
         _label(const Offset(200, 120), text: 'Post'),
@@ -148,7 +238,7 @@ void main() {
     test('gives a label that moved too far a new id', () {
       // A re-spaced street name, or a centroid the next data clips
       // elsewhere: it cross-fades from the old spot to the new one.
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final first = index.assign(tile, [_label(const Offset(40, 40))]);
       final moved =
           index.assign(tile, [_label(const Offset(40, 80))], replacing: first);
@@ -159,7 +249,7 @@ void main() {
     test('prefers its own previous ids over a neighbour twin', () {
       // The label on screen came from this tile; if the neighbour's copy
       // took over its id instead, the label would fade out and back in.
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final own = index.assign(tile, [_label(const Offset(254, 100))]);
       // The neighbour, still provisional, lays the seam label out two
       // pixels off: no twin, so an id of its own.
@@ -175,7 +265,7 @@ void main() {
 
   group('a zoom crossing', () {
     test('a point label keeps its id across levels, both ways', () {
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       const parent = TileKey(14, 8000, 5000);
       const child = TileKey(15, 16001, 10000);
       // The same world point: (8000·256 + 200, …) at z14 is
@@ -197,7 +287,7 @@ void main() {
       // new ones between them.
       const data = TileKey(14, 8000, 5000);
       final road = _line([200, 1800, 3900, 2100], 'Leopoldstraße');
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final coarse = _layout(data, data, 'road', [road]);
       final coarseIds = index.assign(data, coarse);
       expect(coarse, hasLength(greaterThan(1)));
@@ -231,7 +321,7 @@ void main() {
       // 32 px at z15 is 16 px at z14: a label 20 z14-pixels off is a
       // different one, though it would be close enough between two z14
       // layouts.
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       const child = TileKey(15, 16000, 10000);
       final fine = index.assign(child, [_label(const Offset(100, 100))]);
       final coarse = index.assign(tile, [_label(const Offset(70, 50))]);
@@ -244,7 +334,7 @@ void main() {
       // The layouter lets both tiles claim a feature on their shared
       // edge (rather than risk neither doing so).
       const data = TileKey(14, 8000, 5000);
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final seam = _point(2048, 2048, 'Marienplatz');
       const west = TileKey(15, 16000, 10000);
       const eastChild = TileKey(15, 16001, 10000);
@@ -266,7 +356,7 @@ void main() {
     test('two labels of one name on either side stay two labels', () {
       // Two bakeries a few pixels apart across a tile edge are not
       // twins: sharing an id, only one of them could ever draw.
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final west = index.assign(tile, [_label(const Offset(252, 100))]);
       final eastIds = index.assign(east, [_label(const Offset(3, 100))]);
       expect(eastIds.single, isNot(west.single));
@@ -275,7 +365,7 @@ void main() {
 
   group('one tile', () {
     test('never gives two of its labels one id', () {
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final ids = index.assign(tile, [
         _label(const Offset(100, 100)),
         _label(const Offset(110, 100)),
@@ -284,7 +374,7 @@ void main() {
     });
 
     test('matches each of its labels to the nearest predecessor', () {
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final first = index.assign(tile, [
         _label(const Offset(100, 100)),
         _label(const Offset(120, 100)),
@@ -300,7 +390,7 @@ void main() {
     });
 
     test('separates names, layers and icons', () {
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final ids = index.assign(tile, [
         _label(const Offset(100, 100)),
         _label(const Offset(100, 100), text: 'Post'),
@@ -318,7 +408,7 @@ void main() {
     const child = TileKey(16, 32002, 20000);
 
     test('a neighbour\'s different label stays apart', () {
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final cafe = index.assign(a, [_label(const Offset(254, 100))]);
       // The next level's copy, 5 z15-pixels off (z16 (6, 200) is z15
       // world 16001·256 + 3, i.e. a-local 259).
@@ -331,7 +421,7 @@ void main() {
     });
 
     test('a true seam twin joins, however far another level\'s copy is', () {
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final cafe = index.assign(a, [_label(const Offset(255.9, 100))]);
       final copy = index.assign(child, [_label(const Offset(9.8, 200))]);
       expect(copy, cafe);
@@ -344,7 +434,7 @@ void main() {
     test('a label keeps its nearest predecessor whatever the order', () {
       // Greedy matching in layout order let the first symbol take the
       // label 18 px away, leaving the one 2 px from it a fresh id.
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final before = index.assign(tile, [
         _label(const Offset(100, 100)),
         _label(const Offset(140, 100)),
@@ -362,7 +452,7 @@ void main() {
 
   group('holders', () {
     test('a label lives as long as anything offers it', () {
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       const child = TileKey(15, 16000, 10000);
       final coarse = index.assign(tile, [_label(const Offset(50, 50))]);
       final fine = index.assign(child, [_label(const Offset(100, 100))]);
@@ -380,7 +470,7 @@ void main() {
       // A retained tile disposed while its labels fade: the parked
       // cohort holds the same ids under the same tile key, and a tile
       // of that key arriving again (zooming back) resumes them.
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final parked = index.assign(tile, [_label(const Offset(50, 50))]);
       final current = index.assign(tile, [_label(const Offset(50.3, 50))]);
       expect(current, parked);
@@ -389,7 +479,7 @@ void main() {
     });
 
     test('releasing an empty or unknown holding is harmless', () {
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       final ids = index.assign(tile, [_label(const Offset(50, 50))]);
       index.release(east, ids);
       index.release(tile, Int32List(0));
@@ -398,7 +488,7 @@ void main() {
     });
 
     test('clear forgets everything', () {
-      final index = LabelIdentityIndex();
+      final index = newIndex();
       index.assign(tile, [_label(const Offset(50, 50))]);
       index.clear();
       expect(index.length, 0);

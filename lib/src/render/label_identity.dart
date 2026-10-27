@@ -52,7 +52,24 @@ import 'tile_rasterizer.dart';
 /// hands them back with [release] when it stops offering them. A label
 /// stays known for as long as any holder offers it, which is exactly as
 /// long as the label pass can draw it. Pure Dart, no clock.
+///
+/// Most names are rare, and a publish simply compares each symbol with
+/// the few labels known under its name. Some are not: icon-only labels
+/// all share an empty text, so a city centre offers hundreds of one-way
+/// arrows or waste baskets under a single key, and comparing every
+/// symbol with every one of them made a tile publish cost milliseconds
+/// on a phone. A name with more than [gridFrom] labels is therefore
+/// also filed by where its copies are, and only the copies around a
+/// symbol are compared — the same candidates, found without the scan.
 class LabelIdentityIndex {
+  /// [gridFrom]: how many labels a name holds before [assign] looks its
+  /// candidates up by position rather than scanning them all. Only tests
+  /// change it — at 0 every name is looked up by position, which must
+  /// match exactly what the scan matches.
+  LabelIdentityIndex({this.gridFrom = 16});
+
+  final int gridFrom;
+
   /// How far apart two layouts of one label may be and still share its
   /// id, in logical pixels of the finer of the two levels. A zoom
   /// crossing over the same data moves nothing (along-line anchors are
@@ -68,10 +85,11 @@ class LabelIdentityIndex {
   /// (or quantization, when one side is still provisional).
   static const double twinRadius = 1.0;
 
-  final _byKey = <Object, List<_LabelEntry>>{};
+  final _byKey = <Object, _KeyLabels>{};
   final _byId = <int, _LabelEntry>{};
   var _nextId = 1;
   var _batch = 0;
+  var _visit = 0;
 
   /// Distinct labels currently held — for tests asserting that what was
   /// assigned is also released.
@@ -111,13 +129,40 @@ class LabelIdentityIndex {
       (byKey[symbols[i].continuityKey] ??= <int>[]).add(i);
     }
     byKey.forEach((key, group) {
-      final entries = _byKey[key] ??= <_LabelEntry>[];
+      final labels = _byKey[key] ??= _KeyLabels();
+      final entries = labels.entries;
       if (entries.isNotEmpty) {
         final pairs = <_Pair>[];
+        final grid = labels.grid;
         for (final i in group) {
-          for (final entry in entries) {
-            final pair = _pair(entry, tile, i, xs[i], ys[i], unit);
-            if (pair != null) pairs.add(pair);
+          if (grid == null) {
+            for (final entry in entries) {
+              final pair = _pair(entry, tile, i, xs[i], ys[i], unit);
+              if (pair != null) pairs.add(pair);
+            }
+            continue;
+          }
+          // Every label with a copy close enough to match has one in
+          // the 3×3 cells around the symbol on that copy's level, since
+          // a cell is as wide as the widest radius a copy there matches
+          // at. Each is judged by [_pair] on all its copies, as above.
+          final visit = ++_visit;
+          for (final level in grid.entries) {
+            final size = _cellSize(level.key);
+            final cx = (xs[i] / size).floor();
+            final cy = (ys[i] / size).floor();
+            for (var dx = -1; dx <= 1; dx++) {
+              for (var dy = -1; dy <= 1; dy++) {
+                final cell = level.value[_cell(cx + dx, cy + dy)];
+                if (cell == null) continue;
+                for (final entry in cell) {
+                  if (entry.visit == visit) continue;
+                  entry.visit = visit;
+                  final pair = _pair(entry, tile, i, xs[i], ys[i], unit);
+                  if (pair != null) pairs.add(pair);
+                }
+              }
+            }
           }
         }
         pairs.sort(_Pair.compare);
@@ -133,11 +178,24 @@ class LabelIdentityIndex {
         var entry = _byId[ids[i]];
         if (entry == null) {
           entry = _LabelEntry(_freshId(), key)..batch = batch;
+          entry.slot = entries.length;
           entries.add(entry);
           _byId[entry.id] = entry;
           ids[i] = entry.id;
+          if (labels.grid == null && entries.length > gridFrom) {
+            // Common enough now: file everything known so far.
+            final grid = labels.grid = {};
+            for (final known in entries) {
+              for (final holding in known.holdings) {
+                _file(grid, known, holding);
+              }
+            }
+          }
         }
-        entry.holdings.add(_Holding(tile, xs[i], ys[i]));
+        final holding = _Holding(tile, xs[i], ys[i]);
+        entry.holdings.add(holding);
+        final grid = labels.grid;
+        if (grid != null) _file(grid, entry, holding);
       }
     });
     if (replacing != null) release(tile, replacing);
@@ -181,12 +239,20 @@ class LabelIdentityIndex {
       final holdings = entry.holdings;
       final at = holdings.indexWhere((holding) => holding.tile == tile);
       if (at < 0) continue;
-      holdings.removeAt(at);
+      final holding = holdings.removeAt(at);
+      final labels = _byKey[entry.key]!;
+      final grid = labels.grid;
+      if (grid != null) _unfile(grid, entry, holding);
       if (holdings.isNotEmpty) continue;
       _byId.remove(id);
-      final entries = _byKey[entry.key];
-      if (entries == null) continue;
-      entries.remove(entry);
+      // Swapped out rather than removed in place: a common name holds
+      // hundreds of labels, and a tile hands back hundreds at once.
+      final entries = labels.entries;
+      final last = entries.removeLast();
+      if (!identical(last, entry)) {
+        entries[entry.slot] = last;
+        last.slot = entry.slot;
+      }
       if (entries.isEmpty) _byKey.remove(entry.key);
     }
   }
@@ -203,6 +269,36 @@ class LabelIdentityIndex {
   static double _unit(int z) =>
       1 / (TileRasterizer.logicalTileSize * math.pow(2, z));
 
+  /// The width of a level-[z] cell of [_KeyLabels.grid], in world units:
+  /// the widest radius a copy on that level matches at.
+  static double _cellSize(int z) => matchRadius * _unit(z);
+
+  /// The [_KeyLabels.grid] key of cell ([cx], [cy]). Distinct cells may
+  /// share one far out (past 2^26 cells a row, or on the web's doubles),
+  /// which only adds candidates that [_pair] then turns down.
+  static int _cell(int cx, int cy) => cx * 67108864 + cy;
+
+  static void _file(Map<int, Map<int, List<_LabelEntry>>> grid,
+      _LabelEntry entry, _Holding holding) {
+    final size = _cellSize(holding.tile.z);
+    final cell = _cell((holding.x / size).floor(), (holding.y / size).floor());
+    ((grid[holding.tile.z] ??= {})[cell] ??= []).add(entry);
+  }
+
+  static void _unfile(Map<int, Map<int, List<_LabelEntry>>> grid,
+      _LabelEntry entry, _Holding holding) {
+    final cells = grid[holding.tile.z];
+    if (cells == null) return;
+    final size = _cellSize(holding.tile.z);
+    final cell = _cell((holding.x / size).floor(), (holding.y / size).floor());
+    final filed = cells[cell];
+    if (filed == null) return;
+    filed.remove(entry);
+    if (filed.isNotEmpty) return;
+    cells.remove(cell);
+    if (cells.isEmpty) grid.remove(holding.tile.z);
+  }
+
   int _freshId() {
     // Ids stay within 31 bits (an Int32List holds them, and web ints
     // are doubles). Wrapping takes two billion labels; skipping live
@@ -215,12 +311,29 @@ class LabelIdentityIndex {
   }
 }
 
+/// The labels known under one continuity key.
+class _KeyLabels {
+  final entries = <_LabelEntry>[];
+
+  /// Once the name is common ([LabelIdentityIndex.gridFrom]): per level,
+  /// the labels with a copy in each cell of that level (see
+  /// [LabelIdentityIndex._cellSize]), one listing per copy.
+  Map<int, Map<int, List<_LabelEntry>>>? grid;
+}
+
 class _LabelEntry {
   final int id;
   final Object key;
 
   /// The [LabelIdentityIndex.assign] call that last claimed this label.
   var batch = 0;
+
+  /// The grid lookup that last visited this label, so a label with
+  /// copies in several cells is judged once per symbol.
+  var visit = 0;
+
+  /// Where this label sits in its [_KeyLabels.entries].
+  var slot = 0;
 
   /// One copy per tile offering this label, where that tile has it.
   final holdings = <_Holding>[];
@@ -251,9 +364,15 @@ class _Pair {
 
   _Pair(this.symbol, this.entry, this.own, this.distance);
 
-  /// Own labels first, then nearest first.
+  /// Own labels first, then nearest first; exact ties by the older label,
+  /// then layout order, so the outcome never depends on the order the
+  /// candidates were found in.
   static int compare(_Pair a, _Pair b) {
     if (a.own != b.own) return a.own ? -1 : 1;
-    return a.distance.compareTo(b.distance);
+    final byDistance = a.distance.compareTo(b.distance);
+    if (byDistance != 0) return byDistance;
+    final byId = a.entry.id - b.entry.id;
+    if (byId != 0) return byId;
+    return a.symbol - b.symbol;
   }
 }
