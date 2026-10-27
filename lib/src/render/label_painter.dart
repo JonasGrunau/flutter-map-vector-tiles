@@ -755,6 +755,7 @@ class LabelPainter {
       toDraw.add(drawable);
       anyFading |= drawable.opacity < 1;
     }
+    if (adopting) LabelPlacementWorker.debugAdoptedDrawn += _drawing.length;
     if (placing) {
       debugPlaceMicros += loopStopwatch.elapsedMicroseconds;
     } else {
@@ -1096,6 +1097,8 @@ class LabelPainter {
       if (copy != null) _drawnCopy[id] = copy;
     }
     LabelPlacementWorker.debugCommits++;
+    LabelPlacementWorker.debugMissingCohorts += result.missingCohorts;
+    LabelPlacementWorker.debugAdoptedWinners += winners.length;
     LabelPlacementWorker.debugCommitLatencyFrames += _frames - request.frame;
     LabelPlacementWorker.debugWorkerMicros += result.micros;
     return true;
@@ -1153,6 +1156,9 @@ class LabelPainter {
       final text = memo == null || symbol.text.isEmpty
           ? null
           : _textCache.peek(memo.cacheKey);
+      if (symbol.text.isNotEmpty && text == null) {
+        LabelPlacementWorker.debugUnmeasured++;
+      }
       if (text != null) {
         width = text.size.width;
         height = text.size.height;

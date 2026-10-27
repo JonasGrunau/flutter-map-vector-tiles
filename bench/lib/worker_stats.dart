@@ -22,6 +22,10 @@ List<int> placementWorkerCounters() => [
       LabelPlacementWorker.debugMirrorCount,
       LabelPlacementWorker.debugMirrorBytes,
       LabelPlacementWorker.debugMirrorMicros,
+      LabelPlacementWorker.debugUnmeasured,
+      LabelPlacementWorker.debugMissingCohorts,
+      LabelPlacementWorker.debugAdoptedWinners,
+      LabelPlacementWorker.debugAdoptedDrawn,
     ];
 
 /// The `WORKER` report line for counters diffed over a window, or null
@@ -37,7 +41,11 @@ String? placementWorkerLine(List<int> before) {
     workerUs,
     mirrors,
     bytes,
-    mirrorUs
+    mirrorUs,
+    unmeasured,
+    missing,
+    adopted,
+    adoptedDrawn,
   ] = d;
   if (requests == 0 && commits == 0 && mirrors == 0) return null;
   String ms(int us) => (us / 1000).toStringAsFixed(2);
@@ -48,5 +56,7 @@ String? placementWorkerLine(List<int> before) {
       'pass=${per(workerUs, commits)}ms(worker) '
       'mirrors=$mirrors ${(bytes / 1024).round()}KB '
       'ui=${ms(mirrorUs)}ms total ${per(mirrorUs, mirrors)}ms/list '
-      'live=${(LabelPlacementWorker.debugMirrorLiveBytes / 1024).round()}KB';
+      'live=${(LabelPlacementWorker.debugMirrorLiveBytes / 1024).round()}KB '
+      'unmeasured=$unmeasured missing=$missing '
+      'adopted=$adopted drewOnAdopt=$adoptedDrawn';
 }

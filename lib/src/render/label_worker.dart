@@ -125,6 +125,7 @@ typedef LabelPassResult = ({
   int id,
   Int32List winners,
   Int32List copies,
+  int missingCohorts,
   List<String?> anchors,
   Uint8List textDropped,
   int micros,
@@ -165,6 +166,15 @@ abstract class LabelPlacementWorker {
   static int debugCommits = 0;
   static int debugCommitLatencyFrames = 0;
   static int debugWorkerMicros = 0;
+
+  /// Bench diagnostics (UI isolate): mirrored symbols with text but no
+  /// shaped metrics (the worker places them without text); cohorts a
+  /// worker pass could not find a mirror for; winners adopted, and how
+  /// many of them drew on the frame that adopted them.
+  static int debugUnmeasured = 0;
+  static int debugMissingCohorts = 0;
+  static int debugAdoptedWinners = 0;
+  static int debugAdoptedDrawn = 0;
 
   /// Whether the isolate is up and a theme is installed.
   bool get ready;

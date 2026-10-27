@@ -222,10 +222,14 @@ LabelPassResult _pass(
 }) {
   final stopwatch = Stopwatch()..start();
   final symbols = <PlacedSymbol>[];
+  var missing = 0;
   if (current) {
     for (final cohort in request.cohorts) {
       final list = mirrors[cohort.mirror];
-      if (list == null || list.length != cohort.ids.length) continue;
+      if (list == null || list.length != cohort.ids.length) {
+        missing++;
+        continue;
+      }
       final transform = TileTransform(
         origin: Offset(cohort.originX, cohort.originY),
         scale: cohort.scale,
@@ -271,6 +275,7 @@ LabelPassResult _pass(
     id: request.id,
     winners: ids,
     copies: copies,
+    missingCohorts: missing,
     anchors: anchors,
     textDropped: dropped,
     micros: stopwatch.elapsedMicroseconds,
