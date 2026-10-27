@@ -705,6 +705,20 @@ class TileRasterizer {
       shared = _lineStyle(layer, EvalContext(zoom: styleZoom), pixelScale);
       if (shared == null) return false; // invisible at this zoom
     }
+    // A mask filter is an offscreen pass per draw on the GPU: a blurred
+    // stroke drawn per feature made a tile of Liberty, every line
+    // blurred by 0.5 px as Americana blurs its roads, cost the Nothing
+    // Phone a third of its frames whenever tiles were rasterized. When
+    // the stroke is the same for every feature and opaque, one path for
+    // the whole layer draws what the features would — overlaps differ
+    // only inside the soft edges — for one pass per layer and tile.
+    final blurred = shared?.paint;
+    final batch = blurred != null &&
+            blurred.maskFilter != null &&
+            blurred.color.a >= 1 &&
+            shared!.gapWidth <= 0
+        ? Path()
+        : null;
 
     _eachFeature(layer, data, styleZoom, null, (feature, ctx, transform, clip) {
       if (feature.type == PreparedGeomType.point) return;
@@ -738,7 +752,7 @@ class TileRasterizer {
       final dashes = dash
           ?.map((d) => (d * style.width).clamp(0.01, 4096.0))
           .toList(growable: false);
-      final path = Path();
+      final path = batch ?? Path();
       _addLineRuns(path, feature, transform, clip,
           offset: style.offset, dashes: dashes);
 
@@ -794,11 +808,12 @@ class TileRasterizer {
         canvas.drawPath(path, casing);
         if (gap.strokeWidth > 0) canvas.drawPath(path, gap);
         canvas.restore();
-      } else {
+      } else if (batch == null) {
         canvas.drawPath(path, style.paint);
       }
       painted = true;
     }, translate: translate);
+    if (batch != null && painted) canvas.drawPath(batch, blurred!);
     return painted;
   }
 

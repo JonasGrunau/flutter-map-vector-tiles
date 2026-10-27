@@ -429,6 +429,41 @@ void main() {
       expect(r.maxError, lessThan(0.2));
     });
 
+    test('a layer-wide opaque blur drawn as one path matches per feature',
+        () async {
+      // A colour read from the feature (the same for both) keeps the
+      // stroke per feature; a constant one lets the layer draw a single
+      // blurred path. Apart from where strokes overlap, the two agree.
+      Future<_Pixels> draw(Object color) => _render(
+            _theme([
+              {
+                'type': 'line',
+                'paint': {
+                  'line-width': 8,
+                  'line-blur': 3,
+                  'line-color': color,
+                },
+              },
+            ]),
+            _tile([
+              _line([20, 64, 236, 64], properties: {'c': '#000000'}),
+              _line([20, 192, 236, 192], properties: {'c': '#000000'}),
+            ]),
+            devicePixelRatio: 3,
+          );
+      final batched = await draw('#000000');
+      final perFeature = await draw(['get', 'c']);
+      var worst = 0;
+      for (var y = 0; y < 768; y += 3) {
+        for (var x = 60; x < 708; x += 9) {
+          worst = math.max(
+              worst, (batched.grey(x, y) - perFeature.grey(x, y)).abs());
+        }
+      }
+      expect(worst, lessThanOrEqualTo(2));
+      expect(batched.grey(384, 192), _near(0, 30), reason: 'blurred core');
+    });
+
     test('a blur reading the feature applies per feature', () async {
       final pixels = await _render(
         _theme([
