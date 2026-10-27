@@ -126,7 +126,11 @@ class GlyphSource {
       if (!range.settled) (pending ??= []).add(range.done.future);
     }
     if (pending == null) return null;
-    return pending.length == 1 ? pending.first : Future.wait(pending);
+    if (pending.length == 1) return pending.first;
+    // A true Future<void>: `Future.wait` is a Future<List<void>> at
+    // runtime, whose `timeout` rejects an `onTimeout` returning nothing —
+    // which is how the render pump caps its wait.
+    return Future.wait(pending).then<void>((_) {});
   }
 
   _Range _start(String fontstack, int start) {

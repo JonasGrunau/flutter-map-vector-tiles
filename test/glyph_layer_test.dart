@@ -18,12 +18,12 @@ import 'fixtures/mvt_builder.dart';
 
 const _stack = 'Test Regular';
 
-Uint8List _labelledTile() => MvtTileBuilder()
+Uint8List _labelledTile([String name = 'AAAA']) => MvtTileBuilder()
     .layer('poi', extent: extent)
     .feature(
       type: 1,
       geometry: [cmd(1, 1), zig(extent ~/ 2), zig(extent ~/ 2)],
-      properties: {'name': 'AAAA'},
+      properties: {'name': name},
     )
     .done()
     .build();
@@ -31,15 +31,19 @@ Uint8List _labelledTile() => MvtTileBuilder()
 /// The label tile at the map's centre, (14, 8726, 5683), and empty
 /// tiles everywhere else, so exactly one label is on screen.
 class _OneLabelProvider extends CountingProvider {
+  _OneLabelProvider({this.name = 'AAAA'});
+
+  final String name;
+
   @override
-  String get cacheKey => 'one-label';
+  String get cacheKey => 'one-label-$name';
 
   @override
   Future<TileResponse> load(TileKey tile,
       {CancellationToken? cancellation}) async {
     note(tile);
     return TileResponseData(tile == const TileKey(14, 8726, 5683)
-        ? _labelledTile()
+        ? _labelledTile(name)
         : MvtTileBuilder().build());
   }
 }
@@ -233,5 +237,71 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
     glyphs.source.dispose();
+  });
+
+  testWidgets('labels whose glyph range fails at once use the system font',
+      (tester) async {
+    tester.view.physicalSize = const Size(600, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    // What no network looks like: every range fails straight away.
+    var loads = 0;
+    final glyphs = GlyphSource(
+      load: (stack, start) async {
+        loads++;
+        throw StateError('Failed host lookup');
+      },
+      signature: 'offline',
+    );
+    final provider = _OneLabelProvider();
+    await tester.pumpWidget(_app(provider, glyphs));
+    expect(await pumpUntil(tester, () => _hasLabel(tester)), isTrue,
+        reason: 'the label is shaped by the platform once its range failed');
+    expect(await _labelPixels(tester), greaterThan(_glyphLabelPixels));
+    expect(loads, 1);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    glyphs.dispose();
+  });
+
+  testWidgets('labels waiting on several ranges at once still appear',
+      (tester) async {
+    // Regression: waiting on two ranges at once handed the pump a
+    // Future<List<void>>, whose `timeout` threw at the wait limit's
+    // callback inside the pump, and the tile's labels never came.
+    tester.view.physicalSize = const Size(600, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final gate = Completer<void>();
+    final glyphs = GlyphSource(
+      load: (stack, start) async {
+        await gate.future;
+        return GlyphPbfBuilder().stack(stack, '$start-${start + 255}', [
+          TestGlyph(0x41),
+          TestGlyph(0x110),
+        ]).build();
+      },
+      signature: 'two ranges',
+    );
+    final provider = _OneLabelProvider(name: 'AĐAĐ');
+    await tester.pumpWidget(_app(provider, glyphs));
+    expect(await pumpUntil(tester, () async => provider.loads > 0), isTrue);
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(tester.takeException(), isNull);
+    expect(await _hasLabel(tester), isFalse);
+
+    await tester.runAsync(() async => gate.complete());
+    expect(await pumpUntil(tester, () => _hasLabel(tester)), isTrue);
+    expect(await _labelPixels(tester), lessThan(_glyphLabelPixels),
+        reason: 'drawn from the glyphs');
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    glyphs.dispose();
   });
 }
