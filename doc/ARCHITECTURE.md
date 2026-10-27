@@ -666,9 +666,17 @@ inverse of the painter's translate · rotate into world pixels, into each
 display tile's logical pixels, clipped to the tile, and then into the
 data tile's extent units, rather than every candidate feature into
 pixels; features are rejected on their decode-time bounds before any
-expression runs. Clipping to the display tile is what makes overzoom
-answer for the window a tile shows and keeps a rectangle that crosses a
-seam from matching one tile's buffer geometry on the other side. Paint
+expression runs, and within a feature, edges whose bounds miss the query
+area (widened by the half width, for lines) are skipped before any
+crossing test. That second cull is what keeps big features cheap:
+OpenFreeMap's z14 tiles merge whole blocks of buildings into one feature
+of up to ~1,000 rings, whose bounds pass the first test for nearly any
+query on the tile. A polygon needs one non-zero winding pass after its
+edges, not one per query corner: when no edge enters the area, all of it
+lies on one side of the outline. Clipping to the display tile is what
+makes overzoom answer for the window a tile shows and keeps a rectangle
+that crosses a seam from matching one tile's buffer geometry on the
+other side. Paint
 opacity is not consulted, as in MapLibre. A feature with an id is
 reported once per style layer across tiles; one without is reported
 once per decoded feature object, which every display tile cut from one
