@@ -531,8 +531,8 @@ void main() {
           }),
           'a · b');
       expect(eval(['split', 'a;b;;c', ';']), ['a', 'b', '', 'c']);
-      expect(eval(['join', 'not a list', ',']), isNull);
-      expect(eval(['split', 5, ',']), isNull);
+      expect(eval(['join', 'not a list', ',']), evalError);
+      expect(eval(['split', 5, ',']), evalError);
     });
 
     test('semiliteral evaluates the expressions inside its array', () {
@@ -599,14 +599,14 @@ void main() {
           '21.5°C');
     });
 
-    test('a non-number formats to null', () {
+    test('a non-number is an error', () {
       expect(
           eval([
             'number-format',
             ['get', 'missing'],
             <String, Object?>{}
           ]),
-          isNull);
+          evalError);
     });
 
     test('currency and unit together warn', () {
@@ -708,7 +708,7 @@ void main() {
 
     test('to-number converts null to 0 and fails on the unconvertible', () {
       expect(eval(['to-number', null]), 0);
-      expect(eval(['to-number', 'abc']), isNull);
+      expect(eval(['to-number', 'abc']), evalError);
       expect(eval(['to-number', 'abc', '7']), 7);
     });
 
@@ -849,6 +849,358 @@ void main() {
             ]
           }, zoom: 1),
           20);
+    });
+  });
+
+  group('runtime type errors, as strict as MapLibre', () {
+    test('ordering compares two numbers or two strings, nothing else', () {
+      final cmp = [
+        '<',
+        ['get', 'a'],
+        ['get', 'b']
+      ];
+      expect(eval(cmp, props: {'a': 1, 'b': 10}), true);
+      expect(eval(cmp, props: {'a': '10', 'b': '9'}), true);
+      expect(eval(cmp, props: {'a': '1', 'b': 10}), evalError);
+      expect(eval(cmp, props: {'a': 1}), evalError);
+      expect(evalFilter(cmp, props: {'a': '1', 'b': 10}), false);
+    });
+
+    test('a literal number types the other side', () {
+      final cmp = [
+        '>=',
+        ['get', 'rank'],
+        5
+      ];
+      expect(eval(cmp, props: {'rank': 7}), true);
+      expect(eval(cmp, props: {'rank': 3.0}), false);
+      expect(eval(cmp, props: {'rank': '7'}), evalError);
+      expect(eval(cmp, props: {}), evalError);
+      expect(eval(['<', 3, 5]), true);
+      expect(eval(['<=', 'a', 'b']), true);
+    });
+
+    test('== takes any values but passes an error on', () {
+      expect(
+          eval([
+            '!=',
+            ['get', 'x'],
+            5
+          ], props: {
+            'x': '5'
+          }),
+          true);
+      final asserted = [
+        '!=',
+        [
+          'number',
+          ['get', 'x']
+        ],
+        5
+      ];
+      expect(eval(asserted, props: {'x': '5'}), evalError);
+      expect(evalFilter(asserted, props: {'x': '5'}), false);
+      expect(eval(asserted, props: {'x': 4}), true);
+    });
+
+    test('decisions take booleans only', () {
+      expect(
+          eval([
+            'case',
+            ['get', 'x'],
+            'yes',
+            'no'
+          ], props: {
+            'x': 'false'
+          }),
+          evalError);
+      expect(
+          eval([
+            '!',
+            ['get', 'x']
+          ]),
+          evalError);
+      expect(
+          eval([
+            'all',
+            true,
+            ['get', 'x']
+          ], props: {
+            'x': 1
+          }),
+          evalError);
+      // In order: an error before a deciding operand decides.
+      final error = [
+        'number',
+        ['get', 'missing']
+      ];
+      expect(eval(['any', error, true]), evalError);
+      expect(eval(['any', true, error]), true);
+      expect(eval(['all', false, error]), false);
+      // A filter that is not a boolean keeps the feature out.
+      expect(evalFilter(['get', 'flag'], props: {'flag': 1}), false);
+      expect(evalFilter(['get', 'flag'], props: {'flag': true}), true);
+    });
+
+    test('coalesce and match pass an error on', () {
+      final error = [
+        'number',
+        ['get', 'missing']
+      ];
+      expect(eval(['coalesce', error, 1]), evalError);
+      expect(eval(['coalesce', null, 1]), 1);
+      expect(eval(['match', error, 1, 'one', 'other']), evalError);
+      // An input of another type than the labels' is just a miss.
+      expect(
+          eval([
+            'match',
+            ['get', 'x'],
+            1,
+            'one',
+            'other'
+          ], props: {
+            'x': '1'
+          }),
+          'other');
+    });
+
+    test('in and index-of check needle and haystack', () {
+      Object? inOf(Object? needle, Object? haystack) => eval([
+            'in',
+            ['get', 'n'],
+            ['get', 'h']
+          ], props: {
+            'n': needle,
+            'h': haystack
+          });
+      expect(inOf(1, [1, 2]), true);
+      expect(inOf(null, [1, null]), true);
+      expect(inOf('lo', 'hello'), true);
+      expect(inOf(1, null), false);
+      expect(inOf(1, 0), false);
+      expect(inOf(1, 123), evalError);
+      expect(inOf({}, [1]), evalError);
+      expect(
+          eval([
+            'in',
+            ['get', 'n'],
+            [
+              'literal',
+              [1, 2]
+            ]
+          ], props: {
+            'n': <Object?>[1]
+          }),
+          evalError);
+      expect(
+          eval([
+            'index-of',
+            1,
+            ['get', 'h']
+          ]),
+          evalError);
+    });
+
+    test('at, slice and length check their operands', () {
+      final list = [
+        'literal',
+        [9, 8, 7]
+      ];
+      expect(eval(['at', 1, list]), 8);
+      expect(eval(['at', 3, list]), evalError);
+      expect(eval(['at', -1, list]), evalError);
+      expect(eval(['at', 1.5, list]), evalError);
+      expect(eval(['slice', 'abc', true]), evalError);
+      expect(eval(['length', 5]), evalError);
+    });
+
+    test('math takes numbers, not numeric strings', () {
+      final sum = [
+        '+',
+        ['get', 'x'],
+        1
+      ];
+      expect(eval(sum, props: {'x': 2}), 3);
+      expect(eval(sum, props: {'x': '2'}), evalError);
+      expect(
+          eval([
+            'upcase',
+            ['get', 'x']
+          ], props: {
+            'x': 5
+          }),
+          evalError);
+      // The explicit conversion still converts.
+      expect(eval(['to-number', '2']), 2);
+    });
+
+    test('rgba rejects channels out of range', () {
+      final rgba = [
+        'rgba',
+        0,
+        0,
+        ['get', 'b'],
+        1
+      ];
+      expect(eval(rgba, props: {'b': 255}), const Color(0xff0000ff));
+      expect(eval(rgba, props: {'b': 256}), evalError);
+      final parser = ExpressionParser();
+      expect(parser.parse(['rgb', 300, 0, 0])(EvalContext.empty), isNull);
+      expect(parser.warnings, isNotEmpty);
+    });
+
+    test('ramps take a number input, unless they never read it', () {
+      final step = [
+        'step',
+        ['get', 'x'],
+        'low',
+        5,
+        'high'
+      ];
+      expect(eval(step, props: {'x': 7}), 'high');
+      expect(eval(step, props: {'x': '7'}), evalError);
+      expect(eval(step), evalError);
+      expect(
+          eval([
+            'step',
+            ['get', 'x'],
+            'only'
+          ]),
+          'only');
+      expect(
+          eval([
+            'interpolate',
+            ['linear'],
+            ['get', 'x'],
+            0,
+            0,
+            10,
+            10
+          ], props: {
+            'x': '5'
+          }),
+          evalError);
+      // Outputs that cannot be blended are an error too.
+      expect(
+          eval([
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            0,
+            0,
+            20,
+            ['get', 'w']
+          ], zoom: 10),
+          evalError);
+    });
+
+    test('the array assertion checks item type and length', () {
+      Object? array(List<Object?> assertion, Object? value) => eval([
+            ...assertion,
+            ['get', 'v']
+          ], props: {
+            'v': value
+          });
+      expect(array(['array', 'number'], [1, 2]), [1, 2]);
+      expect(array(['array', 'number'], ['1']), evalError);
+      expect(array(['array', 'number'], <Object?>[]), isEmpty);
+      expect(array(['array', 'string', 2], ['a']), evalError);
+      expect(array(['array'], 'not'), evalError);
+    });
+  });
+
+  group('legacy syntax, as strict as MapLibre', () {
+    test('ordering filters compare one type with itself', () {
+      expect(evalFilter(['>=', 'rank', 3], props: {'rank': 5}), true);
+      expect(evalFilter(['>=', 'rank', 3], props: {'rank': '5'}), false);
+      expect(evalFilter(['<', 'name', 'm'], props: {'name': 'a'}), true);
+      expect(evalFilter(['<', 'name', 'm'], props: {'name': 1}), false);
+      expect(
+          evalFilter([
+            'none',
+            ['>=', 'rank', 3]
+          ], props: {
+            'rank': '5'
+          }),
+          true);
+    });
+
+    test('a property function takes a number input, not a numeric string', () {
+      final fn = {
+        'property': 'p',
+        'stops': [
+          [0, 0],
+          [10, 10]
+        ],
+      };
+      expect(eval(fn, props: {'p': 5}), 5);
+      expect(eval(fn, props: {'p': '5'}), isNull);
+      expect(eval({...fn, 'default': -1}, props: {'p': '5'}), -1);
+      expect(eval({...fn, 'type': 'interval'}, props: {'p': '5'}), isNull);
+    });
+
+    test('an identity function hands on values of the property type', () {
+      Object? identity(Object? value,
+          {required bool Function(Object?) accepts,
+          Object? defaultValue,
+          Set<String>? enumValues}) {
+        final parser = ExpressionParser();
+        final expr = parser.parseForProperty({
+          'type': 'identity',
+          'property': 'p',
+          if (defaultValue != null) 'default': defaultValue,
+        }, accepts: accepts, enumValues: enumValues).expr;
+        return expr(EvalContext(zoom: 0, properties: {'p': value}));
+      }
+
+      bool isNumber(Object? v) => v is num;
+      bool isString(Object? v) => v is String;
+      expect(identity(3, accepts: isNumber), 3);
+      expect(identity('3', accepts: isNumber), isNull);
+      expect(identity('3', accepts: isNumber, defaultValue: -1), -1);
+      expect(identity(0, accepts: isString, defaultValue: 'd'), 'd');
+      // An enum property takes only its values when there is a default
+      // to fall back to, and any string otherwise.
+      expect(
+          identity('c',
+              accepts: isString, defaultValue: 'a', enumValues: {'a', 'b'}),
+          'a');
+      expect(identity('c', accepts: isString, enumValues: {'a', 'b'}), 'c');
+    });
+  });
+
+  group('typed wrappers read values as MapLibre types them', () {
+    test('number, boolean and list properties fall back on other types', () {
+      expect(DoubleProp((_) => '5', 1).eval(EvalContext.empty), 1);
+      expect(DoubleProp((_) => 5, 1).eval(EvalContext.empty), 5);
+      expect(BoolProp((_) => 1, false).eval(EvalContext.empty), false);
+      expect(NumListProp((_) => ['1', 2], const [0, 0]).eval(EvalContext.empty),
+          [0, 0]);
+      expect(
+          NumListProp((_) => [1, 2, 3], const [0, 0], length: 2)
+              .eval(EvalContext.empty),
+          [0, 0]);
+      expect(
+          StringListProp((_) => 'Noto Sans', const ['x'])
+              .eval(EvalContext.empty),
+          ['x']);
+    });
+
+    test('an error falls back in every wrapper', () {
+      Object? error(EvalContext _) => evalError;
+      expect(DoubleProp(error, 1).eval(EvalContext.empty), 1);
+      expect(ColorProp(error, const Color(0xff00ff00)).eval(EvalContext.empty),
+          const Color(0xff00ff00));
+      expect(StringProp(error, 'f').eval(EvalContext.empty), 'f');
+      expect(BoolProp(error, true).eval(EvalContext.empty), true);
+    });
+
+    test('string and colour properties still convert', () {
+      expect(StringProp((_) => 5, '').eval(EvalContext.empty), '5');
+      expect(
+          ColorProp((_) => 'red', const Color(0x00000000))
+              .eval(EvalContext.empty),
+          const Color(0xffff0000));
     });
   });
 }

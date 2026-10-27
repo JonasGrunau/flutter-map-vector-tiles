@@ -140,8 +140,8 @@ class ThemeReader {
           dashArray: paint['line-dasharray'] == null
               ? null
               : _numList(parser, paint['line-dasharray'], const []),
-          cap: _string(parser, layout['line-cap'], 'butt'),
-          join: _string(parser, layout['line-join'], 'miter'),
+          cap: _enum(parser, layout['line-cap'], 'butt', _lineCaps),
+          join: _enum(parser, layout['line-join'], 'miter', _lineJoins),
           pattern: paint['line-pattern'] == null
               ? null
               : _string(parser, paint['line-pattern'], ''),
@@ -170,7 +170,8 @@ class ThemeReader {
           minzoom: minzoom,
           maxzoom: maxzoom,
           filter: filter,
-          placement: _string(parser, layout['symbol-placement'], 'point'),
+          placement:
+              _enum(parser, layout['symbol-placement'], 'point', _placements),
           sortKey: _double(parser, layout['symbol-sort-key'], 0),
           spacing: _double(parser, layout['symbol-spacing'], 250),
           textField: _tokenString(parser, layout['text-field'], ''),
@@ -179,30 +180,33 @@ class ThemeReader {
               parser, layout['text-font'], const ['Open Sans Regular']),
           textMaxWidth: _double(parser, layout['text-max-width'], 10),
           textLetterSpacing: _double(parser, layout['text-letter-spacing'], 0),
-          textTransform: _string(parser, layout['text-transform'], 'none'),
-          textAnchor: _string(parser, layout['text-anchor'], 'center'),
+          textTransform:
+              _enum(parser, layout['text-transform'], 'none', _transforms),
+          textAnchor: _enum(parser, layout['text-anchor'], 'center', _anchors),
           textVariableAnchor: layout['text-variable-anchor'] == null
               ? null
               : _stringList(parser, layout['text-variable-anchor'], const []),
           textRadialOffset: _double(parser, layout['text-radial-offset'], 0),
-          textOffset: _numList(parser, layout['text-offset'], const [0, 0]),
+          textOffset:
+              _numList(parser, layout['text-offset'], const [0, 0], length: 2),
           textPadding: _double(parser, layout['text-padding'], 2),
           textAllowOverlap: _bool(parser, layout['text-allow-overlap'], false),
           textOptional: _bool(parser, layout['text-optional'], false),
           textMaxAngle: _double(parser, layout['text-max-angle'], 45),
           textKeepUpright: _bool(parser, layout['text-keep-upright'], true),
-          textRotationAlignment:
-              _string(parser, layout['text-rotation-alignment'], 'auto'),
+          textRotationAlignment: _enum(parser,
+              layout['text-rotation-alignment'], 'auto', _textAlignments),
           iconImage: layout['icon-image'] == null
               ? null
               : _tokenString(parser, layout['icon-image'], ''),
           iconSize: _double(parser, layout['icon-size'], 1),
-          iconAnchor: _string(parser, layout['icon-anchor'], 'center'),
-          iconOffset: _numList(parser, layout['icon-offset'], const [0, 0]),
+          iconAnchor: _enum(parser, layout['icon-anchor'], 'center', _anchors),
+          iconOffset:
+              _numList(parser, layout['icon-offset'], const [0, 0], length: 2),
           iconAllowOverlap: _bool(parser, layout['icon-allow-overlap'], false),
           iconRotate: _double(parser, layout['icon-rotate'], 0),
-          iconRotationAlignment:
-              _string(parser, layout['icon-rotation-alignment'], 'auto'),
+          iconRotationAlignment: _enum(parser,
+              layout['icon-rotation-alignment'], 'auto', _iconAlignments),
           textColor:
               _color(parser, paint['text-color'], const Color(0xff000000)),
           textHaloColor:
@@ -255,11 +259,38 @@ class ThemeReader {
   static Map<String, Object?> _map(Object? v) =>
       v is Map ? v.cast<String, Object?>() : const {};
 
+  // What each kind of property takes from a legacy identity function
+  // (see `ExpressionParser.parseForProperty`).
+  static bool _isNumber(Object? v) => v is num;
+  static bool _isColor(Object? v) => toColor(v) != null;
+  static bool _isString(Object? v) => v is String;
+  static bool _isBool(Object? v) => v is bool;
+  static bool _isStringList(Object? v) => asStringList(v) != null;
+
+  // The values of the enum properties read here.
+  static const _lineCaps = {'butt', 'round', 'square'};
+  static const _lineJoins = {'bevel', 'round', 'miter'};
+  static const _placements = {'point', 'line', 'line-center'};
+  static const _transforms = {'none', 'uppercase', 'lowercase'};
+  static const _anchors = {
+    'center',
+    'left',
+    'right',
+    'top',
+    'bottom',
+    'top-left',
+    'top-right',
+    'bottom-left',
+    'bottom-right',
+  };
+  static const _textAlignments = {'map', 'viewport', 'viewport-glyph', 'auto'};
+  static const _iconAlignments = {'map', 'viewport', 'auto'};
+
   static DoubleProp _double(
       ExpressionParser parser, Object? json, double fallback) {
     if (json == null) return DoubleProp.constant(fallback);
     if (json is num) return DoubleProp.constant(json.toDouble());
-    final p = parser.parseForProperty(json);
+    final p = parser.parseForProperty(json, accepts: _isNumber);
     return DoubleProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
@@ -270,12 +301,13 @@ class ThemeReader {
       final parsed = toColor(json);
       if (parsed != null) return ColorProp.constant(parsed);
     }
-    final p = parser.parseForProperty(json);
+    final p = parser.parseForProperty(json, accepts: _isColor);
     return ColorProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
   static StringProp _string(
-      ExpressionParser parser, Object? json, String fallback) {
+      ExpressionParser parser, Object? json, String fallback,
+      {Set<String>? enumValues}) {
     if (json == null) return StringProp.constant(fallback);
     if (json is String && !json.contains('{')) {
       return StringProp.constant(json);
@@ -284,9 +316,15 @@ class ThemeReader {
       // Legacy token syntax: "{name} ({ref})".
       return StringProp(_tokenExpr(parser, json), fallback);
     }
-    final p = parser.parseForProperty(json);
+    final p = parser.parseForProperty(json,
+        accepts: _isString, enumValues: enumValues);
     return StringProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
+
+  /// An enum layout property, one of [values].
+  static StringProp _enum(ExpressionParser parser, Object? json,
+          String fallback, Set<String> values) =>
+      _string(parser, json, fallback, enumValues: values);
 
   /// `text-field` / `icon-image` — the two properties whose spec
   /// declares `tokens`. Beyond a bare template string, MapLibre also
@@ -312,7 +350,7 @@ class ThemeReader {
     if (defaultValue is String && defaultValue.contains('{')) {
       templates[defaultValue] ??= _tokenExpr(parser, defaultValue);
     }
-    final p = parser.parseForProperty(json);
+    final p = parser.parseForProperty(json, accepts: _isString);
     if (templates.isEmpty) {
       return StringProp(p.expr, fallback, zoomOnly: p.zoomOnly);
     }
@@ -326,37 +364,42 @@ class ThemeReader {
 
   /// String-array layout properties (font stacks, anchor lists): a bare
   /// array of strings whose head is not an expression operator is a
-  /// literal value, not an expression.
+  /// literal value, not an expression, and so is a single string — a
+  /// one-font stack written without its brackets.
   static StringListProp _stringList(
       ExpressionParser parser, Object? json, List<String> fallback) {
     if (json == null) return StringListProp(constExpr(null), fallback);
+    if (json is String) return StringListProp.constant([json]);
     if (json is List &&
         json.isNotEmpty &&
         json.every((e) => e is String) &&
         !ExpressionParser.operators.contains(json.first)) {
       return StringListProp.constant(json.cast<String>());
     }
-    final p = parser.parseForProperty(json);
+    final p = parser.parseForProperty(json, accepts: _isStringList);
     return StringListProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
   /// Numeric-array properties (text-offset, icon-offset, dash arrays):
   /// a bare array of numbers is a literal value, pre-converted once.
+  /// [length] is the one length the property takes, if it has one.
   static NumListProp _numList(
-      ExpressionParser parser, Object? json, List<double> fallback) {
+      ExpressionParser parser, Object? json, List<double> fallback,
+      {int? length}) {
     if (json == null) return NumListProp(constExpr(null), fallback);
     if (json is List && json.isNotEmpty && json.every((e) => e is num)) {
       return NumListProp.constant(
           [for (final e in json) (e as num).toDouble()]);
     }
-    final p = parser.parseForProperty(json);
-    return NumListProp(p.expr, fallback, zoomOnly: p.zoomOnly);
+    final p = parser.parseForProperty(json,
+        accepts: (v) => asNumberList(v, length) != null);
+    return NumListProp(p.expr, fallback, zoomOnly: p.zoomOnly, length: length);
   }
 
   static BoolProp _bool(ExpressionParser parser, Object? json, bool fallback) {
     if (json == null) return BoolProp.constant(fallback);
     if (json is bool) return BoolProp.constant(json);
-    final p = parser.parseForProperty(json);
+    final p = parser.parseForProperty(json, accepts: _isBool);
     return BoolProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 

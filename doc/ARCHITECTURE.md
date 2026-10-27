@@ -898,7 +898,7 @@ whole style. Expressions are compiled once into Dart closures; both the
 modern expression array syntax and the legacy filter syntax are
 supported. The parser proves per property whether an expression reads
 feature data — properties that depend only on the zoom (most paint
-properties are pure zoom ramps) memoize their coerced result against
+properties are pure zoom ramps) memoize their typed result against
 the zoom in the typed wrappers, so a tile pass or a label frame
 evaluates each once instead of per feature. It also records whether a
 layer's filter reads the zoom (`ThemeLayer.filterReadsZoom`); a filter
@@ -979,6 +979,26 @@ around the feature's first coordinate, both following MapLibre's
 definitions. The answer depends only on the feature, so it is memoized
 per feature (an `Expando` on its coordinate list) and costs one
 geometry test per feature, not one per display tile.
+
+Tolerance stops at parse time. Evaluation is as strict about types as
+MapLibre's: an operand of a type the operator does not take — a numeric
+string where a number belongs, a condition that is not a boolean, an
+array index out of bounds — makes the expression evaluate to
+`evalError`. That is a constant, not a thrown exception, so a feature
+with odd data costs no throw. Every operator hands it on (`coalesce`
+too, since it is not null); the typed wrappers turn it into the
+property's fallback and a filter into false, as MapLibre does with its
+runtime errors. The wrappers check the property's type the same way:
+number, boolean and list properties take only values of their type,
+colour and string properties convert. The checks live inside the
+closures that already exist, never in an extra closure layer or a field
+on `EvalContext`, and where the parser can see an operand's type they
+compile away: `[">=", ["get", "rank"], 5]` is one type test and one
+comparison, and `==` between literals and plain feature reads, which
+cannot fail, skips the error test. Numbers are compared as doubles: tile
+values are mostly integers, and the VM compares an `int` with a
+`double` through a runtime call, which on a phone cost more than the
+rest of the filter.
 
 The engine is held to maplibre-style-spec's own expression fixtures
 (`test/maplibre_expression_conformance_test.dart`): every fixture

@@ -54,66 +54,6 @@ const _divergences = <String, String>{
   'all/short-circuiting': _testOnly,
   'any/short-circuiting': _testOnly,
 
-  'array/default-value': _lenient,
-  'array/implicit-2': _lenient,
-  'array/implicit-3': _lenient,
-  'array/item-type/boolean': _lenient,
-  'array/item-type/number': _lenient,
-  'array/item-type/string': _lenient,
-  'array/length': _lenient,
-  'at/basic': _lenient,
-  'case/basic': _lenient,
-  'coalesce/error': _lenient,
-  'global-state/projection-invalid-value': _lenient,
-  'greater/string-and-value': _lenient,
-  'greater/value': _lenient,
-  'greater_or_equal/string-and-value': _lenient,
-  'greater_or_equal/value': _lenient,
-  'in/assert-array': _lenient,
-  'in/assert-string': _lenient,
-  'in/invalid-haystack': _lenient,
-  'in/invalid-needle': _lenient,
-  'index-of/invalid-needle': _lenient,
-  'less/string-and-value': _lenient,
-  'less/value': _lenient,
-  'less_or_equal/string-and-value': _lenient,
-  'less_or_equal/value': _lenient,
-  'match/label-string': _lenient,
-  'rgba/out-of-bounds': _lenient,
-  'slice/invalid-start-index': _lenient,
-  'zoom/nested-let': _lenient,
-
-  'legacy/exponential/array': _lenientLegacy,
-  'legacy/exponential/array-default': _lenientLegacy,
-  'legacy/exponential/color': _lenientLegacy,
-  'legacy/exponential/color-default': _lenientLegacy,
-  'legacy/exponential/color-hcl': _lenientLegacy,
-  'legacy/exponential/color-lab': _lenientLegacy,
-  'legacy/exponential/composite': _lenientLegacy,
-  'legacy/exponential/composite-default': _lenientLegacy,
-  'legacy/exponential/implicit': _lenientLegacy,
-  'legacy/exponential/number': _lenientLegacy,
-  'legacy/exponential/number-default': _lenientLegacy,
-  'legacy/identity/array': _lenientLegacy,
-  'legacy/identity/array-default': _lenientLegacy,
-  'legacy/identity/boolean': _lenientLegacy,
-  'legacy/identity/color-default': _lenientLegacy,
-  'legacy/identity/enum-default': _lenientLegacy,
-  'legacy/identity/number-default': _lenientLegacy,
-  'legacy/identity/string': _lenientLegacy,
-  'legacy/identity/string-default': _lenientLegacy,
-  'legacy/interval/array': _lenientLegacy,
-  'legacy/interval/array-default': _lenientLegacy,
-  'legacy/interval/color': _lenientLegacy,
-  'legacy/interval/color-default': _lenientLegacy,
-  'legacy/interval/composite': _lenientLegacy,
-  'legacy/interval/composite-default': _lenientLegacy,
-  'legacy/interval/implicit': _lenientLegacy,
-  'legacy/interval/number': _lenientLegacy,
-  'legacy/interval/number-default': _lenientLegacy,
-  'legacy/interval/string': _lenientLegacy,
-  'legacy/interval/string-default': _lenientLegacy,
-
   'collator/accent-lt-en': _collator,
   'collator/accent-not-equals-en': _collator,
   'collator/base-equals-en': _collator,
@@ -136,6 +76,9 @@ const _divergences = <String, String>{
   'interpolate/projection/global-state': _unsupportedType,
   'interpolate/projection/linear': _unsupportedType,
   'interpolate/projection/same-from-to': _unsupportedType,
+  'global-state/projection-invalid-value': 'no projection is drawn, so '
+      'nothing parses the value as one: 42 is handed on, where MapLibre '
+      'fails to read it as a projection',
   'legacy/identity/color_array': _unsupportedType,
   'legacy/identity/number_array': _unsupportedType,
   'legacy/identity/padding': _unsupportedType,
@@ -172,11 +115,6 @@ const _divergences = <String, String>{
 };
 
 const _testOnly = "uses MapLibre's test-only `error` operator";
-const _lenient = 'MapLibre fails on the operand types at runtime; this '
-    'engine coerces them and carries on';
-const _lenientLegacy = 'legacy functions here take numeric strings as '
-    'numbers and ignore output types, where MapLibre falls back to the '
-    'default';
 const _collator = 'collators are not implemented: strings compare by '
     'code unit whatever the locale, case or diacritic options';
 const _unsupportedType = 'the value is right, but for a property type '
@@ -201,7 +139,9 @@ String? _run(Map<String, Object?> fixture) {
   final globalState =
       (fixture['globalState'] as Map?)?.cast<String, Object?>() ?? const {};
   final parser = ExpressionParser(globalState: globalState);
-  final parsed = parser.parseForProperty(fixture['expression']);
+  final parsed = parser.parseForProperty(fixture['expression'],
+      accepts: _accepts(spec),
+      enumValues: (spec?['values'] as Map?)?.keys.cast<String>().toSet());
   if (compiled['result'] == 'error') return null;
   if (parser.warnings.isNotEmpty) {
     return 'warns on a valid expression: ${parser.warnings.join('; ')}';
@@ -350,24 +290,52 @@ Object? _expected(Object? v, String type) {
   return v;
 }
 
-/// The value as the renderer reads it: [_fallback] for null — every
-/// typed property falls back to its default there — through the
-/// coercions of `DoubleProp`, `StringProp`, `ColorProp` and `BoolProp`
-/// where the fixture names the property type, and colours as MapLibre's
-/// premultiplied [r, g, b, a].
+/// What the theme reader tells the parser a property of [spec]'s type
+/// takes (`ThemeReader._double`, `_color`, `_string`, `_enum`, …).
+bool Function(Object?)? _accepts(Map<String, Object?>? spec) {
+  switch (spec?['type']) {
+    case 'number':
+      return (v) => v is num;
+    case 'color':
+      return (v) => toColor(v) != null;
+    case 'string' || 'enum':
+      return (v) => v is String;
+    case 'boolean':
+      return (v) => v is bool;
+    case 'array':
+      final length = (spec!['length'] as num?)?.toInt();
+      return switch (spec['value']) {
+        'number' => (v) => asNumberList(v, length) != null,
+        'string' => (v) => asStringList(v) != null,
+        _ => null,
+      };
+  }
+  return null;
+}
+
+/// The value as the renderer reads it: [_fallback] for null and for an
+/// error — every typed property falls back to its default there —
+/// through the reading of `DoubleProp`, `StringProp`, `ColorProp`,
+/// `BoolProp`, `NumListProp` and `StringListProp` where the fixture
+/// names the property type, and colours as MapLibre's premultiplied
+/// [r, g, b, a].
 Object? _asProperty(Object? v, Map<String, Object?>? spec, String type) {
-  if (v == null) return _fallback;
+  if (v == null || identical(v, evalError)) return _fallback;
   final propertyType = spec?['type'];
   switch (propertyType is String ? propertyType : type) {
     case 'color':
       final c = toColor(v);
       return c == null ? _fallback : _rgba(c);
     case 'number' when propertyType == 'number':
-      return toNumber(v)?.toDouble() ?? _fallback;
+      return asNumber(v) ?? _fallback;
     case 'string' || 'formatted':
       return toStringValue(v);
     case 'boolean' when propertyType == 'boolean':
-      return toBoolean(v);
+      return v is bool ? v : _fallback;
+    case 'array' when propertyType == 'array' && spec!['value'] == 'number':
+      return asNumberList(v, (spec['length'] as num?)?.toInt()) ?? _fallback;
+    case 'array' when propertyType == 'array' && spec!['value'] == 'string':
+      return asStringList(v) ?? _fallback;
     default:
       return _plain(v);
   }

@@ -359,12 +359,22 @@ compiles, as do legacy filters, legacy `{stops}` functions (zoom,
 property and zoom-and-property ones, with `{token}` templates in their
 `text-field` / `icon-image` outputs) and `{token}` templates. The engine
 is checked against all 583 expression fixtures of `maplibre-style-spec`:
-the 425 that MapLibre evaluates give MapLibre's results, apart from 103
+the 425 that MapLibre evaluates give MapLibre's results, apart from 46
 listed one by one, with the reason, in
-`test/maplibre_expression_conformance_test.dart`. Most of those are
-deliberate: where MapLibre fails on an operand of the wrong type, this
-engine converts it and carries on. A few operators answer with a fixed
-value because what they read does not exist here:
+`test/maplibre_expression_conformance_test.dart`.
+
+Evaluation is as strict about types as MapLibre's. Where an operand has
+the wrong type — a numeric string compared with a number or fed to
+`+`, a `case` condition that is not a boolean, an array index out of
+bounds, an `rgb` channel above 255 — the property falls back to its
+default and a filter leaves the feature out, as in MapLibre. Number,
+boolean and array properties take only values of their type, so
+`["get", "size"]` with `"12"` in the tile is not a text size of 12;
+`["to-number", ["get", "size"]]` is. Legacy functions follow the same
+rules: a property function needs a number, not a numeric string, and
+an identity function falls back to its `default` for a value of the
+wrong type. A few operators answer with a fixed value because what
+they read does not exist here:
 
 | Operator | Here |
 |---|---|
@@ -710,6 +720,12 @@ runs a short version of the benchmark in your browser.
   check a feature's tags on openstreetmap.org.
 - **Labels/roads look bigger than in MapLibre.** Probably `TileOffset.none`
   with a 512px-convention style; use the default.
+- **A layer or property shows its default where it used to draw.** The
+  style relies on a value of the wrong type, such as a number stored as
+  a string in the tiles, which versions up to 2.10 converted and
+  MapLibre never did. Convert it in the style (`to-number`,
+  `to-string`, `to-boolean`), and the style draws the same in MapLibre
+  too.
 - **Stale data after changing styles.** The disk cache keys by URL, and a
   changed `{key}` or map id is a different URL, so usually there is
   nothing to do. Supply `cachePath` to wipe it yourself.
