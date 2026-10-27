@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- ⚡ A fresh tile no longer tests its features against the style's
+  layer filters on the UI thread. The background isolates that decode
+  tiles now also resolve every filter that doesn't read the zoom, so
+  the first draw of a tile only looks up the features they matched. On
+  the Android test phone this takes a dense Munich tile's filter
+  matching from 19 ms to under 1 ms of UI time and a fresh z17 tile's
+  first draw and label layout from 21 ms to 4 ms; the first complete
+  map came 40–90 ms sooner (median of five runs), and frame rates
+  didn't change. The isolates spend about 16 ms more per such tile. Web, whose tile preparation already runs on the
+  UI thread, is unchanged.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same
