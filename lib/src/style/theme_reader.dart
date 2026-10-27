@@ -349,7 +349,7 @@ class ThemeReader {
   /// a bare array of numbers is a literal value, pre-converted once.
   static NumListProp _numList(
       ExpressionParser parser, Object? json, List<double> fallback) {
-    if (json == null) return NumListProp(constExpr(null), fallback);
+    if (json == null) return NumListProp.constant(fallback);
     if (json is List && json.isNotEmpty && json.every((e) => e is num)) {
       return NumListProp.constant(
           [for (final e in json) (e as num).toDouble()]);

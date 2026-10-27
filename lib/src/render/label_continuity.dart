@@ -370,6 +370,11 @@ class SittingPlacement {
   /// only the text was drawn (`icon-optional`).
   bool iconDropped = false;
 
+  /// The placement pass that last seated a symbol here, as `LabelPainter`
+  /// stamps its passes. Several copies of one label share a sitting; the
+  /// first placed in a pass owns the choices above for that pass.
+  int seatedPass = 0;
+
   Offset _at;
   int _seen;
 

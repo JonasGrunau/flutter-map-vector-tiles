@@ -53,6 +53,7 @@ PlacedSymbol _symbol(
   bool alongLine = false,
   double screenAngle = 0,
   TileTransform? transform,
+  Map<String, Object?> properties = const {},
 }) =>
     PlacedSymbol(
       instance: SymbolInstance(
@@ -64,7 +65,7 @@ PlacedSymbol _symbol(
         text: text,
         iconName: icon,
         sortKey: 0,
-        properties: const {},
+        properties: properties,
         geometryType: 'Point',
         featureId: null,
       ),
@@ -744,6 +745,25 @@ void main() {
       expect(place('never', true), hasLength(1));
     });
 
+    test('a data-driven overlap mode is read per feature', () {
+      // Placement properties that read no feature data are resolved once
+      // per layer; one that does must still differ between features.
+      final layer = _layer({
+        'text-field': 'x',
+        'text-overlap': ['get', 'overlap'],
+      });
+      PlacedSymbol label(String text, int order, String overlap) =>
+          _symbol(layer, const Offset(200, 200),
+              text: text, order: order, properties: {'overlap': overlap});
+      final drawn = _paint([
+        label('Alpha', 0, 'never'),
+        label('Beta', 1, 'always'),
+        label('Gamma', 2, 'never'),
+      ]);
+      expect(drawn.map((s) => s.instance.text),
+          unorderedEquals(['Alpha', 'Beta']));
+    });
+
     test('cooperative symbols overlap each other but not never-symbols', () {
       List<PlacedSymbol> place(String topMode) {
         final top = _symbol(
@@ -1132,6 +1152,25 @@ void main() {
       // The map is turned a quarter: "down" on the map is screen left.
       expect(await row('map'), (160, 179));
       expect(await row('viewport'), isNull, reason: 'moved below row 200');
+    });
+
+    test('a data-driven translate moves each feature its own way', () async {
+      final layer = _layer({
+        'text-field': 'x',
+        'text-size': 20
+      }, paint: {
+        'text-translate': ['get', 'shift'],
+      });
+      final data = await _render([
+        _symbol(layer, const Offset(100, 200), text: 'W', properties: {
+          'shift': [0, 0]
+        }),
+        _symbol(layer, const Offset(300, 200), text: 'W', properties: {
+          'shift': [0, 30]
+        }),
+      ]);
+      expect(_span(data, 200, _black), (90, 109));
+      expect(_span(data, 230, _black), (290, 309));
     });
 
     test('icon-translate moves the icon', () async {

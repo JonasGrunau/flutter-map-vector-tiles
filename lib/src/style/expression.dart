@@ -188,6 +188,9 @@ class StringProp {
         zoomOnly = false;
 
   String eval(EvalContext ctx) {
+    // Most layout strings are a style's literal or the spec default, read
+    // per symbol per frame by the label pass: no closure, no coercion.
+    if (isConstant) return fallback;
     if (zoomOnly) {
       if (ctx.zoom == _memoZoom) return _memoValue;
       _memoZoom = ctx.zoom;
@@ -202,19 +205,26 @@ class StringProp {
   }
 }
 
-/// See [DoubleProp] for [zoomOnly] semantics.
+/// See [DoubleProp] for [isConstant]/[zoomOnly] semantics.
 class BoolProp {
   final Expr _expr;
   final bool fallback;
+  final bool isConstant;
   final bool zoomOnly;
   double _memoZoom = double.nan;
   bool _memoValue = false;
 
-  BoolProp(this._expr, this.fallback, {this.zoomOnly = false});
+  BoolProp(this._expr, this.fallback, {this.zoomOnly = false})
+      : isConstant = false;
 
-  factory BoolProp.constant(bool value) => BoolProp((_) => value, value);
+  BoolProp.constant(bool value)
+      : _expr = ((_) => value),
+        fallback = value,
+        isConstant = true,
+        zoomOnly = false;
 
   bool eval(EvalContext ctx) {
+    if (isConstant) return fallback;
     if (zoomOnly) {
       if (ctx.zoom == _memoZoom) return _memoValue;
       _memoZoom = ctx.zoom;

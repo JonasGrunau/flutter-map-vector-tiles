@@ -24,6 +24,12 @@
   MapLibre) instead of a fixed 1.15 em, so every label's box is a little
   taller, and a wrapped label's box is as wide as its longest line
   rather than as `text-max-width`.
+- ⚡ The label pass resolves a layer's symbol properties once per zoom
+  step instead of once per label per frame when they read no feature
+  data, as in practice they never do. Constant string and boolean
+  properties and absent list properties (an unset `text-offset`, say)
+  also no longer run an expression on every read, which speeds up the
+  properties labels already used.
 - 🐛 A symbol allowed to overlap (`text-allow-overlap` /
   `icon-allow-overlap`) now reserves its space, as in MapLibre: labels
   that may not overlap keep clear of it, where before they could be

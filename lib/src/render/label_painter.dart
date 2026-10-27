@@ -594,7 +594,7 @@ class LabelPainter {
     if (placing) {
       _winners.clear();
       _repeatAnchors.clear();
-      _seatedThisPass.clear();
+      _seating = ++_seatings;
     }
     final loopStopwatch = Stopwatch()..start();
     for (final candidate in candidates) {
@@ -758,11 +758,13 @@ class LabelPainter {
     // insertion-order tiebreaker keeps draw order stable across frames.
     toDraw.sort((a, b) {
       final byLayer =
-          a.symbol.instance.layerIndex.compareTo(b.symbol.instance.layerIndex);
+          a.symbol.instance.layerIndex - b.symbol.instance.layerIndex;
       if (byLayer != 0) return byLayer;
       // `symbol-z-order` within the layer; see [_zOrderKey].
-      final byZOrder = a.drawKey.compareTo(b.drawKey);
-      if (byZOrder != 0) return byZOrder;
+      final ka = a.drawKey;
+      final kb = b.drawKey;
+      if (ka < kb) return -1;
+      if (ka > kb) return 1;
       return a.symbol.order - b.symbol.order;
     });
     _prepareAtlasGlyphs(toDraw, devicePixelRatio);
@@ -868,7 +870,7 @@ class LabelPainter {
     try {
       _disposeRetired();
       _pass++;
-      _seatedThisPass.clear();
+      _seating = ++_seatings;
       const tile = Size.square(displayTileSize);
       final candidates = [
         for (var i = 0; i < symbols.length; i++)
@@ -906,11 +908,15 @@ class LabelPainter {
     }
   }
 
-  /// The sittings a symbol was placed at in the current pass, cleared as
-  /// each pass (or [paintTile]) begins. The first placement at a sitting
-  /// owns its remembered choices for the pass; see [_rememberDrops] and
-  /// [_prepareVariableAnchor].
-  final _seatedThisPass = <SittingPlacement>{};
+  /// The current pass's stamp, renewed as each pass (or [paintTile])
+  /// begins and unique across painters: a sitting whose
+  /// [SittingPlacement.seatedPass] holds it was already placed at in this
+  /// pass. The first placement at a sitting owns its remembered choices
+  /// for the pass; see [_rememberDrops] and [_prepareVariableAnchor]. A
+  /// stamp rather than a set of sittings: it is read for every symbol
+  /// placed.
+  int _seating = 0;
+  static int _seatings = 0;
 
   /// Repeat suppression for `symbol-placement: line` text, rebuilt on
   /// every placing pass: per `(source, source-layer, text)`, the anchors
@@ -1209,6 +1215,7 @@ class LabelPainter {
       geometryType: instance.geometryType,
       featureId: instance.featureId,
     );
+    final rules = _rulesFor(layer, instance.layerIndex, evalZoom);
 
     // A label the style has faded out is skipped rather than laid out:
     // reserving collision space for invisible text would suppress the
@@ -1225,9 +1232,8 @@ class LabelPainter {
     // out of what is drawn and placed.
     final replaying = collision.permissive;
     final iconName = instance.iconName;
-    final fitsText = iconName != null &&
-        sprites != null &&
-        layer.iconTextFit.eval(ctx) != 'none';
+    final fitsText =
+        iconName != null && sprites != null && rules.iconTextFit(ctx) != 'none';
     final dropText = replaying && sitting.textDropped;
     _LaidOutText? text;
     var textShown = false;
@@ -1261,9 +1267,7 @@ class LabelPainter {
           final offset = layer.iconOffset.eval(ctx);
           final dx = offset.isNotEmpty ? offset[0] * iconSize : 0.0;
           final dy = offset.length > 1 ? offset[1] * iconSize : 0.0;
-          final pivot = anchor +
-              _translation(
-                  layer.iconTranslate, layer.iconTranslateAnchor, ctx, placed);
+          final pivot = anchor + rules.iconTranslation(ctx, placed);
           final rect = _anchoredRect(
               layer.iconAnchor.eval(ctx), pivot + Offset(dx, dy), w, h);
           // `auto` follows the line when the symbol sits on one, else the
@@ -1300,7 +1304,7 @@ class LabelPainter {
             iconSize: iconSize,
             pivot: pivot,
             rotation: rotation,
-            padding: _padding(layer.iconPadding.eval(ctx)),
+            padding: rules.iconPadding(ctx),
           );
         }
       }
@@ -1332,20 +1336,16 @@ class LabelPainter {
 
     // `icon-text-fit` sizes the icon to the text's box, so the icon is
     // fitted wherever that box ends up.
-    final fit = text != null && icon != null && fitsText
-        ? layer.iconTextFit.eval(ctx)
-        : '';
+    final fit =
+        text != null && icon != null && fitsText ? rules.iconTextFit(ctx) : '';
     final fitting = fit == 'width' || fit == 'height' || fit == 'both';
     // `symbol-avoid-edges`: every box inside the tile the symbol was
     // laid out in. A replay reproduces the pass's decision.
-    final edges = !replaying && layer.symbolAvoidEdges.eval(ctx)
+    final edges = !replaying && rules.avoidEdges(ctx)
         ? placed.transform?.tileBounds
         : null;
-    final textAnchor = text == null
-        ? anchor
-        : anchor +
-            _translation(
-                layer.textTranslate, layer.textTranslateAnchor, ctx, placed);
+    final textAnchor =
+        text == null ? anchor : anchor + rules.textTranslation(ctx, placed);
 
     // Variable anchors: try each candidate until one fits.
     if (text != null && variableAnchors != null) {
@@ -1361,7 +1361,7 @@ class LabelPainter {
               fitting ? fit : null,
               variableAnchors,
               textAnchor,
-              _pointTextAngle(layer, ctx, placed),
+              rules.pointTextAngle(ctx, placed),
               collision,
               sitting,
               edges),
@@ -1393,7 +1393,7 @@ class LabelPainter {
         textAngle = _uprightAngle(sitting, placed.screenAngle);
       }
     } else if (text != null) {
-      textAngle = _pointTextAngle(layer, ctx, placed);
+      textAngle = rules.pointTextAngle(ctx, placed);
     }
 
     var textRect = Rect.zero;
@@ -1486,10 +1486,27 @@ class LabelPainter {
         placed);
   }
 
+  /// [layer]'s rules at [zoom], found by its style index: the one
+  /// lookup a symbol pays per frame. It also primes [_SymbolRules.of]
+  /// for the helpers the symbol then goes through.
+  _SymbolRules _rulesFor(SymbolThemeLayer layer, int index, double zoom) {
+    final byIndex = _rulesByIndex;
+    if (index >= byIndex.length) byIndex.length = index + 1;
+    var rules = byIndex[index];
+    if (rules == null || !identical(rules.layer, layer)) {
+      rules = byIndex[index] = _SymbolRules.of(layer, zoom);
+    }
+    rules._resolve(zoom);
+    return _SymbolRules._last = rules;
+  }
+
+  final _rulesByIndex = <_SymbolRules?>[];
+
   /// [drawable] with its `symbol-z-order` key (see [_zOrderKey]).
   static _DrawableSymbol? _ordered(_DrawableSymbol? drawable,
           SymbolThemeLayer layer, EvalContext ctx, PlacedSymbol placed) =>
-      drawable?..drawKey = _zOrderKey(layer, ctx, placed);
+      drawable
+        ?..drawKey = _SymbolRules.of(layer, ctx.zoom).zOrderKey(ctx, placed);
 
   /// MapLibre's rule for a symbol's text and icon: each is tested
   /// against the placed symbols with its own overlap mode (`*-overlap`,
@@ -1513,17 +1530,19 @@ class LabelPainter {
   }) {
     final hasText = textBoxes != null;
     final hasIcon = iconBoxes != null;
-    final textOverlap = hasText
-        ? _overlapOf(layer.textOverlap, layer.textAllowOverlap, ctx)
-        : _Overlap.never;
-    final iconOverlap = hasIcon
-        ? _overlapOf(layer.iconOverlap, layer.iconAllowOverlap, ctx)
-        : _Overlap.never;
+    // A replay decides no space: what the last pass dropped is already
+    // left out, and the rest is placed as it was.
+    if (collision.permissive && textFits) {
+      return hasText || hasIcon ? (text: hasText, icon: hasIcon) : null;
+    }
+    final rules = _SymbolRules.of(layer, ctx.zoom);
+    final textOverlap = hasText ? rules.textOverlap(ctx) : _Overlap.never;
+    final iconOverlap = hasIcon ? rules.iconOverlap(ctx) : _Overlap.never;
     var placeText =
         hasText && textFits && collision.free(textBoxes, textOverlap, edges);
     var placeIcon = hasIcon && collision.free(iconBoxes, iconOverlap, edges);
-    final iconWithoutText = !hasText || layer.textOptional.eval(ctx);
-    final textWithoutIcon = !hasIcon || layer.iconOptional.eval(ctx);
+    final iconWithoutText = !hasText || rules.textOptional(ctx);
+    final textWithoutIcon = !hasIcon || rules.iconOptional(ctx);
     if (!iconWithoutText && !textWithoutIcon) {
       placeText = placeIcon = placeText && placeIcon;
     } else if (!textWithoutIcon) {
@@ -1532,10 +1551,10 @@ class LabelPainter {
       placeIcon = placeIcon && placeText;
     }
     if (!placeText && !placeIcon) return null;
-    if (placeText && !layer.textIgnorePlacement.eval(ctx)) {
+    if (placeText && !rules.textIgnore(ctx)) {
       collision.insert(textBoxes!, textOverlap);
     }
-    if (placeIcon && !layer.iconIgnorePlacement.eval(ctx)) {
+    if (placeIcon && !rules.iconIgnore(ctx)) {
       collision.insert(iconBoxes!, iconOverlap);
     }
     return (text: placeText, icon: placeIcon);
@@ -1549,7 +1568,8 @@ class LabelPainter {
   /// one on screen decided.
   void _rememberDrops(_CollisionIndex collision, SittingPlacement sitting,
       ({bool text, bool icon}) placement, bool hasText, bool hasIcon) {
-    if (collision.permissive || !_seatedThisPass.add(sitting)) return;
+    if (collision.permissive || sitting.seatedPass == _seating) return;
+    sitting.seatedPass = _seating;
     sitting.textDropped = hasText && !placement.text;
     sitting.iconDropped = hasIcon && !placement.icon;
   }
@@ -1581,17 +1601,6 @@ class LabelPainter {
     final cosB = math.cos(bearing);
     final sinB = math.sin(bearing);
     return Offset(dx * cosB - dy * sinB, dx * sinB + dy * cosB);
-  }
-
-  /// The angle point-placed text is drawn at: `text-rotate`, plus the
-  /// map's bearing when `text-rotation-alignment` is `map`.
-  static double _pointTextAngle(
-      SymbolThemeLayer layer, EvalContext ctx, PlacedSymbol placed) {
-    var angle = layer.textRotate.eval(ctx) * math.pi / 180;
-    if (layer.textRotationAlignment.eval(ctx) == 'map') {
-      angle += placed.screenAngle;
-    }
-    return angle;
   }
 
   /// `icon-padding`'s one to four values as a CSS-order inset (top,
@@ -1886,10 +1895,9 @@ class LabelPainter {
     Rect? edges,
   ) {
     final padding = layer.textPadding.eval(ctx);
-    final textOverlap =
-        _overlapOf(layer.textOverlap, layer.textAllowOverlap, ctx);
-    final iconOverlap =
-        _overlapOf(layer.iconOverlap, layer.iconAllowOverlap, ctx);
+    final rules = _SymbolRules.of(layer, ctx.zoom);
+    final textOverlap = rules.textOverlap(ctx);
+    final iconOverlap = rules.iconOverlap(ctx);
     final width = text.size.width * textScale;
     final height = text.size.height * textScale;
     // Index -1 is the remembered anchor, which the style-order loop
@@ -1904,7 +1912,7 @@ class LabelPainter {
     // other tile at a seam) already took this sitting in this pass: this
     // one may only stand in at the same anchor, never draw the label a
     // second time at another.
-    final taken = !collision.permissive && _seatedThisPass.contains(sitting);
+    final taken = !collision.permissive && sitting.seatedPass == _seating;
     if (taken && seat == null) return null;
     for (var i = seat == null ? 0 : -1; i < (taken ? 0 : anchors.length); i++) {
       final entry = i < 0 ? seat! : anchors[i];
@@ -2226,14 +2234,14 @@ class LabelPainter {
     double fontSize,
   ) =>
       _lookupText(instance, layer, ctx, fontSize,
-          _justify(layer.textJustify.eval(ctx), 'center'))
+          _SymbolRules.of(layer, ctx.zoom).baseJustify(ctx))
         ..pass = _pass;
 
   /// [text] with its lines aligned for a label at [anchor] — itself,
   /// unless `text-justify` is `auto` and the text has more than one line.
   static _LaidOutText _justifiedFor(_LaidOutText text, SymbolThemeLayer layer,
       EvalContext ctx, String anchor) {
-    final value = layer.textJustify.eval(ctx);
+    final value = _SymbolRules.of(layer, ctx.zoom).justify(ctx);
     return value == 'auto' ? text.justified(_justify(value, anchor)) : text;
   }
 
@@ -2246,7 +2254,8 @@ class LabelPainter {
   /// `text-justify` [value] resolved for text at [anchor]: `auto`
   /// justifies towards the side of the box the anchor is on.
   static String _justify(String value, String anchor) => switch (value) {
-        'left' || 'right' => value,
+        // The default first: read for every label shaped or looked up.
+        'center' || 'left' || 'right' => value,
         'auto' => switch (anchor) {
             'left' || 'top-left' || 'bottom-left' => 'left',
             'right' || 'top-right' || 'bottom-right' => 'right',
@@ -3339,6 +3348,190 @@ enum _Overlap {
 
   /// Collides only with boxes placed in [never] mode.
   cooperative,
+}
+
+/// How [LabelPainter._zOrderKey] orders a layer's symbols when drawn.
+enum _ZOrder { sortKey, screenY, none }
+
+/// A symbol layer's placement properties as one eval zoom resolves them.
+///
+/// The label pass reads these for every symbol on every frame, and in
+/// real styles none of them reads feature data: each is resolved here
+/// once per layer and zoom, so the pass pays a field read for it rather
+/// than an evaluation. A property that does read feature data stays
+/// null here and is evaluated per symbol.
+final class _SymbolRules {
+  _SymbolRules(this.layer);
+
+  final SymbolThemeLayer layer;
+  double _zoom = double.nan;
+
+  _Overlap? _textOverlap;
+  _Overlap? _iconOverlap;
+  bool? _textIgnore;
+  bool? _iconIgnore;
+  bool? _textOptional;
+  bool? _iconOptional;
+  bool? _avoidEdges;
+  String? _iconTextFit;
+  String? _justify;
+  String? _baseJustify;
+  EdgeInsets? _iconPadding;
+  bool? _textTranslated;
+  bool? _iconTranslated;
+  double? _textRotate;
+  bool? _textMapAligned;
+  _ZOrder? _zOrder;
+
+  // The layer the last lookup was for: every helper a symbol goes
+  // through asks for the same one in turn.
+  static _SymbolRules? _last;
+  static final _rules = Expando<_SymbolRules>();
+
+  /// [layer]'s rules at eval zoom [zoom].
+  static _SymbolRules of(SymbolThemeLayer layer, double zoom) {
+    final last = _last;
+    if (last != null && identical(last.layer, layer) && last._zoom == zoom) {
+      return last;
+    }
+    return _last = (_rules[layer] ??= _SymbolRules(layer)).._resolve(zoom);
+  }
+
+  static bool _fixedBool(BoolProp p) => p.isConstant || p.zoomOnly;
+  static bool _fixedString(StringProp? p) =>
+      p == null || p.isConstant || p.zoomOnly;
+  static bool _fixedList(NumListProp p) => p.isConstant || p.zoomOnly;
+  static bool _fixedOverlap(StringProp? overlap, BoolProp allow) =>
+      overlap == null ? _fixedBool(allow) : _fixedString(overlap);
+
+  void _resolve(double zoom) {
+    if (zoom == _zoom) return;
+    _zoom = zoom;
+    final l = layer;
+    final ctx = EvalContext(
+        zoom: zoom,
+        properties: const {},
+        geometryType: 'Point',
+        featureId: null);
+    T? fixed<T extends Object>(bool isFixed, T Function() value) =>
+        isFixed ? value() : null;
+    _textOverlap = fixed(_fixedOverlap(l.textOverlap, l.textAllowOverlap),
+        () => LabelPainter._overlapOf(l.textOverlap, l.textAllowOverlap, ctx));
+    _iconOverlap = fixed(_fixedOverlap(l.iconOverlap, l.iconAllowOverlap),
+        () => LabelPainter._overlapOf(l.iconOverlap, l.iconAllowOverlap, ctx));
+    _textIgnore = fixed(_fixedBool(l.textIgnorePlacement),
+        () => l.textIgnorePlacement.eval(ctx));
+    _iconIgnore = fixed(_fixedBool(l.iconIgnorePlacement),
+        () => l.iconIgnorePlacement.eval(ctx));
+    _textOptional =
+        fixed(_fixedBool(l.textOptional), () => l.textOptional.eval(ctx));
+    _iconOptional =
+        fixed(_fixedBool(l.iconOptional), () => l.iconOptional.eval(ctx));
+    _avoidEdges = fixed(
+        _fixedBool(l.symbolAvoidEdges), () => l.symbolAvoidEdges.eval(ctx));
+    _iconTextFit =
+        fixed(_fixedString(l.iconTextFit), () => l.iconTextFit.eval(ctx));
+    _justify =
+        fixed(_fixedString(l.textJustify), () => l.textJustify.eval(ctx));
+    _baseJustify = fixed(_fixedString(l.textJustify),
+        () => LabelPainter._justify(_justify!, 'center'));
+    _iconPadding = fixed(_fixedList(l.iconPadding),
+        () => LabelPainter._padding(l.iconPadding.eval(ctx)));
+    bool moves(List<double> t) =>
+        (t.isNotEmpty && t[0] != 0) || (t.length > 1 && t[1] != 0);
+    _textTranslated = fixed(
+        _fixedList(l.textTranslate), () => moves(l.textTranslate.eval(ctx)));
+    _iconTranslated = fixed(
+        _fixedList(l.iconTranslate), () => moves(l.iconTranslate.eval(ctx)));
+    final rotateFixed = l.textRotate.isConstant || l.textRotate.zoomOnly;
+    final alignFixed = _fixedString(l.textRotationAlignment);
+    _textRotate = fixed(rotateFixed && alignFixed,
+        () => l.textRotate.eval(ctx) * math.pi / 180);
+    _textMapAligned = fixed(rotateFixed && alignFixed,
+        () => l.textRotationAlignment.eval(ctx) == 'map');
+    final zOrderFixed = _fixedString(l.symbolZOrder) &&
+        _textOverlap != null &&
+        _iconOverlap != null &&
+        _textIgnore != null &&
+        _iconIgnore != null;
+    _zOrder = fixed(zOrderFixed, () {
+      final zOrder = l.symbolZOrder.eval(ctx);
+      if (zOrder != 'viewport-y' && !l.sortKey.isConstant) {
+        return _ZOrder.sortKey;
+      }
+      if (zOrder == 'source') return _ZOrder.none;
+      final overlaps = _textOverlap != _Overlap.never ||
+          _iconOverlap != _Overlap.never ||
+          _textIgnore! ||
+          _iconIgnore!;
+      return overlaps ? _ZOrder.screenY : _ZOrder.none;
+    });
+  }
+
+  _Overlap textOverlap(EvalContext ctx) =>
+      _textOverlap ??
+      LabelPainter._overlapOf(layer.textOverlap, layer.textAllowOverlap, ctx);
+  _Overlap iconOverlap(EvalContext ctx) =>
+      _iconOverlap ??
+      LabelPainter._overlapOf(layer.iconOverlap, layer.iconAllowOverlap, ctx);
+  bool textIgnore(EvalContext ctx) =>
+      _textIgnore ?? layer.textIgnorePlacement.eval(ctx);
+  bool iconIgnore(EvalContext ctx) =>
+      _iconIgnore ?? layer.iconIgnorePlacement.eval(ctx);
+  bool textOptional(EvalContext ctx) =>
+      _textOptional ?? layer.textOptional.eval(ctx);
+  bool iconOptional(EvalContext ctx) =>
+      _iconOptional ?? layer.iconOptional.eval(ctx);
+  bool avoidEdges(EvalContext ctx) =>
+      _avoidEdges ?? layer.symbolAvoidEdges.eval(ctx);
+  String iconTextFit(EvalContext ctx) =>
+      _iconTextFit ?? layer.iconTextFit.eval(ctx);
+  String justify(EvalContext ctx) => _justify ?? layer.textJustify.eval(ctx);
+
+  /// `text-justify` before any anchor resolves `auto`: what a label is
+  /// shaped with.
+  String baseJustify(EvalContext ctx) =>
+      _baseJustify ?? LabelPainter._justify(justify(ctx), 'center');
+  EdgeInsets iconPadding(EvalContext ctx) =>
+      _iconPadding ?? LabelPainter._padding(layer.iconPadding.eval(ctx));
+
+  /// `text-translate` for [placed], as [LabelPainter._translation].
+  Offset textTranslation(EvalContext ctx, PlacedSymbol placed) =>
+      _textTranslated == false
+          ? Offset.zero
+          : LabelPainter._translation(
+              layer.textTranslate, layer.textTranslateAnchor, ctx, placed);
+
+  /// `icon-translate` for [placed], as [LabelPainter._translation].
+  Offset iconTranslation(EvalContext ctx, PlacedSymbol placed) =>
+      _iconTranslated == false
+          ? Offset.zero
+          : LabelPainter._translation(
+              layer.iconTranslate, layer.iconTranslateAnchor, ctx, placed);
+
+  /// The angle point-placed text is drawn at: `text-rotate`, plus the
+  /// map's bearing when `text-rotation-alignment` is `map`.
+  double pointTextAngle(EvalContext ctx, PlacedSymbol placed) {
+    final rotate = _textRotate;
+    final mapAligned = _textMapAligned;
+    if (rotate != null && mapAligned != null) {
+      return mapAligned ? rotate + placed.screenAngle : rotate;
+    }
+    var angle = layer.textRotate.eval(ctx) * math.pi / 180;
+    if (layer.textRotationAlignment.eval(ctx) == 'map') {
+      angle += placed.screenAngle;
+    }
+    return angle;
+  }
+
+  /// Where [placed] sorts among this layer's symbols when drawn; see
+  /// [LabelPainter._zOrderKey].
+  double zOrderKey(EvalContext ctx, PlacedSymbol placed) => switch (_zOrder) {
+        _ZOrder.sortKey => placed.instance.sortKey,
+        _ZOrder.screenY => placed.screenAnchor.dy,
+        _ZOrder.none => 0,
+        null => LabelPainter._zOrderKey(layer, ctx, placed),
+      };
 }
 
 /// Grid-bucketed screen-space collision index. Boxes placed in
