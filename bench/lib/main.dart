@@ -75,7 +75,9 @@ const _mode = String.fromEnvironment('BENCH_MODE', defaultValue: 'bench');
 const _logGone = bool.fromEnvironment('BENCH_LOG_GONE');
 
 /// `BENCH_WATCH=<regexp>` prints every rejection, frame by frame, of the
-/// labels whose continuity key matches — for chasing one blink.
+/// labels whose continuity key matches, and a `DRAWN` line (label id,
+/// screen position, opacity) for every frame one is drawn — for chasing
+/// one blink.
 const _watch = String.fromEnvironment('BENCH_WATCH');
 final _watchRe = _watch.isEmpty ? null : RegExp(_watch);
 
@@ -330,8 +332,17 @@ class _BenchPageState extends State<BenchPage>
   /// while a window is recording; the frame-to-frame memory runs
   /// always, so a window never opens against an empty previous frame.
   void _onLabelsDrawn(double styleZoom, List<DrawnLabelRecord> drawn) {
+    final watch = _recording ? _watchRe : null;
     for (final record in drawn) {
       _keyOfId[record.id] = record.key;
+      if (watch != null && watch.hasMatch('${record.key}')) {
+        debugPrint('BENCH[$_label] DRAWN z=${_zoomNow()?.toStringAsFixed(3)} '
+            't=${DateTime.now().millisecondsSinceEpoch % 100000} '
+            'id=${record.id} at=${record.position.dx.toStringAsFixed(1)},'
+            '${record.position.dy.toStringAsFixed(1)} '
+            'opacity=${record.opacity.toStringAsFixed(2)}'
+            '${record.ghost ? ' ghost' : ''} ${record.key}');
+      }
     }
     if (!_mapReady.isCompleted) return;
     final camera = _controller.camera;
