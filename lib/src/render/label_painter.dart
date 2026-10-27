@@ -1695,17 +1695,14 @@ class LabelPainter {
       rect: rect,
       pivot: textAnchor,
       rotation: rotation,
-      cells: xs.length == 1 && ys.length == 1
+      mesh: xs.length == 1 && ys.length == 1
           ? null
-          : [
-              for (final y in ys)
-                for (final x in xs)
-                  (
-                    Rect.fromLTRB(sprite.x + x.$1, sprite.y + y.$1,
-                        sprite.x + x.$2, sprite.y + y.$2),
-                    Rect.fromLTRB(x.$3, y.$3, x.$4, y.$4),
-                  ),
-            ],
+          : _IconMesh(
+              xs: [xs.first.$3, for (final x in xs) x.$4],
+              ys: [ys.first.$3, for (final y in ys) y.$4],
+              us: [sprite.x + xs.first.$1, for (final x in xs) sprite.x + x.$2],
+              vs: [sprite.y + ys.first.$1, for (final y in ys) sprite.y + y.$2],
+            ),
     );
   }
 
@@ -3012,10 +3009,9 @@ class _DrawableIcon {
   final EdgeInsets padding;
 
   /// For an icon stretched by `icon-text-fit` around a sprite's
-  /// `stretchX` / `stretchY` zones: each slice of the sprite (in the
-  /// sheet) and where it is drawn, together covering [rect]. Null draws
-  /// the whole sprite into [rect].
-  final List<(Rect, Rect)>? cells;
+  /// `stretchX` / `stretchY` zones: the grid its slices form, covering
+  /// [rect]. Null draws the whole sprite into [rect].
+  final _IconMesh? mesh;
 
   _DrawableIcon({
     required this.atlas,
@@ -3030,16 +3026,16 @@ class _DrawableIcon {
     required this.pivot,
     this.rotation = 0,
     this.padding = const EdgeInsets.all(2),
-    this.cells,
+    this.mesh,
   });
 
-  /// This icon drawn into [rect] instead, sliced by [cells], about
+  /// This icon drawn into [rect] instead, sliced by [mesh], about
   /// [pivot] at [rotation] — `icon-text-fit`'s result.
   _DrawableIcon fitted({
     required Rect rect,
     required Offset pivot,
     required double rotation,
-    List<(Rect, Rect)>? cells,
+    _IconMesh? mesh,
   }) =>
       _DrawableIcon(
         atlas: atlas,
@@ -3054,7 +3050,7 @@ class _DrawableIcon {
         pivot: pivot,
         rotation: rotation,
         padding: padding,
-        cells: cells,
+        mesh: mesh,
       );
 
   /// Screen extent of the (rotated) sprite. Read once per collision
@@ -3110,15 +3106,31 @@ class _DrawableIcon {
   }
 
   void _drawSprite(Canvas canvas, Paint paint) {
-    final cells = this.cells;
-    if (cells == null) {
+    final mesh = this.mesh;
+    if (mesh == null) {
       canvas.drawImageRect(atlas.image, sprite.sourceRect, rect, paint);
       return;
     }
-    for (final (source, target) in cells) {
-      canvas.drawImageRect(atlas.image, source, target, paint);
-    }
+    // One mesh, so neighbouring slices share their edges: drawn slice by
+    // slice, each slice's antialiased edge let the background through
+    // along the seams wherever they fell between pixels.
+    final vertices = mesh.vertices();
+    canvas.drawVertices(vertices, BlendMode.srcOver,
+        paint..shader = _shaderFor(atlas, paint.filterQuality));
+    vertices.dispose();
   }
+
+  /// One shader over [atlas]'s sheet per filter quality, living as long
+  /// as the atlas: never disposed here, since on the web disposing an
+  /// `ImageShader` disposes the image it samples, which the atlas owns.
+  static ImageShader _shaderFor(SpriteAtlas atlas, FilterQuality quality) =>
+      (_shaders[atlas] ??= {})[quality] ??= ImageShader(
+          atlas.image, TileMode.clamp, TileMode.clamp, _identity,
+          filterQuality: quality);
+
+  static final _shaders = Expando<Map<FilterQuality, ImageShader>>();
+  static final _identity =
+      Float64List.fromList([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
   /// Thresholds the distance field at [edge] and tints what survives
   /// with [color]. A colour matrix is applied *after* texture sampling,
@@ -3147,6 +3159,56 @@ class _DrawableIcon {
         0, 0, 0, 0, color.b * 255, //
         0, 0, 0, slope, shift * 255, //
       ]);
+  }
+}
+
+/// A sliced icon's grid: [xs] and [ys] are where its slices meet on
+/// screen, [us] and [vs] the same lines in the sprite sheet.
+final class _IconMesh {
+  _IconMesh({
+    required this.xs,
+    required this.ys,
+    required this.us,
+    required this.vs,
+  });
+
+  final List<double> xs;
+  final List<double> ys;
+  final List<double> us;
+  final List<double> vs;
+
+  /// Two triangles per slice, over vertices the slices share.
+  ui.Vertices vertices() {
+    final columns = xs.length;
+    final rows = ys.length;
+    final positions = Float32List(columns * rows * 2);
+    final uvs = Float32List(columns * rows * 2);
+    var i = 0;
+    for (var row = 0; row < rows; row++) {
+      for (var column = 0; column < columns; column++) {
+        positions[i] = xs[column];
+        uvs[i++] = us[column];
+        positions[i] = ys[row];
+        uvs[i++] = vs[row];
+      }
+    }
+    final indices = Uint16List((columns - 1) * (rows - 1) * 6);
+    var k = 0;
+    for (var row = 0; row + 1 < rows; row++) {
+      for (var column = 0; column + 1 < columns; column++) {
+        final topLeft = row * columns + column;
+        final bottomLeft = topLeft + columns;
+        indices
+          ..[k++] = topLeft
+          ..[k++] = topLeft + 1
+          ..[k++] = bottomLeft
+          ..[k++] = topLeft + 1
+          ..[k++] = bottomLeft + 1
+          ..[k++] = bottomLeft;
+      }
+    }
+    return ui.Vertices.raw(ui.VertexMode.triangles, positions,
+        textureCoordinates: uvs, indices: indices);
   }
 }
 

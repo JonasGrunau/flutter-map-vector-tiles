@@ -891,6 +891,43 @@ void main() {
       expect(_span(data, 200, _red), _about((164, 235), tolerance: 4));
     });
 
+    test('a stretched icon has no seams between its slices', () async {
+      // A solid sprite stretched on both axes, its slice boundaries on
+      // fractional pixels: drawn slice by slice, each slice's
+      // antialiased edge let the background through along the seams.
+      final atlas = await _sheet(16, 16, (_, __) => 0xffff0000,
+          stretchX: [(4, 12)], stretchY: [(4, 12)]);
+      addTearDown(atlas.dispose);
+      final layer = _layer({
+        'text-field': 'x',
+        'text-size': 20,
+        'icon-image': 'i',
+        'icon-text-fit': 'both',
+        'icon-text-fit-padding': [3.3, 3.3, 3.3, 3.3],
+      }, paint: {
+        'text-color': 'rgba(0,0,0,0)',
+      });
+      final data = await _render([
+        _symbol(layer, const Offset(200.4, 200.4), text: 'WWWW', icon: 'i'),
+      ], sprites: atlas);
+      bool solid(int x, int y) {
+        final p = _pixel(data, x, y);
+        return p.a == 255 && p.r > 250 && p.g < 5 && p.b < 5;
+      }
+
+      // The icon spans about 157..244 × 185..216; one pixel in from its
+      // edges, every pixel is the sprite's own colour.
+      final notSolid = [
+        for (var x = 159; x <= 241; x++)
+          for (final y in const [190, 200, 210])
+            if (!solid(x, y)) (x, y),
+        for (var y = 188; y <= 213; y++)
+          for (final x in const [165, 200, 235])
+            if (!solid(x, y)) (x, y),
+      ];
+      expect(notSolid, isEmpty);
+    });
+
     test('the content box is what fits the text', () async {
       // Content is the red middle; the blue frame stays outside it.
       final atlas = await _sheet(

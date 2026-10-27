@@ -292,9 +292,11 @@ screen y or source order, as MapLibre resolves it.
 `icon-text-fit` sizes the icon once the text's box is known, wherever
 the variable anchors put it: the fitted axes span the text plus
 `icon-text-fit-padding`, and a sprite that declares `stretchX` /
-`stretchY` is drawn as slices, the stretch zones sharing whatever its
+`stretchY` is cut into slices, the stretch zones sharing whatever its
 fixed pixels leave of the span and its `content` box landing on the
-text. Text with a fitted icon is never curved; a shield stays a box.
+text. The slices are drawn as one textured mesh (`drawVertices`), so
+neighbouring slices share their edges: drawn one by one, each slice's
+antialiased edge showed the background along the seams. Text with a fitted icon is never curved; a shield stays a box.
 `text-rotate` turns point-placed text (and its collision box, as an
 axis-aligned bound) about its anchor, `text-rotation-alignment: map`
 turns it with the map, and `*-translate` moves text and icon apart —
