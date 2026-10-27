@@ -259,12 +259,17 @@ for frames with no per-frame label work in them.
 - **A label's direction is set per line, with isolates.** Labels are
   laid out left to right; each line of a paragraph whose first strong
   character is right-to-left (`_readsRightToLeft`, the bidi rule
-  MapLibre follows) is wrapped in a right-to-left isolate. A newline
-  ends every isolate, so the lines `breakAroundWideRuns` spells out get
-  one each, carrying the direction of the paragraph they came from; a
-  paragraph the line breaker wraps stays in one. Left-to-right text is
-  laid out exactly as before. Right-to-left text is never curve-safe,
-  so the isolate controls never reach `_computeClusters`.
+  MapLibre follows) is wrapped in a right-to-left isolate if it needs
+  one (`_needsIsolate`: a left-to-right letter or direction control in
+  it, or something other than a letter or mark at either end). A
+  newline ends every isolate, so the lines `breakAroundWideRuns` spells
+  out get one each, carrying the direction of the paragraph they came
+  from; a paragraph the line breaker wraps stays in one. Left-to-right
+  text, and right-to-left lines that resolve the same either way (most
+  Arabic and Hebrew names), are laid out exactly as before: an isolate
+  is two characters a font must map, and a line drawn from two fonts
+  comes out taller. Right-to-left text is never curve-safe, so the
+  isolate controls never reach `_computeClusters`.
 - **Curved labels draw from `GlyphAtlas`, and the atlas is a
   `toImageSync` image like any tile.** Keep `rasterizeGlyphs` tied to
   the layer's `_foregrounded` and `discardGlyphAtlas()` in
