@@ -13,8 +13,9 @@ renderer / cache / executor satellite packages.
 The design commitments that shape almost every file: geometry is rasterized
 **once** per display tile into a GPU-resident `ui.Image`; by default labels
 are **not** baked into those rasters but drawn per frame in screen space with
-one global collision pass (`LabelMode.tile` opts into baking them, through
-the same label painter); cancellation is a **state**, never an exception;
+one global collision pass, decided on a placement isolate where isolates
+exist (`LabelMode.tile` opts into baking them, through the same label
+painter); cancellation is a **state**, never an exception;
 every `ui.Image` has exactly one owner and is disposed on eviction.
 
 ## Key Files
@@ -83,7 +84,8 @@ every `ui.Image` has exactly one owner and is disposed on eviction.
   Anything else under `lib/src/` is private and may be changed freely; adding
   an export is a semver-relevant decision.
 - **Web is supported since 2.0.0** — tile preparation runs on a yielding
-  event-loop executor there instead of isolates, PMTiles gunzip uses
+  event-loop executor there instead of isolates, label placement passes
+  run in-frame instead of on the placement isolate, PMTiles gunzip uses
   `DecompressionStream`, and web-only tests exist (`flutter test --platform
   chrome`). The one real limitation: there is no persistent disk cache on web
   (`path_provider` has no web support) — tiles and styles fall back to the

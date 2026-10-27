@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- ⚡ **Label placement off the UI thread**: on platforms with isolates
+  the label collision pass runs in an isolate of its own, from a copy of
+  the theme and the metrics of the text the UI already shaped, and the
+  frame that needs a new decision no longer makes it. Zooming over a
+  dense city on an Android phone, the frames over 16.7 ms fell from
+  7–10 % to about 2 %. Placement shows one frame later than before,
+  which in a very fast zoom draws fewer labels per frame; web, label
+  fades turned off and `LabelMode.tile` still place in-frame.
 - 🐛 A label two tiles laid out at once — the feature on a seam that
   both neighbours claim, or the outgoing and arriving level's copy
   during a zoom crossing — drew twice, one copy over the other, in a
