@@ -43,7 +43,7 @@ abstract final class MatchedFeatures {
     final matched = <PreparedFeature>[
       for (final feature in features)
         // The zoom is never read: the filter is zoom-free.
-        if (layer.matches(EvalContext(
+        if (layer.matches(featureContext(
           zoom: 0,
           properties: feature.properties,
           geometryType: feature.geometryType,

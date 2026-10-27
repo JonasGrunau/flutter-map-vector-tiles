@@ -646,8 +646,8 @@ void main() {
     };
 
     Object? evalAt(Object? json, FeatureGeometry geometry) =>
-        ExpressionParser().parse(json)(
-            EvalContext(zoom: 0, geometryType: 'Point', geometry: geometry));
+        ExpressionParser().parse(json)(GeometryEvalContext(
+            zoom: 0, geometryType: 'Point', geometry: geometry));
 
     test('within tests the feature against the polygons', () {
       expect(evalAt(['within', square], point(2048, 2048)), isTrue);

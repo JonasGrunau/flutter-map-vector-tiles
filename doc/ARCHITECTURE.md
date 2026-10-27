@@ -959,15 +959,20 @@ style's plain id while others append `|state=<json>`. Siblings read the
 same feature properties from the same sources, so `VectorTileLayer`
 does not rebuild its stores for one: it re-renders the live tiles from
 the decoded data, as for a sprites change, the old imagery holding
-until each replacement lands. Recompiling a full basemap costs a few
-milliseconds; every visible tile is drawn again.
+until each replacement lands. Recompiling Liberty takes 0.4–0.8 ms
+on a Nothing Phone (1); the cost of a state change is drawing every
+visible tile again.
 
 `within` and `distance` read the feature's geometry, which nothing else
 in the engine does. The parser flags them (`ThemeLayer.readsGeometry`),
 and only for such layers do the filter matcher, the rasterizer and the
 symbol layouter build a `FeatureGeometry` — the data tile's z/x/y and
-extent plus the feature's coordinate runs — into the `EvalContext`;
-symbol instances carry it for the per-frame label pass. The GeoJSON
+extent plus the feature's coordinate runs — and evaluate in a
+`GeometryEvalContext`, an internal subclass that carries it; symbol
+instances carry it for the per-frame label pass. Every other layer
+keeps the plain `EvalContext`: one is allocated per feature evaluated,
+and a field more on every one made filter matching on a fresh tile
+measurably slower on a phone. The GeoJSON
 argument is parsed once. `within` runs in Web Mercator on the feature's
 own grid, `distance` on a local flat approximation of the ellipsoid
 around the feature's first coordinate, both following MapLibre's

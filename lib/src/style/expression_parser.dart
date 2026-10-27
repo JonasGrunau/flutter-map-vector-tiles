@@ -665,7 +665,7 @@ class ExpressionParser {
   }
 
   /// `within` and `distance`: a GeoJSON literal compiled once, tested
-  /// against the feature's geometry ([EvalContext.geometry]). The answer
+  /// against the feature's geometry ([GeometryEvalContext]). The answer
   /// depends on nothing but the feature, so it is kept per feature —
   /// against its coordinate list, weakly — and a paint property reading
   /// it costs the geometry test once per feature, not once per display
@@ -684,14 +684,14 @@ class ExpressionParser {
     final memo = Expando<Object>(op);
     if (op == 'within') {
       return (ctx) {
+        if (ctx is! GeometryEvalContext) return false;
         final geometry = ctx.geometry;
-        if (geometry == null) return false;
         return memo[geometry.parts] ??= featureWithin(geometry, shapes);
       };
     }
     return (ctx) {
+      if (ctx is! GeometryEvalContext) return null;
       final geometry = ctx.geometry;
-      if (geometry == null) return null;
       final cached = memo[geometry.parts];
       if (cached != null) return cached is double ? cached : null;
       final d = featureDistance(geometry, shapes);

@@ -169,6 +169,31 @@ void main() {
         same(sourceLayer.features));
   });
 
+  test('a within filter reads each feature\'s geometry in its data tile', () {
+    // The western three quarters of data tile 14/8000/5000 (lon
+    // -4.21875…-4.19678, lat 57.2196…57.2315): the centre point lies
+    // inside, the line across the tile leaves it, and polygons are
+    // never within.
+    final west = {
+      'type': 'Polygon',
+      'coordinates': [
+        [
+          [-5, 57],
+          [-4.2022705, 57],
+          [-4.2022705, 57.5],
+          [-5, 57.5],
+          [-5, 57],
+        ]
+      ],
+    };
+    final layer = _fillTheme(['within', west]).layers.single;
+    expect(layer.readsGeometry, isTrue);
+    final matched = MatchedFeatures.of(
+        layer, _tile(_features()).layers['landuse']!,
+        tile: _dataKey);
+    expect(matched!.map((f) => f.id), [6]);
+  });
+
   test('a zoom-reading filter is not cached and still flips across zooms', () {
     final tile = _tile(_features());
     final theme = _fillTheme([

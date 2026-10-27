@@ -9,9 +9,9 @@ import 'css_color.dart';
 /// The geometry of the feature being evaluated, in the data tile it was
 /// decoded from — what `within` and `distance` read. The renderer builds
 /// one only for layers whose expressions use them
-/// (`ThemeLayer.readsGeometry`); everywhere else [EvalContext.geometry]
-/// is null and those operators answer as for a feature without
-/// geometry.
+/// (`ThemeLayer.readsGeometry`) and hands it over in a
+/// [GeometryEvalContext]; in any other context those operators answer
+/// as for a feature without geometry.
 @internal
 final class FeatureGeometry {
   /// The data tile, whose extent the coordinates in [parts] span.
@@ -50,18 +50,12 @@ class EvalContext {
   /// Bindings introduced by `let`.
   final Map<String, Object?>? vars;
 
-  /// The feature's geometry, for `within` and `distance`; null unless
-  /// the layer being evaluated reads it.
-  @internal
-  final FeatureGeometry? geometry;
-
   const EvalContext({
     required this.zoom,
     this.properties = const {},
     this.geometryType = '',
     this.featureId,
     this.vars,
-    @internal this.geometry,
   });
 
   EvalContext withVars(Map<String, Object?> newVars) => EvalContext(
@@ -70,11 +64,65 @@ class EvalContext {
         geometryType: geometryType,
         featureId: featureId,
         vars: {...?vars, ...newVars},
-        geometry: geometry,
       );
 
   static const empty = EvalContext(zoom: 0);
 }
+
+/// An [EvalContext] that also carries the feature's geometry, for
+/// `within` and `distance`. Only layers that read geometry
+/// (`ThemeLayer.readsGeometry`) get one, through [featureContext]: a
+/// context is allocated per feature evaluated, and a field more on every
+/// one made filter matching on a fresh tile measurably slower on a phone.
+@internal
+final class GeometryEvalContext extends EvalContext {
+  final FeatureGeometry geometry;
+
+  const GeometryEvalContext({
+    required super.zoom,
+    super.properties,
+    super.geometryType,
+    super.featureId,
+    super.vars,
+    required this.geometry,
+  });
+
+  @override
+  EvalContext withVars(Map<String, Object?> newVars) => GeometryEvalContext(
+        zoom: zoom,
+        properties: properties,
+        geometryType: geometryType,
+        featureId: featureId,
+        vars: {...?vars, ...newVars},
+        geometry: geometry,
+      );
+}
+
+/// The context to evaluate one feature in: a [GeometryEvalContext] when
+/// the layer reads geometry and [geometry] is given, a plain
+/// [EvalContext] otherwise.
+@internal
+EvalContext featureContext({
+  required double zoom,
+  required Map<String, Object?> properties,
+  required String geometryType,
+  required Object? featureId,
+  FeatureGeometry? geometry,
+}) =>
+    geometry == null
+        ? EvalContext(
+            zoom: zoom,
+            properties: properties,
+            geometryType: geometryType,
+            featureId: featureId,
+          )
+        : GeometryEvalContext(
+            zoom: zoom,
+            properties: properties,
+            geometryType: geometryType,
+            featureId: featureId,
+            geometry: geometry,
+          );
 
 /// A compiled style expression.
 typedef Expr = Object? Function(EvalContext ctx);

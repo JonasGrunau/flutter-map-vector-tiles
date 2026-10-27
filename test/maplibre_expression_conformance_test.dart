@@ -223,7 +223,7 @@ String? _run(Map<String, Object?> fixture) {
     final globals = (input[0] as Map).cast<String, Object?>();
     final feature = (input[1] as Map).cast<String, Object?>();
     final geometry = (feature['geometry'] as Map?)?.cast<String, Object?>();
-    final ctx = EvalContext(
+    final ctx = featureContext(
       zoom: (globals['zoom'] as num?)?.toDouble() ?? 0,
       properties:
           (feature['properties'] as Map?)?.cast<String, Object?>() ?? const {},

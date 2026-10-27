@@ -314,7 +314,7 @@ class SymbolLayouter {
         final geometry = layer.readsGeometry
             ? featureGeometry(tile.key, sourceLayer, feature)
             : null;
-        final ctx = EvalContext(
+        final ctx = featureContext(
           zoom: styleZoom,
           properties: feature.properties,
           geometryType: feature.geometryType,

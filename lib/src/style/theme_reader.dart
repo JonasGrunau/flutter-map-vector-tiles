@@ -402,8 +402,9 @@ class ThemeReader {
 }
 
 /// One style's themes under different global states. Compiling a
-/// sibling re-reads the style document with the new state — a few
-/// milliseconds for a full basemap — so recent ones are kept: asking
+/// sibling re-reads the style document with the new state — under a
+/// millisecond for a full basemap on a phone — and every visible tile
+/// is then drawn again, so recent ones are kept: asking
 /// for a state again, as a `build` method does on every rebuild,
 /// returns the same instance and so does not redraw anything.
 final class _GlobalStates implements GlobalStateFamily {
