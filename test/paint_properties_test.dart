@@ -427,15 +427,14 @@ void main() {
     });
 
     test('a blur narrower than anti-aliasing still takes its ink', () async {
-      // Americana's roads: 0.5 px. The line loses what the ramp takes.
-      final r = await compare(3, 0.5);
-      expect(r.ink, closeTo(r.expectedInk, 0.2));
-      expect(r.maxError, lessThan(0.2));
-      // Drawn per feature (Americana's widths read the feature), it is
-      // under the per-feature threshold: no mask filter, the same ink.
-      final perFeature = await compare(3, 0.5, perFeature: true);
-      expect(perFeature.ink, closeTo(perFeature.expectedInk, 0.2));
-      expect(perFeature.maxError, lessThan(0.3));
+      // Americana's roads: 0.5 px, under the mask filter's threshold.
+      // The line loses what the ramp takes, drawn as one path for the
+      // layer or per feature alike.
+      for (final perFeature in [false, true]) {
+        final r = await compare(3, 0.5, perFeature: perFeature);
+        expect(r.ink, closeTo(r.expectedInk, 0.2));
+        expect(r.maxError, lessThan(0.3));
+      }
     });
 
     test('a layer-wide opaque blur drawn as one path matches per feature',
