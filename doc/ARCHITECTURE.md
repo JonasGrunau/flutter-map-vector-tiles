@@ -215,7 +215,9 @@ so joining, reordering and stacking come right in every script, and the label co
 `TextPainter` does not: words kept whole at `text-max-width` (Chinese
 and Japanese still breaking between characters, which Skia's intrinsic
 widths hide), and a direction per line taken from its first letter,
-set with Unicode isolates because a label is laid out left to right.
+set with Unicode isolates because a label is laid out left to right —
+only on the lines that would read differently without one, such as an
+Arabic name holding a Latin word.
 Only scripts whose glyphs keep their shape alone are curved glyph by
 glyph; the rest are drawn straight along the line. `test/scripts/`
 draws all of it in 23 scripts with bundled fonts and asserts on the
