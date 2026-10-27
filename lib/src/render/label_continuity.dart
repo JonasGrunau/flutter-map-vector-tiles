@@ -20,10 +20,11 @@ import 'symbol_layouter.dart';
 /// along-line label from teleporting when the next zoom level re-spaces
 /// its street's anchors.
 ///
-/// A record, not an `Object.hash` value: set membership must compare the
-/// actual triple, or a hash collision between unrelated labels would
-/// silently conflate them. Memoized on the instance — the label pass
-/// looks it up per candidate per frame.
+/// A [ContinuityKey], not an `Object.hash` value: set membership must
+/// compare the actual triple, or a hash collision between unrelated
+/// labels would silently conflate them. Its hash is computed once, and
+/// it is memoized on the instance — the label pass looks it up several
+/// times per candidate per frame.
 Object labelContinuityKey(SymbolInstance symbol) => symbol.continuityKey;
 
 /// The subset of [symbols] that was actually on screen, per [drawn] —
