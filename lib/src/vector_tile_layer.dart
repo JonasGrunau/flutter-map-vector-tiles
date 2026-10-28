@@ -35,6 +35,7 @@ import 'render/symbol_layouter.dart';
 import 'render/tile_rasterizer.dart';
 import 'style/sprite_atlas.dart';
 import 'style/theme.dart';
+import 'text/glyph_source.dart';
 import 'tile_offset.dart';
 import 'tile_providers.dart';
 
@@ -50,6 +51,7 @@ import 'tile_providers.dart';
 ///       tileProviders: style.providers,
 ///       rasterSources: style.rasterSources,
 ///       sprites: style.sprites,
+///       glyphs: style.glyphs,
 ///     ),
 ///   ],
 /// )
@@ -71,6 +73,17 @@ class VectorTileLayer extends StatefulWidget {
 
   /// Sprite atlas for icon rendering (optional).
   final SpriteAtlas? sprites;
+
+  /// The style's glyphs (optional; `StyleReader` provides them as
+  /// `Style.glyphs` for every style that declares `glyphs`). With them,
+  /// labels draw in the style's own fonts, as in MapLibre, and their
+  /// text is laid out from the glyphs' metrics instead of by the
+  /// platform's text shaper — a fraction of the UI-thread time per
+  /// tile. Text in scripts that need complex shaping (right-to-left,
+  /// Indic, Southeast Asian), CJK, emoji, and text whose glyphs fail to
+  /// load keep the platform's renderer and system fonts, as all labels
+  /// do without this. The layer does not take ownership.
+  final GlyphSource? glyphs;
 
   /// See [TileOffset]. Defaults to [TileOffset.maplibre], which renders
   /// MapLibre-authored styles (MapTiler etc.) exactly as designed.
@@ -163,6 +176,7 @@ class VectorTileLayer extends StatefulWidget {
     required this.tileProviders,
     this.rasterSources = const {},
     this.sprites,
+    this.glyphs,
     this.tileOffset = TileOffset.maplibre,
     this.concurrency = 3,
     this.diskCacheMaximumSizeInBytes = 50 * 1024 * 1024,
@@ -576,6 +590,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // alongside the layers that did live through it.
     _recovered = _away ? _departures - 1 : _departures;
     if (_foregrounded) _away = false;
+    _labelPainter.glyphs = widget.glyphs;
     _executor = TilePrepareExecutor(concurrency: widget.concurrency);
     _fadeTicker = createTicker(_onFadeTick);
     _renderTicker = createTicker(_pumpRenderQueue);
@@ -748,6 +763,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   void _clearTiles() {
     _renderQueue.clear();
+    _dropParkedJobs();
     for (final tile in _tiles.values) {
       tile.dispose();
     }
@@ -782,6 +798,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // must be re-rasterized with the new atlas.
       _patterns?.dispose();
       _patterns = null;
+      refresh = true;
+    }
+    if (oldWidget.glyphs != widget.glyphs) {
+      // Every label is shaped anew — from the new glyphs, or by the
+      // platform without any — so the live tiles' symbols are redone.
+      _labelPainter.glyphs = widget.glyphs;
       refresh = true;
     }
     // Symbols are laid out at rasterize time; the paint pass checks the
@@ -937,7 +959,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// The sprite atlas contributes [SpriteAtlas.signature], not its
   /// object identity: re-reading a style yields a new atlas every time,
   /// so identity would mint a fresh cache on every map open and strand
-  /// the previous one.
+  /// the previous one. The glyphs contribute [GlyphSource.signature] for
+  /// the same reason.
   static String _signatureOf(VectorTileLayer widget, double devicePixelRatio) {
     final providers = [
       for (final entry in widget.tileProviders.providers.entries)
@@ -947,7 +970,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     ]..sort();
     return '${widget.theme.id}|${widget.tileOffset.zoomOffset}|'
         '$devicePixelRatio|${widget.showLabels}|${widget.labelMode.name}|'
-        '${widget.sprites?.signature}|${providers.join(',')}';
+        '${widget.sprites?.signature}|${widget.glyphs?.signature}|'
+        '${providers.join(',')}';
   }
 
   /// Memoized [_signatureOf] for the current widget: it is consulted on
@@ -1771,7 +1795,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
               continue;
             }
           case RenderPhase.symbols:
-            if (!_symbolsJob(tile, job, stopwatch)) {
+            final outcome = _symbolsJob(tile, job, stopwatch);
+            if (outcome == _SymbolsOutcome.parked) {
+              // Waiting for glyphs; [_parkForGlyphs] owns the job now.
+              processed++;
+              continue;
+            }
+            if (outcome == _SymbolsOutcome.outOfTick) {
               // Shaping ran out of tick. The job keeps its cursor and
               // its already-extracted candidates (and, drawing labels
               // into the tile, its recorded geometry, which therefore
@@ -1927,7 +1957,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// image instead, geometry and labels together (see
   /// [_rasterizeWithLabels]); a tile in that mode shows nothing of its
   /// own until then.
-  bool _symbolsJob(_DisplayTile tile, _RenderJob job, Stopwatch tick) {
+  _SymbolsOutcome _symbolsJob(
+      _DisplayTile tile, _RenderJob job, Stopwatch tick) {
     developer.Timeline.startSync('VT symbols');
     final styleZoom = _styleZoomOf(tile.key.z.toDouble());
     var symbols = job.symbols;
@@ -1946,6 +1977,17 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           styleZoom: styleZoom,
           exact: _tileLabels);
     }
+    if (!job.glyphsSettled) {
+      // Shaping waits for the glyph ranges the labels need, so they
+      // appear in the style's fonts rather than switch to them.
+      final wait = _labelPainter.glyphsPending(symbols, styleZoom);
+      if (wait != null) {
+        developer.Timeline.finishSync();
+        _parkForGlyphs(tile, job, wait);
+        return _SymbolsOutcome.parked;
+      }
+      job.glyphsSettled = true;
+    }
     job.shapeCursor = _labelPainter.prewarm(
       symbols,
       styleZoom,
@@ -1953,7 +1995,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       outOfBudget: () => tick.elapsedMicroseconds >= _pumpBudget,
     );
     developer.Timeline.finishSync();
-    if (job.shapeCursor < symbols.length) return false;
+    if (job.shapeCursor < symbols.length) return _SymbolsOutcome.outOfTick;
     // Drawing labels into the tile, what is left — placing and drawing
     // every label, then the snapshot — is one more unit of work, and
     // the largest. A tick whose budget the extraction or the shaping
@@ -1961,7 +2003,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     if (_tileLabels &&
         !shapedBefore &&
         tick.elapsedMicroseconds >= _pumpBudget) {
-      return false;
+      return _SymbolsOutcome.outOfTick;
     }
 
     if (_tileLabels) {
@@ -1986,7 +2028,58 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // Same as [_rasterizeJob]: a symbol publish can be the last thing
     // the current level was waiting on.
     _releaseRetainedIfReady(DateTime.now());
-    return true;
+    return _SymbolsOutcome.done;
+  }
+
+  /// Symbols jobs waiting for glyph ranges, out of the queue meanwhile.
+  final _parkedJobs = <_RenderJob>{};
+
+  /// How long a tile's labels wait for their glyph ranges at most. A
+  /// range normally arrives in a fraction of a second, or fails at once
+  /// offline; a request hanging on a bad connection would otherwise
+  /// keep the tile's labels off the map for as long as it hangs. Past
+  /// this they are shaped by the platform, in the system font, and
+  /// switch to the style's once the range does arrive.
+  static const _glyphWaitLimit = Duration(seconds: 5);
+
+  /// Takes [job] out of the pump until [wait] — its glyph ranges
+  /// loading — completes or [_glyphWaitLimit] passes, then queues it
+  /// again where it left off; unless its tile has moved on in the
+  /// meantime (disposed, reloaded, re-rendered), in which case it is
+  /// dropped like any superseded job.
+  void _parkForGlyphs(_DisplayTile tile, _RenderJob job, Future<void> wait) {
+    _parkedJobs.add(job);
+    var gaveUp = false;
+    // Ranges that arrive after the job gave up on them: the label pass
+    // shapes such text again from the glyphs on its next lookup, so one
+    // repaint shows the switch rather than leaving it to the next
+    // camera move. (`LabelMode.tile` keeps the labels it baked.)
+    unawaited(wait.then((_) {
+      if (gaveUp && mounted) _repaint.trigger();
+    }));
+    unawaited(wait.timeout(_glyphWaitLimit, onTimeout: () {
+      gaveUp = true;
+    }).then((_) {
+      if (!_parkedJobs.remove(job)) return; // dropped with the tiles
+      if (!mounted ||
+          tile.cancellation.isCancelled ||
+          job.generation != tile.loadGeneration ||
+          _renderQueue.pendingRaster(tile) != null ||
+          _renderQueue.pendingSymbols(tile) != null) {
+        job.dispose();
+        return;
+      }
+      job.glyphsSettled = true;
+      _renderQueue.enqueueSymbols(tile, job.priority, job, resumed: true);
+      if (_foregrounded && !_renderTicker.isActive) _renderTicker.start();
+    }));
+  }
+
+  void _dropParkedJobs() {
+    for (final job in _parkedJobs) {
+      job.dispose();
+    }
+    _parkedJobs.clear();
   }
 
   /// [LabelMode.tile]'s tile image: the geometry the raster phase
@@ -2144,6 +2237,18 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   }
 }
 
+/// How far a symbols job got in one pump turn.
+enum _SymbolsOutcome {
+  /// Shaped and published.
+  done,
+
+  /// Ran out of tick; requeue it with its progress.
+  outOfTick,
+
+  /// Waiting for glyph ranges, out of the queue until they arrive.
+  parked,
+}
+
 class _RepaintNotifier extends ChangeNotifier {
   void trigger() => notifyListeners();
 }
@@ -2199,6 +2304,10 @@ class _RenderJob {
   /// How far [LabelPainter.prewarm] has got through [symbols]. The
   /// batch is published only once this reaches its length.
   int shapeCursor = 0;
+
+  /// Whether the glyph ranges [symbols] need have all loaded or failed
+  /// (see [LabelPainter.glyphsPending]) — asked once, before shaping.
+  bool glyphsSettled = false;
 
   /// [LabelMode.tile]'s symbol phase only: the tile's geometry as the
   /// raster phase recorded it, still to be rasterized together with the
