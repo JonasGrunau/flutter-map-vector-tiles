@@ -3276,9 +3276,14 @@ class _DrawableSymbol {
     final text = this.text;
     if (glyphs != null) {
       for (final glyph in glyphs) {
-        final painter = glyph.painters.fill;
-        quads.add(rotatedBox(glyph.position, painter.width * textScale,
-            painter.height * textScale, glyph.angle));
+        // A glyph drawn from the style's glyphs has no painters; its
+        // extent is twice its cell, so half of it is the glyph's box.
+        final painter = glyph.painters?.fill;
+        final size = painter != null
+            ? Size(painter.width, painter.height)
+            : glyph.extent / 2;
+        quads.add(rotatedBox(glyph.position, size.width * textScale,
+            size.height * textScale, glyph.angle));
       }
     } else if (text != null) {
       quads.add(textAngle == 0
