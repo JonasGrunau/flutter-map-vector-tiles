@@ -466,8 +466,13 @@ the same generation and creates no new debt, allowing the ticker to stop
 on an unchanged map.
 
 **Placement passes prefer incumbents.** Candidate priority is topmost
-style layer, then incumbency, then `symbol-sort-key`, then screen y,
-then insertion order — where an incumbent is a candidate whose label is
+style layer, then incumbency, then `symbol-sort-key`, then the current
+level ahead of a retained one, then MapLibre's own order — data tiles
+deepest first, then by x and y, and in each tile the features in the
+order the tile lists them, each one's anchors from the start of its
+line — and last insertion order. Nothing in it reads the camera, so a
+pan or a rotation never reorders two labels, and a pair that collides
+resolves as in MapLibre. An incumbent is a candidate whose label is
 steadily visible right now (last pass's winners by instance identity,
 plus any candidate matching a full-opacity fade sitting, which is what
 carries incumbency across the instance replacement every republish and
@@ -487,8 +492,10 @@ an arbitrary tie-break used to move a label that had no reason to move:
 
 * **Which candidate draws a label.** A street name reaches the pass more
   than once (the two carriageways of one road; the outgoing and arriving
-  copy at a zoom crossing), and which one sorts first depends on their
-  screen y — so a slow pan walked the name across the street. The
+  copy at a zoom crossing), and which one sorts first depended on their
+  screen y — so a slow pan walked the name across the street. The sort
+  no longer reads the screen, but a zoom crossing still swaps the tiles
+  and features it ranks by. The
   copy already drawn is tried ahead of the others *of its own label*
   (`_promoteIncumbents`, distinct from the cross-label incumbency term
   above: this one only reorders candidates within one continuity key).

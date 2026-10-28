@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 🐛 When two labels of one layer collide and neither has a lower
+  `symbol-sort-key`, the one MapLibre shows now wins. The label higher
+  on the screen used to win, so a different label could show than in
+  MapLibre: at Munich's Marienplatz, the shield of staircase MP30 where
+  MapLibre shows MP31's. Labels are now placed in MapLibre's order,
+  tile by tile and, within a tile, feature by feature.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same

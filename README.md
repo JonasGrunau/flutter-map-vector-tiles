@@ -398,8 +398,18 @@ mode](#choosing-a-label-mode) has what changes then.
   within half of `symbol-spacing` *along the same road* — the two
   carriageways of a motorway, neighbouring switchbacks and parallel
   same-named roads sit beside each other and keep their labels, as in
-  MapLibre. The topmost candidate that fits wins; `point` and
-  `line-center` labels are not affected.
+  MapLibre. The candidate placed first that fits wins (see the next
+  point); `point` and `line-center` labels are not affected.
+- **Collisions go the way they go in MapLibre.** Of two labels that
+  collide, the one from the higher style layer wins, then the one with
+  the lower `symbol-sort-key`. Past that, labels are placed in
+  MapLibre's order: tile by tile in a fixed order, and within a tile
+  feature by feature as the tile lists them. So the same label shows
+  as in MapLibre, and panning or rotating never swaps the winner. One
+  deliberate difference: a label already on screen keeps its spot
+  against a newcomer from its own layer, where MapLibre decides every
+  pair afresh at each placement and lets a label drop out and return
+  while zooming.
 - **Zoom ranges, with a ramp at the top.** Nothing claims label space
   outside a symbol layer's `[minzoom, maxzoom)`, but labels ramp out over
   the last quarter zoom level before a declared `maxzoom` instead of

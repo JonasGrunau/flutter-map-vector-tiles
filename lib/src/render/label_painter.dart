@@ -70,9 +70,10 @@ class PlacedSymbol {
   final bool retained;
 
   /// Insertion index within the frame's symbol list, the final
-  /// placement tiebreaker: the caller adds current-level tiles before
-  /// retained previous-level ones, so on an exact tie the current
-  /// level's copy wins deterministically (`List.sort` is not stable).
+  /// placement tiebreaker, which keeps the winner deterministic
+  /// (`List.sort` is not stable). Only candidates that agree on
+  /// everything else reach it: one anchor laid out by two world copies
+  /// of a tile, or hand-built instances.
   final int order;
 
   /// Whether this candidate's label is steadily visible on screen right
@@ -533,9 +534,9 @@ class LabelPainter {
       // Everyone else is at most a fade-out fallback, recorded in input
       // order instead of priority order. That order only settles exact
       // distance ties in [_nearestCandidate], between candidates of one
-      // key and so of one layer — which at a shared anchor already fell
-      // through to `order`, the input order, unless their sort keys
-      // differ.
+      // key at one spot: copies of one anchor from neighbouring tiles,
+      // which draw the same, or an outgoing and an arriving level's,
+      // which input order ranks as priority does, current level first.
       candidates = <PlacedSymbol>[];
       for (final candidate in symbols) {
         if (!candidate.ghostOnly && _winners.contains(candidate.instance)) {
@@ -690,18 +691,39 @@ class LabelPainter {
   /// Placement priority: topmost style layers first (they win space),
   /// then incumbents — labels on screen right now, which a same-layer
   /// newcomer must not evict (see [PlacedSymbol.incumbent]) — then by
-  /// symbol-sort-key, then by y, then by insertion order — the last
-  /// term keeps the non-stable sort deterministic and lets current-level
-  /// tiles beat retained ones on exact ties. A total order: `order` is
-  /// unique per frame.
+  /// symbol-sort-key, then current-level tiles ahead of retained ones,
+  /// then MapLibre's order: data tiles by zoom (deepest first), x and y,
+  /// and within a tile the features in source order, each one's parts
+  /// in order and its anchors along a part from the start (see
+  /// [SymbolInstance.sourceTile]). None of these terms reads the
+  /// camera, so a pan or a rotation never reorders two labels. The last
+  /// term, insertion order, keeps the non-stable sort deterministic. A
+  /// total order: `order` is unique per frame.
   static int _byPlacementPriority(PlacedSymbol a, PlacedSymbol b) {
-    final byLayer = b.instance.layerIndex - a.instance.layerIndex;
+    final ai = a.instance;
+    final bi = b.instance;
+    final byLayer = bi.layerIndex - ai.layerIndex;
     if (byLayer != 0) return byLayer;
     if (a.incumbent != b.incumbent) return a.incumbent ? -1 : 1;
-    final bySortKey = a.instance.sortKey.compareTo(b.instance.sortKey);
+    final bySortKey = ai.sortKey.compareTo(bi.sortKey);
     if (bySortKey != 0) return bySortKey;
-    final byY = a.screenAnchor.dy.compareTo(b.screenAnchor.dy);
-    if (byY != 0) return byY;
+    if (a.retained != b.retained) return a.retained ? 1 : -1;
+    final at = ai.sourceTile;
+    final bt = bi.sourceTile;
+    if (!identical(at, bt)) {
+      final byZ = bt.z - at.z;
+      if (byZ != 0) return byZ;
+      final byX = at.x - bt.x;
+      if (byX != 0) return byX;
+      final byY = at.y - bt.y;
+      if (byY != 0) return byY;
+    }
+    final byFeature = ai.featureIndex - bi.featureIndex;
+    if (byFeature != 0) return byFeature;
+    final byPart = ai.part - bi.part;
+    if (byPart != 0) return byPart;
+    final byDistance = ai.pathDistance.compareTo(bi.pathDistance);
+    if (byDistance != 0) return byDistance;
     return a.order - b.order;
   }
 
@@ -944,9 +966,9 @@ class LabelPainter {
   /// repeats along its road and again on the parallel carriageway, and
   /// a zoom crossing puts the outgoing and arriving level's copies up
   /// at once. Which of them the priority sort puts first depends on the
-  /// anchors' screen y, so a slow pan reorders them and the name jumps
-  /// across the street and back. Trying the one already drawn first
-  /// pins it there for as long as it still fits.
+  /// tiles and features they come from, and a zoom crossing swaps both,
+  /// so the name could jump across the street and back. Trying the one
+  /// already drawn first pins it there for as long as it still fits.
   ///
   /// Only the order *inside* a key changes: the key still competes for
   /// space at the position its best candidate earned, so this can never

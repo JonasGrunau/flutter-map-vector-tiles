@@ -4,6 +4,7 @@ import 'dart:ui';
 
 import 'package:meta/meta.dart';
 
+import '../core/tile_key.dart';
 import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
@@ -89,6 +90,19 @@ class SymbolInstance {
   final String geometryType;
   final Object? featureId;
 
+  /// Where the symbol comes from, which is MapLibre's placement order
+  /// among symbols of one layer and sort key (see
+  /// `LabelPainter._byPlacementPriority`): the data tile it was laid out
+  /// from, the feature's index among the features of that tile's source
+  /// layer that the layer selects (in source order), and the geometry
+  /// part its anchor sits on — a line or ring, or one point of a
+  /// multipoint. [pathDistance] orders the anchors along one part. None
+  /// of them depends on which display tile laid the symbol out, so two
+  /// display tiles cut from one data tile agree on the order.
+  final TileKey sourceTile;
+  final int featureIndex;
+  final int part;
+
   /// Label-pass memo (see `LabelPainter._layoutText`): the evaluated,
   /// quantized text style and the cache-key strings built from it.
   /// Trusted as-is while the eval zoom is unchanged; on a zoom step it
@@ -137,6 +151,9 @@ class SymbolInstance {
     required this.properties,
     required this.geometryType,
     required this.featureId,
+    this.sourceTile = const TileKey(0, 0, 0),
+    this.featureIndex = 0,
+    this.part = 0,
   });
 }
 
@@ -299,7 +316,11 @@ class SymbolLayouter {
       // Zoom-free filters are resolved once per prepared tile, as in
       // the rasterizer.
       final matched = MatchedFeatures.of(layer, sourceLayer);
-      for (final feature in matched ?? sourceLayer.features) {
+      final features = matched ?? sourceLayer.features;
+      for (var featureIndex = 0;
+          featureIndex < features.length;
+          featureIndex++) {
+        final feature = features[featureIndex];
         if (feature.maxX < cullMinX ||
             feature.minX > cullMaxX ||
             feature.maxY < cullMinY ||
@@ -329,6 +350,9 @@ class SymbolLayouter {
 
         final placement = layer.placement.eval(ctx);
         final sortKey = layer.sortKey.eval(ctx);
+        // The geometry part the next anchor sits on, see
+        // [SymbolInstance.part].
+        var part = 0;
 
         void add(Offset anchor, double angle, bool alongLine,
             {SymbolPath? path, double pathDistance = 0}) {
@@ -352,6 +376,9 @@ class SymbolLayouter {
             properties: feature.properties,
             geometryType: feature.geometryType,
             featureId: feature.id,
+            sourceTile: tile.key,
+            featureIndex: featureIndex,
+            part: part,
           ));
         }
 
@@ -366,10 +393,10 @@ class SymbolLayouter {
           continue;
         }
         if (placement == 'point') {
-          for (final part in feature.parts) {
+          for (final points in feature.parts) {
             if (feature.type == PreparedGeomType.polygon) {
               // Label polygons at their centroid (first exterior ring).
-              final centroid = _centroid(part);
+              final centroid = _centroid(points);
               add(
                   Offset(centroid.dx * scale + offsetX,
                       centroid.dy * scale + offsetY),
@@ -379,17 +406,21 @@ class SymbolLayouter {
             }
             if (feature.type == PreparedGeomType.line) {
               // point placement on a line: use the midpoint.
-              final mid = _midpoint(part);
+              final mid = _midpoint(points);
               add(Offset(mid.dx * scale + offsetX, mid.dy * scale + offsetY), 0,
                   false);
+              part++;
               continue;
             }
-            for (var p = 0; p + 1 < part.length; p += 2) {
+            // Each point of a multipoint is a part of its own, as in
+            // MapLibre's geometry.
+            for (var p = 0; p + 1 < points.length; p += 2) {
               add(
-                  Offset(
-                      part[p] * scale + offsetX, part[p + 1] * scale + offsetY),
+                  Offset(points[p] * scale + offsetX,
+                      points[p + 1] * scale + offsetY),
                   0,
                   false);
+              part++;
             }
           }
         } else {
@@ -397,8 +428,9 @@ class SymbolLayouter {
           final spacing = placement == 'line-center'
               ? double.infinity
               : layer.spacing.eval(ctx);
-          for (final part in feature.parts) {
-            _placeAlongLine(part, scale, offsetX, offsetY, spacing, add);
+          for (final points in feature.parts) {
+            _placeAlongLine(points, scale, offsetX, offsetY, spacing, add);
+            part++;
           }
         }
       }
