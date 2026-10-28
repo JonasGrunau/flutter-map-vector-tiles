@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-08-09 | Updated: 2026-08-09 -->
+<!-- Generated: 2026-08-09 | Updated: 2026-10-26 -->
 
 # render
 
@@ -20,11 +20,16 @@ for frames with no per-frame label work in them.
 | File | Description |
 |------|-------------|
 | `tile_rasterizer.dart` | `TileRasterizer.paint()` — draws background/fill/line/raster/circle layers of one display tile into a `Canvas` (turned into an image by `toImage`, i.e. `Picture.toImageSync`). The layer records only through `recordSlice`, which is `record` spread over calls: it stops at a layer boundary once its `outOfBudget` says so (after at least one layer that draws, and never just before layers that draw nothing), returns the cursor to resume from, and `compose` stacks the slices into the picture one `record` would have made — the render pump records every tile this way, a dense one over several frames. In `LabelMode.tile` the composed picture goes to the symbol job the raster job enqueues (`_RenderJob.geometry`), which draws the labels over it before `toImage`. `rasterize` (= `record` + `toImage`) and `record` remain for tests and benchmarks. Iterates the `MatchedFeatures` of zoom-free filters (only a zoom-reading filter is still evaluated here), culls features on their decode-time bounds against the display window (+64px buffer) before any other expression work, clips geometry to the window from overzoom shift 2 — and descendant tiles standing in on zoom-out to their own extent, unconditionally — and handles fill outlines as MapLibre draws them (dimmed by `fill-opacity`, one device pixel wide via the `pixelScale` the recording canvas is scaled by, off under `fill-antialias: false`), fill and line patterns, dash arrays (phase-anchored to the un-clipped run start), `fill-extrusion` per spec in `_paintExtrusion` (`fill-extrusion-opacity` per layer rather than per feature, the alpha of `fill-extrusion-color` ignored, no outline; one non-zero union path when the colour reads no feature, a composited `saveLayer` when it varies by feature or the layer is patterned), raster colour matrices, and the `_TileTransform` from tile-extent units to logical pixels (both directions: ancestor sub-window at overzoom, descendant sub-square under zoom-out substitution) |
+| `matched_features.dart` | `MatchedFeatures.of(layer, sourceLayer, tile:)` — the features a zoom-free filter (`ThemeLayer.filterReadsZoom` false) selects, in source order, resolved on first use and cached in an `Expando` on the `PreparedSourceLayer`: one filter scan per data tile instead of one per display tile cut from it, the entry living exactly as long as the prepared tile. Keyed by layer identity, so a theme swap misses — and through a second `Expando`, so both levels are weak: a swapped-out theme's layers and their match lists are not kept alive by the decoded tiles still in the cache. Keep it that way; a strong map keyed by `ThemeLayer` held every previous style alive on each cached tile. Returns null for zoom-reading filters, which the callers evaluate per display tile; an unfiltered layer gets the source list itself. Also `featureGeometry(tile, sourceLayer, feature)`, the `FeatureGeometry` that `within` / `distance` read; every evaluation site (filter matching here, the rasterizer, the symbol layouter, `SymbolInstance.geometry` for the label pass) builds it only when `ThemeLayer.readsGeometry` and evaluates through `featureContext`, so the layers that do not read geometry allocate neither it nor the larger `GeometryEvalContext` |
+| `tile_rasterizer.dart` | `TileRasterizer.paint()` — draws background/fill/line/raster/hillshade/circle layers of one display tile into a `Canvas` (turned into an image by `toImage`, i.e. `Picture.toImageSync`). The layer records only through `recordSlice`, which is `record` spread over calls: it stops at a layer boundary once its `outOfBudget` says so (after at least one layer that draws, and never just before layers that draw nothing), returns the cursor to resume from, and `compose` stacks the slices into the picture one `record` would have made — the render pump records every tile this way, a dense one over several frames. In `LabelMode.tile` the composed picture goes to the symbol job the raster job enqueues (`_RenderJob.geometry`), which draws the labels over it before `toImage`. `rasterize` (= `record` + `toImage`) and `record` remain for tests and benchmarks. Iterates the `MatchedFeatures` of zoom-free filters (only a zoom-reading filter is still evaluated here), culls features on their decode-time bounds against the display window (+64px buffer) before any other expression work, clips geometry to the window from overzoom shift 2 — and descendant tiles standing in on zoom-out to their own extent, unconditionally — and handles fill outlines as MapLibre draws them (dimmed by `fill-opacity`, one device pixel wide via the `pixelScale` the recording canvas is scaled by, off under `fill-antialias: false`), fill and line patterns, dash arrays (phase-anchored to the un-clipped run start), `fill-extrusion` per spec in `_paintExtrusion` (`fill-extrusion-opacity` per layer rather than per feature, the alpha of `fill-extrusion-color` ignored, no outline; one non-zero union path when the colour reads no feature, a composited `saveLayer` when it varies by feature or the layer is patterned), raster colour matrices, and the `_TileTransform` from tile-extent units to logical pixels (both directions: ancestor sub-window at overzoom, descendant sub-square under zoom-out substitution) |
+| `hillshade_renderer.dart` | `HillshadeRenderer.paint` — a `hillshade` layer for one display tile, called by the rasterizer at the layer's position. Per DEM tile (the display tile's own or ancestor's, or zoom-out descendants): a snapshot of the elevations with a two-texel border from the neighbours (`_bordered`, the tile's own edge repeated where one is missing), the prepare shader's slope snapshot from it (`_slopes`, (dim+2)² texels), then the shade shader drawn over the tile's part, per device pixel (`_shade`). `neighbourKey` (antimeridian wrap, null past a pole) and `neighboursNeeded` (all eight, or the touched edges at overzoom) are shared with the layer; `slopeScale` (texel size + MapLibre's below-z15 exaggeration) and `latitudeOf` are pure and unit tested. `HillshadePrograms` loads both programs once per process (`packages/…` key first, the bare key for the package's own tests) and is read synchronously via `loaded`; null means not yet or never (no fragment programs), and the layer draws nothing then. Web-only branch in `_shade`: CanvasKit keeps a pointer to a `FragmentShader`'s uniforms and `dispose` frees them, so there the shade pass is snapshotted at once and the tile records the image |
+| `tile_rasterizer.dart` | `TileRasterizer.paint()` — draws background/fill/line/raster/circle layers of one display tile into a `Canvas` (turned into an image by `toImage`, i.e. `Picture.toImageSync`). The layer records only through `recordSlice`, which is `record` spread over calls: it stops at a layer boundary once its `outOfBudget` says so (after at least one layer that draws, and never just before layers that draw nothing), returns the cursor to resume from, and `compose` stacks the slices into the picture one `record` would have made — the render pump records every tile this way, a dense one over several frames. In `LabelMode.tile` the composed picture goes to the symbol job the raster job enqueues (`_RenderJob.geometry`), which draws the labels over it before `toImage`. `rasterize` (= `record` + `toImage`) and `record` remain for tests and benchmarks. Iterates the `MatchedFeatures` of zoom-free filters (only a zoom-reading filter is still evaluated here), culls features on their decode-time bounds against the display window (+64px buffer) before any other expression work, clips geometry to the window from overzoom shift 2 — and descendant tiles standing in on zoom-out to their own extent, unconditionally — and handles fill outlines as MapLibre draws them (dimmed by `fill-opacity`, one device pixel wide via the `pixelScale` the recording canvas is scaled by, off under `fill-antialias: false`), fill, line and background patterns, dash arrays (phase-anchored to the un-clipped run start), `*-translate` folded into the `_TileTransform` (so the cull and clip windows follow the geometry; patterns are shifted with it), `*-sort-key` order (cached weakly per feature list, layer and zoom, like the filter matches), `line-offset` (`_offsetRun`, per run in logical px after clipping), `line-blur` (a narrowed stroke under a Gaussian mask filter, see `_blurFilter`), `line-miter-limit` (Skia's default is 4, the spec's 2), circle strokes outside the radius and `circle-blur` as a radial gradient (`_blurredCircle`), `resampling`, `fill-extrusion` per spec in `_paintExtrusion` (`fill-extrusion-opacity` per layer rather than per feature, the alpha of `fill-extrusion-color` ignored, no outline; one non-zero union path when the colour reads no feature, a composited `saveLayer` when it varies by feature or the layer is patterned), raster colour matrices, and the `_TileTransform` from tile-extent units to logical pixels (both directions: ancestor sub-window at overzoom, descendant sub-square under zoom-out substitution) |
 | `matched_features.dart` | `MatchedFeatures.of(layer, sourceLayer)` — the features a zoom-free filter (`ThemeLayer.filterReadsZoom` false) selects, in source order, resolved on first use and cached in an `Expando` on the `PreparedSourceLayer`: one filter scan per data tile instead of one per display tile cut from it, the entry living exactly as long as the prepared tile. Keyed by layer identity, so a theme swap misses — and through a second `Expando`, so both levels are weak: a swapped-out theme's layers and their match lists are not kept alive by the decoded tiles still in the cache. Keep it that way; a strong map keyed by `ThemeLayer` held every previous style alive on each cached tile. Returns null for zoom-reading filters, which the callers evaluate per display tile; an unfiltered layer gets the source list itself |
 | `geometry_clipper.dart` | `clipPolyline` (segment-wise Liang–Barsky, emitting sub-runs plus their distance from the original run start for dash/stamp phase; with `close:` it walks the ring's closing segment and rejoins the contour that crosses vertex 0, so a stroked ring keeps its join there instead of butting two caps) and `clipRing` (Sutherland–Hodgman, winding-preserving) over tile-extent `Float32List`s — pure functions, no canvas |
 | `fade.dart` | `fadeProgressOf` — elapsed fraction of a fade, in microseconds. Shared by the tile and label fades; the unit matters (see the file) |
-| `label_continuity.dart` | The per-label fade model: `labelContinuityKey` (`(layer, text, icon)` — deliberately position-free, memoized on `SymbolInstance.continuityKey`), `LabelFadeTracker` (one opacity per *sitting* — a key at a screen position, matched within `matchRadius` inside the loose key via `beginFrame`/`showAt`/`sweep`, integrated toward "placed this frame ? 1 : 0". The loose-key-plus-position-match shape carries three guarantees at once: cross-level copies of one label land on the same sitting despite simplification noise, so a crossing never cross-fades a label against itself; same-key labels far apart — every parking icon, every housenumber "12", the re-spaced repeats of a street name — fade independently instead of popping while any one of them holds the key's opacity; and resume-not-restart stops dips from becoming blinks. **Nothing may park a placed sitting at zero** — `sweep` drops anything at or below zero, so a state resting there is destroyed by one lost frame; see the invariant below. `sweep` reports each fading sitting's position so the painter can ghost it where it was; `isVisibleAt` reports a full-opacity sitting, which is how placement recognises incumbents across instance replacement), `PlacementThrottle` (which frames re-run the collision pass: a changed placement generation — camera or candidate set — is placed once the fade-duration interval permits, a viewport resize at once; `deferred` reports a pass owed only while the latest generation differs from the one last placed, so an unchanged replay never keeps the ticker alive), `PlacementMemory` (the choices a label is sitting on — `SittingPlacement.anchor`/`flip`/`textDropped` — keyed by continuity key *and* screen position, so they outlive the `SymbolInstance` that took them) and `drawnLabels` (a cohort filtered to what the last frame actually drew — retention pins outgoing cohorts to it so they can keep labels but never introduce them). Pure and clock-agnostic; the painter drives both |
-| `label_painter.dart` | `LabelPainter` — the per-frame screen-space pass (~2600 lines), and `paintTile`, `LabelMode.tile`'s once-per-tile version of it (one placing pass of the same `_prepare`/`_draw` in tile coordinates, with a fresh `PlacementMemory` and repeat-anchor map swapped in for the call, no fades/throttle/incumbents, and a collision index bounded by the tile that also holds `*-allow-overlap` boxes to it — a label crossing the tile edge is dropped): text shaped once at a 16 px reference size and drawn scaled through the canvas transform — from the style's glyph PBFs when `glyphs` is set and `isGlyphShapeable` accepts the text (`_GlyphRun`: pure-Dart layout via `text/glyph_shaper.dart`, drawn from distance-field cells in the glyph atlas with per-sprite colours, halos and fills in one `drawRawAtlas`; `glyphsPending` tells the pump which ranges a tile's labels still wait for; text the platform shaped only because its ranges were loading carries `awaitedRanges` and is re-shaped from glyphs on its first lookup after they arrive), else as platform paragraphs —, grapheme clustering, halos (baked as a quantized em-ratio stroke), variable text anchors, curved text along lines (with a max-angle bail-out to an icon-only fallback), SDF icon tinting, map/line-aligned icon rotation about the symbol anchor (with rotated collision/fade bounds), upright text rotation, and repeat suppression for visible `line` text within `symbol-spacing / 2` across layers reading the same source layer — only between anchors on the *same road* (displacement along either one's line direction, never within one feature, never involving retained-level candidates), after exact zoom/opacity/collision, so a rejected candidate never hides a fallback; MapLibre's in-tile line merging was rejected because it would re-parametrize anchors per data level. It also owns the per-label fades (a `LabelFadeTracker` keyed on `SymbolInstance.continuityKey`, every label via `showAt` with its screen anchor — one fade per sitting, so same-key POIs fade independently and a re-spaced street name cross-fades between its per-level sittings instead of teleporting; sittings no longer placed draw ghosts — laid out past the zoom gate, claiming no collision space — from the surviving candidate nearest the fading sitting within `_ghostRadius`) compounded with the `zoomRangeOpacity` ramp out before a declared `maxzoom` into `_DrawableSymbol.opacity` and drawn via per-opacity-bucket `saveLayer`s (a bucket's bounds are the union of its members', so on a label-dense screen each one is effectively full-screen — the bucket *count* is the cost, but see the invariant below before trading anything for it: a key on its first frame takes the one-step floor rather than drawing at zero), the throttled placement (a `PlacementThrottle` decides pass vs replay; replay frames sort and prepare only `_winners` — everyone else goes straight to the fade-out fallbacks, unsorted — and use `_CollisionIndex.permissive()`, so the frozen decision is reproduced rather than re-derived), `prewarm()` for shaping a tile's labels inside the render pump — **resumable**, taking a `from` cursor and an `outOfBudget` predicate and returning where to continue, because shaping one dense tile costs several times a whole frame's render budget; its caller must not publish a batch as placement candidates before it completes, or the label pass will shape the remainder during paint, and `_CollisionIndex`, a grid-bucketed screen-space collision index (which is where tile-seam duplicates are removed — the layouter deliberately lets both neighbours claim a feature on the seam rather than risk neither doing so). Evaluates at a 1/8-level-quantized zoom so its memos survive pinch gestures |
+| `label_identity.dart` | `LabelIdentityIndex` — the cross-tile symbol index: gives every symbol on offer an integer label id that outlives its `SymbolInstance`. A tile `assign`s ids when it publishes (matching each instance to the labels already on offer by continuity key and world position, within `matchRadius`, 32 logical px of the finer level), and its holder `release`s them when it stops offering them. Each label keeps one holding per tile that offers it, with that tile's copy's position; matching is one-to-one per publish and nearest-first within one name (the tile's own previous labels ahead of others'), and within one zoom level a different tile may share an id only as a seam twin of the copy *it* holds (`twinRadius`, 1 px). A name with more than `gridFrom` (16) labels — icon-only labels share an empty text, so one-way arrows or waste baskets run into the hundreds — is also filed in a per-level grid of `matchRadius` cells, and `assign` judges only the labels with a copy in the 3×3 cells around each symbol instead of scanning the name (the same candidates; the tests run every case both ways). The layer owns one per state, holders are current/retained tiles and parked ghost cohorts, and ids live in a parallel `Int32List` per holder (`_DisplayTile.labelIds`), never on the shared `SymbolInstance`s the finished-tile cache hands to other layers |
+| `label_continuity.dart` | The per-label fade model, keyed by label id: `labelContinuityKey` (`(layer, text, icon)` as a pre-hashed `ContinuityKey` — position-free, the first half of a label's identity, memoized on `SymbolInstance.continuityKey`), `LabelFadeTracker` (one opacity per label id, integrated toward "placed this frame ? 1 : 0" via `beginFrame`/`show`/`sweep`; every copy of a label resumes its state, labels the index keeps apart fade apart, and resume-not-restart stops dips from becoming blinks. **Nothing may park a placed label at zero** — `sweep` drops anything at or below zero, so a state resting there is destroyed by one lost frame; see the invariant below), `PlacementThrottle` (which frames re-run the collision pass: a changed placement generation — camera or candidate set — is placed once the fade-duration interval permits, a viewport resize at once; `deferred` reports a pass owed only while the latest generation differs from the one last placed, so an unchanged replay never keeps the ticker alive), `PlacementMemory` (the choices a label is sitting on — `SittingPlacement.anchor`/`flip`/`textDropped` — keyed by label id, so they outlive the `SymbolInstance` that took them) and `drawnLabels` (the indices of a cohort whose label ids the last frame drew — retention pins outgoing cohorts to them so they can keep labels but never introduce them). Pure and clock-agnostic; the painter drives both |
+| `label_painter.dart` | `LabelPainter` — the per-frame screen-space pass (~2600 lines), and `paintTile`, `LabelMode.tile`'s once-per-tile version of it (one placing pass of the same `_prepare`/`_draw` in tile coordinates, with a fresh `PlacementMemory` and repeat-anchor map swapped in for the call, no fades/throttle/incumbents, and a collision index bounded by the tile that also holds `*-allow-overlap` boxes to it — a label crossing the tile edge is dropped): text shaped once at a 16 px reference size and drawn scaled through the canvas transform — from the style's glyph PBFs when `glyphs` is set and `isGlyphShapeable` accepts the text (`_GlyphRun`: pure-Dart layout via `text/glyph_shaper.dart`, drawn from distance-field cells in the glyph atlas with per-sprite colours, halos and fills in one `drawRawAtlas`; `glyphsPending` tells the pump which ranges a tile's labels still wait for; text the platform shaped only because its ranges were loading carries `awaitedRanges` and is re-shaped from glyphs on its first lookup after they arrive), else as platform paragraphs —, grapheme clustering, halos (baked as a quantized em-ratio stroke), variable text anchors, curved text along lines (with a max-angle bail-out to an icon-only fallback), SDF icon tinting, map/line-aligned icon rotation about the symbol anchor (with rotated collision/fade bounds), upright text rotation, and repeat suppression for visible `line` text within `symbol-spacing / 2` across layers reading the same source layer — only between anchors on the *same road* (displacement along either one's line direction, never within one feature, never involving retained-level candidates), after exact zoom/opacity/collision, so a rejected candidate never hides a fallback; MapLibre's in-tile line merging was rejected because it would re-parametrize anchors per data level. Every candidate carries its label id (`PlacedSymbol.id`): one copy per id draws in a frame, the first in priority order, and later copies are skipped before any layout work. It also owns the per-label fades (a `LabelFadeTracker` keyed on the label id — so same-named POIs fade independently and a re-spaced street name, a different label at its new position, cross-fades instead of teleporting; labels no longer placed draw ghosts — laid out past the zoom gate, claiming no collision space — from a copy of their own id still on offer) compounded with the `zoomRangeOpacity` ramp out before a declared `maxzoom` into `_DrawableSymbol.opacity` and drawn via per-opacity-bucket `saveLayer`s (a bucket's bounds are the union of its members', so on a label-dense screen each one is effectively full-screen — the bucket *count* is the cost, but see the invariant below before trading anything for it: a key on its first frame takes the one-step floor rather than drawing at zero), the throttled placement (a `PlacementThrottle` decides pass vs replay; replay frames sort and prepare only the copies of `_winners`, the last pass's label ids — everyone else goes straight to the fade-out fallbacks, unsorted — and use `_CollisionIndex.permissive()`, so the frozen decision is reproduced rather than re-derived), `prewarm()` for shaping a tile's labels inside the render pump — **resumable**, taking a `from` cursor and an `outOfBudget` predicate and returning where to continue, because shaping one dense tile costs several times a whole frame's render budget; its caller must not publish a batch as placement candidates before it completes, or the label pass will shape the remainder during paint, and `_CollisionIndex`, a grid-bucketed screen-space collision index (which is where tile-seam duplicates are removed — the layouter deliberately lets both neighbours claim a feature on the seam rather than risk neither doing so). Evaluates at a 1/8-level-quantized zoom so its memos survive pinch gestures |
 | `glyph_atlas.dart` | `GlyphAtlas` — glyphs rasterized once per style, glyph and snapped device size onto 1024² pages (shelf-packed, LRU page eviction that never evicts a page the current frame drew from, one `toImageSync` per touched page per frame): curved paragraph text's graphemes, and every glyph of text drawn from the style's glyph PBFs as white coverage thresholded from its distance field. `generation` changes whenever cells are lost, so a label can keep its cells across frames and check them with `use` instead of a lookup per glyph |
 | `symbol_layouter.dart` | `SymbolLayouter.layout()` — extracts label/icon placement candidates (`SymbolInstance`, with its `TextStyleMemo` label-pass memo; placement state deliberately lives in `PlacementMemory` instead, since instances are replaced under labels that stay on screen) from a prepared tile: polygon centroids, line midpoints, and spaced placements along lines via `SymbolPath` (precomputed cumulative lengths, `pointAt`/`angleAt`). Iterates the `MatchedFeatures` of zoom-free filters, as the rasterizer does, and bounds-culls features before any other expression evaluation; along-line targets are enumerated only within the tile window while keeping their full-line parametrization. Gates layers by zoom-band intersection (`coversZoomBand`) — the precise per-frame cut and repeat suppression are the label pass's job — or, with `exact` (`LabelMode.tile`, whose `paintTile` gates at the tile's own zoom), by `coversZoom` at that zoom. `anySymbolLayerCovers()` (same `exact` switch) lets the render pump skip the symbol phase when no symbol layer intersects the tile's band |
 | `display_tile_data.dart` | `DisplayTileData` — the prepared data backing one display tile, per style source, plus its raster tiles and any descendant tiles composing a provisional zoom-out cover (geometry only; the symbol layouter never sees descendants) |
@@ -130,18 +135,20 @@ for frames with no per-frame label work in them.
   find a way that never parks a placed label at zero.
 
 - **Only a placement pass may start a fade-out.** Between passes the
-  winner set is frozen by *instance identity*, and republishes/level
-  swaps replace every instance — so an un-shown sitting on a replay
-  frame usually means succession, not departure. `LabelFadeTracker.sweep`'s
-  `hold:` (passed on replay frames) keeps such sittings at their opacity,
-  their ghosts drawn from the successor candidates, until a pass
-  decides. Decaying through the churn window fades a label into itself
-  at every crossing — the regression that added the flag. A fade a pass
-  *has* started advances every frame, held or not; one step per pass
-  would stretch a 150ms fade across minutes.
+  winner set is frozen by label id. A republish or level swap replaces
+  every instance, and the successor carries the id, so it is drawn as
+  the winner it is; but a winner can still be missing for a while — its
+  tile gone before the successor published, or a successor whose anchor
+  moved past the match radius. `LabelFadeTracker.sweep`'s `hold:`
+  (passed on replay frames) keeps such labels at their opacity, their
+  ghosts drawn from any copy on offer, until a pass decides. Decaying
+  through the churn window fades a label into itself at every crossing —
+  the regression that added the flag. A fade a pass *has* started
+  advances every frame, held or not; one step per pass would stretch a
+  150ms fade across minutes.
 
 - **Disabling label fades clears the tracker.** A no-fade paint must
-  discard every tracked sitting, including an in-progress one. Otherwise
+  discard every tracked label, including an in-progress one. Otherwise
   `LabelFadeTracker.anyActive` stays true without any future `beginFrame`
   call to advance it, and the widget's fade ticker repaints forever.
 
@@ -155,8 +162,7 @@ for frames with no per-frame label work in them.
 
 - **A visible label is never evicted by a same-layer arrival.** On
   placing frames `_flagIncumbents` marks candidates whose label is
-  steadily on screen (last pass's winners by instance identity, plus
-  `LabelFadeTracker.isVisibleAt` full-opacity sittings — the latter is
+  steadily on screen (the last pass's winners, by label id — which is
   what survives republishes and level swaps), and the priority sort
   tries incumbents ahead of same-layer newcomers. Without this, every
   crossing let the arriving level's re-ranked candidates evict visible
@@ -187,11 +193,19 @@ for frames with no per-frame label work in them.
   the layer adds current-level tiles before retained ones). Both sorts
   in `LabelPainter` are non-stable; the tiebreaker is what keeps the
   winner deterministic frame to frame. The full priority is layer,
-  incumbency (see above), `symbol-sort-key`, screen y, order. After the
-  sort, `_promoteIncumbents` additionally reorders candidates *within
-  one continuity key* so the instance already drawn is tried first; it
-  must never reorder across keys, or one label would start outranking
-  another.
+  incumbency (see above), `symbol-sort-key`, screen y, order. Two
+  labels of one name — the parallel carriageways of a street — are two
+  ids, and only the one on screen is an incumbent, which is what keeps a
+  pan from walking the name across the street. Copies of *one* id (seam
+  twins, the two levels' at a crossing) draw once — but they can sit up
+  to the identity match radius apart, with geometry of their own, so the
+  copy is part of the decision: `_drawnCopy` remembers which one each
+  label was last drawn from, replay frames draw that one (another copy
+  only once it is gone), `_promoteDrawnCopies` tries it first on a pass
+  (reordering only *within* one id, never across labels), and ghosts are
+  drawn from it. Replaying whichever copy sorted first drew the copy the
+  pass had rejected — a label hopping between two copies at every
+  interval.
 - **A replay frame must reproduce the pass, not re-derive it.** Anything
   a placement decides that is not a pure function of the current frame's
   geometry has to be remembered in the `SittingPlacement` `_prepare`
@@ -219,12 +233,24 @@ for frames with no per-frame label work in them.
 - **Placement state belongs in `PlacementMemory`, never on the
   `SymbolInstance`.** Instances are rebuilt per display-tile layout, so
   anything stored on one is lost at every zoom crossing and republish —
-  precisely when a label is most visibly on screen, and with its
-  continuity key (and so its opacity) unchanged, so the re-decision
-  lands as a hard jump. The memory is keyed by continuity key *and*
-  position; that is deliberate and the opposite of `labelContinuityKey`,
-  which is position-free. Both choices are argued in
-  `label_continuity.dart` — read them before changing either key.
+  precisely when a label is most visibly on screen, and with its fade
+  unchanged, so the re-decision lands as a hard jump. The memory, the
+  fades and the winners are all keyed by label id, which the successor
+  inherits.
+- **Label ids come from `LabelIdentityIndex`, and every id taken is
+  handed back.** A holder (`_DisplayTile`, a parked `_GhostLabels`
+  cohort) takes ids when it publishes and releases them when it stops
+  offering them: replaced symbols (`_setTileSymbols` passes the old ids
+  as `replacing`), the retention pin, disposal, ghost expiry. A parked
+  cohort takes its tile's ids over instead of re-assigning. A missed
+  release keeps a label known with nothing left to draw it — it still
+  matches the next copy at that place, so nothing visible breaks, but the
+  index grows; `VectorTileLayer.debugLabelIds` checks held == offered.
+  Do not store ids on `SymbolInstance`: the finished-tile cache shares
+  instances between layers with the same style, and each layer has its
+  own index. Do not quantize positions into the key instead of matching
+  within a radius: a grid boundary splits a label's two copies into two
+  labels, which cross-fade against each other.
 - **Never put a font size (or unquantized opacity/halo width) into the
   text-shape cache key.** Text is shaped once at the 16 px reference size
   and drawn scaled; a size-bearing key re-creates the full-screen re-shape
@@ -302,6 +328,25 @@ for frames with no per-frame label work in them.
   snapshots when the GPU is disabled and just doesn't do it for the sync
   path, so see the block above `_foregrounded` in `vector_tile_layer.dart`
   for the removal condition.
+- **A mask filter is a render pass per path.** `line-blur` draws
+  through `MaskFilter.blur`, which the GPU backends implement as an
+  offscreen pass for every `drawPath` it is on — Liberty with every road
+  blurred, drawn per feature, fell from 56 to 20 fps on the Nothing Phone
+  while tiles rasterized (49 fps with each layer batched into one path),
+  and the pass never shows in a frame's RASTER time, only in frames
+  missing. So `_blurFilter` gives no mask filter below three quarters of
+  a device pixel of σ (Americana's 0.5 px road blurs fall under it; the
+  stroke keeps only the narrowing that makes its ink match MapLibre's),
+  and `_paintLine` draws a layer's shared, opaque blurred stroke above
+  it as one batched path. Two Impeller faults shape the rest (found on
+  an iPhone, reproduced with `flutter test --enable-impeller`; Skia
+  draws both): a mask-blurred `BlendMode.clear` stroke on a bent path
+  erases the whole layer, so a casing blurs its outer stroke only, and
+  a mask-blurred path of several contours on one horizontal or vertical
+  line draws nothing, so `_drawStroke` drops the mask filter there. The
+  two tests after the blur profiles fail under Impeller without these. Do not put a mask filter on
+  something drawn per feature without measuring frames delivered on a
+  phone (`bench/` fps, `compare/`).
 - **SDF icons need the SDF paint path** (`_sdfPaint` with an edge threshold
   scaled by device pixel ratio); tinting an SDF sprite as a normal image
   produces dark blobs, a bug this code has already been fixed for once.
@@ -324,6 +369,28 @@ for frames with no per-frame label work in them.
   through `_layoutText` / `_glyphPainters`, which stamp the pass, or a
   trim releases text the screen still needs and the next frame shapes
   it again.
+- **A shaped text's clusters remember their glyph-cache entry, but the
+  cache owns it.** `_Cluster.glyph` exists so `_glyphPainters` need not
+  build `styleKey#grapheme` per glyph per frame (6.8 % of UI-thread
+  samples in an Oct 2026 phone profile): within one placement pass a
+  remembered glyph is reused without asking the cache at all, and
+  across passes it is looked up by the key string the cache already
+  holds. So the glyph LRU is ordered by the pass a glyph was last used
+  in, not the frame — deliberately, since promoting every on-screen
+  glyph on every replayed frame was a map removal plus insertion each,
+  rehashes included. The one guard is `_GlyphText.evicted`, set by the
+  cache's eviction callback: the glyph cache evicts and trims
+  independently of the text cache, and an evicted glyph's painters are
+  disposed before the next frame. Reuse a remembered entry only while
+  it is not evicted — `curved_text_test.dart` covers a glyph evicted
+  within its pass and one trimmed under text kept by the trim.
+- **Hot-path keys are hashed once.** `SymbolInstance.continuityKey` is a
+  `ContinuityKey` and a curved glyph's atlas key an `_AtlasKey`: both
+  compare their fields like the records they replaced, but carry their
+  hash, which the label pass would otherwise recompute several times
+  per candidate (fade tracker, placement memory, fallbacks) or per
+  glyph per frame. `ContinuityKey.toString` keeps the record's
+  `(layer, text, icon)` form, which `bench/`'s `BENCH_WATCH` matches.
 
 ### Testing Requirements
 
@@ -338,6 +405,9 @@ for frames with no per-frame label work in them.
   remembered anchor a label is tried at first and its survival of a
   republish
 - `test/fill_pattern_test.dart`, `test/line_pattern_test.dart` — pattern paints
+- `test/paint_properties_test.dart` — translate, `line-offset`, `line-blur`
+  against MapLibre's ramp, `line-miter-limit`, sort keys, circle strokes
+  and `circle-blur`, `background-pattern`, raster resampling
 - `test/fill_extrusion_test.dart` — `fill-extrusion-opacity` blended once
   over overlapping buildings, constant and per-feature colour and
   patterned, the alpha of `fill-extrusion-color` ignored (constant and
@@ -381,6 +451,20 @@ for frames with no per-frame label work in them.
 - `test/label_zoom_gating_test.dart` — the layouter's band and `exact` gates, per-frame layer zoom-range gate, the
   `maxzoom` fade-out ramp, near-zero `text-size` skip, insertion-order
   collision tiebreak
+- `test/label_identity_test.dart` — `LabelIdentityIndex`: a republish
+  keeps every id (and prefers its own over a neighbour's), a label that
+  moved too far gets a new one, point labels across levels both ways,
+  nested along-line anchors keeping their ids at the next level (through
+  the real layouter), seam twins sharing an id while same-named labels
+  either side of a seam stay apart, the twin rule judged against each
+  same-level holder's own copy (not another level's), one-to-one and
+  nearest-first matching, holders and release — every case run twice,
+  scanning names and looking them up by position, plus a common name of
+  hundreds of labels on which both must agree id for id
+- `test/label_identity_layer_test.dart` — the index through the layer:
+  labels keep their ids through zoom crossings (overzoom, four seam
+  twins per label), every id a tile takes is handed back across pans and
+  crossings (held == offered), and `LabelMode.tile` holds none
 - `test/label_continuity_test.dart` — the per-label fade model: key
   identity, `LabelFadeTracker` semantics (rise/fall, resume mid-fade,
   per-frame idempotence, self-pruning), clearing in-progress state when
@@ -392,11 +476,18 @@ for frames with no per-frame label work in them.
   `PlacementThrottle` semantics
   (camera/candidate generations wait for the next due pass, only a resize
   forces one, and an unchanged settling repaint creates no new debt),
-  the painter wiring (no re-fade across a level swap, ghosts that draw
-  without claiming space, the `minzoom`-cut ease-out, never-visible
-  candidates never fading), frozen placement between passes (a
-  mid-interval overlap is not acted on; a label keeps the candidate it
-  is drawn from), the two-copies-collide case a zoom crossing produces,
+  the painter wiring (no re-fade across a level swap, a republished
+  winner drawn from its first frame, a missing winner held until a pass,
+  ghosts that draw without claiming space, the `minzoom`-cut ease-out,
+  never-visible candidates never fading), frozen placement between
+  passes (a mid-interval overlap is not acted on; a name on two
+  carriageways stays on the one it is drawn on), incumbency surviving a
+  republish with and without fades, copies of one label drawing once
+  (also where `*-allow-overlap` means nothing collides, and the copy
+  that fits drawing when the first one does not), which copy draws (a
+  replay draws the copy the pass drew, or another once it is gone; a
+  pass keeps its copy when a rotation reorders them; a ghost is drawn
+  from the copy the label was drawn from),
   and the outgoing-cohort pin (`drawnLabels` — a candidate a zoom-cut
   label was suppressing must not pop in mid-transition)
 - `test/label_mode_test.dart` — `LabelMode.tile`: `paintTile` drops

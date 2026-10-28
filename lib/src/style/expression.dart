@@ -1,6 +1,37 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' show Color;
 
+import 'package:meta/meta.dart';
+
 import 'css_color.dart';
+
+/// The geometry of the feature being evaluated, in the data tile it was
+/// decoded from — what `within` and `distance` read. The renderer builds
+/// one only for layers whose expressions use them
+/// (`ThemeLayer.readsGeometry`) and hands it over in a
+/// [GeometryEvalContext]; in any other context those operators answer
+/// as for a feature without geometry.
+@internal
+final class FeatureGeometry {
+  /// The data tile, whose extent the coordinates in [parts] span.
+  final int z, x, y;
+  final int extent;
+
+  /// 'Point', 'LineString' or 'Polygon' — see `PreparedFeature.parts`
+  /// for how each lays out its runs.
+  final String type;
+  final List<Float32List> parts;
+
+  const FeatureGeometry({
+    required this.z,
+    required this.x,
+    required this.y,
+    required this.extent,
+    required this.type,
+    required this.parts,
+  });
+}
 
 /// Evaluation context for compiled style expressions.
 class EvalContext {
@@ -37,6 +68,61 @@ class EvalContext {
 
   static const empty = EvalContext(zoom: 0);
 }
+
+/// An [EvalContext] that also carries the feature's geometry, for
+/// `within` and `distance`. Only layers that read geometry
+/// (`ThemeLayer.readsGeometry`) get one, through [featureContext]: a
+/// context is allocated per feature evaluated, and a field more on every
+/// one made filter matching on a fresh tile measurably slower on a phone.
+@internal
+final class GeometryEvalContext extends EvalContext {
+  final FeatureGeometry geometry;
+
+  const GeometryEvalContext({
+    required super.zoom,
+    super.properties,
+    super.geometryType,
+    super.featureId,
+    super.vars,
+    required this.geometry,
+  });
+
+  @override
+  EvalContext withVars(Map<String, Object?> newVars) => GeometryEvalContext(
+        zoom: zoom,
+        properties: properties,
+        geometryType: geometryType,
+        featureId: featureId,
+        vars: {...?vars, ...newVars},
+        geometry: geometry,
+      );
+}
+
+/// The context to evaluate one feature in: a [GeometryEvalContext] when
+/// the layer reads geometry and [geometry] is given, a plain
+/// [EvalContext] otherwise.
+@internal
+EvalContext featureContext({
+  required double zoom,
+  required Map<String, Object?> properties,
+  required String geometryType,
+  required Object? featureId,
+  FeatureGeometry? geometry,
+}) =>
+    geometry == null
+        ? EvalContext(
+            zoom: zoom,
+            properties: properties,
+            geometryType: geometryType,
+            featureId: featureId,
+          )
+        : GeometryEvalContext(
+            zoom: zoom,
+            properties: properties,
+            geometryType: geometryType,
+            featureId: featureId,
+            geometry: geometry,
+          );
 
 /// A compiled style expression.
 typedef Expr = Object? Function(EvalContext ctx);
@@ -81,8 +167,21 @@ String toStringValue(Object? v) {
     return 'rgba(${chan(v.r).round()},${chan(v.g).round()},'
         '${chan(v.b).round()},${v.a})';
   }
+  // Arrays and objects as JSON, as the style spec's `to-string` does.
+  if (v is List || v is Map) return _json(v);
   return v.toString();
 }
+
+String _json(Object? v) => switch (v) {
+      null => 'null',
+      final String s => jsonEncode(s),
+      num _ || bool _ => toStringValue(v),
+      final List<Object?> l => '[${l.map(_json).join(',')}]',
+      final Map<Object?, Object?> m => '{${m.entries.map(
+            (e) => '${jsonEncode('${e.key}')}:${_json(e.value)}',
+          ).join(',')}}',
+      _ => jsonEncode(toStringValue(v)),
+    };
 
 Color? toColor(Object? v) {
   if (v is Color) return v;

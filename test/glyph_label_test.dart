@@ -11,6 +11,7 @@ import 'package:flutter_map_vector_tiles/src/text/glyph_source.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fixtures/glyph_pbf_builder.dart';
+import 'fixtures/label_ids.dart';
 
 /// Labels drawn from a style's glyphs: which text takes that path, how
 /// it is measured and drawn, and how it waits for and falls back from
@@ -96,6 +97,7 @@ PlacedSymbol _symbol(SymbolThemeLayer layer, String text, Offset at,
         geometryType: 'Point',
         featureId: null,
       ),
+      id: labelIdOf((text, at)),
       screenAnchor: at,
       screenAngle: 0,
       order: order,
