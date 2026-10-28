@@ -52,7 +52,8 @@ and a 1:1 detail of the 45° camera.
 script showcase on the iPhone, `main` against the branch: release builds
 (a profile build new to the iPhone raises the Local Network prompt), no
 network, the branch's Noto Sans ranges bundled as assets. Every app was
-launched twice; both launches gave identical shots. Page 1 is the
+launched twice; both launches gave identical shots, except that `main`
+placed page 1's curved `Leopoldstraße` slightly differently. Page 1 is the
 24-script page of the Android shots. Page 2 holds #22's cases, taken
 from its script suite: Arabic and Hebrew with a Latin word (`شارع King
 Fahd`, `Rue 5 ‎תל‎`, `כביש 90`), Arabic, Hebrew, Persian and Urdu that
