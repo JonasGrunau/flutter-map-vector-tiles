@@ -29,7 +29,8 @@ class Style {
   final TileProviders providers;
 
   /// Raster sources declared in the style, referenced by its `raster`
-  /// layers. Pass to `VectorTileLayer.rasterSources`.
+  /// layers, and its `raster-dem` sources, referenced by its
+  /// `hillshade` layers. Pass to `VectorTileLayer.rasterSources`.
   final Map<String, RasterTileSource> rasterSources;
   final SpriteAtlas? sprites;
   final LatLng? center;
@@ -212,9 +213,9 @@ class StyleReader {
           final source = entry.value;
           if (source is! Map) continue;
           final type = source['type'];
-          if (type != 'vector' && type != 'raster') {
+          if (type != 'vector' && type != 'raster' && type != 'raster-dem') {
             logger.log('source "$id": type "$type" skipped '
-                '(only vector and raster sources are rendered)');
+                '(only vector, raster and raster-dem sources are rendered)');
             continue;
           }
           try {
@@ -234,6 +235,7 @@ class StyleReader {
                 rasterSources[id] = RasterTileSource(
                   provider: built.provider,
                   tileSize: (map['tileSize'] as num?)?.toInt() ?? 512,
+                  encoding: type == 'raster-dem' ? _demEncoding(map) : null,
                 );
               }
             }
@@ -361,6 +363,23 @@ class StyleReader {
       ),
       attribution: attribution,
     );
+  }
+
+  /// A `raster-dem` source's `encoding`: `mapbox` unless it says
+  /// otherwise, as the spec defaults.
+  static DemEncoding _demEncoding(Map<String, Object?> source) {
+    double factor(String name, double fallback) =>
+        (source[name] as num?)?.toDouble() ?? fallback;
+    return switch (source['encoding']) {
+      'terrarium' => DemEncoding.terrarium,
+      'custom' => DemEncoding(
+          redFactor: factor('redFactor', 1),
+          greenFactor: factor('greenFactor', 1),
+          blueFactor: factor('blueFactor', 1),
+          baseShift: factor('baseShift', 0),
+        ),
+      _ => DemEncoding.mapbox,
+    };
   }
 
   Future<SpriteAtlas?> _loadSprites(

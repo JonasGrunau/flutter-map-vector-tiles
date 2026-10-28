@@ -26,6 +26,7 @@ import 'pipeline/executor/executor.dart';
 import 'pipeline/prepared_tile.dart';
 import 'render/display_tile_data.dart';
 import 'render/fade.dart';
+import 'render/hillshade_renderer.dart';
 import 'render/label_continuity.dart';
 import 'render/label_painter.dart';
 import 'render/pattern_resolver.dart';
@@ -274,6 +275,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   late final Future<ByteCache?> _diskCache;
   final _stores = <String, TileStore>{};
   final _rasterStores = <String, RasterTileStore>{};
+
+  /// The `raster-dem` sources among [_rasterStores], with their
+  /// encodings: a hillshade layer reads its tiles' neighbours too, and
+  /// waits for its shaders.
+  final _demEncodings = <String, DemEncoding>{};
   final _tiles = <TileKey, _DisplayTile>{};
 
   /// Tiles of other zoom levels kept until the current level is ready.
@@ -638,6 +644,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       store.dispose();
     }
     _rasterStores.clear();
+    _demEncodings.clear();
 
     // Per source: source-layer -> union of referenced property names.
     final propsBySource = <String, Map<String, Set<String>?>>{};
@@ -670,14 +677,16 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       );
       store.onRefreshed = (dataKey) => _reloadRefreshed(
           (displayKey) =>
-              store.dataKeyFor(displayKey, widget.tileOffset.zoomOffset),
+              store.dataKeyFor(displayKey, widget.tileOffset.zoomOffset) ==
+              dataKey,
           dataKey);
       _stores[sourceId] = store;
     });
 
     final rasterSourceIds = <String>{
       for (final layer in widget.theme.layers)
-        if (layer is RasterThemeLayer && layer.source != null) layer.source!,
+        if (layer is RasterThemeLayer || layer is HillshadeThemeLayer)
+          if (layer.source case final source?) source,
     };
     widget.rasterSources.forEach((sourceId, source) {
       if (!rasterSourceIds.contains(sourceId)) return; // unused by theme
@@ -687,12 +696,24 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         memoryCacheMaxBytes: widget.memoryCacheMaxBytes,
         logger: widget.logger,
       );
-      store.onRefreshed = (dataKey) => _reloadRefreshed(
-          (displayKey) =>
-              store.dataKeyFor(displayKey, widget.tileOffset.zoomOffset),
-          dataKey);
+      final encoding = source.encoding;
+      store.onRefreshed = (dataKey) => _reloadRefreshed((displayKey) {
+            final served =
+                store.dataKeyFor(displayKey, widget.tileOffset.zoomOffset);
+            if (served == null) return false;
+            if (served == dataKey) return true;
+            // A hillshade's edges are shaded from its neighbours too.
+            return encoding != null &&
+                _demNeighbourKeys(displayKey, served).contains(dataKey);
+          }, dataKey);
       _rasterStores[sourceId] = store;
+      if (encoding != null) _demEncodings[sourceId] = encoding;
     });
+    if (_demEncodings.isNotEmpty) {
+      // Loaded early, while the first tiles are fetched; a tile with a
+      // hillshade awaits it before it renders for good.
+      unawaited(HillshadePrograms.load(widget.logger));
+    }
 
     _generation++;
     _clearTiles();
@@ -823,19 +844,19 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   int _priorityOf(_DisplayTile tile) => _lastLayout?.priorityOf(tile.key) ?? 0;
 
   /// A background revalidation replaced [refreshed]'s decoded content —
-  /// re-rasterize the visible display tiles it serves. The new raster
-  /// cross-fades over the old imagery (see [_DisplayTile.setImage]).
+  /// re-rasterize the visible display tiles it went into ([uses]). The
+  /// new raster cross-fades over the old imagery (see
+  /// [_DisplayTile.setImage]).
   void _reloadRefreshed(
-    TileKey? Function(TileKey displayKey) dataKeyOf,
+    bool Function(TileKey displayKey) uses,
     TileKey refreshed,
   ) {
     if (!mounted) return;
     // Finished results built from the replaced content are stale too —
     // including cached display tiles not currently on screen.
-    _resultCache
-        ?.removeWhere((displayKey) => dataKeyOf(displayKey) == refreshed);
+    _resultCache?.removeWhere(uses);
     for (final tile in _tiles.values.toList()) {
-      if (dataKeyOf(tile.key) != refreshed) continue;
+      if (!uses(tile.key)) continue;
       tile.renderedWith = null; // identical source set must still re-enqueue
       tile.loadGeneration++;
       unawaited(_loadTile(tile, _priorityOf(tile)));
@@ -845,7 +866,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // the generation drops those jobs, so none of them can publish the
     // old content or write it back into the cache just invalidated.
     for (final tile in _retained.values) {
-      if (dataKeyOf(tile.key) == refreshed) tile.loadGeneration++;
+      if (uses(tile.key)) tile.loadGeneration++;
     }
   }
 
@@ -1303,6 +1324,27 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       pendingRasters,
     );
 
+    // A hillshade shades its tile's edges from the neighbouring DEM
+    // tiles, so those load too and are awaited with the rest — but are
+    // never by themselves the reason for a provisional render, which
+    // would rasterize the whole tile twice for the sake of its border.
+    final neighbours = <String, List<RasterTile>>{};
+    final pendingNeighbours = <String, Map<TileKey, Future<RasterTile?>>>{};
+    for (final id in _demEncodings.keys) {
+      final store = _rasterStores[id]!;
+      final dataKey = store.dataKeyFor(tile.key, offset);
+      if (dataKey == null) continue;
+      for (final key in _demNeighbourKeys(tile.key, dataKey)) {
+        final cached = store.peek(key);
+        if (cached != null) {
+          (neighbours[id] ??= []).add(cached);
+        } else if (!store.knownAbsent(key)) {
+          (pendingNeighbours[id] ??= {})[key] =
+              store.obtain(key, cancellation: tile.cancellation);
+        }
+      }
+    }
+
     if (pending.isNotEmpty || pendingRasters.isNotEmpty) {
       // Render a provisional image from already-decoded ancestors so
       // fast zoom-ins never show blank tiles.
@@ -1363,6 +1405,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             rasters: provisionalRasters,
             descendantSources: descendantSources,
             descendantRasters: descendantRasters,
+            neighbourRasters: _peekDemNeighbours(tile.key, provisionalRasters),
             provisional: true,
             priority: priority);
       }
@@ -1375,6 +1418,29 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         if (raster != null) rasters[entry.key] = raster;
       }
     }
+    for (final MapEntry(key: id, value: pendingKeys)
+        in pendingNeighbours.entries) {
+      for (final pendingNeighbour in pendingKeys.values) {
+        final raster = await pendingNeighbour;
+        if (raster != null) (neighbours[id] ??= []).add(raster);
+      }
+    }
+    if (_demEncodings.isNotEmpty && HillshadePrograms.loaded == null) {
+      // The rasterizer draws a hillshade only once its shaders are in,
+      // and a result rendered without it would be cached as final.
+      await HillshadePrograms.load(widget.logger);
+    }
+
+    void disposeHandles() {
+      for (final raster in rasters.values) {
+        raster.dispose();
+      }
+      for (final list in neighbours.values) {
+        for (final raster in list) {
+          raster.dispose();
+        }
+      }
+    }
 
     if (!mounted ||
         generation != _generation ||
@@ -1383,9 +1449,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // Includes the case where the content changed while this load was
       // awaiting: publishing now would show — and cache — sources that
       // were replaced, and would make the reload look like a no-op.
-      for (final raster in rasters.values) {
-        raster.dispose();
-      }
+      disposeHandles();
       return;
     }
 
@@ -1401,24 +1465,31 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           final dataKey =
               store.dataKeyFor(tile.key, widget.tileOffset.zoomOffset);
           return dataKey != null && !store.knownAbsent(dataKey);
+        }) ||
+        pendingNeighbours.entries.any((entry) {
+          final store = _rasterStores[entry.key]!;
+          final arrived = {for (final n in neighbours[entry.key] ?? []) n.key};
+          return entry.value.keys
+              .any((key) => !arrived.contains(key) && !store.knownAbsent(key));
         });
 
     final resolved = {
       ...sources.keys,
       for (final id in rasters.keys) 'raster:$id',
+      for (final MapEntry(key: id, value: list) in neighbours.entries)
+        for (final neighbour in list) 'raster:$id:${neighbour.key}',
     };
     if (setEquals(tile.renderedWith, resolved)) {
       // A retry that recovered nothing: re-rasterizing identical content
       // would only restart the fade. _enqueueRaster would take ownership
       // of the handles, so release them here instead.
-      for (final raster in rasters.values) {
-        raster.dispose();
-      }
+      disposeHandles();
     } else {
       tile.renderedWith = resolved;
       tile.retryAttempt = 0; // progress restores the retry budget
       _enqueueRaster(tile, sources,
           rasters: rasters,
+          neighbourRasters: neighbours,
           provisional: false,
           priority: priority,
           fadeIn: fadeIn,
@@ -1432,6 +1503,37 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         unawaited(_loadTile(tile, priority));
       });
     }
+  }
+
+  /// The DEM tiles bordering [dataKey] whose texels display tile
+  /// [displayKey]'s hillshade reads: all eight neighbours, or at
+  /// overzoom those of the edges the display tile touches.
+  static List<TileKey> _demNeighbourKeys(TileKey displayKey, TileKey dataKey) =>
+      [
+        for (final (dx, dy)
+            in HillshadeRenderer.neighboursNeeded(displayKey, dataKey))
+          if (HillshadeRenderer.neighbourKey(dataKey, dx, dy) case final key?)
+            key,
+      ];
+
+  /// Owned handles to the in-memory neighbours of each DEM tile in
+  /// [centers] that [displayKey] reads — for a provisional render, which
+  /// waits for nothing.
+  Map<String, List<RasterTile>> _peekDemNeighbours(
+    TileKey displayKey,
+    Map<String, RasterTile> centers,
+  ) {
+    final result = <String, List<RasterTile>>{};
+    centers.forEach((id, center) {
+      final store = _demEncodings.containsKey(id) ? _rasterStores[id] : null;
+      if (store == null) return;
+      final found = [
+        for (final key in _demNeighbourKeys(displayKey, center.key))
+          if (store.peek(key) case final neighbour?) neighbour,
+      ];
+      if (found.isNotEmpty) result[id] = found;
+    });
+    return result;
   }
 
   /// Rasterization happens on the UI thread (`Picture.toImageSync`), so
@@ -1452,6 +1554,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     Map<String, RasterTile> rasters = const {},
     Map<String, List<PreparedTile>> descendantSources = const {},
     Map<String, List<RasterTile>> descendantRasters = const {},
+    Map<String, List<RasterTile>> neighbourRasters = const {},
     required bool provisional,
     required int priority,
     bool fadeIn = true,
@@ -1462,6 +1565,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         rasters: rasters,
         descendantSources: descendantSources,
         descendantRasters: descendantRasters,
+        neighbourRasters: neighbourRasters,
         provisional: provisional,
         priority: priority,
         fadeIn: fadeIn,
@@ -1601,7 +1705,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
               // or a newer one for this tile, which supersedes it —
               // take its turn first.
               assert(
-                  job.rasters.isEmpty && job.descendantRasters.isEmpty,
+                  job.rasters.isEmpty &&
+                      job.descendantRasters.isEmpty &&
+                      job.neighbourRasters.isEmpty,
                   'a requeued symbols job must own no raster handles: the '
                   'pump skips dispose() for it');
               _renderQueue.enqueueSymbols(tile, job.priority, job,
@@ -1633,7 +1739,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         sources: job.sources,
         rasters: job.rasters,
         descendantSources: job.descendantSources,
-        descendantRasters: job.descendantRasters);
+        descendantRasters: job.descendantRasters,
+        neighbourRasters: job.neighbourRasters,
+        demEncodings: _demEncodings);
     // A theme change rebuilds the stores, which empties this queue, and
     // a sprites change retires every queued job (see [_refreshTiles]):
     // the pixel ratio is the one input that can change under a job
@@ -1975,6 +2083,11 @@ class _RenderJob {
   /// Owned descendant raster handles, disposed with the job — the
   /// zoom-out counterpart of the ancestors in [rasters].
   final Map<String, List<RasterTile>> descendantRasters;
+
+  /// Owned handles to the DEM tiles bordering those in [rasters], for a
+  /// seamless hillshade (see [DisplayTileData.neighbourRasters]);
+  /// disposed with the job.
+  final Map<String, List<RasterTile>> neighbourRasters;
   final bool provisional;
   final int priority;
 
@@ -2048,6 +2161,7 @@ class _RenderJob {
     required this.generation,
     this.descendantSources = const {},
     this.descendantRasters = const {},
+    this.neighbourRasters = const {},
     this.fromCache = false,
     this.symbols,
     this.geometry,
@@ -2059,7 +2173,10 @@ class _RenderJob {
     for (final raster in rasters.values) {
       raster.dispose();
     }
-    for (final rasters in descendantRasters.values) {
+    for (final rasters in [
+      ...descendantRasters.values,
+      ...neighbourRasters.values,
+    ]) {
       for (final raster in rasters) {
         raster.dispose();
       }

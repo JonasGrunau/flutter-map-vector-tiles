@@ -231,6 +231,42 @@ class ThemeReader {
           hueRotate: _double(parser, paint['raster-hue-rotate'], 0),
         );
       case 'hillshade':
+        final directions =
+            _doubles(parser, paint['hillshade-illumination-direction'], 335);
+        final altitudes =
+            _doubles(parser, paint['hillshade-illumination-altitude'], 45);
+        final shadows = _colors(
+            parser, paint['hillshade-shadow-color'], const Color(0xff000000));
+        final highlights = _colors(parser, paint['hillshade-highlight-color'],
+            const Color(0xffffffff));
+        final lights = [
+          directions.length,
+          altitudes.length,
+          shadows.length,
+          highlights.length,
+        ].reduce((a, b) => a > b ? a : b);
+        if (lights > HillshadeThemeLayer.maxLights) {
+          logger.warn('layer "$id": $lights light sources, only the first '
+              '${HillshadeThemeLayer.maxLights} are drawn');
+        }
+        layer = HillshadeThemeLayer(
+          id: id,
+          source: source,
+          minzoom: minzoom,
+          maxzoom: maxzoom,
+          filter: filter,
+          method: _string(parser, paint['hillshade-method'], 'standard'),
+          directions: directions,
+          altitudes: altitudes,
+          anchor: _string(
+              parser, paint['hillshade-illumination-anchor'], 'viewport'),
+          exaggeration: _double(parser, paint['hillshade-exaggeration'], 0.5),
+          shadowColors: shadows,
+          highlightColors: highlights,
+          accentColor: _color(
+              parser, paint['hillshade-accent-color'], const Color(0xff000000)),
+          resampling: _string(parser, paint['resampling'], 'linear'),
+        );
       case 'heatmap':
       case 'sky':
         logger.log('layer "$id": type "$type" not supported, skipped');
@@ -272,6 +308,29 @@ class ThemeReader {
     }
     final p = parser.parseForProperty(json);
     return ColorProp(p.expr, fallback, zoomOnly: p.zoomOnly);
+  }
+
+  /// A `numberArray` property — one number, or a literal array of them
+  /// (one per light of a multidirectional hillshade). Never empty.
+  static List<DoubleProp> _doubles(
+      ExpressionParser parser, Object? json, double fallback) {
+    if (json is List && json.isNotEmpty && json.every((e) => e is num)) {
+      return [for (final e in json) DoubleProp.constant((e as num).toDouble())];
+    }
+    return [_double(parser, json, fallback)];
+  }
+
+  /// A `colorArray` property — one colour, or a literal array of colour
+  /// strings. Never empty.
+  static List<ColorProp> _colors(
+      ExpressionParser parser, Object? json, Color fallback) {
+    if (json is List &&
+        json.isNotEmpty &&
+        !ExpressionParser.operators.contains(json.first) &&
+        json.every((e) => e is String && toColor(e) != null)) {
+      return [for (final e in json) ColorProp.constant(toColor(e)!)];
+    }
+    return [_color(parser, json, fallback)];
   }
 
   static StringProp _string(
