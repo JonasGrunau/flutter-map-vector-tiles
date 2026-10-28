@@ -72,11 +72,13 @@ class EvalContext {
 /// An [EvalContext] that also carries what only some layers read about a
 /// feature: its geometry, for `within` and `distance`, and its state, as
 /// set through `VectorTileLayerController.setFeatureState`, for
-/// `feature-state`. In a plain [EvalContext] those operators answer as for
-/// a feature without geometry or state. Only a feature that needs one gets
-/// it, through [featureContext]: a context is allocated per feature
-/// evaluated, and a field more on every one made filter matching on a
-/// fresh tile measurably slower on a phone.
+/// `feature-state`; and the kernel density a heatmap layer's
+/// `heatmap-color` ramp reads through `heatmap-density`. In a plain
+/// [EvalContext] those operators answer as for a feature without geometry
+/// or state, and the density reads 0. Only a feature that needs one gets
+/// it, through [featureContext], and the ramp builds its own: a context
+/// is allocated per feature evaluated, and a field more on every one made
+/// filter matching on a fresh tile measurably slower on a phone.
 @internal
 final class FeatureEvalContext extends EvalContext {
   /// The feature's geometry, for a layer that reads it
@@ -88,6 +90,10 @@ final class FeatureEvalContext extends EvalContext {
   /// otherwise.
   final Map<String, Object?>? featureState;
 
+  /// The density `["heatmap-density"]` reads, while a heatmap layer's
+  /// `heatmap-color` ramp is evaluated; null otherwise.
+  final double? heatmapDensity;
+
   const FeatureEvalContext({
     required super.zoom,
     super.properties,
@@ -96,6 +102,7 @@ final class FeatureEvalContext extends EvalContext {
     super.vars,
     this.geometry,
     this.featureState,
+    this.heatmapDensity,
   });
 
   @override
@@ -107,6 +114,7 @@ final class FeatureEvalContext extends EvalContext {
         vars: {...?vars, ...newVars},
         geometry: geometry,
         featureState: featureState,
+        heatmapDensity: heatmapDensity,
       );
 }
 

@@ -37,6 +37,7 @@ set_defines() {
     "--dart-define=FMVT_VERSION=$FMVT_VERSION"
     "--dart-define=GIT_SHA=$GIT_SHA"
     "--dart-define=DEVICE=$1"
+    "--dart-define=STYLE=${STYLE:-liberty}"
   )
 }
 

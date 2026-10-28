@@ -67,16 +67,21 @@ class ExpressionParser {
   bool _readsGeometry = false;
 
   /// Parses one style property, additionally reporting whether the
-  /// compiled expression is zoom-only (reads no feature data). The
-  /// typed property wrappers memoize zoom-only results against the
-  /// zoom — see `DoubleProp.zoomOnly`.
-  ({Expr expr, bool zoomOnly}) parseForProperty(Object? json) {
-    final saved = _readsFeature;
+  /// compiled expression is zoom-only (reads no feature data) and
+  /// whether it reads the zoom at all. The typed property wrappers
+  /// memoize zoom-only results against the zoom — see
+  /// `DoubleProp.zoomOnly`.
+  ({Expr expr, bool zoomOnly, bool readsZoom}) parseForProperty(Object? json) {
+    final savedFeature = _readsFeature;
+    final savedZoom = _readsZoom;
     _readsFeature = false;
+    _readsZoom = false;
     final expr = parse(json);
     final zoomOnly = !_readsFeature;
-    _readsFeature = saved || _readsFeature;
-    return (expr: expr, zoomOnly: zoomOnly);
+    final readsZoom = _readsZoom;
+    _readsFeature = savedFeature || _readsFeature;
+    _readsZoom = savedZoom || _readsZoom;
+    return (expr: expr, zoomOnly: zoomOnly, readsZoom: readsZoom);
   }
 
   /// Records a feature-property reference discovered outside the
@@ -665,8 +670,14 @@ class ExpressionParser {
         final keyExpr = parse(key);
         return (ctx) => _featureStateOf(ctx)?[toStringValue(keyExpr(ctx))];
 
-      // --- heatmap / line metrics — not applicable here ---
       case 'heatmap-density':
+        // An input besides the zoom, like feature data: a ramp over it
+        // must not be memoized against the zoom alone.
+        _readsFeature = true;
+        return (ctx) =>
+            ctx is FeatureEvalContext ? ctx.heatmapDensity ?? 0.0 : 0.0;
+
+      // --- line metrics — not applicable here ---
       case 'line-progress':
       case 'accumulated':
         return (_) => 0.0;
