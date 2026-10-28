@@ -932,8 +932,8 @@ class _BenchPageState extends State<BenchPage>
     String ms(int us) => (us / 1000).toStringAsFixed(1);
     debugPrint('BENCH[$_label]   WORK   rasterize=${ms(rasterUs)}ms '
         'layout=${ms(layoutUs)}ms labels=${ms(labelUs)}ms');
-    // The label pass split: placement work (and how many frames did some:
-    // a whole pass each, or a slice of one), replayed frames, the per-frame candidate sort, and paragraph
+    // The label pass split: placement work (and the frames that did it),
+    // replayed frames, the per-frame candidate sort, and paragraph
     // shaping on cache misses. Whatever `labels` holds beyond these is
     // drawing the placed symbols.
     if (labelSplit != null) {
