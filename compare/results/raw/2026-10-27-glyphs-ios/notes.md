@@ -45,3 +45,34 @@ UI build p50 is 0.05–0.25 ms higher (fling and zoom the most).
 side at two of the fidelity cameras (`main` draws in the iOS system
 font, the branch in the style's Noto Sans from its glyph PBFs on Metal),
 and a 1:1 detail of the 45° camera.
+
+## Script showcase (2026-10-28)
+
+`showcase.webp`, `showcase-22.webp` and `showcase-22-detail.webp` are the
+script showcase on the iPhone, `main` against the branch: release builds
+(a profile build new to the iPhone raises the Local Network prompt), no
+network, the branch's Noto Sans ranges bundled as assets. Every app was
+launched twice; both launches gave identical shots. Page 1 is the
+24-script page of the Android shots. Page 2 holds #22's cases, taken
+from its script suite: Arabic and Hebrew with a Latin word (`شارع King
+Fahd`, `Rue 5 ‎תל‎`, `כביש 90`), Arabic, Hebrew, Persian and Urdu that
+wrap at `text-max-width`, Chinese and Japanese that wrap there, the long
+Bengali name whose word #22 stopped splitting, Devanagari, Sinhala (with
+its ZWJ), Tibetan and Thai stacking, vowelled Arabic, a ZWJ family, a
+flag and a skin tone, and Chinese and Arabic along curved roads.
+
+- Page 1: on the branch Latin, Greek, Cyrillic, Armenian and Georgian
+  come from the glyphs in Noto Sans (`main`: the iOS system font); the
+  column of complex scripts is pixel-identical on both sides.
+- `شارع King Fahd`: `main` draws the Arabic word on the left, the branch
+  (#22) on the right, reading right to left. The line is not taller on
+  iOS: 42 device px of ink (43 with its halo) from the same top on both
+  sides; the branch's sits 4 px further right.
+- `北京市朝阳区建国门外大街`: one line on `main`, two on the branch
+  (`北京市朝阳区建` / `国门外大街`).
+- Everything else on page 2 is pixel-identical between `main` and the
+  branch, apart from sub-pixel placement of the curved Arabic name. No
+  `.notdef` boxes; Arabic, Persian and Urdu join, marks and stacks sit
+  where they belong, the emoji draw as one glyph each. The Bengali name
+  wraps into three lines at word boundaries on both sides; `main`'s
+  split needs a narrower width than this page has.
