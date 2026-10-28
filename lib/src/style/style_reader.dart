@@ -191,14 +191,14 @@ class StyleReader {
       final styleJson =
           localizeStyle(await loader.loadJson(styleUrl), language);
 
-      var theme = ThemeReader(logger: logger).read(styleJson);
       final lang = language;
-      if (lang != null && lang.isNotEmpty) {
-        // The theme id keys the finished-tile cache, which holds label
-        // text (baked into the raster with LabelMode.tile): a style read
-        // in two languages must not share it.
-        theme = Theme(id: '${theme.id}|language=$lang', layers: theme.layers);
-      }
+      // The theme id keys the finished-tile cache, which holds label
+      // text (baked into the raster with LabelMode.tile): a style read
+      // in two languages must not share it.
+      final theme = ThemeReader(logger: logger).read(styleJson,
+          id: lang != null && lang.isNotEmpty
+              ? '${ThemeReader.idOf(styleJson)}|language=$lang'
+              : null);
 
       final sources = styleJson['sources'];
       final providers = <String, VectorTileProvider>{};

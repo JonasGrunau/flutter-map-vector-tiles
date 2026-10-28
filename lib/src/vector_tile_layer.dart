@@ -777,7 +777,15 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       TileResultCache.releaseSignature(
           _signatureOf(oldWidget, _devicePixelRatio));
     }
-    if (oldWidget.theme != widget.theme ||
+    // The same style under another global state reads the same
+    // features from the same sources: the decoded tiles stay, and only
+    // what is drawn from them is redone — like a sprites change, the old
+    // imagery and labels holding until their replacements land.
+    final themeChanged = oldWidget.theme != widget.theme;
+    final siblingTheme =
+        themeChanged && widget.theme.isSiblingOf(oldWidget.theme);
+    if (siblingTheme) refresh = true;
+    if ((themeChanged && !siblingTheme) ||
         oldWidget.tileProviders != widget.tileProviders ||
         oldWidget.rasterSources != widget.rasterSources ||
         oldWidget.tileOffset.zoomOffset != widget.tileOffset.zoomOffset) {
@@ -789,8 +797,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   /// Re-rasterizes every live tile from already-decoded data — for
   /// widget changes that alter what is baked into the raster or the
-  /// symbol set (sprites, showLabels, labelMode) without changing the
-  /// data, and for the resume recovery. The old imagery stays on screen
+  /// symbol set (sprites, showLabels, labelMode, a sibling theme under
+  /// another global state) without changing the data, and for the
+  /// resume recovery. The old imagery stays on screen
   /// until its replacement is ready, and nothing re-fades.
   void _refreshTiles() {
     for (final tile in _tiles.values) {

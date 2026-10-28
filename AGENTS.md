@@ -136,6 +136,10 @@ full pub points, so a failure there costs a re-tag.
 
 - `flutter_map` ^8.2.0 — host map framework; it owns camera, gestures, layers
 - `http` ^1.2.0 — tile and style fetching
+- `intl` >=0.19.0 <1.0.0 — the `number-format` expression's locale digits
+  and currencies; already in every app through `latlong2`, so keep the
+  range at least as wide as the one Flutter's `flutter_localizations`
+  pins on the oldest Flutter supported
 - `path_provider` ^2.1.0 — disk cache directory (no web support)
 - `latlong2`, `characters`, `meta` — coordinates, grapheme clustering for label
   layout, annotations

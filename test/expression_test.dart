@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:ui' show Color;
 
 import 'package:flutter_map_vector_tiles/src/style/expression.dart';
@@ -481,6 +482,373 @@ void main() {
             ]
           ]),
           false);
+    });
+  });
+
+  group('global-state', () {
+    test('reads the state the parser was given, compiled in', () {
+      final parser = ExpressionParser(globalState: {'mode': 'night', 'n': 3});
+      final p = parser.parseForProperty([
+        'case',
+        [
+          '==',
+          ['global-state', 'mode'],
+          'night'
+        ],
+        ['global-state', 'n'],
+        0
+      ]);
+      expect(p.expr(EvalContext.empty), 3);
+      expect(p.zoomOnly, isTrue, reason: 'global state is no feature data');
+      expect(parser.readsZoom, isFalse);
+      expect(parser.readsGlobalState, isTrue);
+    });
+
+    test('an unset name is null', () {
+      expect(eval(['global-state', 'nothing']), isNull);
+    });
+
+    test('a computed name degrades with a warning', () {
+      final parser = ExpressionParser(globalState: {'ab': 1});
+      final e = parser.parse([
+        'global-state',
+        ['concat', 'a', 'b']
+      ]);
+      expect(e(EvalContext.empty), isNull);
+      expect(parser.warnings, isNotEmpty);
+    });
+  });
+
+  group('join, split and semiliteral', () {
+    test('join and split', () {
+      expect(
+          eval([
+            'join',
+            ['get', 'names'],
+            ' · '
+          ], props: {
+            'names': ['a', 'b']
+          }),
+          'a · b');
+      expect(eval(['split', 'a;b;;c', ';']), ['a', 'b', '', 'c']);
+      expect(eval(['join', 'not a list', ',']), isNull);
+      expect(eval(['split', 5, ',']), isNull);
+    });
+
+    test('semiliteral evaluates the expressions inside its array', () {
+      expect(
+          eval([
+            'semiliteral',
+            [
+              ['get', 'x'],
+              2,
+              'top'
+            ]
+          ], props: {
+            'x': 1
+          }),
+          [1, 2.0, 'top']);
+      expect(
+          eval([
+            'semiliteral',
+            [1, 2]
+          ]),
+          [1, 2]);
+    });
+
+    test('semiliteral without exactly one argument warns', () {
+      final parser = ExpressionParser();
+      expect(parser.parse(['semiliteral'])(EvalContext.empty), isNull);
+      expect(parser.warnings, isNotEmpty);
+    });
+  });
+
+  group('number-format', () {
+    test('locale digits, currencies and units', () {
+      expect(eval(['number-format', 123456.789, <String, Object?>{}]),
+          '123,456.789');
+      expect(
+          eval([
+            'number-format',
+            1234.5,
+            {'locale': 'de'}
+          ]),
+          '1.234,5');
+      expect(
+          eval([
+            'number-format',
+            123456.789,
+            {'locale': 'en-US', 'currency': 'EUR'}
+          ]),
+          '€123,456.79');
+      expect(
+          eval([
+            'number-format',
+            ['get', 'ele'],
+            {'unit': 'meter', 'max-fraction-digits': 0}
+          ], props: {
+            'ele': 2962.4
+          }),
+          '2,962 m');
+      expect(
+          eval([
+            'number-format',
+            21.5,
+            {'unit': 'celsius'}
+          ]),
+          '21.5°C');
+    });
+
+    test('a non-number formats to null', () {
+      expect(
+          eval([
+            'number-format',
+            ['get', 'missing'],
+            <String, Object?>{}
+          ]),
+          isNull);
+    });
+
+    test('currency and unit together warn', () {
+      final parser = ExpressionParser();
+      parser.parse([
+        'number-format',
+        1,
+        {'currency': 'EUR', 'unit': 'meter'}
+      ]);
+      expect(parser.warnings, isNotEmpty);
+    });
+  });
+
+  group('within and distance', () {
+    // z0, extent 4096: the tile centre is (0°, 0°).
+    FeatureGeometry point(double x, double y) => FeatureGeometry(
+          z: 0,
+          x: 0,
+          y: 0,
+          extent: 4096,
+          type: 'Point',
+          parts: [
+            Float32List.fromList([x, y])
+          ],
+        );
+    const square = {
+      'type': 'Polygon',
+      'coordinates': [
+        [
+          [-10, -10],
+          [10, -10],
+          [10, 10],
+          [-10, 10],
+          [-10, -10]
+        ]
+      ],
+    };
+
+    Object? evalAt(Object? json, FeatureGeometry geometry) =>
+        ExpressionParser().parse(json)(GeometryEvalContext(
+            zoom: 0, geometryType: 'Point', geometry: geometry));
+
+    test('within tests the feature against the polygons', () {
+      expect(evalAt(['within', square], point(2048, 2048)), isTrue);
+      expect(evalAt(['within', square], point(3072, 2048)), isFalse);
+    });
+
+    test('distance is in metres', () {
+      final d = evalAt([
+        'distance',
+        {
+          'type': 'Point',
+          'coordinates': [0, 1]
+        }
+      ], point(2048, 2048)) as double;
+      // One degree of latitude at the equator.
+      expect(d, closeTo(110574, 1));
+      expect(evalAt(['distance', square], point(2048, 2048)), 0);
+    });
+
+    test('both read the geometry, which makes them per feature', () {
+      final parser = ExpressionParser();
+      final p = parser.parseForProperty(['distance', square]);
+      expect(p.zoomOnly, isFalse);
+      expect(parser.readsGeometry, isTrue);
+      expect(ExpressionParser().readsGeometry, isFalse);
+    });
+
+    test('without geometry a feature is not within and has no distance', () {
+      expect(eval(['within', square]), isFalse);
+      expect(eval(['distance', square]), isNull);
+    });
+
+    test('non-geometry arguments warn', () {
+      final parser = ExpressionParser();
+      expect(
+          parser.parse([
+            'within',
+            {
+              'type': 'Point',
+              'coordinates': [0, 0]
+            }
+          ])(EvalContext.empty),
+          isNull);
+      parser.parse([
+        'distance',
+        ['get', 'geojson']
+      ]);
+      expect(parser.warnings, hasLength(2));
+    });
+  });
+
+  group('MapLibre semantics the spec fixtures pinned down', () {
+    test('elevation is null: no terrain is drawn', () {
+      final parser = ExpressionParser();
+      expect(parser.parse(['elevation'])(EvalContext.empty), isNull);
+      expect(parser.warnings, isEmpty);
+    });
+
+    test('to-number converts null to 0 and fails on the unconvertible', () {
+      expect(eval(['to-number', null]), 0);
+      expect(eval(['to-number', 'abc']), isNull);
+      expect(eval(['to-number', 'abc', '7']), 7);
+    });
+
+    test('index-of, slice and length count characters, not code units', () {
+      expect(eval(['index-of', 'b', 'abcb', 2]), 3);
+      expect(eval(['index-of', '市', '😀市']), 1);
+      expect(eval(['length', '😀市']), 2);
+      expect(eval(['slice', 'hello', -3]), 'llo');
+      expect(
+          eval([
+            'slice',
+            [
+              'literal',
+              [1, 2, 3, 4]
+            ],
+            1,
+            -1
+          ]),
+          [2, 3]);
+    });
+
+    test('to-string writes arrays and objects as JSON', () {
+      expect(
+          eval([
+            'to-string',
+            [
+              'literal',
+              [1, 'a']
+            ]
+          ]),
+          '[1,"a"]');
+    });
+
+    test('typeof names an array by its items', () {
+      expect(
+          eval([
+            'typeof',
+            [
+              'literal',
+              [1, 2]
+            ]
+          ]),
+          'array<number, 2>');
+    });
+
+    test('format leaves inline images out of the text', () {
+      expect(
+          eval([
+            'format',
+            ['image', 'shield'],
+            <String, Object?>{},
+            'A9',
+            <String, Object?>{}
+          ]),
+          'A9');
+    });
+
+    test('interpolate-lab and -hcl blend outside RGB', () {
+      Color at(String op) => eval([
+            op,
+            ['linear'],
+            0.5,
+            0,
+            '#ff0000',
+            1,
+            '#0000ff'
+          ]) as Color;
+      final rgb = at('interpolate');
+      final lab = at('interpolate-lab');
+      final hcl = at('interpolate-hcl');
+      expect(rgb.r, closeTo(0.5, 0.01));
+      expect(lab.r, greaterThan(rgb.r + 0.1), reason: 'LAB keeps it lighter');
+      expect(hcl.r, greaterThan(rgb.r + 0.1));
+      expect(hcl, isNot(lab));
+    });
+
+    test('cubic-bezier easing is solved exactly, not approximated', () {
+      // CSS `ease` at the midpoint.
+      expect(
+          eval([
+            'interpolate',
+            ['cubic-bezier', 0.25, 0.1, 0.25, 1],
+            0.5,
+            0,
+            0,
+            1,
+            1
+          ]) as double,
+          closeTo(0.8024033877399112, 1e-6));
+    });
+
+    test('legacy zoom-and-property functions ramp both', () {
+      final f = {
+        'property': 'p',
+        'stops': [
+          [
+            {'zoom': 0, 'value': 0},
+            0
+          ],
+          [
+            {'zoom': 0, 'value': 1},
+            1
+          ],
+          [
+            {'zoom': 1, 'value': 0},
+            2
+          ],
+          [
+            {'zoom': 1, 'value': 1},
+            3
+          ],
+        ],
+      };
+      expect(eval(f, zoom: 0.5, props: {'p': 0.5}), 1.5);
+      expect(eval({...f, 'type': 'interval'}, zoom: 0.5, props: {'p': 0.5}), 0);
+    });
+
+    test('legacy functions hold numeric strings and the first duplicate stop',
+        () {
+      expect(
+          eval({
+            'property': 'p',
+            'stops': [
+              [0, '0'],
+              [1, '1']
+            ]
+          }, props: {
+            'p': 0.5
+          }),
+          '0');
+      expect(
+          eval({
+            'stops': [
+              [0, 10],
+              [1, 20],
+              [1, 25],
+              [2, 30]
+            ]
+          }, zoom: 1),
+          20);
     });
   });
 }

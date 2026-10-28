@@ -1091,11 +1091,12 @@ class LabelPainter {
       final instance = symbols[i];
       if (instance.text.isEmpty) continue;
       final layer = instance.layer;
-      final ctx = EvalContext(
+      final ctx = featureContext(
         zoom: zoom,
         properties: instance.properties,
         geometryType: instance.geometryType,
         featureId: instance.featureId,
+        geometry: instance.geometry,
       );
       if (layer.textOpacity.eval(ctx) <= 0) continue;
       final size = layer.textSize.eval(ctx);
@@ -1158,11 +1159,12 @@ class LabelPainter {
     // one it replaces was sitting on.
     final sitting = _memory.sitting(instance.continuityKey, anchor);
 
-    final ctx = EvalContext(
+    final ctx = featureContext(
       zoom: evalZoom,
       properties: instance.properties,
       geometryType: instance.geometryType,
       featureId: instance.featureId,
+      geometry: instance.geometry,
     );
 
     // A label the style has faded out is skipped rather than laid out:
