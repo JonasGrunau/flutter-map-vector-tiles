@@ -26,7 +26,7 @@ layers; this package only draws the map.
 | 🔍 **Crisp labels** | Text and icons drawn per frame in screen space: upright under rotation, sharp at fractional zoom, and **one global collision pass**, so nothing is duplicated or clipped at a tile seam. Or, with `labelMode: LabelMode.tile`, drawn into the tiles once, for no per-frame label cost at all — see [Choosing a label mode](#choosing-a-label-mode) |
 | 🌫️ **No white flashes** | New tiles fade in over retained ancestor imagery. Fast zoom-ins render from already-decoded parent tiles, zoom-outs compose the decoded children until the new level arrives |
 | 🎚️ **Correct MapLibre zoom semantics** | The default `TileOffset.maplibre` renders 512px-convention styles *exactly* as their authors designed them |
-| 🧵 **Isolate pipeline** | Tiles decode and trim on a worker-isolate pool (a yielding event-loop queue on web), viewport-centre first. Cancellation is a state, **never an exception** in your crash reporting |
+| 🧵 **Isolate pipeline** | Tiles decode, trim and match the style's layer filters on a worker-isolate pool (a yielding event-loop queue on web), viewport-centre first. Cancellation is a state, **never an exception** in your crash reporting |
 | 💾 **Deterministic caching** | LRU memory caches with byte budgets, plus a size-capped disk cache with no index files to corrupt. Every `ui.Image` is disposed on eviction |
 | ✈️ **Works offline** | The style bundle and recently viewed tiles are cached on disk (native), so places you visited keep rendering with no network |
 | 🌐 **All six platforms** | Android, iOS, macOS, Linux, Windows and web. See [Web support](#-web-support) for the browser differences |
@@ -255,6 +255,11 @@ native:
   density is computed there too, after the frame that asked for it.
 - **CORS.** The browser fetches style.json, TileJSON, sprites, glyphs and
   tiles directly, so every host involved must send
+  worker-isolate pool, and `concurrency` is ignored. Layer filters are
+  matched against a tile's features when it is first drawn, not while it
+  is decoded.
+- **CORS.** The browser fetches style.json, TileJSON, sprites and tiles
+  directly, so every host involved must send
   `Access-Control-Allow-Origin`. MapTiler, OpenFreeMap and Stadia do;
   self-hosted tile servers need it configured. PMTiles hosts additionally
   need range requests to pass CORS, meaning `Range` in
@@ -791,7 +796,7 @@ language keeps its own finished tiles.
 ```
 style.json ─► StyleReader ─► compiled Theme (expressions → closures)
 camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
-   bytes ◄─ disk cache ◄─ network        ─► isolate: decode + trim
+   bytes ◄─ disk cache ◄─ network        ─► isolate: decode + trim + filter
    PreparedTile ─► rasterize once ─► GPU image ─► textured quad per frame
    symbols ─────► per-frame screen-space label pass (global collision)
            └────► or, LabelMode.tile: drawn into that GPU image, once
@@ -823,6 +828,9 @@ frames, one slice per frame.
 On web the disk cache tier is absent, and decoding and heatmap
 densities run on the event loop instead of isolates. Everything else
 is identical.
+On web the disk cache tier is absent and decoding runs on a yielding
+event-loop queue instead of isolates, which leaves layer filters to be
+matched when a tile is first drawn. Everything else is identical.
 
 The full rendering model, and the reasoning behind each departure from
 [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles), is in
