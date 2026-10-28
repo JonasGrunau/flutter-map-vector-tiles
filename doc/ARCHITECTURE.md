@@ -690,8 +690,13 @@ the same generation and creates no new debt, allowing the ticker to stop
 on an unchanged map.
 
 **Placement passes prefer incumbents.** Candidate priority is topmost
-style layer, then incumbency, then `symbol-sort-key`, then screen y,
-then insertion order — where an incumbent is a candidate whose label is
+style layer, then incumbency, then `symbol-sort-key`, then the current
+level ahead of a retained one, then MapLibre's own order — data tiles
+deepest first, then by x and y, and in each tile the features in the
+order the tile lists them, each one's anchors from the start of its
+line — and last insertion order. Nothing in it reads the camera, so a
+pan or a rotation never reorders two labels, and a pair that collides
+resolves as in MapLibre. An incumbent is a candidate whose label is
 steadily visible right now: one of the last pass's winners, by label id,
 which carries incumbency across the instance replacement every
 republish and level swap performs, with or without fades. A same-layer arrival therefore never evicts a
@@ -710,12 +715,14 @@ an arbitrary tie-break used to move a label that had no reason to move:
 
 * **Which carriageway draws a name.** A street name reaches the pass
   more than once — on both carriageways of one road — and which one
-  sorts first depends on their screen y, so a slow pan walked the name
-  across the street. The two are different labels (different ids), and
-  only the one on screen is an incumbent, so it keeps being tried first.
-  The outgoing and arriving copy of *one* label at a zoom crossing share
-  an id; the copy already drawn is tried first, so a rotation that
-  reorders the two does not move the label between them.
+  sorts first depended on their screen y, so a slow pan walked the name
+  across the street. The sort no longer reads the screen, but a zoom
+  crossing still swaps the tiles and features it ranks the two by. They
+  are different labels (different ids), and only the one on screen is
+  an incumbent, so it keeps being tried first. The outgoing and
+  arriving copy of *one* label at a zoom crossing share an id; the copy
+  already drawn is tried first, so the arriving copy, which the sort
+  puts ahead, does not take the label over from it.
 * **Which `text-variable-anchor` it sits at.** Anchors are tried in
   style order, except the one the label is already at, which is tried
   first: a neighbour brushing past no longer pushes a label to its
