@@ -20,7 +20,10 @@ import 'symbol_layouter.dart';
 @internal
 class LabelMirror {
   /// Per symbol, [intsPerSymbol] values: layer index, flags (see
-  /// [flagAlongLine]), path index (-1 for none) and feature index.
+  /// [flagAlongLine]), path index (-1 for none), index into the feature
+  /// lists below, and what placement orders ties by: the feature's
+  /// position in its source layer, the geometry part, and the data tile
+  /// it came from (z, x, y).
   final Int32List ints;
 
   /// Per symbol, [realsPerSymbol] values: anchor x and y, angle, path
@@ -44,7 +47,7 @@ class LabelMirror {
   final List<String> geometryTypes;
   final List<Object?> featureIds;
 
-  static const intsPerSymbol = 4;
+  static const intsPerSymbol = 9;
   static const realsPerSymbol = 7;
   static const flagAlongLine = 1;
 

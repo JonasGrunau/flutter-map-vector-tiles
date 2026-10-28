@@ -124,6 +124,7 @@ Future<LoadedArm> loadArm(
         tileProviders: style.providers,
         rasterSources: style.rasterSources,
         sprites: style.sprites,
+        glyphs: style.glyphs,
         tileOffset: arm == Arm.fmvtNone || arm == Arm.fmvtRasterNone
             ? vt.TileOffset.none
             : vt.TileOffset.maplibre,

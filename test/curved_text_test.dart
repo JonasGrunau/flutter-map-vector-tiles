@@ -208,6 +208,79 @@ void main() {
         reason: 'the label on screen needs no new glyph');
   });
 
+  test('a label whose glyphs were released draws again with new ones', () {
+    // The shaped text remembers the glyphs it drew with, but the glyph
+    // cache owns them: drawn straight, the label keeps its text through
+    // a trim and loses its glyphs, which are disposed. Curved again, it
+    // must not reach for them.
+    final points = <Offset>[];
+    for (var i = 0; i <= 24; i++) {
+      final a = -math.pi / 6 + (math.pi / 3) * i / 24;
+      points.add(
+          const Offset(200, 400) + Offset(math.sin(a), -math.cos(a)) * 240);
+    }
+    final curved = _path(points);
+    final straight = _path(const [Offset(0, 200), Offset(400, 200)]);
+    final layer = _lineLayer();
+    final painter = LabelPainter();
+    addTearDown(painter.dispose);
+
+    _paint([_lineSymbol(layer, curved, 'Ringstraße')], painter: painter);
+    expect(painter.debugGlyphCacheLength, 10);
+    _paint([_lineSymbol(layer, straight, 'Ringstraße')], painter: painter);
+    painter.trimCaches();
+    expect(painter.debugTextCacheLength, 1);
+    expect(painter.debugGlyphCacheLength, 0);
+
+    final placed =
+        _paint([_lineSymbol(layer, curved, 'Ringstraße')], painter: painter);
+    expect(placed, hasLength(1));
+    expect(painter.debugGlyphCacheLength, 10);
+  });
+
+  test('a glyph the cache evicts within a pass is not drawn again', () {
+    // Within a placement pass a cluster reuses the glyph it resolved
+    // without asking the cache, unless the cache has evicted it since:
+    // here the second label's glyphs push the first one's 'R' out of an
+    // eleven-glyph cache during the pass, and the replayed frame after
+    // it must not draw the disposed painters.
+    List<Offset> arc(double dy) => [
+          for (var i = 0; i <= 24; i++)
+            Offset(200, 400 + dy) +
+                Offset(math.sin(-math.pi / 6 + (math.pi / 3) * i / 24),
+                        -math.cos(-math.pi / 6 + (math.pi / 3) * i / 24)) *
+                    240,
+        ];
+    final layer = _lineLayer();
+    final labels = [
+      _lineSymbol(layer, _path(arc(0)), 'Ringstraße'),
+      _lineSymbol(layer, _path(arc(120)), 'Kaiserweg'),
+    ];
+    final painter = LabelPainter(glyphCapacity: 11);
+    addTearDown(painter.dispose);
+    final start = DateTime(2026);
+    List<PlacedSymbol> frame(Duration at) {
+      final recorder = ui.PictureRecorder();
+      final placed = painter.paint(
+        canvas: Canvas(recorder),
+        screenSize: const Size(400, 400),
+        styleZoom: 12,
+        symbols: [...labels],
+        labelFadeDuration: const Duration(milliseconds: 300),
+        placementGeneration: 1,
+        now: start.add(at),
+      );
+      recorder.endRecording().dispose();
+      return placed;
+    }
+
+    expect(frame(Duration.zero), hasLength(2));
+    expect(painter.placementPending, isFalse,
+        reason: 'the next frame replays this pass');
+    expect(frame(const Duration(milliseconds: 16)), hasLength(2));
+    expect(painter.debugGlyphCacheLength, lessThanOrEqualTo(11));
+  });
+
   test('label longer than its line is dropped', () {
     final layer = _lineLayer();
     final path = _path(const [Offset(0, 0), Offset(30, 0)]);

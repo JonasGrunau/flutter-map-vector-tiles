@@ -107,6 +107,13 @@ void main() {
       expect(broken('LONGWORDXXXXXXXXX aa bb'), 'LONGWORDXXXXXXXXX\naa bb');
     });
 
+    test('moves a cluster that opens a line to that line whole', () {
+      // Two code points, four code units, one grapheme: only the
+      // grapheme as a whole has a box to tell its line by.
+      expect(broken('aaaaaaaa \u{1f44d}\u{1f3fd} LONGWORDXXXXXXXXX'),
+          'aaaaaaaa\n\u{1f44d}\u{1f3fd}\nLONGWORDXXXXXXXXX');
+    });
+
     test('keeps explicit line breaks', () {
       expect(broken('aa\nLONGWORDXXXXXXXXX'), 'aa\nLONGWORDXXXXXXXXX');
     });

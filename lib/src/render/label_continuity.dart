@@ -18,9 +18,11 @@ import 'symbol_layouter.dart';
 /// every housenumber "12" and every parking icon still get ids of their
 /// own.
 ///
-/// A record, not an `Object.hash` value: grouping must compare the
-/// actual triple, or a hash collision between unrelated labels would
-/// silently conflate them. Memoized on the instance.
+/// A [ContinuityKey], not an `Object.hash` value: grouping must compare
+/// the actual triple, or a hash collision between unrelated labels would
+/// silently conflate them. Its hash is computed once, and it is memoized
+/// on the instance — the label pass looks it up several times per
+/// candidate per frame.
 Object labelContinuityKey(SymbolInstance symbol) => symbol.continuityKey;
 
 /// The indices of a cohort whose label [ids] the last label pass drew,

@@ -10,6 +10,7 @@ import '../core/tile_zoom.dart';
 import '../logger.dart';
 import '../pipeline/executor/executor.dart';
 import '../pipeline/prepared_tile.dart';
+import '../pipeline/tile_filters.dart';
 import '../pipeline/tile_processor.dart';
 import '../provider/vector_tile_provider.dart';
 import 'tile_byte_loader.dart';
@@ -28,6 +29,18 @@ class TileStore {
 
   /// Per source-layer property keep-lists derived from the theme.
   final Map<String, Set<String>?> layerProperties;
+
+  /// Per source-layer: the property promoted to feature id (the
+  /// source's `promoteId`), kept by [layerProperties] too.
+  final Map<String, String> promoteIds;
+
+  /// The theme's zoom-free layer filters over this source, which the
+  /// executor's workers resolve while preparing a tile. Not part of the
+  /// memory cache's signature: match lists are keyed by filter, so a
+  /// tile prepared for another theme over the same source still serves
+  /// this one — every filter the two share is resolved, and the rest
+  /// fall back to the UI isolate.
+  final TileFilterPlan? filterPlan;
 
   /// Decoded tiles, shared process-wide between every store built on the
   /// same source *and* the same property keep-lists.
@@ -58,12 +71,14 @@ class TileStore {
     required this.provider,
     required this.executor,
     required this.layerProperties,
+    this.promoteIds = const {},
+    this.filterPlan,
     Future<ByteCache?>? diskCache,
     int memoryCacheMaxBytes = 32 * 1024 * 1024,
     this.logger = const Logger.noop(),
   })  : _bytes = TileByteLoader(provider, diskCache ?? Future.value()),
         _memory = _memoryCaches.putIfAbsent(
-          _memorySignature(provider, layerProperties),
+          _memorySignature(provider, layerProperties, promoteIds),
           () => LruCache(
             maxEntries: 256,
             maxCost: memoryCacheMaxBytes,
@@ -76,10 +91,12 @@ class TileStore {
   /// The source alone is not enough: prepared tiles are trimmed to the
   /// properties the theme reads, so two themes over the same source produce
   /// different content for the same key. The details and monitoring styles of
-  /// one map provider are exactly that case.
+  /// one map provider are exactly that case. A promoted id changes the
+  /// content too.
   static String _memorySignature(
     VectorTileProvider provider,
     Map<String, Set<String>?> layerProperties,
+    Map<String, String> promoteIds,
   ) {
     final buffer = StringBuffer(provider.cacheKey);
     for (final sourceLayer in layerProperties.keys.toList()..sort()) {
@@ -87,6 +104,8 @@ class TileStore {
       buffer.write('|$sourceLayer:');
       buffer.write(
           properties == null ? '*' : (properties.toList()..sort()).join(','));
+      final promoteId = promoteIds[sourceLayer];
+      if (promoteId != null) buffer.write('#id=$promoteId');
     }
     return buffer.toString();
   }
@@ -175,6 +194,8 @@ class TileStore {
             y: dataKey.y,
             bytes: bytes,
             layerProperties: layerProperties,
+            promoteIds: promoteIds,
+            filterIds: filterPlan?.idsAt(dataKey.z),
           ),
           priority: priority,
           cancellation: cancellation,
@@ -270,6 +291,8 @@ class TileStore {
             y: dataKey.y,
             bytes: bytes,
             layerProperties: layerProperties,
+            promoteIds: promoteIds,
+            filterIds: filterPlan?.idsAt(dataKey.z),
           ),
           priority: priority,
           cancellation: _lifetime,

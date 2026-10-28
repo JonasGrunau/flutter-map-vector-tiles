@@ -28,7 +28,7 @@ every `ui.Image` has exactly one owner and is disposed on eviction.
 | `CLAUDE.md` | Agent working agreements — doc-sync rules, README/version rules, release gate. Imports this file via `@AGENTS.md` |
 | `analysis_options.yaml` | `flutter_lints` + strict casts/inference/raw-types, plus `prefer_final_locals`, `unawaited_futures`, `avoid_print`, `directives_ordering` |
 | `.gitignore` | Repo exclusions |
-| `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs |
+| `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs, `bench/`, `compare/` and the script suite's fonts and goldens (`test/scripts/`) |
 | `.tool-versions` | Pinned Flutter version — also the one the publish workflow installs |
 | `.github/workflows/checks.yml` | Reusable check suite: format, analyze, VM + Chrome tests, publish dry run, optional pana. Called by the two below |
 | `.github/workflows/ci.yml` | Runs `checks.yml` on every push to `main` and every PR into it |
@@ -41,11 +41,12 @@ every `ui.Image` has exactly one owner and is disposed on eviction.
 | Directory | Purpose |
 |-----------|---------|
 | `lib/` | Package source — the entire library (see `lib/AGENTS.md`) |
-| `test/` | Unit and widget tests, no mocking framework (see `test/AGENTS.md`) |
+| `test/` | Unit and widget tests, no mocking framework (see `test/AGENTS.md`); `test/scripts/` draws labels in 23 scripts with bundled Noto fonts and is the guard for any shaping or wrapping change |
 | `bench/` | On-device frame-timing and label-stability harness for zoom crossings — profile-mode app that sweeps a zoom band (or records while you zoom by hand in `manual` mode) and reports UI/raster frame-time distributions, cache-hit counters and, in `stability` mode, label pop/blink counts. Not published (see `bench/AGENTS.md`) |
 | `compare/` | Head-to-head with `vector_map_tiles` 9.0.0-beta.13: one app that is the device benchmark (driven by a record/replay lab server, fresh process per arm, frames-delivered as the headline metric, fidelity screenshots next to MapLibre GL JS) and the web demo deployed to GitHub Pages. Results in `compare/RESULTS.md`. Public API only. Not published (see `compare/AGENTS.md`) |
 | `example/` | Runnable example app driven by `--dart-define` (see `example/AGENTS.md`) |
 | `doc/` | `ARCHITECTURE.md` — the prose companion to this file; update it when the data flow, rendering model, concurrency model or cache layers change |
+| `shaders/` | Fragment shaders that ship in the package, declared under `flutter: shaders:` in `pubspec.yaml`: `hillshade_prepare.frag` (DEM → slopes) and `hillshade.frag` (slopes → shading), loaded by `lib/src/render/hillshade_renderer.dart`. Apps load them as `packages/flutter_map_vector_tiles/shaders/…`; the package's own tests, as the root package, without the prefix |
 | `screenshots/` | pub.dev gallery images (WebP, framed in an iPhone bezel), wired up via `screenshots:` in `pubspec.yaml` — these ship in the package; regeneration recipe in `screenshots/AGENTS.md` |
 
 ## For AI Agents
@@ -91,7 +92,12 @@ every `ui.Image` has exactly one owner and is disposed on eviction.
   (`path_provider` has no web support) — tiles and styles fall back to the
   in-memory caches and the browser's HTTP cache. Keep changes web-safe: no
   bare `dart:io` outside conditional imports, no bitwise ops on values past
-  32 bits (see the MVT decoder's arithmetic). Losing the web platform tag in
+  32 bits (see the MVT decoder's arithmetic), and never dispose a
+  `FragmentShader` before the picture drawing with it is rasterized —
+  CanvasKit keeps a pointer to its uniforms, which `dispose` frees (see
+  the hillshade renderer). `flutter test --platform chrome` serves no
+  assets, so shader-drawing tests skip there; check the web on a real
+  build. Losing the web platform tag in
   `pana` is a release blocker, so run the browser suite when touching
   anything platform-sensitive.
 - **This package takes no native dependencies.** Anything needing `dart:ffi`
@@ -138,6 +144,10 @@ full pub points, so a failure there costs a re-tag.
 
 - `flutter_map` ^8.2.0 — host map framework; it owns camera, gestures, layers
 - `http` ^1.2.0 — tile and style fetching
+- `intl` >=0.19.0 <1.0.0 — the `number-format` expression's locale digits
+  and currencies; already in every app through `latlong2`, so keep the
+  range at least as wide as the one Flutter's `flutter_localizations`
+  pins on the oldest Flutter supported
 - `path_provider` ^2.1.0 — disk cache directory (no web support)
 - `latlong2`, `characters`, `meta` — coordinates, grapheme clustering for label
   layout, annotations
