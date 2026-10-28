@@ -244,6 +244,32 @@ for frames with no per-frame label work in them.
   greedy line breaker pull short words onto lines past
   `text-max-width`. Text that fits on one line keeps a single layout,
   and only text with a too-wide word pays a layout per word.
+- **`minIntrinsicWidth` is wrong for a run with no space in it.** Skia
+  reports a run of ideographs (or of Thai, Lao, Khmer, …) as one
+  unbreakable run as wide as the whole label, though its line breaker
+  breaks Chinese between characters. So `breakAroundWideRuns` does not
+  keep a word whole that `_breaksBetweenIdeographs` (MapLibre's set:
+  Han, kana, Bopomofo, Yi — not Hangul) says may break: it wraps at the
+  width. The spaceless scripts staying on one line is what MapLibre
+  does too, so that is left alone.
+- **`breakAroundWideRuns` assigns graphemes to lines, never code
+  units.** A code unit inside a cluster (শা, an emoji, a letter with a
+  combining mark) has no selection box of its own; stepping by code
+  units left a cluster that opened a line on the line before.
+- **A label's direction is set per line, with isolates.** Labels are
+  laid out left to right; each line of a paragraph whose first strong
+  character is right-to-left (`_readsRightToLeft`, the bidi rule
+  MapLibre follows) is wrapped in a right-to-left isolate if it needs
+  one (`_needsIsolate`: a left-to-right letter or direction control in
+  it, or something other than a letter or mark at either end). A
+  newline ends every isolate, so the lines `breakAroundWideRuns` spells
+  out get one each, carrying the direction of the paragraph they came
+  from; a paragraph the line breaker wraps stays in one. Left-to-right
+  text, and right-to-left lines that resolve the same either way (most
+  Arabic and Hebrew names), are laid out exactly as before: an isolate
+  is two characters a font must map, and a line drawn from two fonts
+  comes out taller. Right-to-left text is never curve-safe, so the
+  isolate controls never reach `_computeClusters`.
 - **Curved labels draw from `GlyphAtlas`, and the atlas is a
   `toImageSync` image like any tile.** Keep `rasterizeGlyphs` tied to
   the layer's `_foregrounded` and `discardGlyphAtlas()` in
@@ -347,7 +373,14 @@ for frames with no per-frame label work in them.
 - `test/label_wrap_test.dart` — `text-max-width` wrapping, read off the
   collision box: a word wider than the width stays whole, words still
   wrap between them; `breakAroundWideRuns` giving a wide word its own
-  line while the rest wraps at the width, and keeping explicit breaks
+  line while the rest wraps at the width, keeping explicit breaks, and
+  moving a cluster that opens a line there whole
+- `test/scripts/` — labels in 23 scripts drawn with real (bundled
+  Noto) fonts, asserted on pixels: reading order and direction,
+  joining, pre-base vowels, stacking, emoji sequences, combining marks,
+  line breaks per script, halos, curved vs straight; plus goldens of
+  each. Any change to shaping, wrapping, curved text or halos must keep
+  it green — see `test/scripts/AGENTS.md`
 - `test/label_replay_test.dart` — replay frames, which sort only the
   last pass's winners: they draw exactly what the pass placed, in the
   same order, and still fade out a label that lost the pass
