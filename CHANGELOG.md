@@ -111,6 +111,36 @@
   `background-pattern`, which replaces the colour. `line-gradient`
   (which needs a GeoJSON source) and `line-round-limit` are still not
   drawn; the README's style support section has the details.
+- 🎨 **Symbol properties**: labels and icons now honour
+  `text-halo-blur` and `icon-halo-blur`, `icon-optional`,
+  `icon-padding`, `icon-text-fit` and `icon-text-fit-padding` (with a
+  sprite's `stretchX`, `stretchY` and `content`, so road shields stretch
+  where they are meant to), `text-justify`, `text-line-height`,
+  `text-overlap` / `icon-overlap`, `text-ignore-placement` /
+  `icon-ignore-placement`, `symbol-z-order`, `symbol-avoid-edges`,
+  `text-variable-anchor-offset`, `text-rotate`, `text-translate` /
+  `icon-translate` with their anchors, and `icon-keep-upright`. All of
+  them used to be ignored; Liberty's and Positron's place and POI labels
+  now get the soft halo the style asks for. Text drawn in the style's
+  own fonts (`glyphs`) blurs its halo the way MapLibre does, by widening
+  the edge of the glyph's distance field; that edge is drawn once per
+  glyph and size, so it adds nothing to a frame. Other text blurs its
+  halo with a mask filter. `text-writing-mode` is still unsupported and
+  logged.
+- 🎨 Point labels with `text-rotation-alignment: map` turn with the map
+  instead of staying upright.
+- 🎨 Within a layer, symbols that may overlap (`*-allow-overlap`,
+  `*-ignore-placement`) draw the lower ones on screen on top, and a
+  feature-dependent `symbol-sort-key` orders drawing too, as
+  `symbol-z-order: auto` says; they used to draw in tile order.
+- 🎨 Text lines are `text-line-height` apart (1.2 em by default, as in
+  MapLibre) instead of a fixed 1.15 em, so every label's box is a little
+  taller, and a wrapped label's box is as wide as its longest line
+  rather than as `text-max-width`. The space a line has beyond its
+  letters goes evenly above and below them, so a line mixing fonts (an
+  Arabic street name with a Latin number) sits where it would in one
+  font, and Latin text comes out about half a pixel lower, nearer where
+  MapLibre centres it.
 - ⚡ With `glyphs`, laying out a tile's labels takes a small fraction
   of the UI-thread time it did: the 222 label candidates of a dense
   Munich tile took 31–32 ms of platform text shaping on a Nothing
@@ -144,6 +174,12 @@
   on screen each frame, which makes its sort and fade sweep cheaper. On
   the Nothing Phone (1), the compare harness's camera runs deliver 1 to
   2 points more frames, with a UI-thread p90 1 to 2 ms lower.
+- ⚡ The label pass resolves a layer's symbol properties once per zoom
+  step instead of once per label per frame when they read no feature
+  data, as in practice they never do. Constant string and boolean
+  properties and absent list properties (an unset `text-offset`, say)
+  also no longer run an expression on every read, which speeds up the
+  properties labels already used.
 - 🐛 An Arabic or Hebrew label holding a Latin word read from the left:
   labels were laid out left to right whatever their script, so
   "شارع King Fahd" drew the Arabic word first, on the left. Each line
@@ -191,6 +227,14 @@
   the fill, so a stroked circle came out half a stroke width smaller
   than in MapLibre. The stroke now lies outside the radius, as the spec
   says.
+- 🐛 A symbol allowed to overlap (`text-allow-overlap` /
+  `icon-allow-overlap`) now reserves its space, as in MapLibre: labels
+  that may not overlap keep clear of it, where before they could be
+  placed on top of it. A symbol's icon is tested with its own
+  `icon-allow-overlap`; it used the text's.
+- 🐛 `text-offset` now applies to labels with `text-variable-anchor`
+  and no `text-radial-offset`, as distances away from each anchor the
+  way MapLibre takes them; it was ignored.
 - 🐛 When two labels of one layer collide and neither has a lower
   `symbol-sort-key`, the one MapLibre shows now wins. The label higher
   on the screen used to win, so a different label could show than in
