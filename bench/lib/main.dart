@@ -173,6 +173,17 @@ class _BenchPageState extends State<BenchPage>
   var _allFrames = 0;
   DateTime? _recordStart;
 
+  // Opening: from the first build with the style until the map has drawn
+  // its first screen and gone quiet — the OPEN line. Covers what no phase
+  // sees: the process's first tiles and first labels, fonts included.
+  var _opening = true;
+  DateTime? _openStart;
+  DateTime? _firstLabelAt;
+  DateTime? _lastOpenFrameAt;
+  final _openBuild = <int>[];
+  var _openShapeMax = 0;
+  var _openShapeUs0 = 0;
+
   // Manual mode: zoom band covered inside the current reporting window, and
   // the live zoom for the overlay. The notifier deliberately bypasses
   // setState — rebuilding the whole page on every frame of a pinch would put
@@ -283,6 +294,12 @@ class _BenchPageState extends State<BenchPage>
     _frameShapeUs += shape;
     _frameSweepUs += sweep;
     _frameDrawUs += draw;
+    if (_opening && _openStart != null) {
+      final now = DateTime.now();
+      _lastOpenFrameAt = now;
+      if (labels > 0) _firstLabelAt ??= now;
+      if (shape > _openShapeMax) _openShapeMax = shape;
+    }
     if (!_recording || raster + layout + labels <= 6000) return;
     String ms(int us) => (us / 1000).toStringAsFixed(1);
     final zoom = _zoomNow();
@@ -569,6 +586,11 @@ class _BenchPageState extends State<BenchPage>
 
   void _onTimings(List<FrameTiming> timings) {
     _allFrames += timings.length;
+    if (_opening) {
+      for (final timing in timings) {
+        _openBuild.add(timing.buildDuration.inMicroseconds);
+      }
+    }
     if (!_recording) return;
     // The zoom is sampled rather than derived from the driver — in manual
     // mode the camera is in the user's hands. The timings callback lags the
@@ -595,12 +617,45 @@ class _BenchPageState extends State<BenchPage>
     }
   }
 
+  /// Waits for the first screen to finish — no frame for 2 s, at most 20 s
+  /// — and reports how opening went: when the first label frame came, when
+  /// the last frame did, and the UI-thread frames on the way.
+  Future<void> _reportOpening() async {
+    final start = _openStart!;
+    while (true) {
+      final now = DateTime.now();
+      final last = _lastOpenFrameAt ?? start;
+      if (now.difference(last) > const Duration(seconds: 2) ||
+          now.difference(start) > const Duration(seconds: 20)) {
+        break;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    // Let the timings callback deliver the last batch.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    _opening = false;
+    String ms(num us) => (us / 1000).toStringAsFixed(1);
+    final sorted = [..._openBuild]..sort();
+    final over = sorted.where((b) => b > 16667).length;
+    final total = sorted.fold<int>(0, (a, b) => a + b);
+    debugPrint('BENCH[$_label] OPEN '
+        'firstLabel=${_firstLabelAt?.difference(start).inMilliseconds}ms '
+        'settled=${(_lastOpenFrameAt ?? start).difference(start).inMilliseconds}ms '
+        'frames=${sorted.length} build=${ms(total)}ms '
+        'max=${sorted.isEmpty ? '-' : ms(sorted.last)}ms '
+        'top3=${sorted.reversed.take(3).map(ms).join('/')} '
+        '>16.7=$over '
+        'shape=${ms(LabelPainter.debugShapeMicros - _openShapeUs0)}ms '
+        'shapeMaxFrame=${ms(_openShapeMax)}ms');
+  }
+
   Future<void> _run() async {
     final style = await _style;
     // The map lives behind a FutureBuilder, so the style future completing is
     // not the same as the map being laid out — the controller throws until it
     // has rendered once.
     await _mapReady.future;
+    await _reportOpening();
     await Future<void>.delayed(const Duration(milliseconds: 500));
 
     if (_mode == 'idle') {
@@ -880,6 +935,10 @@ class _BenchPageState extends State<BenchPage>
               return const Center(child: CircularProgressIndicator());
             }
             final style = snapshot.data!;
+            if (_openStart == null) {
+              _openStart = DateTime.now();
+              _openShapeUs0 = LabelPainter.debugShapeMicros;
+            }
             return Stack(children: [
               FlutterMap(
                 mapController: _controller,
