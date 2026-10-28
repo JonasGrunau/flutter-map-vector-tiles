@@ -180,6 +180,46 @@ matches. That cut rasterization time per tile by a third to almost
 half on a phone in the z15.5–17.5 band, where one z14 data tile serves
 up to 64 display tiles.
 
+The geometry paint properties beyond colour, width and opacity follow
+the same two rules: work that is the same for every display tile of a
+data tile is done once for it, and nothing per feature is paid by a
+layer that does not set the property. A `*-translate` is folded into
+the tile-to-pixel transform, so the cull and clip windows, which are
+derived from it, move with the geometry, and patterns are shifted with
+it. A `*-sort-key` that reads the feature reorders the layer's
+features once per data tile and zoom, held weakly against the feature
+list as the filter matches are; one that is constant or reads only the
+zoom cannot tell features apart and leaves source order alone.
+`line-offset` shifts each run in logical pixels after clipping, every
+vertex to where its two shifted segments meet, beveled on the outside
+of a sharp turn and split where the inner meeting point lies beyond a
+segment — MapLibre leaves gaps and crossings at such turns.
+`line-blur` is MapLibre's linear alpha ramp drawn as a stroke narrowed
+by the blur under a Gaussian mask filter whose variance, with
+anti-aliasing's own, adds up to the ramp's: within about 0.05 alpha of
+MapLibre's profile for blurs of 2 px and more, with a steeper edge but
+the same ink, to 10 %, for narrower ones. A mask filter costs a
+render pass per path on the GPU: blurring each road of Liberty by
+0.5 px, as Americana does, cut the Nothing Phone from 56 to 20 frames a
+second while tiles were rasterized, and drawing each layer as one path
+still left 49 of 58. So a blur under three quarters of a device pixel of
+σ (about 0.6 px at a pixel ratio of 3) keeps just the narrowing, its
+edges about a device pixel sharper than MapLibre's, and costs nothing;
+above it, a layer whose blurred stroke is the same for every feature and
+opaque draws all its features as one path, a pass per layer and tile.
+Impeller, the renderer on iOS and Android, has two faults here that
+Skia does not: it erases a whole layer for a mask-blurred clear stroke
+on a bent path, and draws nothing for a mask-blurred path of several
+contours along one axis. So a casing's inner edge stays sharp, and such
+a path is drawn narrowed without the blur. Circle strokes lie outside the radius, as
+the spec says, and `circle-blur` draws the circle as one disc whose
+radial gradient samples MapLibre's circle shader. Several properties
+are deliberately not drawn: `line-gradient` needs a GeoJSON source with
+`lineMetrics` (MapLibre rejects it on a vector source), `line-round-limit`
+changes nothing visible at its default, and a `*-translate-anchor` of
+`viewport` is drawn as `map`, since a tile is rasterized once and then
+rotated with the map.
+
 By default (`LabelMode.screen`) labels and icons are **not** baked into
 the tile images. They are drawn each frame in screen space:
 

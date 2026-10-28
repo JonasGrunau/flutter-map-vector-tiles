@@ -348,12 +348,31 @@ the factors of a `custom` one).
 
 | Type | Support |
 |---|---|
-| `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, dashes and casing |
+| `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, `background-pattern`, dashes and casing, `line-offset`, `line-blur`, `line-miter-limit`, `circle-blur`, the `*-translate` and `*-sort-key` properties; see the notes below the table |
 | `symbol` | full, including curved line text and `text-variable-anchor` / `text-radial-offset`; see [Labels](#-labels) below |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity` and brightness/contrast/saturation/hue-rotate matching MapLibre's shader math |
 | `hillshade` | terrain shading computed from a `raster-dem` source (`terrarium`, `mapbox` or `custom` encoding), drawn at its layer position with every paint property: all five `hillshade-method`s (`standard`, `basic`, `combined`, `igor`, `multidirectional`, up to four lights), illumination direction, altitude and anchor, exaggeration, shadow/highlight/accent colours and `resampling`. Slopes are read across tile edges from the neighbouring elevation tiles, so the shading has no seams. One difference: tiles are shaded once and turn with the map, so `hillshade-illumination-anchor: viewport` (the default) is drawn as if the map were not rotated; with `map` it matches MapLibre at every bearing |
+| `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity`, brightness/contrast/saturation/hue-rotate matching MapLibre's shader math, and `resampling` / `raster-resampling` |
 | `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, patterned ones included, so a building part over its outline does not draw darker; the alpha of `fill-extrusion-color` is ignored, as the spec says |
 | `color-relief`, `heatmap`, `sky` | skipped, with a log line |
+
+**Geometry properties not drawn.** `line-gradient` needs a GeoJSON
+source with `lineMetrics`, which this package does not read (MapLibre
+refuses the style when it sits on a vector source); the line keeps its
+`line-color`. `line-round-limit` is ignored: round joins stay round at
+every angle, a difference below a pixel at the default limit. A
+`*-translate-anchor` of `viewport` is drawn as `map`, which differs
+only while the map is rotated, because a tile is drawn once and rotated
+with the map. Where `line-offset` meets a sharp turn the shifted line
+is beveled on the outside, where MapLibre leaves a gap and its two
+segments cross. A `line-blur` under about 0.6 px on a 3× screen (0.9 px on
+a 2× one) only narrows the line by what the blur takes, without
+softening its edges: a blur costs GPU passes, and blurring every road of
+a style by 0.5 px cost a phone a sixth to two thirds of its frames while
+tiles were drawn. A blurred casing (`line-gap-width`) softens only its
+outer edge, and a blurred dashed line running exactly along a tile axis
+is drawn sharp: Impeller, Flutter's renderer on iOS and Android, draws
+those two wrongly when blurred.
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
 per `icon-color`, `icon-halo-color` and `icon-halo-width`; dark MapLibre
