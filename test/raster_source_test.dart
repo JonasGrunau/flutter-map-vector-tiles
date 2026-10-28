@@ -68,10 +68,9 @@ void main() {
     expect(layer.opacity.eval(const EvalContext(zoom: 10)), 0.5);
   });
 
-  test('hillshade/heatmap/sky layers are still skipped', () {
+  test('sky layers are still skipped', () {
     final theme = const ThemeReader().read({
       'layers': [
-        {'id': 'h', 'type': 'hillshade', 'source': 'dem'},
         {'id': 'x', 'type': 'sky'},
       ],
     });

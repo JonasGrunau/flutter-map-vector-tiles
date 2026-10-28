@@ -7,6 +7,8 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fixtures/label_ids.dart';
+
 /// `text-max-width` wrapping, observed through the collision box: a
 /// label's box is as tall as its lines, so whether a second label just
 /// below it fits tells how many lines the first one took.
@@ -47,6 +49,7 @@ PlacedSymbol _symbol(SymbolThemeLayer layer, String text, Offset at) =>
         geometryType: 'Point',
         featureId: null,
       ),
+      id: labelIdOf((text, at)),
       screenAnchor: at,
       screenAngle: 0,
     );
@@ -102,6 +105,13 @@ void main() {
       expect(broken('aa bb cc dd ee ff gg hh LONGWORDXXXXXXXXX'),
           'aa bb cc\ndd ee ff\ngg hh\nLONGWORDXXXXXXXXX');
       expect(broken('LONGWORDXXXXXXXXX aa bb'), 'LONGWORDXXXXXXXXX\naa bb');
+    });
+
+    test('moves a cluster that opens a line to that line whole', () {
+      // Two code points, four code units, one grapheme: only the
+      // grapheme as a whole has a box to tell its line by.
+      expect(broken('aaaaaaaa \u{1f44d}\u{1f3fd} LONGWORDXXXXXXXXX'),
+          'aaaaaaaa\n\u{1f44d}\u{1f3fd}\nLONGWORDXXXXXXXXX');
     });
 
     test('keeps explicit line breaks', () {

@@ -13,6 +13,8 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fixtures/label_ids.dart';
+
 // Symbol layout and paint properties beyond the basics: halo blur,
 // optional icons and padding, ignore-placement and the overlap modes,
 // icon-text-fit with stretchable sprites, justification and line height,
@@ -54,8 +56,11 @@ PlacedSymbol _symbol(
   double screenAngle = 0,
   TileTransform? transform,
   Map<String, Object?> properties = const {},
+  Object? label,
 }) =>
     PlacedSymbol(
+      // One label per symbol, unless [label] makes several copies of one.
+      id: labelIdOf(label ?? (layer, text, icon, at)),
       instance: SymbolInstance(
         layer: layer,
         layerIndex: layerIndex,
@@ -560,8 +565,7 @@ void main() {
       final drawn =
           _paint([blocker, optional], painter: painter, sprites: icon);
       expect(drawn, unorderedEquals([blocker, optional]));
-      final sitting = painter.debugPlacement
-          .lookup(optional.instance.continuityKey, optional.screenAnchor)!;
+      final sitting = painter.debugPlacement.lookup(optional.id)!;
       expect(sitting.iconDropped, isTrue);
       expect(sitting.textDropped, isFalse);
     });
@@ -588,12 +592,12 @@ void main() {
         'icon-optional': true,
       });
       final poi = _symbol(poiLayer, const Offset(200, 200),
-          text: 'Poi', icon: 'i', order: 1);
+          text: 'Poi', icon: 'i', order: 1, label: poiLayer);
       // A second copy of the same label at the same sitting (the other
       // level of a zoom crossing), which loses to the first: it must not
       // wipe what the winner's pass decided.
       final copy = _symbol(poiLayer, const Offset(202, 200),
-          text: 'Poi', icon: 'i', order: 2);
+          text: 'Poi', icon: 'i', order: 2, label: poiLayer);
       final painter = LabelPainter();
       addTearDown(painter.dispose);
       Future<ByteData> frame(int generation, DateTime now) async {
@@ -641,9 +645,9 @@ void main() {
       });
       final drawn = _paint([
         _symbol(layer, const Offset(200, 200),
-            text: 'Poi', icon: 'i', order: 0),
+            text: 'Poi', icon: 'i', order: 0, label: layer),
         _symbol(layer, const Offset(201, 200),
-            text: 'Poi', icon: 'i', order: 1),
+            text: 'Poi', icon: 'i', order: 1, label: layer),
       ], sprites: icon);
       expect(drawn, hasLength(1));
     });
@@ -1003,11 +1007,7 @@ void main() {
       painter.prewarm([label.instance, blocker.instance], 12);
       final shaped = painter.debugShapedTextCount;
       expect(_paint([blocker, label], painter: painter), hasLength(2));
-      expect(
-          painter.debugPlacement
-              .lookup(label.instance.continuityKey, label.screenAnchor)!
-              .anchor,
-          'right');
+      expect(painter.debugPlacement.lookup(label.id)!.anchor, 'right');
       expect(painter.debugShapedTextCount, shaped);
       expect(LabelPainter.debugJustifiedLayouts, justified);
     });
@@ -1099,11 +1099,7 @@ void main() {
           const Offset(200, 200),
           text: 'WW');
       expect(_paint([blocker, label], painter: painter), hasLength(2));
-      expect(
-          painter.debugPlacement
-              .lookup(label.instance.continuityKey, label.screenAnchor)!
-              .anchor,
-          'right');
+      expect(painter.debugPlacement.lookup(label.id)!.anchor, 'right');
     });
 
     test('text-offset with variable anchors points away from each anchor',

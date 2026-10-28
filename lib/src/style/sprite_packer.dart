@@ -3,8 +3,6 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:meta/meta.dart';
-
 import 'sprite_atlas.dart';
 
 /// Transparent gutter, in sheet pixels, around every repacked sprite.
@@ -129,8 +127,8 @@ Future<SpriteAtlas> padSpriteSheet(SpriteAtlas atlas,
 /// these pixels are premultiplied. On web, CanvasKit reports a failed
 /// decode only as a console warning, which no zone can catch; the packer
 /// always passes exactly `width * height * 4` bytes, so a malformed
-/// buffer, the usual cause, cannot reach it.
-@visibleForTesting
+/// buffer, the usual cause, cannot reach it — as does the heatmap
+/// painter, the other caller.
 Future<ui.Image> decodeRgbaPixels(Uint8List pixels, int width, int height) {
   final completer = Completer<ui.Image>();
   runZonedGuarded(

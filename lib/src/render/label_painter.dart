@@ -10,10 +10,16 @@ import 'package:meta/meta.dart';
 import '../cache/lru_cache.dart';
 import '../core/tile_zoom.dart';
 import '../style/expression.dart';
+import '../style/feature_state.dart';
 import '../style/sprite_atlas.dart';
 import '../style/theme.dart';
+import '../text/glyph_pbf.dart';
+import '../text/glyph_script.dart';
+import '../text/glyph_shaper.dart';
+import '../text/glyph_source.dart';
 import 'fade.dart';
 import 'glyph_atlas.dart';
+import 'hit_test.dart';
 import 'label_continuity.dart';
 import 'symbol_layouter.dart';
 
@@ -61,6 +67,14 @@ class TileTransform {
 /// A symbol candidate projected to screen coordinates.
 class PlacedSymbol {
   final SymbolInstance instance;
+
+  /// The label this candidate is a copy of, as `LabelIdentityIndex`
+  /// assigned it. Every copy of one label — seam twins, the outgoing and
+  /// arriving level's at a crossing, a republished tile's successor —
+  /// carries the same id, so the painter's winners, fades and placement
+  /// memory follow the label rather than the instance, and at most one
+  /// copy per id draws in a frame. Distinct labels never share one.
+  final int id;
   final Offset screenAnchor;
 
   /// Screen-space map angle for point symbols, or map plus local line
@@ -90,9 +104,10 @@ class PlacedSymbol {
   final bool retained;
 
   /// Insertion index within the frame's symbol list, the final
-  /// placement tiebreaker: the caller adds current-level tiles before
-  /// retained previous-level ones, so on an exact tie the current
-  /// level's copy wins deterministically (`List.sort` is not stable).
+  /// placement tiebreaker, which keeps the winner deterministic
+  /// (`List.sort` is not stable). Only candidates that agree on
+  /// everything else reach it: one anchor laid out by two world copies
+  /// of a tile, or hand-built instances.
   final int order;
 
   /// Whether this candidate's label is steadily visible on screen right
@@ -110,6 +125,7 @@ class PlacedSymbol {
 
   PlacedSymbol({
     required this.instance,
+    required this.id,
     required this.screenAnchor,
     required this.screenAngle,
     this.transform,
@@ -120,11 +136,12 @@ class PlacedSymbol {
 }
 
 /// One label a paint actually drew, as reported to
-/// [LabelPainter.debugDrawnProbe]: its continuity key, its screen
-/// anchor, the opacity it drew at, whether it was a fade-out ghost,
-/// and whether it is an along-line label.
+/// [LabelPainter.debugDrawnProbe]: its continuity key, its label id,
+/// its screen anchor, the opacity it drew at, whether it was a fade-out
+/// ghost, and whether it is an along-line label.
 typedef DrawnLabelRecord = ({
   Object key,
+  int id,
   Offset position,
   double opacity,
   bool ghost,
@@ -138,6 +155,13 @@ typedef DrawnLabelRecord = ({
 /// `LabelMode.tile` runs the same placement and drawing once per tile
 /// instead, into the tile's raster — see [paintTile].
 class LabelPainter {
+  /// [glyphCapacity] stands in for [glyphCacheEntries], for tests that
+  /// need the glyph cache to evict.
+  LabelPainter({@visibleForTesting int glyphCapacity = glyphCacheEntries})
+      : _glyphCapacity = glyphCapacity;
+
+  final int _glyphCapacity;
+
   /// Cache capacities. One dense-city screen of distinct labels is the
   /// floor (below it every frame evicts entries the same frame still
   /// needs), but the text cache must hold a zoom *round trip*: the
@@ -234,6 +258,11 @@ class LabelPainter {
   @visibleForTesting
   static int debugJustifiedLayouts = 0;
 
+  /// The part of [debugShapedTextCount] shaped from [glyphs] rather
+  /// than by the platform.
+  @visibleForTesting
+  int debugGlyphShapedTextCount = 0;
+
   /// UI-thread microseconds spent inside [paint], summed across all
   /// painters — static so the bench can diff it per frame without a
   /// reference to the layer's painter instance.
@@ -268,8 +297,10 @@ class LabelPainter {
   @visibleForTesting
 
   /// Debug hook: called with a candidate's continuity key and why it was
-  /// not drawn on a frame (`fit`, `angle`, `collision`, `repeat`), and
-  /// whether that frame was a replay. For the bench; null otherwise.
+  /// not drawn on a frame (`fit`, `angle`, `collision`, `repeat`, and the
+  /// `ghost:*` reasons of a fade-out), and whether that frame was a
+  /// replay. `ghost:none` has no candidate left to name, so it reports
+  /// the label id instead. For the bench; null otherwise.
   static void Function(Object key, String reason, bool replay)?
       debugRejectProbe;
 
@@ -298,6 +329,14 @@ class LabelPainter {
   @visibleForTesting
   int get debugTextCacheLength => _textCache.length;
 
+  /// Font families every label is shaped with, in fallback order, ahead
+  /// of the platform's own fallback. Null in an app, where the system
+  /// fonts cover each script. `flutter test` has none and does no font
+  /// fallback, so a test drawing anything but its own box-glyph test font
+  /// loads real fonts and names them here (see `test/scripts/`).
+  @visibleForTesting
+  static List<String>? debugFontFamilies;
+
   /// The scale text drawn at [scale] actually uses on a
   /// [devicePixelRatio] screen.
   @visibleForTesting
@@ -308,8 +347,11 @@ class LabelPainter {
       maxEntries: textCacheEntries,
       onEvict: (_, text) => _retired.add(text.dispose));
   late final _glyphCache = LruCache<String, _GlyphText>(
-      maxEntries: glyphCacheEntries,
-      onEvict: (_, glyph) => _retired.add(glyph.dispose));
+      maxEntries: _glyphCapacity,
+      onEvict: (_, glyph) {
+        glyph.evicted = true;
+        _retired.add(glyph.dispose);
+      });
 
   /// Counts placement passes: [paint] frames that decide placement
   /// afresh, and [paintTile] calls. Every text and glyph a lookup
@@ -322,6 +364,43 @@ class LabelPainter {
 
   @visibleForTesting
   int get debugGlyphCacheLength => _glyphCache.length;
+
+  /// The feature state symbol layers reading `feature-state` evaluate
+  /// their paint properties with; null evaluates every label stateless.
+  /// Set by the layer, which owns it.
+  FeatureStates? featureStates;
+
+  /// The state of [instance]'s feature, for a layer that reads it.
+  Map<String, Object?>? _stateOf(SymbolInstance instance) {
+    final layer = instance.layer;
+    if (!layer.readsFeatureState) return null;
+    return featureStates?.lookup(
+        layer.source, layer.sourceLayer, instance.featureId);
+  }
+
+  /// [featureStates]' version, or 0 without any.
+  int get _stateVersion => featureStates?.version ?? 0;
+
+  /// What the last [paint] drew, in draw order — kept so a
+  /// rendered-feature query can hit-test the labels on screen
+  /// ([hitTestLabels]) without the frame paying anything for it: the
+  /// shapes are only worked out when someone asks. Holds the frame's
+  /// text painters, so everything that disposes them between frames
+  /// ([trimCaches], [paintTile]'s retirement, [reset], [dispose]) clears
+  /// it first.
+  List<_DrawableSymbol> _lastDrawn = const [];
+
+  /// The labels and icons the last [paint] drew that [area] (in screen
+  /// pixels) touches, topmost first. Fading-out ghosts and symbols the
+  /// zoom ramp has retired are not on screen as far as a query is
+  /// concerned.
+  List<SymbolInstance> hitTestLabels(HitArea area) => [
+        for (final drawable in _lastDrawn.reversed)
+          if (drawable.opacity > 0 &&
+              !drawable.isGhost &&
+              drawable.hitQuads().any(area.hitsConvex))
+            drawable.symbol.instance,
+      ];
 
   /// Releases the shaped text and glyphs not used since the last
   /// placement pass began, keeping what is on screen and what was
@@ -342,6 +421,7 @@ class LabelPainter {
   /// next pass comes. That is safe because this runs between frames, so
   /// no prepared symbol still holds them.
   void trimCaches() {
+    _lastDrawn = const [];
     _textCache.removeWhere((_, text) => text.pass != _pass);
     _glyphCache.removeWhere((_, glyph) => glyph.pass != _pass);
     _disposeRetired();
@@ -360,6 +440,56 @@ class LabelPainter {
   /// Drops every atlas page, for the layer's resume recovery.
   void discardGlyphAtlas() => _glyphAtlas.clear();
 
+  /// The style's glyphs. Text they can draw — see [isGlyphShapeable] — is
+  /// shaped from their metrics and drawn from their distance fields;
+  /// everything else, and everything while this is null, is shaped by
+  /// the platform into paragraphs. Replacing it drops all shaped text.
+  GlyphSource? get glyphs => _glyphs;
+  GlyphSource? _glyphs;
+  set glyphs(GlyphSource? value) {
+    if (identical(value, _glyphs)) return;
+    _glyphs = value;
+    _textCache.clear();
+    _glyphCache.clear();
+    _glyphAtlas.clear();
+  }
+
+  /// Starts loading the glyph ranges [symbols]' text needs at
+  /// [styleZoom], and returns a future that completes once none of them
+  /// is still on its way — or null when none is. The render pump holds
+  /// a tile's symbols back until then: shaped before its glyphs
+  /// arrive, a label would show in a system font and switch to the
+  /// style's a moment later.
+  Future<void>? glyphsPending(List<SymbolInstance> symbols, double styleZoom) {
+    final glyphs = _glyphs;
+    if (glyphs == null) return null;
+    final zoom = (styleZoom * _zoomStep).round() / _zoomStep;
+    // Per font stack, which of the 256 ranges of the BMP are needed.
+    Map<String, Uint8List>? needed;
+    for (final instance in symbols) {
+      final text = instance.text;
+      if (text.isEmpty || !instance.glyphShapeable) continue;
+      final stack = instance.layer.textFont
+          .eval(EvalContext(
+            zoom: zoom,
+            properties: instance.properties,
+            geometryType: instance.geometryType,
+            featureId: instance.featureId,
+          ))
+          .join(',');
+      final ranges = (needed ??= {})[stack] ??= Uint8List(256);
+      for (var i = 0; i < text.length; i++) {
+        ranges[text.codeUnitAt(i) ~/ 256] = 1;
+      }
+    }
+    if (needed == null) return null;
+    return glyphs.ensure([
+      for (final MapEntry(key: stack, value: ranges) in needed.entries)
+        for (var r = 0; r < 256; r++)
+          if (ranges[r] != 0) (stack, r * 256)
+    ]);
+  }
+
   @visibleForTesting
   GlyphAtlas get debugGlyphAtlas => _glyphAtlas;
 
@@ -375,40 +505,45 @@ class LabelPainter {
     _retired.clear();
   }
 
-  /// Per-label fade state — one opacity per continuity key, advanced
-  /// every painted frame. See [LabelFadeTracker].
+  /// Per-label fade state — one opacity per label id, advanced every
+  /// painted frame. See [LabelFadeTracker].
   final _fades = LabelFadeTracker();
 
   /// The fade tracker, for tests that assert fade state across frames.
   @visibleForTesting
   LabelFadeTracker get debugFades => _fades;
 
-  /// Fallback drawables for the fade-out, keeping *every* unplaced
-  /// candidate of a tracked key: fades are matched by position (see
-  /// [LabelFadeTracker.showAt]), so the sweep draws each fading sitting
-  /// from the candidate nearest it, instead of the priority-first one —
-  /// which for a street with several repeats, or a key several POIs
-  /// share, could be a different label entirely, teleporting the ghost.
-  final _sittingFallbacks = <Object, List<PlacedSymbol>>{};
-
-  /// How far from a fading sitting its ghost's stand-in candidate may
-  /// be. Beyond this, drawing the "nearest" candidate would move the
-  /// label — the artefact the positional fades remove — so the sitting
-  /// finishes its fade undrawn instead.
-  static const double _ghostRadius = LabelFadeTracker.matchRadius * 2;
+  /// Fallback drawables for the fade-out: per tracked label id, one
+  /// unplaced copy on offer this frame — the copy the label was last
+  /// drawn from when it is still offered ([_drawnCopy]), else the first.
+  /// Copies of one id can sit up to the identity match radius apart, so
+  /// a ghost that switched copies would move.
+  final _fallbacks = <int, PlacedSymbol>{};
 
   /// When the collision pass re-runs; between passes its decision is
   /// replayed. See [PlacementThrottle].
   final _placement = PlacementThrottle();
 
-  /// The instances that won space at the last full pass — the frozen
-  /// decision itself. Between passes only these compete (everything
-  /// else is skipped before it is even laid out), and at the next pass
-  /// they are tried ahead of the other candidates of their own label,
-  /// so a label that can be drawn from two instances keeps the one it
-  /// already occupies. `SymbolInstance` does not override `==`, so this
-  /// is an identity set.
-  final _winners = <SymbolInstance>{};
+  /// The label ids that won space at the last full pass — the frozen
+  /// decision itself. Between passes only their copies compete
+  /// (everything else is skipped before it is even laid out), and at the
+  /// next pass they are the incumbents. Ids outlive instances, so a
+  /// winner whose tile republished is still a winner in its successor.
+  final _winners = <int>{};
+
+  /// Which copy of each label the last frame drew, placed or as a ghost.
+  /// One label can be on offer as several copies (seam twins, the two
+  /// levels' at a crossing), up to the identity match radius apart and
+  /// with geometry of their own, so the copy is part of the decision: a
+  /// replay draws this one, a pass tries it ahead of the label's other
+  /// copies, and a ghost is drawn from it — as long as it is still on
+  /// offer. Without it a replay redrew whichever copy sorted first,
+  /// which could be the one the pass had rejected.
+  var _drawnCopy = <int, SymbolInstance>{};
+
+  /// [_drawnCopy] for the frame being painted; also how a frame knows a
+  /// label already drew. Swapped in at the end of the frame.
+  var _drawing = <int, SymbolInstance>{};
 
   /// The placement choices each label is sitting on — kept here rather
   /// than on the instances, which are replaced under a label that never
@@ -437,9 +572,12 @@ class LabelPainter {
   /// where every symbol instance is replaced and layer indices change
   /// meaning.
   void reset() {
+    _lastDrawn = const [];
     _fades.clear();
-    _sittingFallbacks.clear();
+    _fallbacks.clear();
     _winners.clear();
+    _drawnCopy.clear();
+    _drawing.clear();
     _memory.clear();
     _placement.reset();
   }
@@ -560,34 +698,47 @@ class LabelPainter {
     final sortStopwatch = Stopwatch()..start();
     final List<PlacedSymbol> candidates;
     if (placing) {
-      _flagIncumbents(symbols, fades);
+      _flagIncumbents(symbols);
       candidates = symbols..sort(_byPlacementPriority);
+      _promoteDrawnCopies(candidates);
     } else {
       // Replaying: the frozen decision says only the last pass's
-      // winners are on screen, so only they are laid out — and only
-      // they need sorting, ~100 of a few thousand candidates on a dense
-      // screen. [_byPlacementPriority] is a total order (`order` is
-      // unique), so
-      // their relative order is exactly what a full sort gives.
-      // Everyone else is at most a fade-out fallback, recorded in input
-      // order instead of priority order. That order only settles exact
-      // distance ties in [_nearestCandidate], between candidates of one
-      // key and so of one layer — which at a shared anchor already fell
-      // through to `order`, the input order, unless their sort keys
-      // differ.
+      // winners are on screen, so only they are laid out — each from the
+      // copy it was drawn from, or, where that copy is gone (its tile
+      // republished), from its other copies — and only they need
+      // sorting, ~100 of a few thousand candidates on a dense screen.
+      // [_byPlacementPriority] is a total order (`order` is unique), so
+      // their relative order is exactly what a full sort gives. Everyone
+      // else is at most a fade-out fallback, recorded in input order
+      // instead of priority order.
       candidates = <PlacedSymbol>[];
+      List<PlacedSymbol>? otherCopies;
+      Set<int>? drawnCopyOffered;
       for (final candidate in symbols) {
-        if (!candidate.ghostOnly && _winners.contains(candidate.instance)) {
-          candidates.add(candidate);
+        if (!candidate.ghostOnly && _winners.contains(candidate.id)) {
+          if (identical(_drawnCopy[candidate.id], candidate.instance)) {
+            candidates.add(candidate);
+            (drawnCopyOffered ??= {}).add(candidate.id);
+          } else {
+            (otherCopies ??= []).add(candidate);
+          }
         } else if (fades) {
           _recordFallback(candidate);
+        }
+      }
+      if (otherCopies != null) {
+        for (final candidate in otherCopies) {
+          if (drawnCopyOffered?.contains(candidate.id) ?? false) {
+            if (fades) _recordFallback(candidate);
+          } else {
+            candidates.add(candidate);
+          }
         }
       }
       candidates.sort(_byPlacementPriority);
     }
     debugSortMicros += sortStopwatch.elapsedMicroseconds;
     if (placing) debugPlacingFrames++;
-    if (placing && _winners.isNotEmpty) _promoteIncumbents(candidates);
 
     final toDraw = <_DrawableSymbol>[];
     var anyFading = false;
@@ -600,24 +751,29 @@ class LabelPainter {
     for (final candidate in candidates) {
       if (candidate.ghostOnly) {
         // Never competes for placement — only remembered, in case its
-        // key is fading out and nothing else can draw it. (A replay
+        // label is fading out and nothing else can draw it. (A replay
         // frame recorded these while picking its winners.)
         if (fades) _recordFallback(candidate);
         continue;
       }
+      // Another copy of this label — a seam twin, the other level's at
+      // a crossing — already drew: one label draws once. Skipped before
+      // any layout work.
+      if (_drawing.containsKey(candidate.id)) continue;
       final drawable =
           _prepare(candidate, zoom, styleZoom, collision, sprites, screenSize);
       if (drawable == null) {
         // A candidate that lost (collision, zoom gate) may still be the
-        // only instance around of a key mid-fade-out.
+        // only copy around of a label mid-fade-out.
         if (fades) _recordFallback(candidate);
         continue;
       }
+      _drawing[candidate.id] = candidate.instance;
+      if (placing) _winners.add(candidate.id);
       // The label's fade and its layer's zoom-range ramp compound: a
       // label appearing near its layer's maxzoom is subject to both.
       final ramp = zoomRangeOpacity(candidate.instance.layer, styleZoom);
       if (placing) {
-        _winners.add(candidate.instance);
         final repeatKey = drawable.repeatKey;
         // Only text that actually shows may suppress a repeat: a
         // rejected or ramped-out candidate never hides a fallback.
@@ -627,14 +783,11 @@ class LabelPainter {
       }
       var fade = 1.0;
       if (fades) {
-        // Fades are per sitting — one state per (key, position). Two
-        // POIs sharing a name or an icon fade independently instead of
-        // popping while the other holds their key's opacity; an
-        // along-line label whose anchors are re-spaced per display
-        // layout fades in at the new position while the old one fades
-        // out, instead of inheriting its opacity and teleporting.
-        fade = _fades.showAt(
-            candidate.instance.continuityKey, candidate.screenAnchor);
+        // One fade per label id: every copy of a label resumes its
+        // state, while two POIs sharing a name, or a street name whose
+        // anchor the next level re-spaced, are different labels and
+        // fade on their own.
+        fade = _fades.show(candidate.id);
         // A key on its first frame has no elapsed fade time yet; one
         // step keeps it from starting invisible. Every placed label
         // paints something, on every frame it is placed: a label held
@@ -654,56 +807,52 @@ class LabelPainter {
     }
     final sweepStopwatch = Stopwatch()..start();
     if (fades) {
-      // Keys placed until recently but not this frame fade out, drawing
-      // one ghost each: laid out (the zoom gate bypassed — a departing
-      // label is often departing *because* the gate just cut its layer)
-      // but claiming no collision space, so whatever takes the spot
-      // fades in over the ghost instead of waiting for it to expire and
-      // popping.
+      // Labels placed until recently but not this frame fade out,
+      // drawing one ghost each: laid out (the zoom gate bypassed — a
+      // departing label is often departing *because* the gate just cut
+      // its layer) but claiming no collision space, so whatever takes
+      // the spot fades in over the ghost instead of waiting for it to
+      // expire and popping.
       _CollisionIndex? permissive;
-      _fades.sweep((key, position, opacity) {
-        // Each fading sitting takes the candidate nearest its position,
-        // and only within [_ghostRadius] — a farther stand-in would
-        // move the fading label, which is the artefact the positional
-        // fades exist to remove.
-        final fallback = _nearestCandidate(_sittingFallbacks[key], position);
+      _fades.sweep((id, opacity) {
+        final fallback = _fallbacks[id];
         if (fallback == null) {
-          debugRejectProbe?.call(key, 'ghost:none', true);
-          return null;
+          debugRejectProbe?.call(id, 'ghost:none', true);
+          return;
         }
+        final key = fallback.instance.continuityKey;
         final ramp = zoomRangeOpacity(fallback.instance.layer, styleZoom);
         if (ramp <= 0) {
           debugRejectProbe?.call(key, 'ghost:ramp', true);
-          return null;
+          return;
         }
         // Floored, mirroring the fade-in's implicit ceil: a departing
         // label reaches zero instead of lingering one step above it.
         final ghostOpacity =
             (opacity * ramp * _opacitySteps).floor() / _opacitySteps;
-        if (ghostOpacity <= 0) return null;
+        if (ghostOpacity <= 0) return;
         final drawable = _prepare(fallback, zoom, styleZoom,
             permissive ??= _CollisionIndex.permissive(), sprites, screenSize,
             gateZoom: false);
         if (drawable == null) {
           debugRejectProbe?.call(key, 'ghost:prepare', true);
-          return null;
+          return;
         }
         drawable.opacity = ghostOpacity;
         drawable.isGhost = true;
         toDraw.add(drawable);
         anyFading = true;
-        // The tracker moves the sitting to where its ghost was drawn,
-        // so the fade keeps tracking the camera.
-        return fallback.screenAnchor;
+        _drawing[id] = fallback.instance;
       },
-          // Replay frames hold: an un-shown key mid-interval usually
-          // means its instance was replaced (republish, level swap), and
-          // the successor is only picked up at the next due pass —
-          // decaying through that window fades a label into itself.
-          // Only a pass may start a fade-out.
+          // Replay frames hold: a winner missing mid-interval may only
+          // be between copies (its tile gone, the successor not yet
+          // published), and only a pass may start a fade-out.
           hold: !placing);
-      _sittingFallbacks.clear();
+      _fallbacks.clear();
     }
+    final drawnCopy = _drawnCopy;
+    _drawnCopy = _drawing;
+    _drawing = drawnCopy..clear();
     debugSweepMicros += sweepStopwatch.elapsedMicroseconds;
     final probe = debugDrawnProbe;
     if (probe != null) {
@@ -714,6 +863,7 @@ class LabelPainter {
           if (drawable.opacity > 0)
             (
               key: drawable.symbol.instance.continuityKey,
+              id: drawable.symbol.id,
               position: drawable.symbol.screenAnchor,
               opacity: drawable.opacity,
               ghost: drawable.isGhost,
@@ -723,6 +873,7 @@ class LabelPainter {
     }
     final drawStopwatch = Stopwatch()..start();
     final drawn = _draw(canvas, toDraw, devicePixelRatio, anyFading);
+    _lastDrawn = toDraw;
     debugDrawMicros += drawStopwatch.elapsedMicroseconds;
     return drawn;
   }
@@ -730,18 +881,39 @@ class LabelPainter {
   /// Placement priority: topmost style layers first (they win space),
   /// then incumbents — labels on screen right now, which a same-layer
   /// newcomer must not evict (see [PlacedSymbol.incumbent]) — then by
-  /// symbol-sort-key, then by y, then by insertion order — the last
-  /// term keeps the non-stable sort deterministic and lets current-level
-  /// tiles beat retained ones on exact ties. A total order: `order` is
-  /// unique per frame.
+  /// symbol-sort-key, then current-level tiles ahead of retained ones,
+  /// then MapLibre's order: data tiles by zoom (deepest first), x and y,
+  /// and within a tile the features in source order, each one's parts
+  /// in order and its anchors along a part from the start (see
+  /// [SymbolInstance.sourceTile]). None of these terms reads the
+  /// camera, so a pan or a rotation never reorders two labels. The last
+  /// term, insertion order, keeps the non-stable sort deterministic. A
+  /// total order: `order` is unique per frame.
   static int _byPlacementPriority(PlacedSymbol a, PlacedSymbol b) {
-    final byLayer = b.instance.layerIndex - a.instance.layerIndex;
+    final ai = a.instance;
+    final bi = b.instance;
+    final byLayer = bi.layerIndex - ai.layerIndex;
     if (byLayer != 0) return byLayer;
     if (a.incumbent != b.incumbent) return a.incumbent ? -1 : 1;
-    final bySortKey = a.instance.sortKey.compareTo(b.instance.sortKey);
+    final bySortKey = ai.sortKey.compareTo(bi.sortKey);
     if (bySortKey != 0) return bySortKey;
-    final byY = a.screenAnchor.dy.compareTo(b.screenAnchor.dy);
-    if (byY != 0) return byY;
+    if (a.retained != b.retained) return a.retained ? 1 : -1;
+    final at = ai.sourceTile;
+    final bt = bi.sourceTile;
+    if (!identical(at, bt)) {
+      final byZ = bt.z - at.z;
+      if (byZ != 0) return byZ;
+      final byX = at.x - bt.x;
+      if (byX != 0) return byX;
+      final byY = at.y - bt.y;
+      if (byY != 0) return byY;
+    }
+    final byFeature = ai.featureIndex - bi.featureIndex;
+    if (byFeature != 0) return byFeature;
+    final byPart = ai.part - bi.part;
+    if (byPart != 0) return byPart;
+    final byDistance = ai.pathDistance.compareTo(bi.pathDistance);
+    if (byDistance != 0) return byDistance;
     return a.order - b.order;
   }
 
@@ -853,12 +1025,17 @@ class LabelPainter {
   /// the style and gates layers by their zoom range. [devicePixelRatio]
   /// is the canvas's scale to backing pixels, used exactly as [paint]
   /// uses the screen's: to size glyph-atlas cells and snap text.
+  ///
+  /// When [hits] is given, the drawn labels' hit shapes, in tile
+  /// coordinates, are added to it, for rendered-feature queries over a
+  /// tile whose labels are part of its image.
   List<PlacedSymbol> paintTile({
     required Canvas canvas,
     required List<SymbolInstance> symbols,
     required double styleZoom,
     SpriteAtlas? sprites,
     double devicePixelRatio = 1,
+    List<LabelHit>? hits,
   }) {
     developer.Timeline.startSync('VT tile labels');
     debugTilePaintCount++;
@@ -868,6 +1045,8 @@ class LabelPainter {
     _memory = PlacementMemory();
     _repeatAnchors = {};
     try {
+      // The screen pass's drawables may hold painters retired since.
+      _lastDrawn = const [];
       _disposeRetired();
       _pass++;
       _seating = ++_seatings;
@@ -876,6 +1055,9 @@ class LabelPainter {
         for (var i = 0; i < symbols.length; i++)
           PlacedSymbol(
             instance: symbols[i],
+            // One tile, one layout: every candidate is its own label,
+            // and nothing carries over to another call to need more.
+            id: i + 1,
             screenAnchor: symbols[i].anchor,
             screenAngle: symbols[i].angle,
             transform: symbols[i].alongLine ? _tileSpace : null,
@@ -899,7 +1081,15 @@ class LabelPainter {
         toDraw.add(drawable);
         anyTranslucent |= drawable.opacity < 1;
       }
-      return _draw(canvas, toDraw, devicePixelRatio, anyTranslucent);
+      final drawn = _draw(canvas, toDraw, devicePixelRatio, anyTranslucent);
+      if (hits != null) {
+        for (final drawable in toDraw) {
+          if (drawable.opacity > 0) {
+            hits.add(LabelHit(drawable.symbol.instance, drawable.hitQuads()));
+          }
+        }
+      }
+      return drawn;
     } finally {
       _memory = screenMemory;
       _repeatAnchors = screenRepeats;
@@ -972,85 +1162,67 @@ class LabelPainter {
     return false;
   }
 
-  /// Marks the candidates whose label is steadily visible on screen, so
-  /// the priority sort tries them ahead of same-layer newcomers — see
-  /// [PlacedSymbol.incumbent]. Placing frames only; the flag defaults
-  /// to false on every rebuilt candidate list in between.
+  /// Marks the candidates whose label is steadily visible on screen —
+  /// the last pass's winners — so the priority sort tries them ahead of
+  /// same-layer newcomers; see [PlacedSymbol.incumbent]. Placing frames
+  /// only; the flag defaults to false on every rebuilt candidate list in
+  /// between.
   ///
-  /// Two recognisers, because each covers the other's blind spot. The
-  /// winner set matches by instance identity — exact, but instances are
-  /// replaced wholesale by every republish and level swap, precisely
-  /// when incumbency matters most. The fade tracker matches by key and
-  /// position at full opacity — which survives instance replacement,
-  /// but exists only while fades are enabled.
-  void _flagIncumbents(List<PlacedSymbol> candidates, bool fades) {
+  /// By label id, so incumbency survives the instance replacement every
+  /// republish and level swap performs, precisely when it matters most.
+  /// It also settles which of a label's *own* rivals draws: a street
+  /// name repeated on the parallel carriageway is another label of the
+  /// same name, and since only the one on screen is an incumbent, a
+  /// zoom crossing that swaps the tiles and features the two sort by no
+  /// longer walks the name across the street.
+  void _flagIncumbents(List<PlacedSymbol> candidates) {
     for (final candidate in candidates) {
-      candidate.incumbent = !candidate.ghostOnly &&
-          (_winners.contains(candidate.instance) ||
-              (fades &&
-                  _fades.isVisibleAt(candidate.instance.continuityKey,
-                      candidate.screenAnchor)));
+      candidate.incumbent =
+          !candidate.ghostOnly && _winners.contains(candidate.id);
     }
   }
 
-  /// Moves each label's sitting tenant ahead of its rivals *within its
-  /// own continuity key*, in place.
+  /// Moves the copy each label was last drawn from ahead of the label's
+  /// other copies, in place, so a pass keeps a label on the copy it is
+  /// on for as long as that copy still fits: which copy sorts first
+  /// depends on the tile and feature it comes from, and at a zoom
+  /// crossing the arriving level's copy sorts ahead of the outgoing one
+  /// already drawn.
   ///
-  /// One label often has several candidates on screen: a street name
-  /// repeats along its road and again on the parallel carriageway, and
-  /// a zoom crossing puts the outgoing and arriving level's copies up
-  /// at once. Which of them the priority sort puts first depends on the
-  /// anchors' screen y, so a slow pan reorders them and the name jumps
-  /// across the street and back. Trying the one already drawn first
-  /// pins it there for as long as it still fits.
-  ///
-  /// Only the order *inside* a key changes: the key still competes for
-  /// space at the position its best candidate earned, so this can never
-  /// let one label outrank another. Each key is promoted at most once —
-  /// with two candidates, which is the case that matters, that is
-  /// exactly right, and with more it still puts a tenant first.
-  void _promoteIncumbents(List<PlacedSymbol> candidates) {
-    Map<Object, int>? firstRival;
+  /// Only the order *inside* one label id changes: the label still
+  /// competes for space at the position its best copy earned, so this
+  /// can never let one label outrank another.
+  void _promoteDrawnCopies(List<PlacedSymbol> candidates) {
+    if (_drawnCopy.isEmpty) return;
+    Map<int, int>? firstCopy;
     for (var i = 0; i < candidates.length; i++) {
       final candidate = candidates[i];
       if (candidate.ghostOnly) continue;
-      final key = candidate.instance.continuityKey;
-      if (!_winners.contains(candidate.instance)) {
-        (firstRival ??= {})[key] ??= i;
+      final drawn = _drawnCopy[candidate.id];
+      if (drawn == null) continue;
+      if (!identical(drawn, candidate.instance)) {
+        (firstCopy ??= {})[candidate.id] ??= i;
         continue;
       }
-      final rival = firstRival?.remove(key);
-      if (rival == null) continue; // already first among its key
-      candidates[i] = candidates[rival];
-      candidates[rival] = candidate;
+      final first = firstCopy?.remove(candidate.id);
+      if (first == null) continue; // already first among its copies
+      candidates[i] = candidates[first];
+      candidates[first] = candidate;
     }
   }
 
-  /// Remembers [candidate] as a drawable to fade its key out with,
-  /// should the sweep find one of that key's sittings unplaced this
-  /// frame. Only tracked keys can fade. Every candidate is kept: the
-  /// sweep picks the one nearest each fading sitting.
+  /// Remembers [candidate] as the drawable to fade its label out with,
+  /// should the sweep find that label unplaced this frame — the copy it
+  /// was last drawn from if that is on offer, else the first one seen.
+  /// Only tracked labels can fade.
   void _recordFallback(PlacedSymbol candidate) {
-    final key = candidate.instance.continuityKey;
-    if (!_fades.isTracked(key)) return;
-    (_sittingFallbacks[key] ??= []).add(candidate);
-  }
-
-  /// The candidate in [candidates] nearest [position], within
-  /// [_ghostRadius]; null when none is (or the list is).
-  static PlacedSymbol? _nearestCandidate(
-      List<PlacedSymbol>? candidates, Offset position) {
-    if (candidates == null) return null;
-    PlacedSymbol? best;
-    var bestDistance = _ghostRadius * _ghostRadius;
-    for (final candidate in candidates) {
-      final distance = (candidate.screenAnchor - position).distanceSquared;
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        best = candidate;
-      }
+    final id = candidate.id;
+    if (!_fades.isTracked(id)) return;
+    if (identical(_drawnCopy[id], candidate.instance)) {
+      _fallbacks[id] = candidate;
+    } else {
+      _fallbacks.putIfAbsent(id, () => candidate);
     }
-    return best;
   }
 
   /// Opacity [layer]'s zoom range gives a symbol at [styleZoom]: 1
@@ -1129,11 +1301,13 @@ class LabelPainter {
       final instance = symbols[i];
       if (instance.text.isEmpty) continue;
       final layer = instance.layer;
-      final ctx = EvalContext(
+      final ctx = featureContext(
         zoom: zoom,
         properties: instance.properties,
         geometryType: instance.geometryType,
         featureId: instance.featureId,
+        featureState: _stateOf(instance),
+        geometry: instance.geometry,
       );
       if (layer.textOpacity.eval(ctx) <= 0) continue;
       final size = layer.textSize.eval(ctx);
@@ -1158,9 +1332,13 @@ class LabelPainter {
           }
         }
         // The per-grapheme work is the expensive half for road labels.
-        if (instance.alongLine && instance.curveSafe && instance.path != null) {
+        // Glyph-drawn text has none: its glyphs are the clusters.
+        if (text.glyphRun == null &&
+            instance.alongLine &&
+            instance.curveSafe &&
+            instance.path != null) {
           for (final cluster in text.clusters) {
-            _glyphPainters(cluster.grapheme, text);
+            _glyphPainters(cluster, text);
           }
         }
       }
@@ -1204,16 +1382,18 @@ class LabelPainter {
     // a level away from the threshold the style declares.
     if (gateZoom && !layer.coversZoom(styleZoom)) return null;
 
-    // What this label decided last time it was placed — by position, so
+    // What this label decided last time it was placed — by label id, so
     // the instance that arrives with a new zoom level inherits what the
     // one it replaces was sitting on.
-    final sitting = _memory.sitting(instance.continuityKey, anchor);
+    final sitting = _memory.sitting(placed.id);
 
-    final ctx = EvalContext(
+    final ctx = featureContext(
       zoom: evalZoom,
       properties: instance.properties,
       geometryType: instance.geometryType,
       featureId: instance.featureId,
+      featureState: _stateOf(instance),
+      geometry: instance.geometry,
     );
     final rules = _rulesFor(layer, instance.layerIndex, evalZoom);
 
@@ -2110,7 +2290,7 @@ class LabelPainter {
             (placed.incumbent ? 1.25 : 1.0);
 
     final placements =
-        <({String grapheme, Offset pos, double angle, double width})>[];
+        <({_Cluster cluster, Offset pos, double angle, double width})>[];
     var previousAngle = double.nan;
     var maxDeviation = 0.0;
     double? firstAngle;
@@ -2148,7 +2328,7 @@ class LabelPainter {
         pos += Offset(-math.sin(angle), math.cos(angle)) * perp;
       }
       placements.add((
-        grapheme: cluster.grapheme,
+        cluster: cluster,
         pos: pos,
         angle: angle,
         width: cluster.width * textScale,
@@ -2193,15 +2373,45 @@ class LabelPainter {
         ],
         (icon) => _DrawableSymbol(placed,
             icon: icon,
-            curvedGlyphs: [
-              for (final p in placements)
-                _CurvedGlyph(
-                  painters: _glyphPainters(p.grapheme, text),
-                  position: p.pos,
-                  angle: p.angle,
-                ),
-            ],
+            // Glyph-drawn text keeps its laid-out text, whose run it
+            // draws from.
+            text: text.glyphRun == null ? null : text,
+            curvedGlyphs: _curvedGlyphs(placements, text),
             textScale: textScale));
+  }
+
+  /// The glyphs of curved [text] at [placements]: per grapheme cluster
+  /// its painters, or for glyph-drawn text its index into the run.
+  List<_CurvedGlyph> _curvedGlyphs(
+      List<({_Cluster cluster, Offset pos, double angle, double width})>
+          placements,
+      _LaidOutText text) {
+    final run = text.glyphRun;
+    final glyphs = <_CurvedGlyph>[];
+    for (final p in placements) {
+      if (run == null) {
+        final painters = _glyphPainters(p.cluster, text);
+        final painter = painters.halo ?? painters.fill;
+        glyphs.add(_CurvedGlyph(
+          painters: painters,
+          extent: Size(painter.width, painter.height),
+          position: p.pos,
+          angle: p.angle,
+        ));
+      } else {
+        // The cell is not centred on the glyph's position: twice its
+        // size around it covers it whichever way it sits.
+        final glyph = run.shaped.glyphs[p.cluster.glyphIndex!];
+        glyphs.add(_CurvedGlyph(
+          glyphIndex: p.cluster.glyphIndex,
+          extent: Size(glyph.bitmapWidth * 2 * _glyphScale,
+              glyph.bitmapHeight * 2 * _glyphScale),
+          position: p.pos,
+          angle: p.angle,
+        ));
+      }
+    }
+    return glyphs;
   }
 
   /// Folds an angle into (-π, π].
@@ -2248,6 +2458,14 @@ class LabelPainter {
         _ => TextAlign.center,
       };
 
+  /// [_textAlign] for glyph text: where a line sits in the block's
+  /// width, from its left edge.
+  static double _justifyFraction(String justify) => switch (justify) {
+        'left' => 0,
+        'right' => 1,
+        _ => 0.5,
+      };
+
   /// `text-justify` [value] resolved for text at [anchor]: `auto`
   /// justifies towards the side of the box the anchor is on.
   static String _justify(String value, String anchor) => switch (value) {
@@ -2272,10 +2490,14 @@ class LabelPainter {
     // as-is. Only the key: the laid-out text itself belongs to the LRU,
     // which may evict and dispose it.
     final memo = instance.textStyleMemo;
-    if (memo != null && memo.zoom == ctx.zoom && memo.justify == justify) {
-      final memoized = _textCache.get(memo.cacheKey);
-      if (memoized != null) return memoized;
-      return _shape(instance, memo);
+    // A style reading feature state is also stale once any state
+    // changed — the zoom alone does not vouch for it.
+    final stateVersion = layer.readsFeatureState ? _stateVersion : 0;
+    if (memo != null &&
+        memo.zoom == ctx.zoom &&
+        memo.justify == justify &&
+        memo.stateVersion == stateVersion) {
+      return _cachedOrShape(instance, memo);
     }
 
     // `text-opacity` is folded into the colours quantized to 1/32
@@ -2309,9 +2531,8 @@ class LabelPainter {
         memo.matches(fillArgb, haloArgb, haloRatioQ, haloBlurQ, fonts,
             letterSpacingEm, maxWidthEm, justify, lineHeightEm)) {
       memo.zoom = ctx.zoom;
-      final memoized = _textCache.get(memo.cacheKey);
-      if (memoized != null) return memoized;
-      return _shape(instance, memo);
+      memo.stateVersion = stateVersion;
+      return _cachedOrShape(instance, memo);
     }
 
     final styleKey = '$fillArgb|$haloArgb|$haloRatioQ|$haloBlurQ|'
@@ -2332,11 +2553,28 @@ class LabelPainter {
       styleKey: styleKey,
       cacheKey: cacheKey,
       zoom: ctx.zoom,
+      stateVersion: stateVersion,
     );
     instance.textStyleMemo = built;
-    final cached = _textCache.get(cacheKey);
-    if (cached != null) return cached;
-    return _shape(instance, built);
+    return _cachedOrShape(instance, built);
+  }
+
+  /// The cached shaping of [instance]'s text per [memo], or a fresh one
+  /// — also when the cached one was shaped by the platform only because
+  /// the glyphs it could have used were still loading, and are not any
+  /// more.
+  _LaidOutText _cachedOrShape(SymbolInstance instance, TextStyleMemo memo) {
+    final cached = _textCache.get(memo.cacheKey);
+    if (cached != null) {
+      final awaited = cached.awaitedRanges;
+      final glyphs = _glyphs;
+      if (awaited == null ||
+          glyphs == null ||
+          awaited.any((r) => glyphs.isLoading(r.$1, r.$2))) {
+        return cached;
+      }
+    }
+    return _shape(instance, memo);
   }
 
   /// Shapes [instance]'s text at the reference size per [memo] and puts
@@ -2352,6 +2590,86 @@ class LabelPainter {
   }
 
   _LaidOutText _shapeTimed(SymbolInstance instance, TextStyleMemo memo) {
+    List<(String, int)>? awaited;
+    if (_glyphs != null && instance.glyphShapeable) {
+      final run = _glyphRun(instance, memo);
+      if (run is _GlyphRun) {
+        debugGlyphShapedTextCount++;
+        final laidOut = _LaidOutText.glyphs(
+          text: instance.text,
+          run: run,
+          size: Size(
+              run.shaped.width * _glyphScale, run.shaped.height * _glyphScale),
+          styleKey: memo.styleKey,
+          justify: memo.justify,
+        );
+        _textCache.put(memo.cacheKey, laidOut);
+        return laidOut;
+      }
+      awaited = run as List<(String, int)>?;
+    }
+    final laidOut = _shapeParagraph(instance, memo)..awaitedRanges = awaited;
+    _textCache.put(memo.cacheKey, laidOut);
+    return laidOut;
+  }
+
+  /// Reference-size units per glyph PBF pixel: glyph text is laid out in
+  /// the PBFs' 24 px em and scaled to [_shapeSize] like every other
+  /// metric the painter keeps.
+  static const double _glyphScale = _shapeSize / glyphPbfEm;
+
+  /// [instance]'s text shaped from the glyph source, as a [_GlyphRun];
+  /// or, when that cannot be done, the glyph ranges that are still
+  /// loading (a list, to try again once they are in), or null when
+  /// nothing is pending and the text simply cannot be drawn from glyphs
+  /// — a range that failed, a code point the font lacks.
+  Object? _glyphRun(SymbolInstance instance, TextStyleMemo memo) {
+    final glyphs = _glyphs!;
+    final stack = memo.fontStack;
+    List<(String, int)>? loading;
+    var missing = false;
+    GlyphRange? range;
+    var rangeStart = -1;
+    final shaped = shapeGlyphs(
+      instance.text,
+      (code) {
+        final start = code - code % 256;
+        if (start != rangeStart) {
+          rangeStart = start;
+          range = glyphs.rangeOf(stack, start);
+          if (range == null) {
+            if (glyphs.isLoading(stack, start)) {
+              (loading ??= []).add((stack, start));
+            } else {
+              missing = true;
+            }
+          }
+        }
+        return range?.glyphs[code];
+      },
+      letterSpacingEm: memo.letterSpacingEm,
+      // Along-line labels never wrap; point labels wrap at
+      // `text-max-width`, at least two ems as the paragraph path does.
+      maxWidthEm: instance.alongLine ? null : math.max(memo.maxWidthEm, 2),
+      lineHeightEm: memo.lineHeightEm,
+      justify: _justifyFraction(memo.justify),
+    );
+    if (shaped == null) return missing ? null : loading;
+    return _GlyphRun(
+      shaped: shaped,
+      pages: [
+        for (final glyph in shaped.glyphs)
+          glyphs.rangeOf(stack, glyph.id - glyph.id % 256)!.page
+      ],
+      fontStack: stack,
+      fillArgb: memo.fillArgb,
+      haloArgb: memo.haloArgb,
+      haloRatioQ: memo.haloRatioQ,
+    );
+  }
+
+  /// Shapes [instance]'s text with the platform's paragraph layout.
+  _LaidOutText _shapeParagraph(SymbolInstance instance, TextStyleMemo memo) {
     final singleLine = instance.alongLine;
     final maxLines = singleLine ? 1 : 4;
     var maxWidth = singleLine
@@ -2360,7 +2678,9 @@ class LabelPainter {
     final style = _textStyle(memo.fonts, _shapeSize, memo.letterSpacingEm,
         Color(memo.fillArgb), memo.lineHeightEm);
     final align = _textAlign(memo.justify);
-    var text = instance.text;
+    final paragraphs = instance.text.split('\n');
+    final rtl = paragraphs.map(_readsRightToLeft).toList();
+    var text = _isolateRightToLeft(paragraphs, rtl);
     // Laid out unconstrained first: that is the one layout after which
     // the min intrinsic width is the paragraph's widest unbreakable run.
     // After a constrained layout that broke a word, Skia reports a
@@ -2381,7 +2701,19 @@ class LabelPainter {
     // (LUDWIGSVORST / ADT), so such text gets its breaks spelled out.
     if (fill.maxIntrinsicWidth > maxWidth) {
       if (fill.minIntrinsicWidth > maxWidth) {
-        text = breakAroundWideRuns(text, style, maxWidth);
+        // Broken paragraph by paragraph, so that every line keeps the
+        // direction of the paragraph it came from.
+        final lines = <String>[];
+        final linesRtl = <bool>[];
+        for (var i = 0; i < paragraphs.length; i++) {
+          final broken = breakAroundWideRuns(paragraphs[i], style, maxWidth);
+          for (final line in broken.split('\n')) {
+            if (line.isEmpty) continue;
+            lines.add(line);
+            linesRtl.add(rtl[i]);
+          }
+        }
+        text = _isolateRightToLeft(lines, linesRtl);
         // Every break is explicit now; a width could only add more.
         maxWidth = double.infinity;
         fill.text = TextSpan(text: text, style: style);
@@ -2415,7 +2747,7 @@ class LabelPainter {
       )..layout(maxWidth: maxWidth);
     }
 
-    final laidOut = _LaidOutText(
+    return _LaidOutText(
       text: text,
       fill: fill,
       halo: halo,
@@ -2428,8 +2760,6 @@ class LabelPainter {
       maxLines: maxLines,
       layoutWidth: maxWidth,
     ).._haloPicture;
-    _textCache.put(memo.cacheKey, laidOut);
-    return laidOut;
   }
 
   /// [text] with explicit line breaks for a `text-max-width` of
@@ -2452,15 +2782,21 @@ class LabelPainter {
         text: TextSpan(text: run, style: style),
         textDirection: TextDirection.ltr,
       )..layout(maxWidth: width);
-      // Each character goes to the line its box sits on. Engines differ
+      // Each grapheme goes to the line its box sits on. Engines differ
       // on which line `getLineBoundary` gives the offset of a soft
       // break; a box's top does not, measured to the line's full height.
+      // Whole graphemes, not code units: a code unit inside a cluster
+      // (শা, an emoji, a letter with a combining mark) has no box of its
+      // own, so one that opened a line stayed on the line before.
       final line = StringBuffer();
       double? top;
-      for (var i = 0; i < run.length; i++) {
+      var start = 0;
+      for (final grapheme in run.characters) {
         final boxes = painter.getBoxesForSelection(
-            TextSelection(baseOffset: i, extentOffset: i + 1),
+            TextSelection(
+                baseOffset: start, extentOffset: start + grapheme.length),
             boxHeightStyle: ui.BoxHeightStyle.max);
+        start += grapheme.length;
         if (boxes.isNotEmpty) {
           if (top != null && boxes.first.top > top + 0.5) {
             lines.add(line.toString().trim());
@@ -2468,7 +2804,7 @@ class LabelPainter {
           }
           top = boxes.first.top;
         }
-        line.write(run[i]);
+        line.write(grapheme);
       }
       lines.add(line.toString().trim());
       painter.dispose();
@@ -2489,7 +2825,12 @@ class LabelPainter {
         )..layout();
         final widest = probe.minIntrinsicWidth;
         probe.dispose();
-        if (widest <= maxWidth) {
+        // Chinese and Japanese break between any two ideographs or kana,
+        // in MapLibre as in Flutter's line breaker. Skia reports a run
+        // of them with no space in it as a single unbreakable run as
+        // wide as the whole label, though, which kept every Chinese
+        // label on one line; so they are told apart by script.
+        if (widest <= maxWidth || _breaksBetweenIdeographs(word)) {
           words.add(word);
           continue;
         }
@@ -2501,58 +2842,145 @@ class LabelPainter {
     return lines.where((line) => line.isNotEmpty).join('\n');
   }
 
-  /// Resolves the atlas cells of every curved label in [toDraw],
-  /// rasterizing glyphs met for the first time, and hands each label its
-  /// sprite batches. A label with any glyph missing from the atlas keeps
-  /// none and draws glyph by glyph.
+  /// Whether [word] holds a character MapLibre may break a line next
+  /// to, though no space is there: the Han ideographs, kana, Bopomofo
+  /// and Yi, with their punctuation and fullwidth forms. Not Hangul,
+  /// which is written with spaces between words.
+  static bool _breaksBetweenIdeographs(String word) {
+    for (final rune in word.runes) {
+      if ((rune >= 0x2e80 && rune <= 0x312f) || // radicals, punctuation, kana
+          (rune >= 0x3190 && rune <= 0x9fff) || // kanbun to unified ideographs
+          (rune >= 0xa000 && rune <= 0xa4cf) || // Yi
+          (rune >= 0xf900 && rune <= 0xfaff) || // compatibility ideographs
+          (rune >= 0xfe10 && rune <= 0xfe1f) || // vertical forms
+          (rune >= 0xfe30 && rune <= 0xfe4f) || // compatibility forms
+          (rune >= 0xff00 && rune <= 0xff9f) || // fullwidth, halfwidth kana
+          (rune >= 0x16fe0 && rune <= 0x18d7f) || // Tangut, Khitan
+          (rune >= 0x1aff0 && rune <= 0x1b2ff) || // kana supplements, Nüshu
+          (rune >= 0x1f200 && rune <= 0x1f2ff) || // enclosed ideographs
+          (rune >= 0x20000 && rune <= 0x3ffff)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// [lines] joined into one text, each line of a right-to-left
+  /// paragraph (see [_readsRightToLeft]) that needs it wrapped in a
+  /// right-to-left isolate. Labels are laid out left to right, which put
+  /// the Latin words and edge punctuation of an Arabic or Hebrew
+  /// paragraph on the wrong side: "شارع King Fahd" drew the Arabic
+  /// first, on the left. A line break ends every isolate, so each line
+  /// gets its own; a paragraph that wraps at `text-max-width` stays in
+  /// one.
+  static String _isolateRightToLeft(List<String> lines, List<bool> rtl) {
+    if (!rtl.contains(true)) return lines.join('\n');
+    return [
+      for (var i = 0; i < lines.length; i++)
+        rtl[i] && _needsIsolate(lines[i])
+            ? '\u2067${lines[i]}\u2069'
+            : lines[i],
+    ].join('\n');
+  }
+
+  static final _letter = RegExp(r'\p{L}', unicode: true);
+  static final _letterOrMark = RegExp(r'[\p{L}\p{M}]', unicode: true);
+
+  /// Whether the right-to-left [line] would lay out differently in a
+  /// left-to-right paragraph: whether it holds a left-to-right letter or
+  /// direction control, or starts or ends with something other than a
+  /// letter or mark. A line of right-to-left letters, marks, digits and
+  /// the spaces and punctuation between them resolves the same in either
+  /// direction, and most Arabic and Hebrew labels are such lines. They
+  /// stay as they are: an isolate is two more characters for a font to
+  /// map, and a line drawn from two fonts takes the taller ascent and
+  /// descent of each.
+  static bool _needsIsolate(String line) {
+    final runes = line.runes;
+    if (runes.isEmpty) return false;
+    if (!_letterOrMark.hasMatch(String.fromCharCode(runes.first)) ||
+        !_letterOrMark.hasMatch(String.fromCharCode(runes.last))) {
+      return true;
+    }
+    for (final rune in runes) {
+      if (rune < 0x80) {
+        if ((rune >= 0x41 && rune <= 0x5a) || (rune >= 0x61 && rune <= 0x7a)) {
+          return true;
+        }
+        continue;
+      }
+      if (_isRightToLeft(rune)) continue;
+      if (rune == 0x200e || // left-to-right mark
+          (rune >= 0x202a && rune <= 0x202e) || // embeddings, overrides
+          (rune >= 0x2066 && rune <= 0x2069) || // isolates
+          _letter.hasMatch(String.fromCharCode(rune))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Whether [rune] is in a block of a right-to-left script.
+  static bool _isRightToLeft(int rune) =>
+      (rune >= 0x0590 && rune <= 0x08ff) || // Hebrew to Arabic Ext.
+      (rune >= 0xfb1d && rune <= 0xfdff) || // presentation forms
+      (rune >= 0xfe70 && rune <= 0xfeff) ||
+      (rune >= 0x10800 && rune <= 0x10fff) || // historic RTL scripts
+      (rune >= 0x1e800 && rune <= 0x1efff); // Adlam, Mende Kikakui
+
+  /// Whether [paragraph] reads right to left: whether its first strong
+  /// character, a letter or a direction mark, is right-to-left. That is
+  /// how the Unicode bidi algorithm and MapLibre set the direction of a
+  /// paragraph nothing else sets it for.
+  static bool _readsRightToLeft(String paragraph) {
+    for (final rune in paragraph.runes) {
+      // Most labels start with an ASCII letter: no pattern needed.
+      if (rune < 0x80) {
+        if ((rune >= 0x41 && rune <= 0x5a) || (rune >= 0x61 && rune <= 0x7a)) {
+          return false;
+        }
+        continue;
+      }
+      if (rune == 0x200e) return false; // left-to-right mark
+      if (rune == 0x200f || rune == 0x061c) return true; // RLM, Arabic mark
+      if (_letter.hasMatch(String.fromCharCode(rune))) {
+        return _isRightToLeft(rune);
+      }
+    }
+    return false;
+  }
+
+  /// Resolves the atlas cells of every curved label and every label
+  /// drawn from glyphs in [toDraw], rasterizing cells met for the first
+  /// time, and hands each its sprite batches. A curved paragraph label
+  /// with any glyph missing from the atlas keeps none and draws glyph by
+  /// glyph; a glyph-drawn label that cannot get its cells (the app is
+  /// away, or every page is in use this frame) draws no text this frame.
   void _prepareAtlasGlyphs(
       List<_DrawableSymbol> toDraw, double devicePixelRatio) {
     _glyphAtlas.beginFrame();
     final pending = <_DrawableSymbol>[];
     for (final drawable in toDraw) {
+      drawable.atlasSprites = null;
+      final run = drawable.text?.glyphRun;
       final glyphs = drawable.curvedGlyphs;
-      if (glyphs == null) continue;
+      if (run == null && glyphs == null) continue;
       final deviceScale = devicePixelRatio *
           _DrawableSymbol._snapTextScale(drawable.textScale, devicePixelRatio);
       final sizeKey = (deviceScale * 64).round();
-      final halos = <(GlyphAtlasCell, _CurvedGlyph, Offset)>[];
-      final fills = <(GlyphAtlasCell, _CurvedGlyph, Offset)>[];
-      var complete = true;
-      for (final glyph in glyphs) {
-        final painters = glyph.painters;
-        for (final halo in const [true, false]) {
-          final painter = halo ? painters.halo : painters.fill;
-          if (painter == null) continue;
-          final pad = painters.pad;
-          final key = (painters.key, halo, sizeKey);
-          final cell = _glyphAtlas.lookup(key) ??
-              (rasterizeGlyphs
-                  ? _glyphAtlas.reserve(
-                      key,
-                      ((painter.width + 2 * pad) * deviceScale).ceil(),
-                      ((painter.height + 2 * pad) * deviceScale).ceil(),
-                      (canvas) {
-                        canvas.scale(deviceScale);
-                        painter.paint(canvas, Offset(pad, pad));
-                      },
-                    )
-                  : null);
-          if (cell == null) {
-            complete = false;
-            break;
-          }
-          final anchor = Offset((pad + painter.width / 2) * deviceScale,
-              (pad + painter.height / 2) * deviceScale);
-          (halo ? halos : fills).add((cell, glyph, anchor));
-        }
-        if (!complete) break;
+      final List<_SpriteBatch>? batches;
+      if (run != null) {
+        final cells = _glyphCells(run, deviceScale, sizeKey);
+        batches = cells == null
+            ? null
+            : _glyphRunSprites(
+                drawable, run, cells, deviceScale, devicePixelRatio);
+      } else {
+        batches = _paragraphGlyphSprites(
+            glyphs!, deviceScale, sizeKey, devicePixelRatio);
       }
-      drawable.atlasSprites = null;
-      if (!complete) continue;
-      drawable.atlasSprites = [
-        ..._spriteBatches(halos, devicePixelRatio),
-        ..._spriteBatches(fills, devicePixelRatio),
-      ];
+      if (batches == null) continue;
+      drawable.atlasSprites = batches;
       pending.add(drawable);
     }
     _glyphAtlas.flush();
@@ -2568,59 +2996,319 @@ class LabelPainter {
     }
   }
 
-  /// One sprite batch per atlas page, in glyph order.
-  static List<_SpriteBatch> _spriteBatches(
-      List<(GlyphAtlasCell, _CurvedGlyph, Offset)> sprites,
-      double devicePixelRatio) {
-    final byPage = <int, List<(GlyphAtlasCell, _CurvedGlyph, Offset)>>{};
-    for (final sprite in sprites) {
-      (byPage[sprite.$1.page] ??= []).add(sprite);
+  /// Atlas sprites for a curved label shaped as paragraphs: each
+  /// grapheme's painters rasterized once per style and device size. Null
+  /// when a glyph cannot get a cell.
+  List<_SpriteBatch>? _paragraphGlyphSprites(List<_CurvedGlyph> glyphs,
+      double deviceScale, int sizeKey, double devicePixelRatio) {
+    final halos = <_Sprite>[];
+    final fills = <_Sprite>[];
+    for (final glyph in glyphs) {
+      final painters = glyph.painters!;
+      for (final halo in const [true, false]) {
+        final painter = halo ? painters.halo : painters.fill;
+        if (painter == null) continue;
+        final pad = painters.pad;
+        final key = painters.atlasKey(halo, sizeKey);
+        final cell = _glyphAtlas.lookup(key) ??
+            (rasterizeGlyphs
+                ? _glyphAtlas.reserve(
+                    key,
+                    ((painter.width + 2 * pad) * deviceScale).ceil(),
+                    ((painter.height + 2 * pad) * deviceScale).ceil(),
+                    (canvas) {
+                      canvas.scale(deviceScale);
+                      painter.paint(canvas, Offset(pad, pad));
+                    },
+                  )
+                : null);
+        if (cell == null) return null;
+        // The atlas holds device pixels; drawn at 1/dpr they come out at
+        // the snapped logical size, rotated about the glyph's centre
+        // like the paragraph path.
+        (halo ? halos : fills).add((
+          cell: cell,
+          position: glyph.position,
+          angle: glyph.angle,
+          anchor: Offset((pad + painter.width / 2) * deviceScale,
+              (pad + painter.height / 2) * deviceScale),
+          argb: null,
+        ));
+      }
+    }
+    return _haloAndFillBatches(halos, fills, devicePixelRatio);
+  }
+
+  /// Width, in device pixels, of the ramp over which a glyph's edge
+  /// goes from transparent to opaque — MapLibre's: its text shader's
+  /// edge gamma of 0.105 at a device pixel ratio of 1 spans 0.21 of the
+  /// field's range, which is 1.68 device pixels at any size.
+  static const double _glyphEdgeWidth = 1.68;
+
+  /// Where on a glyph's distance field its outline lies (MapLibre's
+  /// encoding: 192 of 255), and how many field units one glyph pixel
+  /// spans (8 pixels of distance across the range).
+  static const double _sdfOutline = 0.75;
+  static const double _sdfPixel = 1 / 8;
+
+  /// The atlas cells of [run]'s glyphs at [deviceScale] — per glyph its
+  /// fill cell, then its halo cell when it has a halo — rasterizing the
+  /// ones met for the first time. Null when a cell cannot be had.
+  List<GlyphAtlasCell?>? _glyphCells(
+      _GlyphRun run, double deviceScale, int sizeKey) {
+    final atlas = _glyphAtlas;
+    final cached = run.cells;
+    if (cached != null &&
+        run.cellsSize == sizeKey &&
+        run.cellsGeneration == atlas.generation) {
+      for (final cell in cached) {
+        if (cell != null) atlas.use(cell);
+      }
+      return cached;
+    }
+    final glyphs = run.shaped.glyphs;
+    final halo = run.haloRatioQ > 0;
+    // Device pixels per glyph PBF pixel.
+    final f = deviceScale * _glyphScale;
+    final cells = List<GlyphAtlasCell?>.filled(glyphs.length * 2, null);
+    for (var i = 0; i < glyphs.length; i++) {
+      final glyph = glyphs[i];
+      final page = run.pages[i];
+      for (var kind = 0; kind < (halo ? 2 : 1); kind++) {
+        final key =
+            (run.fontStack, glyph.id, sizeKey, kind == 0 ? 0 : run.haloRatioQ);
+        var cell = atlas.lookup(key);
+        if (cell == null && rasterizeGlyphs) {
+          // `text-halo-width` in glyph pixels moves the cut outward.
+          final edge = kind == 0
+              ? _sdfOutline
+              : math.max(0.0,
+                  _sdfOutline - run.haloRatioQ / 128 * glyphPbfEm * _sdfPixel);
+          final paint = _coveragePaint(edge, f);
+          final w = glyph.bitmapWidth * f;
+          final h = glyph.bitmapHeight * f;
+          cell = atlas.reserve(key, w.ceil(), h.ceil(), (canvas) {
+            canvas.drawImageRect(
+                page,
+                Rect.fromLTWH(
+                    glyph.pageX.toDouble(),
+                    glyph.pageY.toDouble(),
+                    glyph.bitmapWidth.toDouble(),
+                    glyph.bitmapHeight.toDouble()),
+                Rect.fromLTWH(0, 0, w, h),
+                paint);
+          });
+        }
+        if (cell == null) return null;
+        cells[i * 2 + kind] = cell;
+      }
+    }
+    run
+      ..cells = cells
+      ..cellsSize = sizeKey
+      ..cellsGeneration = atlas.generation;
+    return cells;
+  }
+
+  /// Turns a distance field drawn at [f] device pixels per field pixel
+  /// into coverage: opaque white inside [edge], transparent outside, a
+  /// [_glyphEdgeWidth] ramp between. Thresholding after the bilinear
+  /// sampling is what keeps a magnified field's edge sharp — the same
+  /// colour-matrix technique as SDF icons ([_DrawableIcon._sdfPaint]).
+  static Paint _coveragePaint(double edge, double f) {
+    final slope = f / _sdfPixel / _glyphEdgeWidth;
+    final shift = 0.5 - edge * slope;
+    return Paint()
+      // Bilinear only: mipmaps blur the field, which erodes the shape.
+      ..filterQuality = FilterQuality.low
+      ..colorFilter = ColorFilter.matrix(<double>[
+        0, 0, 0, 0, 255, //
+        0, 0, 0, 0, 255, //
+        0, 0, 0, 0, 255, //
+        0, 0, 0, slope, shift * 255, //
+      ]);
+  }
+
+  /// Sprites for glyph-drawn text: straight about its box centre, or
+  /// along its line glyph by glyph. Every halo before every fill, each
+  /// tinted with its colour, so one atlas draw paints the whole label.
+  List<_SpriteBatch> _glyphRunSprites(
+    _DrawableSymbol drawable,
+    _GlyphRun run,
+    List<GlyphAtlasCell?> cells,
+    double deviceScale,
+    double devicePixelRatio,
+  ) {
+    final shaped = run.shaped;
+    final glyphs = shaped.glyphs;
+    final positions = shaped.positions;
+    final f = deviceScale * _glyphScale;
+    const border = glyphPbfBorder;
+    const toReference = glyphLineMiddleToReference;
+    final halos = <_Sprite>[];
+    final fills = <_Sprite>[];
+    final curved = drawable.curvedGlyphs;
+    if (curved != null) {
+      for (final placed in curved) {
+        final i = placed.glyphIndex!;
+        final glyph = glyphs[i];
+        // The point of the cell that sits on the line: the middle of the
+        // glyph's advance, on the middle of its line.
+        final anchor = Offset((glyph.advance / 2 - glyph.left + border) * f,
+            (toReference + glyph.top + border) * f);
+        for (var kind = 1; kind >= 0; kind--) {
+          final cell = cells[i * 2 + kind];
+          if (cell == null) continue;
+          (kind == 1 ? halos : fills).add((
+            cell: cell,
+            position: placed.position,
+            angle: placed.angle,
+            anchor: anchor,
+            argb: kind == 1 ? run.haloArgb : run.fillArgb,
+          ));
+        }
+      }
+    } else {
+      final angle = drawable.textAngle;
+      // Turned text turns about its anchor, and a box offset from it
+      // (point text with an anchor or offset) keeps that offset in the
+      // turned frame, as paragraphs do in [_DrawableSymbol.draw].
+      final center =
+          angle != 0 ? drawable.textAnchor : drawable.textRect.center;
+      final boxOffset = angle != 0
+          ? drawable.textRect.center - drawable.textAnchor
+          : Offset.zero;
+      final cosA = math.cos(angle);
+      final sinA = math.sin(angle);
+      for (var i = 0; i < glyphs.length; i++) {
+        final glyph = glyphs[i];
+        // The cell's top-left, in device pixels from the block centre.
+        final x =
+            (positions[i * 2] - shaped.width / 2 + glyph.left - border) * f;
+        final y = (positions[i * 2 + 1] -
+                shaped.height / 2 -
+                toReference -
+                glyph.top -
+                border) *
+            f;
+        final Offset position;
+        if (angle == 0) {
+          // Upright text lands on the device pixel grid, so the cells
+          // are drawn 1:1 instead of resampled half a pixel off.
+          position = Offset(
+              (center.dx * devicePixelRatio + x).roundToDouble() /
+                  devicePixelRatio,
+              (center.dy * devicePixelRatio + y).roundToDouble() /
+                  devicePixelRatio);
+        } else {
+          final dx = x / devicePixelRatio + boxOffset.dx;
+          final dy = y / devicePixelRatio + boxOffset.dy;
+          position = Offset(center.dx + dx * cosA - dy * sinA,
+              center.dy + dx * sinA + dy * cosA);
+        }
+        for (var kind = 1; kind >= 0; kind--) {
+          final cell = cells[i * 2 + kind];
+          if (cell == null) continue;
+          (kind == 1 ? halos : fills).add((
+            cell: cell,
+            position: position,
+            angle: angle,
+            anchor: Offset.zero,
+            argb: kind == 1 ? run.haloArgb : run.fillArgb,
+          ));
+        }
+      }
+    }
+    return _haloAndFillBatches(halos, fills, devicePixelRatio);
+  }
+
+  /// [halos] then [fills] as sprite batches: one batch, so one atlas
+  /// draw, when they all share a page — the usual case — and otherwise
+  /// every halo batch before every fill batch, so no glyph's halo is
+  /// drawn over a neighbour's fill.
+  static List<_SpriteBatch> _haloAndFillBatches(
+      List<_Sprite> halos, List<_Sprite> fills, double devicePixelRatio) {
+    final all = [...halos, ...fills];
+    if (all.isNotEmpty &&
+        all.every((s) => s.cell.page == all.first.cell.page)) {
+      return _spriteBatches(all, devicePixelRatio);
     }
     return [
+      ..._spriteBatches(halos, devicePixelRatio),
+      ..._spriteBatches(fills, devicePixelRatio),
+    ];
+  }
+
+  /// One sprite batch per atlas page, in sprite order: each sprite's
+  /// cell drawn at 1/dpr (the atlas holds device pixels), rotated by its
+  /// angle about its anchor, which lands on its position.
+  static List<_SpriteBatch> _spriteBatches(
+      List<_Sprite> sprites, double devicePixelRatio) {
+    final byPage = <int, List<_Sprite>>{};
+    for (final sprite in sprites) {
+      (byPage[sprite.cell.page] ??= []).add(sprite);
+    }
+    final scale = 1 / devicePixelRatio;
+    return [
       for (final page in byPage.values)
-        _SpriteBatch(page.first.$1, () {
+        () {
           final transforms = Float32List(page.length * 4);
           final rects = Float32List(page.length * 4);
-          final scale = 1 / devicePixelRatio;
+          final tinted = page.first.argb != null;
+          final colors = tinted ? Int32List(page.length) : null;
           for (var i = 0; i < page.length; i++) {
-            final (cell, glyph, anchor) = page[i];
-            // The atlas holds device pixels; drawn at 1/dpr they come
-            // out at the snapped logical size, rotated about the
-            // glyph's centre like the paragraph path.
-            final scos = math.cos(glyph.angle) * scale;
-            final ssin = math.sin(glyph.angle) * scale;
+            final sprite = page[i];
+            final anchor = sprite.anchor;
+            final scos = math.cos(sprite.angle) * scale;
+            final ssin = math.sin(sprite.angle) * scale;
             transforms[i * 4] = scos;
             transforms[i * 4 + 1] = ssin;
             transforms[i * 4 + 2] =
-                glyph.position.dx - scos * anchor.dx + ssin * anchor.dy;
+                sprite.position.dx - scos * anchor.dx + ssin * anchor.dy;
             transforms[i * 4 + 3] =
-                glyph.position.dy - ssin * anchor.dx - scos * anchor.dy;
-            final rect = cell.rect;
+                sprite.position.dy - ssin * anchor.dx - scos * anchor.dy;
+            final rect = sprite.cell.rect;
             rects[i * 4] = rect.left;
             rects[i * 4 + 1] = rect.top;
             rects[i * 4 + 2] = rect.right;
             rects[i * 4 + 3] = rect.bottom;
+            if (colors != null) colors[i] = sprite.argb!;
           }
-          return (transforms, rects);
-        }()),
+          return _SpriteBatch(page.first.cell, transforms, rects, colors);
+        }(),
     ];
   }
 
-  /// Painters for a single glyph cluster, cached across labels — the
-  /// same characters repeat constantly in map text.
-  _GlyphText _glyphPainters(String grapheme, _LaidOutText text) {
-    final key = '${text.styleKey}#$grapheme';
+  /// Painters for a single glyph cluster of [text], cached across
+  /// labels — the same characters repeat constantly in map text.
+  ///
+  /// The cluster remembers the entry it resolved to, so once a label
+  /// has been drawn its glyphs are looked up by the very key string the
+  /// cache holds, whose hash is already computed and whose comparison is
+  /// an identity check — instead of building `styleKey#grapheme` anew
+  /// for every glyph of every curved label on every frame and every
+  /// [prewarm]. Within one placement pass it skips the cache altogether
+  /// after the first lookup, so the LRU order is by the pass a glyph was
+  /// last used in rather than by the frame: every replayed frame
+  /// otherwise moves each glyph on screen to the back of the cache's map
+  /// again, a removal and an insertion that also make the map rehash.
+  /// The cache stays the owner: a remembered entry is used only while it
+  /// has not been evicted (and so disposed).
+  _GlyphText _glyphPainters(_Cluster cluster, _LaidOutText text) {
+    final known = cluster.glyph;
+    if (known != null && known.pass == _pass && !known.evicted) return known;
+    final key = known?.key ?? '${text.styleKey}#${cluster.grapheme}';
     final cached = _glyphCache.get(key);
-    if (cached != null) return cached..pass = _pass;
+    if (cached != null) return (cluster.glyph = cached)..pass = _pass;
 
     final fill = TextPainter(
-      text: TextSpan(text: grapheme, style: text.fillStyle),
+      text: TextSpan(text: cluster.grapheme, style: text.fillStyle),
       textDirection: TextDirection.ltr,
     )..layout();
     TextPainter? halo;
     if (text.haloStyle != null) {
       halo = TextPainter(
-        text: TextSpan(text: grapheme, style: text.haloStyle),
+        text: TextSpan(text: cluster.grapheme, style: text.haloStyle),
         textDirection: TextDirection.ltr,
       )..layout();
     }
@@ -2634,7 +3322,7 @@ class LabelPainter {
         pad: 2 + stroke / 2 + 3 * text.haloBlurSigma)
       ..pass = _pass;
     _glyphCache.put(key, glyph);
-    return glyph;
+    return cluster.glyph = glyph;
   }
 
   static TextStyle _textStyle(
@@ -2659,7 +3347,10 @@ class LabelPainter {
     } else if (joined.contains('thin')) {
       weight = FontWeight.w200;
     }
+    final families = debugFontFamilies;
     return TextStyle(
+      fontFamily: families?.first,
+      fontFamilyFallback: families,
       fontSize: fontSize,
       fontWeight: weight,
       fontStyle:
@@ -2750,6 +3441,7 @@ class LabelPainter {
   }
 
   void dispose() {
+    _lastDrawn = const [];
     _textCache.clear();
     _glyphCache.clear();
     _glyphAtlas.clear();
@@ -2762,14 +3454,23 @@ class LabelPainter {
 /// by the evaluated `text-size / _shapeSize` at use sites.
 class _LaidOutText {
   final String text;
-  final TextPainter fill;
+
+  /// The paragraphs, for text the platform shaped; null for text drawn
+  /// from glyphs ([glyphRun]).
+  final TextPainter? fill;
   final TextPainter? halo;
+
+  /// The glyphs, for text shaped from the style's glyph source; null
+  /// for paragraphs.
+  final _GlyphRun? glyphRun;
   final Size size;
   final String styleKey;
-  final TextStyle fillStyle;
+  final TextStyle? fillStyle;
   final TextStyle? haloStyle;
 
   /// The halo's blur sigma at the reference size; 0 for a crisp halo.
+  /// Platform-shaped text only: glyph text blurs its halo in its atlas
+  /// cells (see [_GlyphRun.haloBlurQ]).
   final double haloBlurSigma;
 
   /// The `text-justify` side the lines are aligned to — never `auto`.
@@ -2781,10 +3482,18 @@ class _LaidOutText {
   final double layoutWidth;
 
   /// Lines of text: alignment changes nothing in a single one.
-  late final int lineCount = fill.computeLineMetrics().length;
+  late final int lineCount =
+      glyphRun?.shaped.lineCount ?? fill!.computeLineMetrics().length;
 
   /// [justified] layouts of this text, made on first request.
   Map<String, _LaidOutText>? _variants;
+
+  /// The glyph ranges this text would have been drawn from had they
+  /// been loaded: set on platform-shaped text that only fell back
+  /// because they were still on their way, so the cache can tell it
+  /// to shape again once they are not (see
+  /// [LabelPainter._cachedOrShape]).
+  List<(String, int)>? awaitedRanges;
 
   /// The label pass that last used this text — see
   /// [LabelPainter.trimCaches].
@@ -2810,17 +3519,32 @@ class _LaidOutText {
 
   _LaidOutText({
     required this.text,
-    required this.fill,
+    required TextPainter this.fill,
     required this.halo,
     required this.size,
     required this.styleKey,
-    required this.fillStyle,
+    required TextStyle this.fillStyle,
     required this.haloStyle,
     this.haloBlurSigma = 0,
     this.justify = 'center',
     this.maxLines = 1,
     this.layoutWidth = double.infinity,
-  });
+  }) : glyphRun = null;
+
+  _LaidOutText.glyphs({
+    required this.text,
+    required _GlyphRun run,
+    required this.size,
+    required this.styleKey,
+    this.justify = 'center',
+  })  : glyphRun = run,
+        fill = null,
+        halo = null,
+        fillStyle = null,
+        haloStyle = null,
+        haloBlurSigma = 0,
+        maxLines = 1,
+        layoutWidth = double.infinity;
 
   /// This text with its lines aligned to [side] (`left`, `center`,
   /// `right`). Text on one line looks the same aligned anywhere, so it is
@@ -2830,6 +3554,17 @@ class _LaidOutText {
     if (side == justify || lineCount < 2) return this;
     return (_variants ??= {})[side] ??= () {
       LabelPainter.debugJustifiedLayouts++;
+      final run = glyphRun;
+      if (run != null) {
+        return _LaidOutText.glyphs(
+          text: text,
+          run: run.justified(LabelPainter._justifyFraction(side)),
+          size: size,
+          styleKey: styleKey,
+          justify: side,
+        );
+      }
+      final fillStyle = this.fillStyle!;
       TextPainter layOut(TextStyle style) => TextPainter(
             text: TextSpan(text: text, style: style),
             textDirection: TextDirection.ltr,
@@ -2877,7 +3612,7 @@ class _LaidOutText {
   List<_Cluster> get clusters => _clusters ??= _computeClusters();
 
   void dispose() {
-    fill.dispose();
+    fill?.dispose();
     halo?.dispose();
     if (haloBlurSigma > 0) _haloPicture?.dispose();
     for (final variant in _variants?.values ?? const <_LaidOutText>[]) {
@@ -2886,6 +3621,25 @@ class _LaidOutText {
   }
 
   List<_Cluster> _computeClusters() {
+    final run = glyphRun;
+    if (run != null) {
+      // One cluster per drawn glyph: glyph text is one code point per
+      // glyph by construction, and only single-line (along-line) text
+      // is drawn curved.
+      const scale = LabelPainter._glyphScale;
+      final glyphs = run.shaped.glyphs;
+      final positions = run.shaped.positions;
+      return [
+        for (var i = 0; i < glyphs.length; i++)
+          _Cluster(
+            String.fromCharCode(glyphs[i].id),
+            (positions[i * 2] + glyphs[i].advance / 2) * scale,
+            glyphs[i].advance * scale,
+            glyphIndex: i,
+          ),
+      ];
+    }
+    final fill = this.fill!;
     final result = <_Cluster>[];
     var start = 0;
     for (final grapheme in text.characters) {
@@ -2916,7 +3670,62 @@ class _Cluster {
   final double center;
   final double width;
 
-  const _Cluster(this.grapheme, this.center, this.width);
+  /// For glyph-drawn text, the cluster's index in its run's glyphs.
+  final int? glyphIndex;
+
+  /// The glyph-cache entry this cluster last resolved to — a lookup
+  /// shortcut only, see [LabelPainter._glyphPainters]; the cache owns it.
+  _GlyphText? glyph;
+
+  _Cluster(this.grapheme, this.center, this.width, {this.glyphIndex});
+}
+
+/// Text laid out from the style's glyphs ([GlyphSource]), with what
+/// drawing it needs: the glyph pages and the colours, which glyph text
+/// applies per sprite at draw time rather than baking them in.
+class _GlyphRun {
+  final ShapedGlyphs shaped;
+
+  /// The distance-field page each glyph of [shaped] lives on.
+  final List<ui.Image> pages;
+
+  /// The `text-font` stack, which with a glyph's code point identifies
+  /// its atlas cells.
+  final String fontStack;
+  final int fillArgb;
+  final int haloArgb;
+
+  /// `text-halo-width` in 1/128 em; 0 for no halo.
+  final int haloRatioQ;
+
+  /// The atlas cells last resolved for this text: for which device
+  /// size key and atlas generation, and per glyph its fill cell then
+  /// its halo cell (null without a halo). A label keeps its size for
+  /// many frames, so most frames reuse these without a lookup per
+  /// glyph.
+  int cellsSize = -1;
+  int cellsGeneration = -1;
+  List<GlyphAtlasCell?>? cells;
+
+  _GlyphRun({
+    required this.shaped,
+    required this.pages,
+    required this.fontStack,
+    required this.fillArgb,
+    required this.haloArgb,
+    required this.haloRatioQ,
+  });
+
+  /// This run with its lines aligned to [justify] (see
+  /// [ShapedGlyphs.justified]); the glyphs and their cells are the same.
+  _GlyphRun justified(double justify) => _GlyphRun(
+        shaped: shaped.justified(justify),
+        pages: pages,
+        fontStack: fontStack,
+        fillArgb: fillArgb,
+        haloArgb: haloArgb,
+        haloRatioQ: haloRatioQ,
+      );
 }
 
 class _GlyphText {
@@ -2933,6 +3742,10 @@ class _GlyphText {
   /// [LabelPainter.trimCaches].
   int pass = 0;
 
+  /// Whether the glyph cache has let go of this glyph, which disposes
+  /// it before the next frame: a cluster remembering it must look again.
+  bool evicted = false;
+
   _GlyphText({
     required this.key,
     required this.fill,
@@ -2940,32 +3753,91 @@ class _GlyphText {
     required this.pad,
   });
 
+  _AtlasKey? _fillKey;
+  _AtlasKey? _haloKey;
+
+  /// This glyph's [GlyphAtlas] key for its [halo] or fill at device size
+  /// [sizeKey]. Kept for the last size asked for: every frame looks each
+  /// curved glyph up twice, and a key built per lookup would be an
+  /// allocation and a hash computation each time.
+  _AtlasKey atlasKey(bool halo, int sizeKey) {
+    final known = halo ? _haloKey : _fillKey;
+    if (known != null && known.size == sizeKey) return known;
+    final made = _AtlasKey(key, halo, sizeKey);
+    return halo ? _haloKey = made : _fillKey = made;
+  }
+
   void dispose() {
     fill.dispose();
     halo?.dispose();
   }
 }
 
-/// Curved-label glyphs that share one atlas page, as `drawRawAtlas`
-/// arguments. [image] is filled in once the atlas has been flushed.
+/// A curved glyph's cell in the [GlyphAtlas]: style and grapheme (the
+/// glyph-cache key), halo or fill, and device size. Compared field by
+/// field, hashed once — see [_GlyphText.atlasKey].
+final class _AtlasKey {
+  _AtlasKey(this.glyph, this.halo, this.size)
+      : hashCode = Object.hash(glyph, halo, size);
+
+  final String glyph;
+  final bool halo;
+  final int size;
+
+  @override
+  final int hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is _AtlasKey &&
+          other.hashCode == hashCode &&
+          other.size == size &&
+          other.halo == halo &&
+          other.glyph == glyph;
+}
+
+/// Glyphs of one label that share one atlas page, as `drawRawAtlas`
+/// arguments; [colors] tints glyph-drawn text, whose cells are white
+/// coverage, and is null for paragraph glyphs, which carry their own.
+/// [image] is filled in once the atlas has been flushed.
 class _SpriteBatch {
   final GlyphAtlasCell cell;
   final Float32List transforms;
   final Float32List rects;
+  final Int32List? colors;
   ui.Image? image;
 
-  _SpriteBatch(this.cell, (Float32List, Float32List) data)
-      : transforms = data.$1,
-        rects = data.$2;
+  _SpriteBatch(this.cell, this.transforms, this.rects, this.colors);
 }
 
+/// One atlas cell to draw: [anchor] (device pixels into the cell) lands
+/// on [position], turned by [angle]; tinted with [argb] unless null.
+typedef _Sprite = ({
+  GlyphAtlasCell cell,
+  Offset position,
+  double angle,
+  Offset anchor,
+  int? argb,
+});
+
 class _CurvedGlyph {
-  final _GlyphText painters;
+  /// The grapheme's paragraphs, for text the platform shaped.
+  final _GlyphText? painters;
+
+  /// The glyph's index in its label's [_GlyphRun], for glyph-drawn text.
+  final int? glyphIndex;
+
+  /// Reference-size extent around [position] that the glyph may cover,
+  /// for the fade layer's bounds.
+  final Size extent;
   final Offset position;
   final double angle;
 
   const _CurvedGlyph({
-    required this.painters,
+    this.painters,
+    this.glyphIndex,
+    required this.extent,
     required this.position,
     required this.angle,
   });
@@ -3308,13 +4180,46 @@ class _DrawableSymbol {
     final text = this.text;
     if (glyphs != null) {
       for (final glyph in glyphs) {
-        final painter = glyph.painters.halo ?? glyph.painters.fill;
-        add(sweptCircle(glyph.position, painter.width, painter.height));
+        add(sweptCircle(
+            glyph.position, glyph.extent.width, glyph.extent.height));
       }
     } else if (text != null) {
       add(LabelPainter._rotatedBounds(textRect, textAnchor, textAngle));
     }
     return result ?? Rect.zero;
+  }
+
+  /// The convex quads this symbol covers on the canvas it is drawn on:
+  /// its icon, and its text as one box or, curved, a box per glyph.
+  /// Tighter than [bounds], which sweeps rotated pieces into circles —
+  /// right for a fade layer, too coarse for picking what was tapped.
+  /// Reads the text painters, so only while they are alive.
+  List<List<Offset>> hitQuads() {
+    final quads = <List<Offset>>[];
+    final icon = this.icon;
+    if (icon != null) {
+      quads.add(rotatedRect(icon.rect, icon.pivot, icon.rotation));
+    }
+    final glyphs = curvedGlyphs;
+    final text = this.text;
+    if (glyphs != null) {
+      for (final glyph in glyphs) {
+        // A glyph drawn from the style's glyphs has no painters; its
+        // extent is twice its cell, so half of it is the glyph's box.
+        final painter = glyph.painters?.fill;
+        final size = painter != null
+            ? Size(painter.width, painter.height)
+            : glyph.extent / 2;
+        quads.add(rotatedBox(glyph.position, size.width * textScale,
+            size.height * textScale, glyph.angle));
+      }
+    } else if (text != null) {
+      quads.add(textAngle == 0
+          ? rotatedRect(textRect, textRect.center, 0)
+          : rotatedBox(symbol.screenAnchor, text.size.width * textScale,
+              text.size.height * textScale, textAngle));
+    }
+    return quads;
   }
 
   void draw(Canvas canvas, double devicePixelRatio) {
@@ -3323,18 +4228,23 @@ class _DrawableSymbol {
     final sprites = atlasSprites;
     if (sprites != null) {
       for (final batch in sprites) {
-        canvas.drawRawAtlas(batch.image!, batch.transforms, batch.rects, null,
-            null, null, _atlasPaint);
+        final colors = batch.colors;
+        canvas.drawRawAtlas(batch.image!, batch.transforms, batch.rects, colors,
+            colors == null ? null : BlendMode.modulate, null, _atlasPaint);
       }
       return;
     }
+    // Glyph-drawn text draws only from the atlas; without its cells it
+    // sits this frame out.
+    if (text?.glyphRun != null) return;
     final glyphs = curvedGlyphs;
     if (glyphs != null) {
       // All halos first: a glyph's halo must never cut into its
       // neighbour's fill.
       for (var pass = 0; pass < 2; pass++) {
         for (final glyph in glyphs) {
-          final painter = pass == 0 ? glyph.painters.halo : glyph.painters.fill;
+          final painters = glyph.painters!;
+          final painter = pass == 0 ? painters.halo : painters.fill;
           if (painter == null) continue;
           canvas.save();
           canvas.translate(glyph.position.dx, glyph.position.dy);
@@ -3349,6 +4259,7 @@ class _DrawableSymbol {
     }
     final t = text;
     if (t == null) return;
+    final fill = t.fill!;
     if (textAngle != 0) {
       // Turned about the anchor; a box offset from it (point text with
       // an anchor or offset) keeps that offset in the turned frame.
@@ -3360,7 +4271,7 @@ class _DrawableSymbol {
       if (textScale != 1) canvas.scale(textScale);
       final topLeft = Offset(-t.size.width / 2, -t.size.height / 2);
       t.paintHalo(canvas, topLeft);
-      t.fill.paint(canvas, topLeft);
+      fill.paint(canvas, topLeft);
       canvas.restore();
     } else if (textScale != 1) {
       // Scaled about the centre: the snapped scale may differ from the
@@ -3371,11 +4282,11 @@ class _DrawableSymbol {
       canvas.scale(textScale);
       final topLeft = Offset(-t.size.width / 2, -t.size.height / 2);
       t.paintHalo(canvas, topLeft);
-      t.fill.paint(canvas, topLeft);
+      fill.paint(canvas, topLeft);
       canvas.restore();
     } else {
       t.paintHalo(canvas, textRect.topLeft);
-      t.fill.paint(canvas, textRect.topLeft);
+      fill.paint(canvas, textRect.topLeft);
     }
   }
 

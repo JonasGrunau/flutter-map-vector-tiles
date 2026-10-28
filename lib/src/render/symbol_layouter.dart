@@ -4,9 +4,11 @@ import 'dart:ui';
 
 import 'package:meta/meta.dart';
 
+import '../core/tile_key.dart';
 import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
+import '../text/glyph_script.dart';
 import 'display_tile_data.dart';
 import 'matched_features.dart';
 import 'tile_rasterizer.dart';
@@ -89,6 +91,23 @@ class SymbolInstance {
   final String geometryType;
   final Object? featureId;
 
+  /// The feature's geometry, for paint properties that read it
+  /// (`within`, `distance`); null unless [layer] does.
+  final FeatureGeometry? geometry;
+
+  /// Where the symbol comes from, which is MapLibre's placement order
+  /// among symbols of one layer and sort key (see
+  /// `LabelPainter._byPlacementPriority`): the data tile it was laid out
+  /// from, the feature's index among the features of that tile's source
+  /// layer that the layer selects (in source order), and the geometry
+  /// part its anchor sits on — a line or ring, or one point of a
+  /// multipoint. [pathDistance] orders the anchors along one part. None
+  /// of them depends on which display tile laid the symbol out, so two
+  /// display tiles cut from one data tile agree on the order.
+  final TileKey sourceTile;
+  final int featureIndex;
+  final int part;
+
   /// Label-pass memo (see `LabelPainter._layoutText`): the evaluated,
   /// quantized text style and the cache-key strings built from it.
   /// Trusted as-is while the eval zoom is unchanged; on a zoom step it
@@ -103,12 +122,17 @@ class SymbolInstance {
   /// the label pass consults this per frame for along-line labels.
   late final bool curveSafe = _curveSafe(text);
 
+  /// Whether [text] can be drawn from glyph PBFs (see [isGlyphShapeable]).
+  /// Computed once — the render pump asks per tile which glyph ranges
+  /// its labels need.
+  late final bool glyphShapeable = isGlyphShapeable(text);
+
   /// Cross-zoom fade identity — see `labelContinuityKey` in
-  /// `label_continuity.dart` for why it is this position-free record.
+  /// `label_continuity.dart` for why it is this position-free triple.
   /// Memoized here because the label pass needs it per candidate per
-  /// frame, and a record allocation per lookup would churn the young
+  /// frame, and an allocation per lookup would churn the young
   /// generation on every painted frame.
-  late final Object continuityKey = (layerIndex, text, iconName);
+  late final Object continuityKey = ContinuityKey(layerIndex, text, iconName);
 
   static bool _curveSafe(String text) {
     for (final r in text.runes) {
@@ -137,7 +161,43 @@ class SymbolInstance {
     required this.properties,
     required this.geometryType,
     required this.featureId,
+    this.sourceTile = const TileKey(0, 0, 0),
+    this.featureIndex = 0,
+    this.part = 0,
+    this.geometry,
   });
+}
+
+/// [SymbolInstance.continuityKey]: the `(layer, text, icon)` triple,
+/// compared field by field as the record it replaced was, with its hash
+/// computed once. The label pass hashes it several times per candidate
+/// per frame — the fade tracker, the placement memory, the fade-out
+/// fallbacks — and a record works its hash out from the fields again on
+/// every lookup.
+final class ContinuityKey {
+  ContinuityKey(this.layerIndex, this.text, this.iconName)
+      : hashCode = Object.hash(layerIndex, text, iconName);
+
+  final int layerIndex;
+  final String text;
+  final String? iconName;
+
+  @override
+  final int hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ContinuityKey &&
+          other.hashCode == hashCode &&
+          other.layerIndex == layerIndex &&
+          other.text == text &&
+          other.iconName == iconName;
+
+  /// Printed as the record was, which `bench/`'s `BENCH_WATCH` patterns
+  /// and logs match against.
+  @override
+  String toString() => '($layerIndex, $text, $iconName)';
 }
 
 /// The evaluated, quantized text style of a [SymbolInstance], memoized
@@ -161,6 +221,9 @@ class TextStyleMemo {
   /// `text-halo-blur` in the same 1/128-em steps; 0 without a halo.
   final int haloBlurQ;
   final List<String> fonts;
+
+  /// [fonts] joined by commas: the glyph source's name for the stack.
+  late final String fontStack = fonts.join(',');
   final double letterSpacingEm;
   final double maxWidthEm;
 
@@ -179,6 +242,11 @@ class TextStyleMemo {
   /// unchanged the style expressions need not be re-evaluated at all.
   double zoom;
 
+  /// The feature-state version this memo was last validated at, for a
+  /// layer reading `feature-state` (0 otherwise): a state change makes
+  /// it stale at an unchanged zoom too.
+  int stateVersion;
+
   TextStyleMemo({
     required this.fillArgb,
     required this.haloArgb,
@@ -192,6 +260,7 @@ class TextStyleMemo {
     required this.styleKey,
     required this.cacheKey,
     required this.zoom,
+    this.stateVersion = 0,
   });
 
   bool matches(
@@ -315,19 +384,27 @@ class SymbolLayouter {
 
       // Zoom-free filters are resolved once per prepared tile, as in
       // the rasterizer.
-      final matched = MatchedFeatures.of(layer, sourceLayer);
-      for (final feature in matched ?? sourceLayer.features) {
+      final matched = MatchedFeatures.of(layer, sourceLayer, tile: tile.key);
+      final features = matched ?? sourceLayer.features;
+      for (var featureIndex = 0;
+          featureIndex < features.length;
+          featureIndex++) {
+        final feature = features[featureIndex];
         if (feature.maxX < cullMinX ||
             feature.minX > cullMaxX ||
             feature.maxY < cullMinY ||
             feature.minY > cullMaxY) {
           continue;
         }
-        final ctx = EvalContext(
+        final geometry = layer.readsGeometry
+            ? featureGeometry(tile.key, sourceLayer, feature)
+            : null;
+        final ctx = featureContext(
           zoom: styleZoom,
           properties: feature.properties,
           geometryType: feature.geometryType,
           featureId: feature.id,
+          geometry: geometry,
         );
         if (matched == null && !layer.matches(ctx)) continue;
 
@@ -346,6 +423,9 @@ class SymbolLayouter {
 
         final placement = layer.placement.eval(ctx);
         final sortKey = layer.sortKey.eval(ctx);
+        // The geometry part the next anchor sits on, see
+        // [SymbolInstance.part].
+        var part = 0;
 
         void add(Offset anchor, double angle, bool alongLine,
             {SymbolPath? path, double pathDistance = 0}) {
@@ -369,6 +449,10 @@ class SymbolLayouter {
             properties: feature.properties,
             geometryType: feature.geometryType,
             featureId: feature.id,
+            sourceTile: tile.key,
+            featureIndex: featureIndex,
+            part: part,
+            geometry: geometry,
           ));
         }
 
@@ -383,10 +467,10 @@ class SymbolLayouter {
           continue;
         }
         if (placement == 'point') {
-          for (final part in feature.parts) {
+          for (final points in feature.parts) {
             if (feature.type == PreparedGeomType.polygon) {
               // Label polygons at their centroid (first exterior ring).
-              final centroid = _centroid(part);
+              final centroid = _centroid(points);
               add(
                   Offset(centroid.dx * scale + offsetX,
                       centroid.dy * scale + offsetY),
@@ -396,17 +480,21 @@ class SymbolLayouter {
             }
             if (feature.type == PreparedGeomType.line) {
               // point placement on a line: use the midpoint.
-              final mid = _midpoint(part);
+              final mid = _midpoint(points);
               add(Offset(mid.dx * scale + offsetX, mid.dy * scale + offsetY), 0,
                   false);
+              part++;
               continue;
             }
-            for (var p = 0; p + 1 < part.length; p += 2) {
+            // Each point of a multipoint is a part of its own, as in
+            // MapLibre's geometry.
+            for (var p = 0; p + 1 < points.length; p += 2) {
               add(
-                  Offset(
-                      part[p] * scale + offsetX, part[p + 1] * scale + offsetY),
+                  Offset(points[p] * scale + offsetX,
+                      points[p + 1] * scale + offsetY),
                   0,
                   false);
+              part++;
             }
           }
         } else {
@@ -414,8 +502,9 @@ class SymbolLayouter {
           final spacing = placement == 'line-center'
               ? double.infinity
               : layer.spacing.eval(ctx);
-          for (final part in feature.parts) {
-            _placeAlongLine(part, scale, offsetX, offsetY, spacing, add);
+          for (final points in feature.parts) {
+            _placeAlongLine(points, scale, offsetX, offsetY, spacing, add);
+            part++;
           }
         }
       }
