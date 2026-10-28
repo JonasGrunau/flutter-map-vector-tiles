@@ -9,6 +9,7 @@ import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 
+import '../fixtures/label_ids.dart';
 import 'script_fonts_io.dart'
     if (dart.library.js_interop) 'script_fonts_web.dart';
 
@@ -156,6 +157,7 @@ PlacedSymbol label(
         geometryType: 'Point',
         featureId: null,
       ),
+      id: labelIdOf((layerIndex, text, at)),
       screenAnchor: at,
       screenAngle: 0,
     );
@@ -178,6 +180,7 @@ PlacedSymbol label(
       geometryType: 'LineString',
       featureId: null,
     ),
+    id: labelIdOf((layerIndex, text, path)),
     screenAnchor: transform.apply(path.pointAt(d)),
     screenAngle: path.angleAt(d),
     transform: transform,
