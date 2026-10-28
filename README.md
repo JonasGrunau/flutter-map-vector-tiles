@@ -121,7 +121,7 @@ Everything has sensible defaults; override what you need:
 vt.VectorTileLayer(
   theme: style.theme,
   tileProviders: style.providers,
-  rasterSources: style.rasterSources,          // satellite/hybrid imagery
+  rasterSources: style.rasterSources,          // imagery and hillshade elevations
   sprites: style.sprites,
   tileOffset: vt.TileOffset.maplibre,          // 512px style convention (default)
   concurrency: 3,                              // decoding isolates
@@ -213,7 +213,9 @@ Everything you looked at recently keeps working without network:
   paint instantly and revalidate in the background: changed tiles
   cross-fade to the new imagery, and with no network the old tile simply
   stays. Stale tiles are deleted only by the size cap, oldest first, never
-  by age alone.
+  by age alone. Elevation tiles for a hillshade are tiles like any other;
+  one whose neighbour was never cached shades that edge without it, a
+  faint seam, until the neighbour can be fetched.
 - **Durable location.** Both caches default to the application support
   directory, which the OS doesn't purge, unlike the temp directory.
 
@@ -254,6 +256,9 @@ native:
 - **No MBTiles.** The companion package reads SQLite through `dart:ffi`,
   which has no web implementation. PMTiles fills the same role over HTTP
   range requests.
+- **Hillshade** draws on CanvasKit and Skwasm alike; the web engine
+  snapshots each tile's shading once more before the tile does, so a
+  hillshaded tile costs a little more to render there than on native.
 
 ## 🔌 Custom tile sources
 
@@ -328,11 +333,16 @@ storing a second copy. Implement it on anything reading from local
 storage, and use `vt.SingleFlight` to coalesce concurrent loads, as the
 built-in providers do.
 
-Raster imagery (satellite, hillshade) wires up the same way: pass
-`rasterSources:` entries of `RasterTileSource(provider: …, tileSize:
-512)`, where the provider serves encoded PNG/JPEG/WebP bytes instead of
-MVT. `NetworkVectorTileProvider` works unchanged. 256px sources are
-fetched one zoom deeper for the same visual scale.
+Raster imagery (satellite, pre-rendered hillshade) wires up the same
+way: pass `rasterSources:` entries of `RasterTileSource(provider: …,
+tileSize: 512)`, where the provider serves encoded PNG/JPEG/WebP bytes
+instead of MVT. `NetworkVectorTileProvider` works unchanged. 256px
+sources are fetched one zoom deeper for the same visual scale. An
+elevation source for `hillshade` layers (a style's `raster-dem`) is the
+same thing with an `encoding`:
+`RasterTileSource(provider: …, tileSize: 256, encoding:
+vt.DemEncoding.terrarium)` (or `.mapbox`, or a `DemEncoding(...)` with
+the factors of a `custom` one).
 
 ## 🎨 Style support
 
@@ -340,11 +350,31 @@ fetched one zoom deeper for the same visual scale.
 
 | Type | Support |
 |---|---|
-| `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, dashes and casing |
+| `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, `background-pattern`, dashes and casing, `line-offset`, `line-blur`, `line-miter-limit`, `circle-blur`, the `*-translate` and `*-sort-key` properties; see the notes below the table |
 | `symbol` | full, including curved line text and `text-variable-anchor` / `text-radial-offset`; see [Labels](#-labels) below |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity` and brightness/contrast/saturation/hue-rotate matching MapLibre's shader math |
+| `hillshade` | terrain shading computed from a `raster-dem` source (`terrarium`, `mapbox` or `custom` encoding), drawn at its layer position with every paint property: all five `hillshade-method`s (`standard`, `basic`, `combined`, `igor`, `multidirectional`, up to four lights), illumination direction, altitude and anchor, exaggeration, shadow/highlight/accent colours and `resampling`. Slopes are read across tile edges from the neighbouring elevation tiles, so the shading has no seams. One difference: tiles are shaded once and turn with the map, so `hillshade-illumination-anchor: viewport` (the default) is drawn as if the map were not rotated; with `map` it matches MapLibre at every bearing |
+| `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity`, brightness/contrast/saturation/hue-rotate matching MapLibre's shader math, and `resampling` / `raster-resampling` |
 | `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, patterned ones included, so a building part over its outline does not draw darker; the alpha of `fill-extrusion-color` is ignored, as the spec says |
-| `hillshade`, `heatmap`, `sky` | skipped, with a log line |
+| `color-relief`, `heatmap`, `sky` | skipped, with a log line |
+
+**Geometry properties not drawn.** `line-gradient` needs a GeoJSON
+source with `lineMetrics`, which this package does not read (MapLibre
+refuses the style when it sits on a vector source); the line keeps its
+`line-color`. `line-round-limit` is ignored: round joins stay round at
+every angle, a difference below a pixel at the default limit. A
+`*-translate-anchor` of `viewport` is drawn as `map`, which differs
+only while the map is rotated, because a tile is drawn once and rotated
+with the map. Where `line-offset` meets a sharp turn the shifted line
+is beveled on the outside, where MapLibre leaves a gap and its two
+segments cross. A `line-blur` under about 0.6 px on a 3× screen (0.9 px on
+a 2× one) only narrows the line by what the blur takes, without
+softening its edges: a blur costs GPU passes, and blurring every road of
+a style by 0.5 px cost a phone a sixth to two thirds of its frames while
+tiles were drawn. A blurred casing (`line-gap-width`) softens only its
+outer edge, and a blurred dashed line running exactly along a tile axis
+is drawn sharp: Impeller, Flutter's renderer on iOS and Android, draws
+those two wrongly when blurred.
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
 per `icon-color`, `icon-halo-color` and `icon-halo-width`; dark MapLibre
@@ -356,14 +386,57 @@ never picks up the edge of its neighbour in the sheet. `icon-rotate` and
 including camera bearing, icon anchor/offset rotation and rotated collision
 bounds.
 
-**Expressions.** The practical MapLibre set: `get`/`has`, comparisons,
-`all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,
-exponential, cubic-bezier), math, string and color operators, `let`/`var`,
-legacy filters, legacy `{stops}` functions (with `{token}` templates in
-their `text-field` / `icon-image` outputs) and `{token}` templates.
+**Expressions.** Every operator of the current MapLibre style spec
+compiles, as do legacy filters, legacy `{stops}` functions (zoom,
+property and zoom-and-property ones, with `{token}` templates in their
+`text-field` / `icon-image` outputs) and `{token}` templates. The engine
+is checked against all 583 expression fixtures of `maplibre-style-spec`:
+the 425 that MapLibre evaluates give MapLibre's results, apart from 103
+listed one by one, with the reason, in
+`test/maplibre_expression_conformance_test.dart`. Most of those are
+deliberate: where MapLibre fails on an operand of the wrong type, this
+engine converts it and carries on. A few operators answer with a fixed
+value because what they read does not exist here:
+
+| Operator | Here |
+|---|---|
+| `within`, `distance` | the feature's geometry against the GeoJSON given; `distance` in metres, as MapLibre measures it |
+| `global-state` | see [Global state](#global-state) below |
+| `number-format` | digits, separators and currency per locale (through `intl`); `unit` symbols are the English short ones (`m`, `km/h`, `°C`) in every locale |
+| `feature-state` | always null: there is no feature state yet |
+| `elevation` | always null: no `raster-dem` source or `color-relief` layer is drawn |
+| `heatmap-density`, `line-progress`, `accumulated` | always 0 |
+| `collator` | ignored: strings compare by code unit, whatever the locale, case or diacritic options |
+| `is-supported-script` | always true: every script is shaped by the platform |
+| `image` | the image name, whether or not the sprite sheet has it |
+| `format` | the text only: style overrides and inline images are left out |
 
 Unsupported layer types, paint properties and expressions are skipped per
 layer with a warning, so one weird layer never kills the whole style.
+
+#### Global state
+
+A style's `global-state` expressions read values the app sets, with
+defaults from the style's root `state`. `Theme.withGlobalState` gives
+the theme for other values. Keys you leave out, or set to null, keep
+their default:
+
+```dart
+VectorTileLayer(
+  theme: style.theme.withGlobalState({'showTrails': showTrails}),
+  tileProviders: style.providers,
+)
+```
+
+The values are compiled into the theme, so changing them never slows
+down drawing: each state is its own theme, and the same state returns
+the same instance, which makes the call safe in `build`. When the layer
+gets a theme that differs only in its state, it redraws its tiles from
+the data it already has, the old imagery staying until the new one is
+ready. Nothing is fetched or decoded again. Each change still redraws
+every visible tile, so drive it from a toggle or a picker, not from a
+slider that changes on every frame. `theme.globalState` holds the
+values in effect. A style that reads no global state returns itself.
 
 ### 🏷️ Labels
 
@@ -392,7 +465,18 @@ mode](#choosing-a-label-mode) has what changes then.
 - **Words stay whole.** `text-max-width` wraps between words; a single
   word wider than it gets a line of its own, as in MapLibre, rather
   than breaking where the width runs out, and the lines around it
-  still break at `text-max-width`.
+  still break at `text-max-width`. Chinese and Japanese wrap between
+  any two characters, as in MapLibre; Thai, Lao, Khmer, Myanmar and
+  Tibetan, written without spaces, stay on one line, as they do there.
+  One difference: Korean may also break between two syllables of a
+  word, where MapLibre breaks it only at spaces.
+- **Each line reads in its own direction.** Every line of the text
+  field takes its direction from its first letter, as in MapLibre, and
+  the lines `text-max-width` wraps it into keep that direction: an
+  Arabic or Hebrew name reads from the right with any Latin word or
+  number in it on the correct side, a Latin name holding a Hebrew word
+  reads from the left, and Liberty's Latin name over the local one
+  gets each line right.
 - **Repeated road names stay spaced.** A street arrives as many features
   (one per OSM way, sometimes one per road-class style layer), each spaced
   on its own. For `symbol-placement: line`, a visible label therefore
@@ -409,25 +493,27 @@ mode](#choosing-a-label-mode) has what changes then.
   it is inclusive, so one would leave a `minzoom: 14` layer invisible at
   exactly zoom 14.
 - **One fade state per label identity.** Beyond that ramp, every
-  appearance and disappearance is animated per label (layer, text, icon),
-  rising while the label is placed and falling once it is not, whatever
-  the reason: a feature the tileset drops at the next zoom, a label
-  crowded out by denser labelling, a whole layer cut at its `minzoom`.
-  Each eases out over `labelFadeDuration` instead of vanishing in one
-  frame. A departing label frees its space immediately, so its replacement
-  fades in over it: a crossfade, not a pop at the fade's end.
+  appearance and disappearance is animated per label (the same text or
+  icon on the same layer, at the same place, across tiles and zoom
+  levels), rising while the label is placed and falling once it is not,
+  whatever the reason: a feature the tileset drops at the next zoom, a
+  label crowded out by denser labelling, a whole layer cut at its
+  `minzoom`. Each eases out over `labelFadeDuration` instead of vanishing
+  in one frame. A departing label frees its space immediately, so its
+  replacement fades in over it: a crossfade, not a pop at the fade's end.
 - **A placed label always paints.** A label that has won its spot is never
   held invisible waiting on anything; it fades in from the frame it
   arrives. A zoom crossing delivers a screen's labels over tens of frames,
   since tiles finish one at a time, and each starts its fade as it lands
   rather than at some shared moment.
 - **No blink when a zoom level hands over.** A label that survives the
-  change keeps its opacity, because the two levels' copies share one fade
-  state; a crossing can neither blink a label nor fade it into itself. The
-  outgoing level also only ever *keeps* labels on screen and never
-  introduces ones that weren't already visible, so a label that had been
-  crowded out, a street name under a POI say, cannot flash up just as the
-  level departs.
+  change keeps its opacity, because the two levels' copies are one label
+  with one fade state; a crossing can neither blink a label nor fade it
+  into itself, and only one of the copies draws, as only one copy of a
+  label on a tile seam does. The outgoing level also only ever *keeps*
+  labels on screen and never introduces ones that weren't already
+  visible, so a label that had been crowded out, a street name under a
+  POI say, cannot flash up just as the level departs.
 - **Street names stay put across zoom levels.** Along-line labels are
   spaced out from the middle of their line, so the next level deeper
   keeps every position of the current one and only adds names in
@@ -435,18 +521,18 @@ mode](#choosing-a-label-mode) has what changes then.
   street name you are looking at doesn't move when a level hands over.
   Where the next level brings its own data tiles, the clipped lines
   differ, or where the style's `symbol-spacing` changes with the zoom, a
-  name can genuinely sit elsewhere on its road; each sitting
-  then fades on its own clock, the old position easing out while the new
-  one fades in, instead of the name teleporting at full opacity.
+  name can genuinely sit elsewhere on its road; the name at its new
+  position is then a label of its own, fading in while the old position
+  eases out, instead of the name teleporting at full opacity.
 - **Placement is remembered, not re-derived.** A label drawable from more
   than one feature, a street name on both carriageways or the same name
   from two zoom levels, stays on the one it is already on; a label at a
   `text-variable-anchor` stays at the anchor it took; a road label near
   vertical keeps reading the way it was reading. A slow pan therefore
   doesn't walk a street name across its street. Those choices are
-  remembered per label and position rather than per tile, so they survive
-  a level handing over or a tile re-rendering underneath a label that
-  never left the screen.
+  remembered per label, matched across tiles by its text and position,
+  rather than per tile, so they survive a level handing over or a tile
+  re-rendering underneath a label that never left the screen.
 - **Collision is decided on a timer.** Camera motion and changed label
   candidates are picked up at the next `labelFadeDuration` interval, at
   most 300 ms away, and the previous decision is held in between. Zooming
@@ -673,6 +759,10 @@ runs a short version of the benchmark in your browser.
 - **Stale data after changing styles.** The disk cache keys by URL, and a
   changed `{key}` or map id is a different URL, so usually there is
   nothing to do. Supply `cachePath` to wipe it yourself.
+- **A `hillshade` layer draws nothing.** Its `raster-dem` source has to
+  reach the layer: pass `style.rasterSources` as `rasterSources`. The
+  shading is a fragment shader bundled with this package; a platform
+  where it cannot load logs a warning once and leaves the layer out.
 - **Blank map on web.** Open the browser console: missing
   `Access-Control-Allow-Origin` headers on the style or tile host block
   every request (see [Web support](#-web-support)).

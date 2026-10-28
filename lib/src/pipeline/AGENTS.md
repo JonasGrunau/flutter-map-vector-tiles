@@ -39,7 +39,9 @@ work itself must be a pure function so it can run anywhere.
   trusts `PreparedSourceLayer.matches` without re-checking, so the worker
   evaluates exactly what `MatchedFeatures._match` would: the filter the
   theme reader compiled from the same JSON, against the same trimmed
-  properties, geometry type and id, at zoom 0 (the filter is zoom-free).
+  properties, geometry type and id, at zoom 0 (the filter is zoom-free,
+  and reads neither global state nor the geometry: the reader gives
+  such filters no id).
   `test/tile_filters_test.dart` holds the two equal on Liberty and on a
   filter-heavy synthetic style; extend it with any new filter shape.
 - **Trimming is what keeps memory bounded.** Only feature properties the theme

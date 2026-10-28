@@ -347,7 +347,8 @@ void _expectWorkerMatchesUi(Theme theme, PreparedTile tile) {
     expect(id, isNotNull, reason: layer.id);
     expect(source.matches.containsKey(id), isTrue,
         reason: '${layer.id} was resolved on the worker');
-    expect(MatchedFeatures.of(layer, source), _scan(layer, source),
+    expect(
+        MatchedFeatures.of(layer, source, tile: tile.key), _scan(layer, source),
         reason: layer.id);
     resolved++;
   }
@@ -489,8 +490,77 @@ void main() {
     final tile = _prepareOnWorker(theme, _poiTile({'class'}));
     final source = tile.layers['poi']!;
     expect(source.matches.keys, [theme.layers[1].filterId]);
-    expect(MatchedFeatures.of(theme.layers[0], source), isNull,
+    expect(MatchedFeatures.of(theme.layers[0], source, tile: tile.key), isNull,
         reason: 'still evaluated per display tile');
+  });
+
+  test('a global-state filter stays on the UI isolate and follows the state',
+      () {
+    // The state is compiled into the filter, so one JSON is a different
+    // filter under every state: it gets no id and no worker list.
+    final a = const ThemeReader().read({
+      'state': {
+        'cls': {'default': 'a'},
+      },
+      'layers': [
+        for (final (id, filter) in [
+          (
+            'by-state',
+            [
+              '==',
+              ['get', 'class'],
+              ['global-state', 'cls']
+            ]
+          ),
+          ('fixed', ['==', 'class', 'a']),
+        ])
+          {
+            'id': id,
+            'type': 'line',
+            'source': 's',
+            'source-layer': 'poi',
+            'filter': filter,
+          },
+      ],
+    });
+    final b = a.withGlobalState({'cls': 'b'});
+    expect(b, isNot(same(a)));
+    expect([a.layers[0].filterId, b.layers[0].filterId], [isNull, isNull]);
+    expect(a.layers[1].filterId, isNotNull);
+
+    // Prepared under state a, then drawn under a and under b.
+    final tile = _prepareOnWorker(a, _poiTile({'class'}));
+    final source = tile.layers['poi']!;
+    expect(source.matches.keys, [a.layers[1].filterId]);
+    for (final (theme, cls) in [(a, 'a'), (b, 'b')]) {
+      final layer = theme.layers[0];
+      final matched = MatchedFeatures.of(layer, source, tile: tile.key)!;
+      expect(matched, isNotEmpty, reason: cls);
+      expect(matched.every((f) => f.properties['class'] == cls), isTrue,
+          reason: cls);
+      expect(matched, _scan(layer, source), reason: cls);
+    }
+  });
+
+  test('a filter reading the feature geometry stays on the UI isolate', () {
+    final theme = _themeOf([
+      [
+        'within',
+        {
+          'type': 'Polygon',
+          'coordinates': [
+            [
+              [0, 0],
+              [1, 0],
+              [1, 1],
+              [0, 0]
+            ]
+          ],
+        }
+      ],
+    ]);
+    expect(theme.layers.single.readsGeometry, isTrue);
+    expect(theme.layers.single.filterId, isNull);
   });
 
   test('a tile prepared for another filter falls back to the UI isolate', () {
@@ -506,7 +576,7 @@ void main() {
     final layer = after.layers.single;
     final source = tile.layers['poi']!;
     expect(source.matches.containsKey(layer.filterId), isFalse);
-    final matched = MatchedFeatures.of(layer, source)!;
+    final matched = MatchedFeatures.of(layer, source, tile: tile.key)!;
     expect(matched, _scan(layer, source));
     expect(matched.every((f) => f.properties['class'] == 'b'), isTrue);
   });
@@ -545,7 +615,8 @@ void main() {
     final source = tile!.layers['poi']!;
     expect(source.matches, isEmpty);
     final layer = theme.layers.single;
-    expect(MatchedFeatures.of(layer, source), _scan(layer, source));
+    expect(MatchedFeatures.of(layer, source, tile: tile.key),
+        _scan(layer, source));
   });
 
   group('TileFilterPlan resolves the layers of a tile\'s own zoom band', () {

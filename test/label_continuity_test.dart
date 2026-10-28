@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'dart:ui' show Offset, Size;
 
@@ -7,6 +8,8 @@ import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'fixtures/label_ids.dart';
 
 SymbolThemeLayer _layer() {
   final theme = const ThemeReader().read({
@@ -46,14 +49,19 @@ SymbolInstance _symbol(
     );
 
 /// An instance projected to screen space, as the label pass sees it.
+/// Every instance is its own label unless [id] says otherwise — pass
+/// the id of the instance it succeeds (or twins) to model what
+/// `LabelIdentityIndex` matches.
 PlacedSymbol _placedAt(
   SymbolInstance instance, {
   Offset anchor = const Offset(200, 200),
   int order = 0,
   bool ghostOnly = false,
+  int? id,
 }) =>
     PlacedSymbol(
       instance: instance,
+      id: id ?? labelIdOf(instance),
       screenAnchor: anchor,
       screenAngle: 0,
       order: order,
@@ -170,107 +178,97 @@ void main() {
   });
 
   group('LabelFadeTracker', () {
-    test('a new key rises from zero to one over the fade duration', () {
+    test('a new label rises from zero to one over the fade duration', () {
       final tracker = LabelFadeTracker();
       tracker.beginFrame(_at(0), _fadeDuration);
-      expect(tracker.showAt('k', Offset.zero), 0,
-          reason: 'no time has elapsed yet');
+      expect(tracker.show(1), 0, reason: 'no time has elapsed yet');
       expect(tracker.anyActive, isTrue);
 
       tracker.beginFrame(_at(50), _fadeDuration);
-      expect(tracker.showAt('k', Offset.zero), 0.5);
+      expect(tracker.show(1), 0.5);
 
       tracker.beginFrame(_at(100), _fadeDuration);
-      expect(tracker.showAt('k', Offset.zero), 1);
-      tracker.sweep((_, __, ___) => fail('nothing is fading out'));
+      expect(tracker.show(1), 1);
+      tracker.sweep((_, __) => fail('nothing is fading out'));
       expect(tracker.anyActive, isFalse, reason: 'the fade has finished');
     });
 
-    test('a key shown every frame stays at one', () {
+    test('a label shown every frame stays at one', () {
       final tracker = LabelFadeTracker();
       tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('k', Offset.zero);
+      tracker.show(1);
       tracker.beginFrame(_at(500), _fadeDuration);
-      expect(tracker.showAt('k', Offset.zero), 1,
-          reason: 'a long gap completes the fade');
+      expect(tracker.show(1), 1, reason: 'a long gap completes the fade');
       tracker.beginFrame(_at(516), _fadeDuration);
-      expect(tracker.showAt('k', Offset.zero), 1);
+      expect(tracker.show(1), 1);
     });
 
-    test('an unshown key fades out through the sweep and is dropped', () {
+    test('an unshown label fades out through the sweep and is dropped', () {
       final tracker = LabelFadeTracker();
       tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('k', Offset.zero);
+      tracker.show(1);
       tracker.beginFrame(_at(100), _fadeDuration);
-      tracker.showAt('k', Offset.zero); // fully visible
+      tracker.show(1); // fully visible
 
       final fading = <double>[];
       tracker.beginFrame(_at(125), _fadeDuration);
-      tracker.sweep((key, position, opacity) {
-        fading.add(opacity);
-        return null;
-      });
+      tracker.sweep((id, opacity) => fading.add(opacity));
       tracker.beginFrame(_at(150), _fadeDuration);
-      tracker.sweep((key, position, opacity) {
-        fading.add(opacity);
-        return null;
-      });
+      tracker.sweep((id, opacity) => fading.add(opacity));
       expect(fading, [0.75, 0.5]);
-      expect(tracker.isTracked('k'), isTrue);
+      expect(tracker.isTracked(1), isTrue);
       expect(tracker.anyActive, isTrue);
 
       tracker.beginFrame(_at(250), _fadeDuration);
-      tracker.sweep((_, __, ___) => fail('the fade has completed'));
-      expect(tracker.isTracked('k'), isFalse, reason: 'self-pruning');
+      tracker.sweep((_, __) => fail('the fade has completed'));
+      expect(tracker.isTracked(1), isFalse, reason: 'self-pruning');
       expect(tracker.anyActive, isFalse);
     });
 
-    test('a key re-shown mid-fade-out resumes from its current opacity', () {
-      // The anti-blink property: a label briefly unplaced — a republish,
-      // a lost frame of collision, a level swap — dips instead of
-      // restarting from zero and never cross-fades against itself.
+    test('a label re-shown mid-fade-out resumes from its opacity', () {
+      // The anti-blink property: a label briefly unplaced — a lost
+      // frame of collision — dips instead of restarting from zero.
       final tracker = LabelFadeTracker();
       tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('k', Offset.zero);
+      tracker.show(1);
       tracker.beginFrame(_at(100), _fadeDuration);
-      tracker.showAt('k', Offset.zero);
+      tracker.show(1);
       tracker.beginFrame(_at(150), _fadeDuration);
-      tracker.sweep((_, __, ___) => null); // down to 0.5
+      tracker.sweep((_, __) {}); // down to 0.5
       tracker.beginFrame(_at(175), _fadeDuration);
-      expect(tracker.showAt('k', Offset.zero), 0.75,
-          reason: 'rising again from 0.5');
+      expect(tracker.show(1), 0.75, reason: 'rising again from 0.5');
     });
 
     test('is idempotent within a frame', () {
-      // Seam twins and the retained copy of a carried-over label all
-      // show the same key; only the first call advances it.
+      // However many copies of a label a frame offers, only the first
+      // show advances it.
       final tracker = LabelFadeTracker();
       tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('k', Offset.zero);
+      tracker.show(1);
       tracker.beginFrame(_at(50), _fadeDuration);
-      expect(tracker.showAt('k', Offset.zero), 0.5);
-      expect(tracker.showAt('k', Offset.zero), 0.5);
+      expect(tracker.show(1), 0.5);
+      expect(tracker.show(1), 0.5);
       tracker.beginFrame(_at(100), _fadeDuration);
-      expect(tracker.showAt('k', Offset.zero), 1);
+      expect(tracker.show(1), 1);
     });
 
     test('a zero duration completes everything immediately', () {
       final tracker = LabelFadeTracker();
       tracker.beginFrame(_at(0), Duration.zero);
-      tracker.showAt('k', Offset.zero);
+      tracker.show(1);
       tracker.beginFrame(_at(1), Duration.zero);
-      expect(tracker.showAt('k', Offset.zero), 1);
+      expect(tracker.show(1), 1);
       tracker.beginFrame(_at(2), Duration.zero);
-      tracker.sweep((_, __, ___) => fail('a zero duration never draws ghosts'));
-      expect(tracker.isTracked('k'), isFalse);
+      tracker.sweep((_, __) => fail('a zero duration never draws ghosts'));
+      expect(tracker.isTracked(1), isFalse);
     });
 
     test('clear forgets everything', () {
       final tracker = LabelFadeTracker();
       tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('k', Offset.zero);
+      tracker.show(1);
       tracker.clear();
-      expect(tracker.isTracked('k'), isFalse);
+      expect(tracker.isTracked(1), isFalse);
       expect(tracker.anyActive, isFalse);
     });
   });
@@ -282,20 +280,19 @@ void main() {
   // relieve was never the bottleneck — so these pin the behaviour it
   // replaced, which is the behaviour that does not flash.
   group('LabelFadeTracker never holds a placed label invisible', () {
-    test('a key arriving mid-fade starts rising immediately', () {
+    test('a label arriving mid-fade starts rising immediately', () {
       final tracker = LabelFadeTracker();
       tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('early', Offset.zero);
+      tracker.show(1);
 
       // Half way through the first label's fade a second one lands. It
       // starts its own fade now; waiting for the first to land would
       // leave it painting nothing for up to a whole fade duration.
       tracker.beginFrame(_at(50), _fadeDuration);
-      expect(tracker.showAt('early', Offset.zero), 0.5);
-      expect(tracker.showAt('late', Offset.zero), 0,
-          reason: 'no elapsed time yet');
+      expect(tracker.show(1), 0.5);
+      expect(tracker.show(2), 0, reason: 'no elapsed time yet');
       tracker.beginFrame(_at(75), _fadeDuration);
-      expect(tracker.showAt('late', Offset.zero), greaterThan(0),
+      expect(tracker.show(2), greaterThan(0),
           reason: 'its own clock, started on arrival');
     });
 
@@ -373,173 +370,65 @@ void main() {
       for (var frame = 0; frame < 60; frame++) {
         tracker.beginFrame(_at(frame * 8), _fadeDuration);
         for (var i = 0; i <= frame; i++) {
-          if (tracker.showAt('k$i', Offset.zero) > 0) firstVisible.add(i);
+          if (tracker.show(i) > 0) firstVisible.add(i);
         }
-        tracker.sweep((_, __, ___) => null);
+        tracker.sweep((_, __) {});
       }
       // Every label that arrived with a frame left to rise in became
       // visible, rather than the handful a burst schedule admits.
       expect(firstVisible, hasLength(59));
     });
 
-    test('a departing key decays from where it got to', () {
+    test('a departing label decays from where it got to', () {
       final tracker = LabelFadeTracker();
       tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('a', Offset.zero);
-      tracker.showAt('b', Offset.zero);
+      tracker.show(1);
+      tracker.show(2);
       tracker.beginFrame(_at(50), _fadeDuration);
-      expect(tracker.showAt('a', Offset.zero), 0.5);
-      expect(tracker.showAt('b', Offset.zero), 0.5);
+      expect(tracker.show(1), 0.5);
+      expect(tracker.show(2), 0.5);
 
       tracker.beginFrame(_at(75), _fadeDuration);
-      tracker.showAt('a', Offset.zero);
-      final ghosts = <Object, double>{};
-      tracker.sweep((key, position, opacity) {
-        ghosts[key] = opacity;
-        return null;
-      });
-      expect(ghosts.keys, ['b']);
-      expect(ghosts['b'], closeTo(0.25, 1e-9));
+      tracker.show(1);
+      final ghosts = <int, double>{};
+      tracker.sweep((id, opacity) => ghosts[id] = opacity);
+      expect(ghosts.keys, [2]);
+      expect(ghosts[2], closeTo(0.25, 1e-9));
 
       // Re-placed mid-fade-out it resumes from where it is, rather than
       // restarting from zero.
       tracker.beginFrame(_at(90), _fadeDuration);
-      final resumed = tracker.showAt('b', Offset.zero);
+      final resumed = tracker.show(2);
       expect(resumed, greaterThan(0.25));
       expect(resumed, lessThan(1));
-    });
-  });
-
-  group('LabelFadeTracker along-line sittings', () {
-    // Along-line anchors are re-derived from `symbol-spacing` per
-    // display layout, so a zoom crossing genuinely moves them — half
-    // the spacing for a straight street. One opacity per key would
-    // hand the new position the old one's full opacity: the name
-    // teleports. Each sitting fades on its own instead, matched by
-    // position within [LabelFadeTracker.matchRadius].
-    const here = Offset(100, 100);
-    const nearby = Offset(110, 105); // within the match radius
-    const there = Offset(225, 100); // a re-spaced anchor, far outside it
-
-    test('a moved sitting fades in at the new position', () {
-      final tracker = LabelFadeTracker();
-      tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('k', here);
-      tracker.beginFrame(_at(100), _fadeDuration);
-      expect(tracker.showAt('k', here), 1);
-
-      // The crossing: the same key arrives at the re-spaced position.
-      tracker.beginFrame(_at(150), _fadeDuration);
-      expect(tracker.showAt('k', there), 0,
-          reason: 'a new sitting, not the old one at full opacity');
-      final ghosts = <Offset?, double>{};
-      tracker.sweep((key, position, opacity) {
-        ghosts[position] = opacity;
-        return null;
-      });
-      expect(ghosts, {here: 0.5},
-          reason: 'the old sitting fades out where it was');
-    });
-
-    test('a sitting that only drifted resumes its fade', () {
-      // Simplification noise, a provisional→final swap, the camera
-      // between two frames: all move an anchor a few pixels. Those must
-      // keep their state, or every republish would re-fade the street.
-      final tracker = LabelFadeTracker();
-      tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('k', here);
-      tracker.beginFrame(_at(50), _fadeDuration);
-      expect(tracker.showAt('k', nearby), 0.5, reason: 'the same sitting');
-      expect(tracker.opacityNear('k', here), 0.5);
-    });
-
-    test('seam twins share one sitting within a frame', () {
-      final tracker = LabelFadeTracker();
-      tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('k', here);
-      tracker.beginFrame(_at(50), _fadeDuration);
-      expect(tracker.showAt('k', here), 0.5);
-      expect(tracker.showAt('k', nearby), 0.5,
-          reason: 'idempotent: the twin reads, it does not advance');
-    });
-
-    test('the repeats of one street fade independently', () {
-      // Two sittings of the same name, spacing apart: a newly appearing
-      // repeat fades in even while the established one sits at 1.
-      final tracker = LabelFadeTracker();
-      tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('k', here);
-      tracker.beginFrame(_at(100), _fadeDuration);
-      expect(tracker.showAt('k', here), 1);
-      expect(tracker.showAt('k', there), 0, reason: 'its own fade');
-      tracker.beginFrame(_at(150), _fadeDuration);
-      expect(tracker.showAt('k', here), 1);
-      expect(tracker.showAt('k', there), 0.5);
-      expect(tracker.anyActive, isTrue);
-    });
-
-    test('a fading sitting follows where its ghost is drawn', () {
-      // The sweep hands back where the ghost actually painted; the
-      // sitting adopts it, so a fade-out tracks the camera and a
-      // re-appearance still matches the sitting.
-      final tracker = LabelFadeTracker();
-      tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('k', here);
-      tracker.beginFrame(_at(100), _fadeDuration);
-      tracker.showAt('k', here);
-
-      // Two ghost frames, the camera dragging the label 20px per frame.
-      tracker.beginFrame(_at(125), _fadeDuration);
-      tracker.sweep((key, position, opacity) {
-        expect(position, here);
-        return here + const Offset(20, 0);
-      });
-      tracker.beginFrame(_at(150), _fadeDuration);
-      tracker.sweep((key, position, opacity) {
-        expect(position, here + const Offset(20, 0));
-        return here + const Offset(40, 0);
-      });
-
-      // Re-placed where the camera has taken it: still the same
-      // sitting, resuming from 0.5 rather than restarting.
-      tracker.beginFrame(_at(175), _fadeDuration);
-      expect(tracker.showAt('k', here + const Offset(45, 2)), 0.75);
-    });
-
-    test('sittings prune like point keys do', () {
-      final tracker = LabelFadeTracker();
-      tracker.beginFrame(_at(0), _fadeDuration);
-      tracker.showAt('k', here);
-      expect(tracker.isTracked('k'), isTrue);
-      tracker.beginFrame(_at(500), _fadeDuration);
-      tracker.sweep((_, __, ___) => null);
-      expect(tracker.isTracked('k'), isFalse, reason: 'self-pruning');
-      expect(tracker.anyActive, isFalse);
     });
   });
 
   group('along-line fades through the painter', () {
     test('a re-spaced street name cross-fades instead of teleporting', () {
       // The zoom-crossing story: the arriving level lays the same
-      // street's label out somewhere else along the road. The old
-      // instance is only on offer as a fallback (its tile has been
-      // covered); the new one fades in at its position while the old
-      // position draws a fading ghost — never a full-opacity jump.
+      // street's label out somewhere else along the road — too far for
+      // the identity index to call it the same label, so it gets an id
+      // of its own. The old instance is only on offer as a fallback (its
+      // tile has been covered); the new one fades in at its position
+      // while the old position draws a fading ghost — never a
+      // full-opacity jump.
       final painter = LabelPainter();
       final outgoing = _symbol(layer, text: 'Hauptstraße', alongLine: true);
       final arriving = _symbol(layer, text: 'Hauptstraße', alongLine: true);
       const oldSpot = Offset(120, 200);
       const newSpot = Offset(290, 200);
+      final oldId = labelIdOf(outgoing);
+      final newId = labelIdOf(arriving);
 
       _frame(painter, [_placedAt(outgoing, anchor: oldSpot)], now: _at(0));
       _frame(painter, [_placedAt(outgoing, anchor: oldSpot)], now: _at(100));
-      expect(
-          painter.debugFades.opacityNear(outgoing.continuityKey, oldSpot), 1);
+      expect(painter.debugFades.opacityOf(oldId), 1);
 
-      // The swap lands mid-interval: that frame replays — the old
-      // position holds as a full-opacity ghost (only a pass may start a
-      // fade-out) while the arriving copy waits for the next due pass.
-      // At the pass both move: the old sitting starts its fade, the new
+      // The swap lands mid-interval: that frame replays — the old label
+      // holds as a full-opacity ghost (only a pass may start a
+      // fade-out) while the arriving one waits for the next due pass.
+      // At the pass both move: the old label starts its fade, the new
       // one starts rising.
       final offered = [
         _placedAt(arriving, anchor: newSpot),
@@ -549,27 +438,27 @@ void main() {
       final crossing = _frame(painter, offered, now: _at(200));
       expect(crossing.map((p) => p.instance).toSet(), {arriving, outgoing},
           reason: 'the new position fades in while the old ghosts out');
-      final key = arriving.continuityKey;
-      expect(painter.debugFades.opacityNear(key, newSpot), lessThan(1),
+      expect(painter.debugFades.opacityOf(newId), lessThan(1),
           reason: 'fading in at the new position, not inheriting 1');
-      expect(painter.debugFades.opacityNear(key, oldSpot), lessThan(1),
+      expect(painter.debugFades.opacityOf(oldId), lessThan(1),
           reason: 'fading out at the old one');
 
-      // Settled: one sitting at the new position, at full opacity.
+      // Settled: only the new label, at full opacity.
       _frame(painter, [_placedAt(arriving, anchor: newSpot)], now: _at(400));
       final settled = _frame(painter, [_placedAt(arriving, anchor: newSpot)],
           now: _at(700));
       expect(settled.map((p) => p.instance), [arriving]);
-      expect(painter.debugFades.opacityNear(key, newSpot), 1);
-      expect(painter.debugFades.opacityNear(key, oldSpot), isNull,
-          reason: 'the old sitting has been swept out');
+      expect(painter.debugFades.opacityOf(newId), 1);
+      expect(painter.debugFades.opacityOf(oldId), isNull,
+          reason: 'the old label has been swept out');
       painter.dispose();
     });
 
-    test('a ghost is not drawn from a repeat far from the fading sitting', () {
-      // With every candidate of a key on offer, the fading sitting must
-      // take the one where it was — not the priority-first repeat at
-      // the other end of the street.
+    test('a ghost draws from its own label, not a repeat of its name', () {
+      // Two repeats of one street name are two labels. When one fades
+      // out, its ghost is drawn from its own copy — not from the
+      // priority-first candidate of the name at the other end of the
+      // street.
       final painter = LabelPainter();
       final northRepeat = _symbol(layer, text: 'Ring', alongLine: true);
       final southRepeat = _symbol(layer, text: 'Ring', alongLine: true);
@@ -594,10 +483,10 @@ void main() {
         now: _at(150),
       );
       final ghost = drawn.singleWhere((p) => identical(p.instance, southRepeat),
-          orElse: () => fail('the south sitting should ghost out'));
+          orElse: () => fail('the south repeat should ghost out'));
       expect(ghost.screenAnchor, south,
-          reason: 'the ghost draws where the sitting was, not at the '
-              'north repeat');
+          reason: 'the ghost draws where its label was, not at the north '
+              'repeat');
       painter.dispose();
     });
   });
@@ -693,58 +582,56 @@ void main() {
   });
 
   group('PlacementMemory', () {
-    const key = 'road-label/Hauptstraße';
+    const id = 7;
 
-    test('a label near where it was sits back down at its own entry', () {
+    test('a label sits back down at its own entry', () {
+      // Whatever instance draws it: the entry is the label id's, and the
+      // id is what a successor instance inherits.
       final memory = PlacementMemory();
       memory.beginFrame(prune: true);
-      memory.sitting(key, const Offset(200, 200)).flip = true;
+      memory.sitting(id).flip = true;
 
       memory.beginFrame(prune: true);
-      expect(memory.sitting(key, const Offset(204, 203)).flip, isTrue,
-          reason: 'the same label, a few pixels along');
-      expect(memory.sitting(key, const Offset(200, 500)).flip, isNull,
-          reason: 'the same name further down the street decides its own');
-    });
-
-    test('the entry follows the label it was matched to', () {
-      final memory = PlacementMemory();
-      memory.beginFrame(prune: true);
-      memory.sitting(key, const Offset(100, 100)).anchor = 'bottom';
-      // Twenty pixels a frame for five frames: never more than the match
-      // radius at once, so the entry travels with it.
-      for (var i = 1; i <= 5; i++) {
-        memory.beginFrame(prune: true);
-        expect(
-            memory.sitting(key, Offset(100 + 20.0 * i, 100)).anchor, 'bottom');
-      }
-      expect(memory.lookup(key, const Offset(100, 100)), isNull,
-          reason: 'it is no longer where it started');
+      expect(memory.sitting(id).flip, isTrue);
     });
 
     test('different labels never share an entry', () {
+      // Two labels of one name (the same street further along, the same
+      // housenumber elsewhere) have ids of their own, so they never share
+      // a side of the street.
       final memory = PlacementMemory();
       memory.beginFrame(prune: true);
-      memory.sitting(key, const Offset(200, 200)).flip = true;
-      expect(memory.sitting('other-key', const Offset(200, 200)).flip, isNull);
+      memory.sitting(id).flip = true;
+      expect(memory.sitting(id + 1).flip, isNull);
     });
 
     test('an entry expires once its label has been gone a while', () {
       final memory = PlacementMemory();
       memory.beginFrame(prune: true);
-      memory.sitting(key, const Offset(200, 200)).anchor = 'bottom';
+      memory.sitting(id).anchor = 'bottom';
       for (var i = 0; i < 200; i++) {
         memory.beginFrame(prune: true);
       }
-      expect(memory.lookup(key, const Offset(200, 200)), isNull);
+      expect(memory.lookup(id), isNull);
+    });
+
+    test('a label seen every frame never expires', () {
+      final memory = PlacementMemory();
+      memory.beginFrame(prune: true);
+      memory.sitting(id).anchor = 'bottom';
+      for (var i = 0; i < 200; i++) {
+        memory.beginFrame(prune: true);
+        memory.sitting(id);
+      }
+      expect(memory.lookup(id)?.anchor, 'bottom');
     });
 
     test('clear forgets everything', () {
       final memory = PlacementMemory();
       memory.beginFrame(prune: true);
-      memory.sitting(key, const Offset(200, 200)).anchor = 'bottom';
+      memory.sitting(id).anchor = 'bottom';
       memory.clear();
-      expect(memory.lookup(key, const Offset(200, 200)), isNull);
+      expect(memory.lookup(id), isNull);
     });
   });
 
@@ -784,11 +671,11 @@ void main() {
     test('disabling fades clears an in-progress fade', () {
       final painter = LabelPainter();
       final label = _symbol(layer);
-      final key = label.continuityKey;
+      final id = labelIdOf(label);
 
       _frame(painter, [_placedAt(label)], now: _at(0));
       expect(painter.hasActiveFades, isTrue);
-      expect(painter.debugFades.isTracked(key), isTrue);
+      expect(painter.debugFades.isTracked(id), isTrue);
 
       final drawn = _frame(
         painter,
@@ -800,73 +687,106 @@ void main() {
           reason: 'disabling fades makes placed labels fully opaque');
       expect(painter.hasActiveFades, isFalse,
           reason: 'the widget fade ticker must be allowed to settle');
-      expect(painter.debugFades.isTracked(key), isFalse,
+      expect(painter.debugFades.isTracked(id), isFalse,
           reason: 'reenabling fades must not resume stale opacity state');
       painter.dispose();
     });
 
     test('a label present at both zoom levels never re-fades', () {
       // The "Munich blink": the arriving level's copy is a brand-new
-      // instance, but it carries the same continuity key — one key, one
-      // opacity, so the swap is invisible.
+      // instance, but the identity index gives it the label's id — one
+      // id, one opacity, so the swap is invisible.
       final painter = LabelPainter();
       final outgoing = _symbol(layer, text: 'München');
       final arriving = _symbol(layer, text: 'München');
-      final key = outgoing.continuityKey;
+      final id = labelIdOf(outgoing);
 
       _frame(painter, [_placedAt(outgoing)], now: _at(0));
       _frame(painter, [_placedAt(outgoing)], now: _at(100));
-      expect(painter.debugFades.opacityNear(key, const Offset(200, 200)), 1);
+      expect(painter.debugFades.opacityOf(id), 1);
 
       // Both copies are on offer while the levels overlap; only one
-      // draws (mid-interval the incumbent replays, at a pass the
-      // collision keeps one) …
-      final overlap = _frame(
-          painter, [_placedAt(arriving), _placedAt(outgoing, order: 1)],
-          now: _at(116));
-      expect(overlap, hasLength(1), reason: 'one copy of one label');
-      expect(painter.debugFades.opacityNear(key, const Offset(200, 200)), 1,
-          reason: 'no restart');
+      // draws …
+      for (final ms in [116, 216]) {
+        final overlap = _frame(painter,
+            [_placedAt(arriving, id: id), _placedAt(outgoing, order: 1)],
+            now: _at(ms));
+        expect(overlap, hasLength(1),
+            reason: 'one copy of one label, replay (${ms}ms) or pass');
+        expect(painter.debugFades.opacityOf(id), 1, reason: 'no restart');
+      }
 
-      // … and the hand-over to the new copy alone — picked up at the
-      // next due pass — changes nothing either.
-      _frame(painter, [_placedAt(arriving)], now: _at(216));
-      expect(painter.debugFades.opacityNear(key, const Offset(200, 200)), 1);
+      // … and the hand-over to the new copy alone changes nothing
+      // either.
+      _frame(painter, [_placedAt(arriving, id: id)], now: _at(316));
+      expect(painter.debugFades.opacityOf(id), 1);
       expect(painter.hasActiveFades, isFalse);
       painter.dispose();
     });
 
     test('a republish mid-interval never fades a label into itself', () {
-      // The throttled-placement regression: winners are matched by
-      // instance identity and a republish replaces every instance, so
-      // between the churn and the next due pass nothing "shows" the
-      // key. Decaying through that window dimmed the label and faded
-      // its successor back in — the same label cross-fading into
-      // itself at every crossing. Un-shown keys hold on replay frames
-      // instead: the ghost draws from the successor candidate at full
-      // opacity until the pass adopts it, seamlessly.
+      // The throttled-placement regression: a republish replaces every
+      // instance between two passes. With winners kept by instance,
+      // nothing "showed" the label until the next pass, and decaying
+      // through that window dimmed it and faded its successor back in —
+      // the same label cross-fading into itself at every crossing. The
+      // successor carries the label's id, so it is the winner from its
+      // first frame: drawn at full opacity, no dip, no hand-over.
       final painter = LabelPainter();
       final first = _symbol(layer, text: 'München');
-      final key = first.continuityKey;
+      final id = labelIdOf(first);
 
       _frame(painter, [_placedAt(first)], now: _at(0));
       _frame(painter, [_placedAt(first)], now: _at(100));
-      expect(painter.debugFades.opacityNear(key, const Offset(200, 200)), 1);
+      expect(painter.debugFades.opacityOf(id), 1);
 
       // Republished: same label, brand-new instance, mid-interval.
       final successor = _symbol(layer, text: 'München');
       for (final ms in [110, 130, 150, 170, 190]) {
-        final drawn = _frame(painter, [_placedAt(successor)], now: _at(ms));
+        final drawn =
+            _frame(painter, [_placedAt(successor, id: id)], now: _at(ms));
         expect(drawn.map((p) => p.instance), [successor],
             reason: 'keeps painting through the churn window at ${ms}ms');
-        expect(painter.debugFades.opacityNear(key, const Offset(200, 200)), 1,
+        expect(painter.debugFades.opacityOf(id), 1,
             reason: 'no dip at ${ms}ms');
       }
 
-      // The pass adopts the successor; still nothing to see.
-      final passed = _frame(painter, [_placedAt(successor)], now: _at(200));
+      // The pass confirms it; still nothing to see.
+      final passed =
+          _frame(painter, [_placedAt(successor, id: id)], now: _at(200));
       expect(passed.map((p) => p.instance), [successor]);
-      expect(painter.debugFades.opacityNear(key, const Offset(200, 200)), 1);
+      expect(painter.debugFades.opacityOf(id), 1);
+      painter.dispose();
+    });
+
+    test('a winner whose tile is gone holds until a pass decides', () {
+      // Only a pass may start a fade-out: between passes a winner with
+      // no copy on offer may just be between tiles. It holds its
+      // opacity, and a successor arriving before the pass resumes it.
+      final painter = LabelPainter();
+      final first = _symbol(layer, text: 'München');
+      final other = _symbol(layer, text: 'Aschheim');
+      final id = labelIdOf(first);
+      const elsewhere = Offset(100, 100);
+
+      _frame(painter, [_placedAt(first), _placedAt(other, anchor: elsewhere)],
+          now: _at(0));
+      _frame(painter, [_placedAt(first), _placedAt(other, anchor: elsewhere)],
+          now: _at(100));
+      _frame(painter, [_placedAt(other, anchor: elsewhere)], now: _at(150));
+      expect(painter.debugFades.opacityOf(id), 1,
+          reason: 'a replay frame never starts a fade-out');
+
+      final successor = _symbol(layer, text: 'München');
+      final back = _frame(
+          painter,
+          [
+            _placedAt(successor, id: id),
+            _placedAt(other, anchor: elsewhere, order: 1),
+          ],
+          now: _at(170));
+      expect(back.map((p) => p.instance), contains(successor));
+      expect(painter.debugFades.opacityOf(id), 1);
       painter.dispose();
     });
 
@@ -903,7 +823,7 @@ void main() {
         now: _at(300),
       );
       expect(settled.map((p) => p.instance), [replacement]);
-      expect(painter.debugFades.isTracked(departing.continuityKey), isFalse);
+      expect(painter.debugFades.isTracked(labelIdOf(departing)), isFalse);
       painter.dispose();
     });
 
@@ -974,9 +894,7 @@ void main() {
       expect(frame(0, 80).map((p) => p.instance).toSet(), {west, east});
       frame(100, 80); // a second pass; both are fully faded in by now
 
-      // The camera drifts them together a step per frame — between two
-      // painted frames an anchor moves only as far as the gesture does,
-      // well inside the fade tracker's sitting match radius.
+      // The camera drifts them together a step per frame.
       for (final (ms, gap) in [(120, 56.0), (140, 32.0), (160, 8.0)]) {
         expect(frame(ms, gap).map((p) => p.instance).toSet(), {west, east},
             reason: 'the decision taken at the last pass still stands');
@@ -988,23 +906,18 @@ void main() {
 
       // The next pass resolves the overlap — once, and through a fade.
       frame(200, 2);
-      expect(
-          painter.debugFades
-              .opacityNear(west.continuityKey, const Offset(198, 200)),
-          1);
-      expect(
-          painter.debugFades
-              .opacityNear(east.continuityKey, const Offset(202, 200)),
-          lessThan(1),
+      expect(painter.debugFades.opacityOf(labelIdOf(west)), 1);
+      expect(painter.debugFades.opacityOf(labelIdOf(east)), lessThan(1),
           reason: 'the loser eases out instead of blinking away');
       painter.dispose();
     });
 
-    test('a label with two candidates keeps the one it is drawn from', () {
-      // A street name reaching the pass twice — the two carriageways of
-      // one road, or the outgoing and arriving level of a zoom. Which
-      // copy the priority sort puts first is decided by their screen y,
-      // so a pan that reorders them walks the name across the street.
+    test('a name on two carriageways stays on the one it is drawn on', () {
+      // A street name reaching the pass twice, as two labels: the two
+      // carriageways of one road. Which one the priority sort puts first
+      // is decided by their screen y, so a pan that reorders them would
+      // walk the name across the street — but only the one on screen is
+      // an incumbent.
       final painter = LabelPainter();
       final north = _symbol(layer, text: 'Rosenheimer Straße');
       final south = _symbol(layer, text: 'Rosenheimer Straße');
@@ -1035,20 +948,21 @@ void main() {
     });
   });
 
-  group('per-sitting fades split what position separates', () {
+  group('labels of one name fade apart', () {
     const westAt = Offset(100, 200);
     const eastAt = Offset(300, 200);
 
     test('two same-named POIs fade independently', () {
-      // One fade state per key held every copy at the key's opacity
-      // while *any* of them was placed: the other copies appeared and
-      // vanished as hard pops, never fading at all — every parking
-      // icon, every housenumber "12", every chain store. Per-sitting
-      // states give each its own fade.
+      // One fade state per name held every copy at the name's opacity
+      // while *any* of them was placed: the others appeared and vanished
+      // as hard pops, never fading at all — every parking icon, every
+      // housenumber "12", every chain store. Each has its own label id,
+      // so each has its own fade.
       final painter = LabelPainter();
       final west = _symbol(layer, text: 'Bäckerei');
       final east = _symbol(layer, text: 'Bäckerei');
-      final key = west.continuityKey;
+      final westId = labelIdOf(west);
+      final eastId = labelIdOf(east);
 
       List<PlacedSymbol> both() => [
             _placedAt(west, anchor: westAt),
@@ -1056,15 +970,15 @@ void main() {
           ];
       _frame(painter, both(), now: _at(0));
       _frame(painter, both(), now: _at(100));
-      expect(painter.debugFades.opacityNear(key, westAt), 1);
-      expect(painter.debugFades.opacityNear(key, eastAt), 1);
+      expect(painter.debugFades.opacityOf(westId), 1);
+      expect(painter.debugFades.opacityOf(eastId), 1);
 
       // East's tile expires; the pass confirms its disappearance. West
-      // being on screen must not hold east's spot at full opacity.
+      // being on screen must not hold east at full opacity.
       _frame(painter, [_placedAt(west, anchor: westAt)], now: _at(150));
       _frame(painter, [_placedAt(west, anchor: westAt)], now: _at(200));
-      expect(painter.debugFades.opacityNear(key, westAt), 1);
-      expect(painter.debugFades.opacityNear(key, eastAt), lessThan(1),
+      expect(painter.debugFades.opacityOf(westId), 1);
+      expect(painter.debugFades.opacityOf(eastId), lessThan(1),
           reason: 'eases out on its own instead of popping');
       painter.dispose();
     });
@@ -1073,7 +987,6 @@ void main() {
       final painter = LabelPainter();
       final west = _symbol(layer, text: 'Bäckerei');
       final east = _symbol(layer, text: 'Bäckerei');
-      final key = west.continuityKey;
 
       _frame(painter, [_placedAt(west, anchor: westAt)], now: _at(0));
       _frame(painter, [_placedAt(west, anchor: westAt)], now: _at(100));
@@ -1087,9 +1000,9 @@ void main() {
             _placedAt(east, anchor: eastAt, order: 1),
           ],
           now: _at(200));
-      expect(painter.debugFades.opacityNear(key, eastAt), lessThan(1),
+      expect(painter.debugFades.opacityOf(labelIdOf(east)), lessThan(1),
           reason: 'fades in on its own');
-      expect(painter.debugFades.opacityNear(key, westAt), 1);
+      expect(painter.debugFades.opacityOf(labelIdOf(west)), 1);
       painter.dispose();
     });
   });
@@ -1121,27 +1034,32 @@ void main() {
     });
 
     test('incumbency survives a republish', () {
-      // Winners are matched by instance identity, and a republish or
-      // level swap replaces every instance — precisely when incumbency
-      // matters most. The fade tracker's full-opacity sitting carries
-      // it across: the successor instance inherits the incumbency.
-      final painter = LabelPainter();
-      final original = _symbol(layer, text: 'Feldkirchen');
+      // A republish or level swap replaces every instance — precisely
+      // when incumbency matters most. Winners are label ids, so the
+      // successor instance is an incumbent from its first pass, with or
+      // without fades.
+      for (final fades in [true, false]) {
+        final painter = LabelPainter();
+        final original = _symbol(layer, text: 'Feldkirchen');
+        final id = labelIdOf(original);
+        DateTime? at(int ms) => fades ? _at(ms) : null;
 
-      _frame(painter, [_placedAt(original)], now: _at(0));
-      _frame(painter, [_placedAt(original)], now: _at(100));
+        _frame(painter, [_placedAt(original)], now: at(0));
+        _frame(painter, [_placedAt(original)], now: at(100));
 
-      final successor = _symbol(layer, text: 'Feldkirchen');
-      final arrival = _symbol(layer, text: 'Aschheim');
-      final offered = [
-        _placedAt(arrival, anchor: const Offset(200, 199)),
-        _placedAt(successor, order: 1),
-      ];
-      _frame(painter, offered, now: _at(150));
-      final passed = _frame(painter, offered, now: _at(200));
-      expect(passed.map((p) => p.instance), [successor],
-          reason: 'the sitting label wins through its successor instance');
-      painter.dispose();
+        final successor = _symbol(layer, text: 'Feldkirchen');
+        final arrival = _symbol(layer, text: 'Aschheim');
+        final offered = [
+          _placedAt(arrival, anchor: const Offset(200, 199)),
+          _placedAt(successor, order: 1, id: id),
+        ];
+        _frame(painter, offered, now: at(150));
+        final passed = _frame(painter, offered, now: at(200));
+        expect(passed.map((p) => p.instance), [successor],
+            reason: 'the sitting label wins through its successor instance '
+                '(fades: $fades)');
+        painter.dispose();
+      }
     });
 
     test('a higher-layer arrival still outranks an incumbent', () {
@@ -1150,7 +1068,6 @@ void main() {
       final painter = LabelPainter();
       final sitting = _symbol(layer, text: 'Feldkirchen');
       final arrival = _symbol(layer, text: 'Aschheim', layerIndex: 1);
-      final key = sitting.continuityKey;
 
       _frame(painter, [_placedAt(sitting)], now: _at(0));
       _frame(painter, [_placedAt(sitting)], now: _at(100));
@@ -1163,52 +1080,195 @@ void main() {
       final passed = _frame(painter, offered, now: _at(200));
       expect(passed.map((p) => p.instance).toSet(), contains(arrival),
           reason: 'the higher layer takes the space');
-      expect(painter.debugFades.opacityNear(key, const Offset(200, 200)),
-          lessThan(1),
+      expect(painter.debugFades.opacityOf(labelIdOf(sitting)), lessThan(1),
           reason: 'the evicted label eases out instead of blinking away');
       painter.dispose();
     });
   });
 
   group('two copies of one label in one frame', () {
-    test('draw once, whichever copy wins collision', () {
+    test('draw once, whichever copy sorts first', () {
       // A zoom crossing (and any tile seam) offers the same label twice
-      // for a few frames; the collision pass keeps exactly one.
+      // for a few frames; one label draws once.
       for (final arrivingFirst in [true, false]) {
+        final id = labelIdOf(('twin', arrivingFirst));
         final drawn = _paint([
           _placedAt(_symbol(layer),
-              anchor: Offset(200, arrivingFirst ? 199.7 : 200.3)),
-          _placedAt(_symbol(layer), anchor: const Offset(200, 200), order: 1),
+              anchor: Offset(200, arrivingFirst ? 199.7 : 200.3), id: id),
+          _placedAt(_symbol(layer),
+              anchor: const Offset(200, 200), order: 1, id: id),
         ]);
-        expect(drawn, hasLength(1), reason: 'the two copies collide');
+        expect(drawn, hasLength(1), reason: 'one label, one copy drawn');
       }
+    });
+
+    test('draw once even where nothing would collide', () {
+      // Collision used to be what removed the second copy. A layer that
+      // allows overlap never collides, so it drew a seam label twice,
+      // one copy over the other.
+      final theme = const ThemeReader().read({
+        'layers': [
+          {
+            'id': 'place',
+            'type': 'symbol',
+            'source': 's',
+            'source-layer': 'place',
+            'layout': {
+              'text-field': '{name}',
+              'text-allow-overlap': true,
+            },
+          },
+        ],
+      });
+      final overlapping = theme.layers.single as SymbolThemeLayer;
+      final id = labelIdOf('overlapping twin');
+      final drawn = _paint([
+        _placedAt(_symbol(overlapping), id: id),
+        _placedAt(_symbol(overlapping), order: 1, id: id),
+        _placedAt(_symbol(overlapping), order: 2),
+      ]);
+      expect(drawn, hasLength(2),
+          reason: 'the twin draws once; another label at the same spot '
+              'still draws, overlap being allowed');
+    });
+
+    test('the copy that draws is the one that fits', () {
+      // Only a *drawn* copy settles its label: one that lost collision
+      // leaves the next copy to try.
+      final blocker = _symbol(layer, text: 'Aschheim', layerIndex: 1);
+      final id = labelIdOf('fitting twin');
+      final blocked = _symbol(layer);
+      final free = _symbol(layer);
+      final drawn = _paint([
+        _placedAt(blocker, anchor: const Offset(200, 200)),
+        _placedAt(blocked, anchor: const Offset(200, 200), order: 1, id: id),
+        _placedAt(free, anchor: const Offset(200, 260), order: 2, id: id),
+      ]);
+      expect(drawn.map((p) => p.instance).toSet(), {blocker, free});
+    });
+  });
+
+  group('which copy of a label draws', () {
+    // Copies of one label sit up to the identity match radius apart, with
+    // geometry of their own: the copy a label is drawn from is part of
+    // the decision, and has to hold between passes like the rest of it.
+    final (street, poi) = _streetAndPoiLayers();
+    const higher = Offset(200, 200);
+    const lower = Offset(200, 225);
+
+    test('a replay draws the copy the pass drew', () {
+      // The pass rejects the higher copy (it collides with a POI) and
+      // draws the lower one; replays used to draw whichever copy sorted
+      // first, so the label jumped between the two at every interval.
+      final painter = LabelPainter();
+      final blocker = _symbol(poi, text: 'Bäckerei', layerIndex: 1);
+      final blocked = _symbol(street, text: 'Hauptstr');
+      final free = _symbol(street, text: 'Hauptstr');
+      final id = labelIdOf(blocked);
+      List<Offset> drawnAt(int ms) => [
+            for (final p in _frame(
+                painter,
+                [
+                  _placedAt(blocker, anchor: higher),
+                  _placedAt(blocked, anchor: higher, order: 1),
+                  _placedAt(free, anchor: lower, order: 2, id: id),
+                ],
+                now: _at(ms)))
+              if (p.id == id) p.screenAnchor,
+          ];
+      expect(drawnAt(0), [lower], reason: 'the pass');
+      for (final ms in [16, 32, 48]) {
+        expect(drawnAt(ms), [lower], reason: 'replay at ${ms}ms');
+      }
+      painter.dispose();
+    });
+
+    test('a replay falls back to another copy when its own is gone', () {
+      final painter = LabelPainter();
+      final first = _symbol(street, text: 'Hauptstr');
+      final second = _symbol(street, text: 'Hauptstr');
+      final id = labelIdOf(first);
+      _frame(painter, [_placedAt(first, anchor: higher)], now: _at(0));
+      final drawn = _frame(painter, [_placedAt(second, anchor: lower, id: id)],
+          now: _at(16));
+      expect(drawn.map((p) => p.instance), [second],
+          reason: 'the label is still the winner, through its other copy');
+      painter.dispose();
+    });
+
+    test('a pass keeps the copy it is on when their order flips', () {
+      // Rotating the map reorders two copies a few pixels apart; the
+      // pass sorts by screen y, and without the drawn copy going first
+      // the label would hop between them at every pass.
+      final painter = LabelPainter();
+      final a = _symbol(street, text: 'Hauptstr');
+      final b = _symbol(street, text: 'Hauptstr');
+      final id = labelIdOf(a);
+      final first = _frame(
+          painter,
+          [
+            _placedAt(a, anchor: const Offset(200, 198)),
+            _placedAt(b, anchor: const Offset(200, 202), order: 1, id: id),
+          ],
+          now: _at(0));
+      expect(first.map((p) => p.instance), [a]);
+      final flipped = _frame(
+          painter,
+          [
+            _placedAt(b, anchor: const Offset(200, 198), id: id),
+            _placedAt(a, anchor: const Offset(200, 202), order: 1),
+          ],
+          now: _at(100));
+      expect(flipped.map((p) => p.instance), [a]);
+      painter.dispose();
+    });
+
+    test('a ghost is drawn from the copy the label was drawn from', () {
+      final painter = LabelPainter();
+      final blocker = _symbol(poi, text: 'Bäckerei', layerIndex: 1);
+      final blocked = _symbol(street, text: 'Hauptstr');
+      final free = _symbol(street, text: 'Hauptstr');
+      final id = labelIdOf(blocked);
+      List<PlacedSymbol> frame(int ms, {required bool gone}) => _frame(
+          painter,
+          [
+            _placedAt(blocker, anchor: higher),
+            _placedAt(blocked, anchor: higher, order: 1, ghostOnly: gone),
+            _placedAt(free, anchor: lower, order: 2, id: id, ghostOnly: gone),
+          ],
+          now: _at(ms));
+      frame(0, gone: false);
+      frame(100, gone: false);
+      // The label's tile goes; both copies remain only as fallbacks,
+      // through replay frames and then the pass that starts the fade.
+      for (final ms in [120, 150, 200, 230]) {
+        final ghosts = [
+          for (final p in frame(ms, gone: true))
+            if (p.id == id) p.screenAnchor,
+        ];
+        expect(ghosts, [lower], reason: 'at ${ms}ms');
+      }
+      painter.dispose();
     });
   });
 
   group('drawnLabels', () {
     test('keeps only what the last frame drew, in order', () {
-      final a = _symbol(layer, text: 'A');
-      final b = _symbol(layer, text: 'B');
-      final c = _symbol(layer, text: 'C');
-      expect(drawnLabels([a, b, c], {c, a}), [a, c]);
+      expect(drawnLabels(Int32List.fromList([1, 2, 3]), {3, 1}), [0, 2]);
     });
 
-    test('returns the input list itself when everything was drawn', () {
-      final a = _symbol(layer);
-      final cohort = [a];
-      expect(identical(drawnLabels(cohort, {a}), cohort), isTrue);
+    test('everything drawn: nothing to cut', () {
+      expect(drawnLabels(Int32List.fromList([1, 2]), {1, 2}), isNull);
     });
 
     test('nothing drawn: the cohort is emptied', () {
-      expect(drawnLabels([_symbol(layer)], const {}), isEmpty);
+      expect(drawnLabels(Int32List.fromList([1]), const {}), isEmpty);
     });
 
-    test('membership is by identity, not label equality', () {
-      // Two instances of the same feature (seam twins) are distinct
-      // candidates; drawing one must not pin the other.
-      final drawnTwin = _symbol(layer);
-      final otherTwin = _symbol(layer);
-      expect(drawnLabels([otherTwin], {drawnTwin}), isEmpty);
+    test('membership is by label, whichever copy drew it', () {
+      // The outgoing cohort's copy of a label the arriving level drew is
+      // still a copy of a label on screen, so it stays.
+      expect(drawnLabels(Int32List.fromList([5, 6]), {5}), [0]);
     });
   });
 
@@ -1224,6 +1284,7 @@ void main() {
       final streetName = _symbol(street, text: 'Hauptstr', layerIndex: 0);
       final poiName = _symbol(poi, text: 'Bäckerei', layerIndex: 1);
       final cohort = [streetName, poiName];
+      final ids = Int32List.fromList([for (final s in cohort) labelIdOf(s)]);
 
       // The last frame before the crossing: the POI wins the shared spot.
       final drawn = _paint(
@@ -1236,9 +1297,9 @@ void main() {
       // style zoom is below the POI layer's minzoom, so its label is
       // gone — and the freed space stays empty instead of flashing the
       // street name in.
-      final pinned = drawnLabels(cohort, {for (final p in drawn) p.instance});
+      final kept = drawnLabels(ids, {for (final p in drawn) p.id})!;
       expect(
-        _paint([for (final s in pinned) _placedAt(s)], styleZoom: 12.9),
+        _paint([for (final i in kept) _placedAt(cohort[i])], styleZoom: 12.9),
         isEmpty,
       );
     });

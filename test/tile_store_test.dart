@@ -107,10 +107,11 @@ void main() {
       final theme = waterTheme('lake');
       final s = filteredStore(theme);
       addTearDown(s.dispose);
-      final water = (await s.obtain(const TileKey(2, 1, 1)))!.layers['water']!;
+      final tile = (await s.obtain(const TileKey(2, 1, 1)))!;
+      final water = tile.layers['water']!;
       final layer = theme.layers.single;
       expect(water.matches.containsKey(layer.filterId), !kIsWeb);
-      expect(MatchedFeatures.of(layer, water), water.features);
+      expect(MatchedFeatures.of(layer, water, tile: tile.key), water.features);
     });
 
     test('a tile cached for another theme serves this one', () async {
@@ -123,8 +124,10 @@ void main() {
       final rivers = waterTheme('river');
       final s = filteredStore(rivers);
       addTearDown(s.dispose);
-      final water = s.peek(const TileKey(2, 1, 1))!.layers['water']!;
-      expect(MatchedFeatures.of(rivers.layers.single, water), isEmpty);
+      final tile = s.peek(const TileKey(2, 1, 1))!;
+      final water = tile.layers['water']!;
+      expect(MatchedFeatures.of(rivers.layers.single, water, tile: tile.key),
+          isEmpty);
     });
   });
 

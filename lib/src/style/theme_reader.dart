@@ -1,4 +1,7 @@
+import 'dart:convert';
 import 'dart:ui' show Color;
+
+import 'package:meta/meta.dart';
 
 import '../logger.dart';
 import 'expression.dart';
@@ -16,38 +19,76 @@ class ThemeReader {
 
   const ThemeReader({this.logger = const Logger.noop()});
 
+  /// Compiles [style] under its `state` defaults. When any expression
+  /// reads `global-state`, the theme keeps [style] to compile its
+  /// siblings from (see [Theme.withGlobalState]), so the document must
+  /// not be changed afterwards.
   Theme read(Map<String, Object?> style, {String? id}) {
-    final themeId = id ??
-        '${style['name'] ?? 'style'}@${style['version'] ?? '0'}'
-            '#${style['modified'] ?? ''}';
+    final themeId = id ?? idOf(style);
+    final defaults = _stateDefaults(style['state']);
+    final compiled = _compile(style, defaults, logger);
+    if (!compiled.readsGlobalState) {
+      return Theme(id: themeId, layers: compiled.layers);
+    }
+    return _GlobalStates(style, themeId, defaults).adopt(compiled.layers);
+  }
+
+  /// The id [read] gives [style] when the caller names none.
+  @internal
+  static String idOf(Map<String, Object?> style) =>
+      '${style['name'] ?? 'style'}@${style['version'] ?? '0'}'
+      '#${style['modified'] ?? ''}';
+
+  /// The root `state` property: `{name: {"default": value}}`.
+  static Map<String, Object?> _stateDefaults(Object? json) {
+    if (json is! Map) return const {};
+    return {
+      for (final entry in json.entries)
+        if (entry.key is String && entry.value is Map)
+          entry.key as String: (entry.value as Map)['default'],
+    };
+  }
+
+  static ({List<ThemeLayer> layers, bool readsGlobalState}) _compile(
+      Map<String, Object?> style,
+      Map<String, Object?> globalState,
+      Logger logger) {
     final layersJson = style['layers'];
     final layers = <ThemeLayer>[];
+    var readsGlobalState = false;
     if (layersJson is List) {
       for (final layerJson in layersJson) {
         if (layerJson is! Map) continue;
         final json = layerJson.cast<String, Object?>();
         try {
-          final layer = _readLayer(json);
+          final parser = ExpressionParser(globalState: globalState);
+          final layer = _readLayer(json, parser, logger);
+          readsGlobalState |= parser.readsGlobalState;
           if (layer != null) layers.add(layer);
         } catch (e) {
           logger.warn('skipping layer "${json['id']}": $e');
         }
       }
     }
-    return Theme(id: themeId, layers: layers);
+    return (layers: layers, readsGlobalState: readsGlobalState);
   }
 
-  ThemeLayer? _readLayer(Map<String, Object?> json) {
+  static ThemeLayer? _readLayer(
+      Map<String, Object?> json, ExpressionParser parser, Logger logger) {
     final type = json['type'] as String? ?? '';
     final id = json['id'] as String? ?? '';
     final layout = _map(json['layout']);
     if (layout['visibility'] == 'none') return null;
 
     final paint = _map(json['paint']);
-    final parser = ExpressionParser();
     final filter = parser.parseFilter(json['filter']);
-    // Sampled before anything else is parsed: the flag is sticky.
+    // Sampled before anything else is parsed: the flags are sticky.
     final filterReadsZoom = parser.readsZoom;
+    // A worker compiles the filter from its JSON alone, with no global
+    // state and no feature geometry: only a filter reading neither
+    // resolves there (see ThemeLayer.filterId).
+    final filterOnWorker =
+        !filterReadsZoom && !parser.readsGlobalState && !parser.readsGeometry;
     final minzoom = toNumber(json['minzoom']) ?? ThemeLayer.defaultMinzoom;
     final maxzoom = toNumber(json['maxzoom']) ?? ThemeLayer.defaultMaxzoom;
     final source = json['source'] as String?;
@@ -64,6 +105,9 @@ class ThemeReader {
           color: _color(
               parser, paint['background-color'], const Color(0xff000000)),
           opacity: _double(parser, paint['background-opacity'], 1),
+          pattern: paint['background-pattern'] == null
+              ? null
+              : _string(parser, paint['background-pattern'], ''),
         );
       case 'fill':
       case 'fill-extrusion':
@@ -89,6 +133,11 @@ class ThemeReader {
               ? null
               : _string(parser, paint['$prefix-pattern'], ''),
           extrusion: extrusion,
+          translate: _optionalNumList(parser, paint['$prefix-translate']),
+          // An extrusion has no sort key.
+          sortKey: extrusion
+              ? null
+              : _optionalDouble(parser, layout['fill-sort-key']),
         );
       case 'line':
         layer = LineThemeLayer(
@@ -110,6 +159,13 @@ class ThemeReader {
           pattern: paint['line-pattern'] == null
               ? null
               : _string(parser, paint['line-pattern'], ''),
+          translate: _optionalNumList(parser, paint['line-translate']),
+          offset: _optionalDouble(parser, paint['line-offset']),
+          blur: _optionalDouble(parser, paint['line-blur']),
+          miterLimit: layout['line-miter-limit'] == null
+              ? null
+              : _double(parser, layout['line-miter-limit'], 2),
+          sortKey: _optionalDouble(parser, layout['line-sort-key']),
         );
       case 'circle':
         layer = CircleThemeLayer(
@@ -126,6 +182,9 @@ class ThemeReader {
               parser, paint['circle-stroke-color'], const Color(0xff000000)),
           strokeWidth: _double(parser, paint['circle-stroke-width'], 0),
           strokeOpacity: _double(parser, paint['circle-stroke-opacity'], 1),
+          blur: _optionalDouble(parser, paint['circle-blur']),
+          translate: _optionalNumList(parser, paint['circle-translate']),
+          sortKey: _optionalDouble(parser, layout['circle-sort-key']),
         );
       case 'symbol':
         layer = SymbolThemeLayer(
@@ -194,8 +253,52 @@ class ThemeReader {
           contrast: _double(parser, paint['raster-contrast'], 0),
           saturation: _double(parser, paint['raster-saturation'], 0),
           hueRotate: _double(parser, paint['raster-hue-rotate'], 0),
+          // The generic `resampling` supersedes `raster-resampling`.
+          resampling:
+              paint['resampling'] == null && paint['raster-resampling'] == null
+                  ? null
+                  : _string(
+                      parser,
+                      paint['resampling'] ?? paint['raster-resampling'],
+                      'linear'),
         );
       case 'hillshade':
+        final directions =
+            _doubles(parser, paint['hillshade-illumination-direction'], 335);
+        final altitudes =
+            _doubles(parser, paint['hillshade-illumination-altitude'], 45);
+        final shadows = _colors(
+            parser, paint['hillshade-shadow-color'], const Color(0xff000000));
+        final highlights = _colors(parser, paint['hillshade-highlight-color'],
+            const Color(0xffffffff));
+        final lights = [
+          directions.length,
+          altitudes.length,
+          shadows.length,
+          highlights.length,
+        ].reduce((a, b) => a > b ? a : b);
+        if (lights > HillshadeThemeLayer.maxLights) {
+          logger.warn('layer "$id": $lights light sources, only the first '
+              '${HillshadeThemeLayer.maxLights} are drawn');
+        }
+        layer = HillshadeThemeLayer(
+          id: id,
+          source: source,
+          minzoom: minzoom,
+          maxzoom: maxzoom,
+          filter: filter,
+          method: _string(parser, paint['hillshade-method'], 'standard'),
+          directions: directions,
+          altitudes: altitudes,
+          anchor: _string(
+              parser, paint['hillshade-illumination-anchor'], 'viewport'),
+          exaggeration: _double(parser, paint['hillshade-exaggeration'], 0.5),
+          shadowColors: shadows,
+          highlightColors: highlights,
+          accentColor: _color(
+              parser, paint['hillshade-accent-color'], const Color(0xff000000)),
+          resampling: _string(parser, paint['resampling'], 'linear'),
+        );
       case 'heatmap':
       case 'sky':
         logger.log('layer "$id": type "$type" not supported, skipped');
@@ -209,9 +312,10 @@ class ThemeReader {
       logger.warn('layer "$id": $warning');
     }
     layer.filterReadsZoom = filterReadsZoom;
-    if (!filterReadsZoom && layer.sourceLayer != null) {
+    if (filterOnWorker && layer.sourceLayer != null) {
       layer.filterId = FilterIds.intern(json['filter']);
     }
+    layer.readsGeometry = parser.readsGeometry;
     if (layer is! BackgroundThemeLayer) {
       layer.referencedProperties =
           parser.referencesAllProperties ? null : parser.referencedProperties;
@@ -230,6 +334,15 @@ class ThemeReader {
     return DoubleProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
+  /// A number property that is null when the style leaves it unset, for
+  /// properties whose default the renderer handles by doing nothing.
+  static DoubleProp? _optionalDouble(ExpressionParser parser, Object? json) =>
+      json == null ? null : _double(parser, json, 0);
+
+  /// [_optionalDouble] for the `[x, y]` translate properties.
+  static NumListProp? _optionalNumList(ExpressionParser parser, Object? json) =>
+      json == null ? null : _numList(parser, json, const [0, 0]);
+
   static ColorProp _color(
       ExpressionParser parser, Object? json, Color fallback) {
     if (json == null) return ColorProp.constant(fallback);
@@ -239,6 +352,29 @@ class ThemeReader {
     }
     final p = parser.parseForProperty(json);
     return ColorProp(p.expr, fallback, zoomOnly: p.zoomOnly);
+  }
+
+  /// A `numberArray` property — one number, or a literal array of them
+  /// (one per light of a multidirectional hillshade). Never empty.
+  static List<DoubleProp> _doubles(
+      ExpressionParser parser, Object? json, double fallback) {
+    if (json is List && json.isNotEmpty && json.every((e) => e is num)) {
+      return [for (final e in json) DoubleProp.constant((e as num).toDouble())];
+    }
+    return [_double(parser, json, fallback)];
+  }
+
+  /// A `colorArray` property — one colour, or a literal array of colour
+  /// strings. Never empty.
+  static List<ColorProp> _colors(
+      ExpressionParser parser, Object? json, Color fallback) {
+    if (json is List &&
+        json.isNotEmpty &&
+        !ExpressionParser.operators.contains(json.first) &&
+        json.every((e) => e is String && toColor(e) != null)) {
+      return [for (final e in json) ColorProp.constant(toColor(e)!)];
+    }
+    return [_color(parser, json, fallback)];
   }
 
   static StringProp _string(
@@ -366,4 +502,70 @@ class ThemeReader {
       return sb.toString();
     };
   }
+}
+
+/// One style's themes under different global states. Compiling a
+/// sibling re-reads the style document with the new state — under a
+/// millisecond for a full basemap on a phone — and every visible tile
+/// is then drawn again, so recent ones are kept: asking
+/// for a state again, as a `build` method does on every rebuild,
+/// returns the same instance and so does not redraw anything.
+final class _GlobalStates implements GlobalStateFamily {
+  _GlobalStates(this._style, this._baseId, this._defaults);
+
+  final Map<String, Object?> _style;
+  final String _baseId;
+  final Map<String, Object?> _defaults;
+
+  /// By canonical state, least recently used first.
+  final _themes = <String, Theme>{};
+  static const _keep = 8;
+
+  /// The theme for the default state, from layers [ThemeReader.read]
+  /// already compiled.
+  Theme adopt(List<ThemeLayer> layers) {
+    final key = _key(_defaults);
+    return _themes[key] = Theme.withFamily(
+      id: _baseId,
+      layers: layers,
+      globalState: Map.unmodifiable(_defaults),
+      family: this,
+    );
+  }
+
+  @override
+  Theme themeFor(Map<String, Object?> overrides) {
+    final state = {..._defaults};
+    overrides.forEach((name, value) {
+      if (value != null) state[name] = value;
+    });
+    final key = _key(state);
+    final cached = _themes.remove(key);
+    if (cached != null) return _themes[key] = cached;
+    // The default state compiled once already and logged whatever the
+    // style does not support; its siblings would only repeat it.
+    final compiled = ThemeReader._compile(_style, state, const Logger.noop());
+    final theme = Theme.withFamily(
+      id: key == _key(_defaults) ? _baseId : '$_baseId|state=$key',
+      layers: compiled.layers,
+      globalState: Map.unmodifiable(state),
+      family: this,
+    );
+    _themes[key] = theme;
+    if (_themes.length > _keep) _themes.remove(_themes.keys.first);
+    return theme;
+  }
+
+  /// [state] as JSON with sorted keys, so equal states share a key.
+  static String _key(Object? state) =>
+      jsonEncode(_sorted(state), toEncodable: (Object? v) => v.toString());
+
+  static Object? _sorted(Object? v) => switch (v) {
+        final Map<Object?, Object?> m => {
+            for (final k in (m.keys.map((k) => '$k').toList()..sort()))
+              k: _sorted(m[k]),
+          },
+        final List<Object?> l => [for (final e in l) _sorted(e)],
+        _ => v,
+      };
 }

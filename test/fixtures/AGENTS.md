@@ -7,8 +7,9 @@
 
 Test data builders. There are no checked-in binary tile fixtures — test tiles
 are constructed programmatically so the input to a failing test is readable in
-the test itself. The one style fixture is `liberty_layers.dart`: the layers of
-a real style reduced to what selects features.
+the test itself. Two exceptions are data, not tiles: maplibre-style-spec's
+expression fixtures, generated into a Dart file, and `liberty_layers.dart`,
+the layers of a real style reduced to what selects features.
 
 ## Key Files
 
@@ -16,8 +17,11 @@ a real style reduced to what selects features.
 |------|-------------|
 | `mvt_builder.dart` | `MvtTileBuilder` / `MvtLayerBuilder` — a minimal MVT (protobuf) encoder: layers, features, tags, geometry commands, varint and tag writing |
 | `pmtiles_builder.dart` | `PmTilesArchiveBuilder` — a minimal PMTiles v3 archive writer: header, delta-varint directories, optional leaf splitting and pluggable compression. Web-safe (arithmetic only) so the same fixtures run in the browser suite |
+| `lifecycle_harness.dart` | The widget-test harness: `app()` (a `FlutterMap` with one `VectorTileLayer` at a fixed 600×600, `landTheme()` unless a `theme` is passed), `CountingProvider` / `EverywhereProvider`, the pixel readers (`centrePixel`, `fullyPainted`) and the waits (`pumpUntil`, `settle`, `settleLoads`, `sampleDuring`) |
+| `maplibre_expression_fixtures.dart` | GENERATED — maplibre-style-spec's expression fixtures as one JSON string, a line per fixture, plus the spec commit they came from. Embedded in Dart, not read from disk, so the conformance test runs in the browser too. BSD-3-Clause, MapLibre contributors: `MAPLIBRE_LICENSE.txt` |
+| `maplibre_expression_fixtures_gen.dart` | Regenerates the file above from a maplibre-style-spec checkout: `dart run test/fixtures/maplibre_expression_fixtures_gen.dart <checkout>`. Then run the conformance test and update its divergence list |
+| `label_ids.dart` | `labelIdOf(label)`: one stable label id per distinct value, for hand-built `PlacedSymbol`s — the stand-in for the `LabelIdentityIndex` a real layer runs. Two candidates built from one value are copies of one label |
 | `liberty_layers.dart` | `libertyLayersJson` — OpenFreeMap Liberty's layers (BSD-3-Clause, from OSM Liberty) reduced to id, type, source, source layer, zoom range and filter, fetched 2026-10-26; real-world filters for `tile_filters_test.dart` |
-| `lifecycle_harness.dart` | The widget-test harness: `app()` (a `FlutterMap` with one `VectorTileLayer` at a fixed 600×600), `CountingProvider` / `EverywhereProvider`, the pixel readers (`centrePixel`, `fullyPainted`) and the waits (`pumpUntil`, `settle`, `settleLoads`, `sampleDuring`) |
 
 ## For AI Agents
 

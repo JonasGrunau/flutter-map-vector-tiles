@@ -139,7 +139,7 @@ void main() {
     ]) {
       final layer = _fillTheme(filter).layers.single;
       expect(layer.filterReadsZoom, isFalse, reason: '$filter');
-      final matched = MatchedFeatures.of(layer, sourceLayer);
+      final matched = MatchedFeatures.of(layer, sourceLayer, tile: _dataKey);
       for (final zoom in [0.0, 10.0, 14.5, 22.0]) {
         expect(
           matched,
@@ -156,7 +156,8 @@ void main() {
           reason: '$filter at zoom $zoom',
         );
       }
-      expect(MatchedFeatures.of(layer, sourceLayer), same(matched),
+      expect(
+          MatchedFeatures.of(layer, sourceLayer, tile: _dataKey), same(matched),
           reason: 'resolved once, then served from the cache');
     }
   });
@@ -178,22 +179,50 @@ void main() {
       },
     );
 
-    expect(MatchedFeatures.of(layer, sourceLayer),
+    expect(MatchedFeatures.of(layer, sourceLayer, tile: _dataKey),
         [features[0], features[2], features[5]]);
-    expect(MatchedFeatures.of(everything, sourceLayer), same(features),
+    expect(MatchedFeatures.of(everything, sourceLayer, tile: _dataKey),
+        same(features),
         reason: 'a null entry is every feature: the source list itself');
     expect(_classReads, 0);
 
     // A filter the worker did not resolve is scanned here, as before.
     final other = _fillTheme(['==', 'class', 'wood']).layers.single;
-    expect(MatchedFeatures.of(other, sourceLayer), [features[1], features[6]]);
+    expect(MatchedFeatures.of(other, sourceLayer, tile: _dataKey),
+        [features[1], features[6]]);
     expect(_classReads, features.length);
   });
 
   test('an unfiltered layer shares the source list instead of copying it', () {
     final sourceLayer = _tile(_features()).layers['landuse']!;
     final layer = _fillTheme(null).layers.single;
-    expect(MatchedFeatures.of(layer, sourceLayer), same(sourceLayer.features));
+    expect(MatchedFeatures.of(layer, sourceLayer, tile: _dataKey),
+        same(sourceLayer.features));
+  });
+
+  test('a within filter reads each feature\'s geometry in its data tile', () {
+    // The western three quarters of data tile 14/8000/5000 (lon
+    // -4.21875…-4.19678, lat 57.2196…57.2315): the centre point lies
+    // inside, the line across the tile leaves it, and polygons are
+    // never within.
+    final west = {
+      'type': 'Polygon',
+      'coordinates': [
+        [
+          [-5, 57],
+          [-4.2022705, 57],
+          [-4.2022705, 57.5],
+          [-5, 57.5],
+          [-5, 57],
+        ]
+      ],
+    };
+    final layer = _fillTheme(['within', west]).layers.single;
+    expect(layer.readsGeometry, isTrue);
+    final matched = MatchedFeatures.of(
+        layer, _tile(_features()).layers['landuse']!,
+        tile: _dataKey);
+    expect(matched!.map((f) => f.id), [6]);
   });
 
   test('a zoom-reading filter is not cached and still flips across zooms', () {
@@ -213,7 +242,8 @@ void main() {
     ]);
     final layer = theme.layers.single;
     expect(layer.filterReadsZoom, isTrue);
-    expect(MatchedFeatures.of(layer, tile.layers['landuse']!), isNull);
+    expect(MatchedFeatures.of(layer, tile.layers['landuse']!, tile: tile.key),
+        isNull);
 
     expect(_draws(theme, tile, _displayA, styleZoom: 14), isTrue);
     expect(_draws(theme, tile, _displayA, styleZoom: 16), isFalse,

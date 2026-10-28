@@ -1,6 +1,7 @@
 import '../core/tile_key.dart';
 import '../grid/raster_tile_store.dart';
 import '../pipeline/prepared_tile.dart';
+import '../tile_providers.dart';
 
 /// The prepared data backing one *display* tile, per style source.
 ///
@@ -30,12 +31,25 @@ class DisplayTileData {
   /// as [descendantSources]. Borrowed like [rasters].
   final Map<String, List<RasterTile>> descendantRasters;
 
+  /// `raster-dem` source id → the decoded tiles bordering those in
+  /// [rasters] / [descendantRasters], whichever were at hand. A
+  /// hillshade reads a tile's slope from the elevations around each
+  /// texel, so its edge texels need their neighbours' — without them it
+  /// seams. Borrowed like [rasters].
+  final Map<String, List<RasterTile>> neighbourRasters;
+
+  /// `raster-dem` source id → how its pixels encode elevation. A raster
+  /// source absent here is imagery.
+  final Map<String, DemEncoding> demEncodings;
+
   const DisplayTileData({
     required this.displayKey,
     required this.sources,
     this.rasters = const {},
     this.descendantSources = const {},
     this.descendantRasters = const {},
+    this.neighbourRasters = const {},
+    this.demEncodings = const {},
   });
 
   bool get isEmpty =>
