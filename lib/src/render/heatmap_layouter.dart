@@ -33,8 +33,12 @@ class HeatmapPoints {
   /// reads both the feature and the zoom.
   final List<PreparedFeature>? _features;
 
-  HeatmapPoints._(
-      this.layer, this.xy, this._weights, this._radii, this._features);
+  /// Per point, its feature's geometry for `within` / `distance` — kept
+  /// with [_features], and only for a layer that reads geometry.
+  final List<FeatureGeometry>? _geometries;
+
+  HeatmapPoints._(this.layer, this.xy, this._weights, this._radii,
+      this._features, this._geometries);
 
   int get length => xy.length >> 1;
 
@@ -44,6 +48,7 @@ class HeatmapPoints {
       (_weights?.lengthInBytes ?? 0) +
       (_radii?.lengthInBytes ?? 0) +
       (_features?.length ?? 0) * 8 +
+      (_geometries?.length ?? 0) * 8 +
       64;
 
   bool get uniformWeight => _weights == null && !_perPass(layer.weight);
@@ -72,7 +77,7 @@ class HeatmapPoints {
       final weights = weighted ? Float32List(length) : null;
       final radii = sized ? Float32List(length) : null;
       for (var i = 0; i < features.length; i++) {
-        final ctx = _contextOf(features[i], zoom);
+        final ctx = _contextOf(features[i], zoom, _geometries?[i]);
         if (weights != null) weights[i] = layer.weight.eval(ctx);
         if (radii != null) radii[i] = layer.radius.eval(ctx);
       }
@@ -83,11 +88,14 @@ class HeatmapPoints {
   }
 }
 
-EvalContext _contextOf(PreparedFeature feature, double zoom) => EvalContext(
+EvalContext _contextOf(
+        PreparedFeature feature, double zoom, FeatureGeometry? geometry) =>
+    featureContext(
       zoom: zoom,
       properties: feature.properties,
       geometryType: feature.geometryType,
       featureId: feature.id,
+      geometry: geometry,
     );
 
 /// Extracts the points of a display tile's heatmap layers — cheap next
@@ -139,6 +147,8 @@ abstract final class HeatmapLayouter {
       HeatmapThemeLayer layer, DisplayTileData data, double styleZoom) {
     final xy = <double>[];
     final features = <PreparedFeature>[];
+    final readsGeometry = layer.readsGeometry;
+    final geometries = readsGeometry ? <FeatureGeometry>[] : null;
     final source = layer.source;
     final sourceLayerName = layer.sourceLayer;
     final tile = source == null ? null : data.sources[source];
@@ -155,7 +165,7 @@ abstract final class HeatmapLayouter {
       final maxX = minX + frac.scale * extent;
       final maxY = minY + frac.scale * extent;
       final scale = TileRasterizer.logicalTileSize / (extent * frac.scale);
-      final matched = MatchedFeatures.of(layer, sourceLayer);
+      final matched = MatchedFeatures.of(layer, sourceLayer, tile: tile.key);
       for (final feature in matched ?? sourceLayer.features) {
         if (feature.type != PreparedGeomType.point ||
             feature.maxX < minX ||
@@ -164,7 +174,11 @@ abstract final class HeatmapLayouter {
             feature.minY >= maxY) {
           continue;
         }
-        if (matched == null && !layer.matches(_contextOf(feature, styleZoom))) {
+        final geometry = readsGeometry
+            ? featureGeometry(tile.key, sourceLayer, feature)
+            : null;
+        if (matched == null &&
+            !layer.matches(_contextOf(feature, styleZoom, geometry))) {
           continue;
         }
         for (final part in feature.parts) {
@@ -176,6 +190,7 @@ abstract final class HeatmapLayouter {
               ..add((x - minX) * scale)
               ..add((y - minY) * scale);
             features.add(feature);
+            geometries?.add(geometry!);
           }
         }
       }
@@ -193,7 +208,7 @@ abstract final class HeatmapLayouter {
         // A multipoint feature's points share one evaluation.
         if (!identical(feature, last)) {
           last = feature;
-          value = prop.eval(_contextOf(feature, styleZoom));
+          value = prop.eval(_contextOf(feature, styleZoom, geometries?[i]));
         }
         values[i] = value;
       }
@@ -209,6 +224,7 @@ abstract final class HeatmapLayouter {
       weightByFeature ? evaluate(layer.weight) : null,
       radiusByFeature ? evaluate(layer.radius) : null,
       keepFeatures ? features : null,
+      keepFeatures ? geometries : null,
     );
   }
 }

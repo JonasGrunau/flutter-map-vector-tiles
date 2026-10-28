@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import '../cache/lru_cache.dart';
 import '../core/tile_key.dart';
 import '../render/heatmap_layouter.dart';
+import '../render/hit_test.dart';
 import '../render/symbol_layouter.dart';
 
 /// A finished display tile: the rasterized geometry image plus the
@@ -26,11 +27,17 @@ class TileResult {
   /// tile so refresh logic can tell recovered sources apart.
   final Set<String> renderedWith;
 
+  /// `LabelMode.tile` only: the labels drawn into [image], for
+  /// rendered-feature queries — null when the layer that drew it had no
+  /// controller to ask, so none were recorded.
+  final List<LabelHit>? labelHits;
+
   TileResult({
     required this.image,
     required this.symbols,
     this.heatmap = const [],
     required this.renderedWith,
+    this.labelHits,
   });
 }
 
@@ -142,6 +149,7 @@ class TileResultCache {
     required List<SymbolInstance> symbols,
     List<HeatmapPoints> heatmap = const [],
     required Set<String> renderedWith,
+    List<LabelHit>? labelHits,
   }) {
     _cache.put(
       key,
@@ -149,7 +157,8 @@ class TileResultCache {
           image: image,
           symbols: symbols,
           heatmap: heatmap,
-          renderedWith: renderedWith),
+          renderedWith: renderedWith,
+          labelHits: labelHits),
     );
   }
 

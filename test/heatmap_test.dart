@@ -13,7 +13,7 @@ import 'package:flutter_map_vector_tiles/src/render/heatmap_density.dart';
 import 'package:flutter_map_vector_tiles/src/render/heatmap_layouter.dart';
 import 'package:flutter_map_vector_tiles/src/render/heatmap_painter.dart';
 import 'package:flutter_map_vector_tiles/src/style/expression.dart'
-    show HeatmapEvalContext;
+    show FeatureEvalContext;
 import 'package:flutter_test/flutter_test.dart';
 
 /// The spec's density of one point at distance [d] from it.
@@ -68,7 +68,7 @@ void main() {
       expect(layer.intensity.eval(ctx), 1);
       expect(layer.opacity.eval(ctx), 1);
       Color at(double density) => layer.color
-          .eval(HeatmapEvalContext(zoom: 10, heatmapDensity: density));
+          .eval(FeatureEvalContext(zoom: 10, heatmapDensity: density));
       expect(at(0).a, 0, reason: 'transparent where there is no density');
       expect(at(1), const Color(0xffff0000));
       expect(at(0.5), const Color(0xff00ff00)); // lime
@@ -91,7 +91,7 @@ void main() {
       }).layers.single as HeatmapThemeLayer;
       final low = layer.color.eval(const EvalContext(zoom: 5));
       final high = layer.color
-          .eval(const HeatmapEvalContext(zoom: 5, heatmapDensity: 1));
+          .eval(const FeatureEvalContext(zoom: 5, heatmapDensity: 1));
       expect(low, const Color(0xff000000));
       expect(high, const Color(0xffffffff));
     });
@@ -329,6 +329,66 @@ void main() {
           seen,
           containsAll(
               ['00:0.000,0.000', '11:0.000,0.000', '00:255.875,12.500']));
+    });
+
+    test('a filter and a weight can read the geometry (within)', () {
+      const west = {
+        'type': 'Polygon',
+        'coordinates': [
+          [
+            [-179, -80],
+            [-1, -80],
+            [-1, 80],
+            [-179, 80],
+            [-179, -80],
+          ],
+        ],
+      };
+      Theme theme(Map<String, Object?> layer) => const ThemeReader().read({
+            'layers': [
+              {
+                'id': 'heat',
+                'type': 'heatmap',
+                'source': 's',
+                'source-layer': 'pts',
+                ...layer,
+              },
+            ],
+          });
+      final data = DisplayTileData(
+        displayKey: const TileKey(0, 0, 0),
+        sources: {
+          's': tileOf(const TileKey(0, 0, 0), [
+            point(1000, 2048), // west of Greenwich
+            point(3000, 2048), // east of it
+          ]),
+        },
+      );
+      final filtered = HeatmapLayouter.layout(
+        theme: theme({
+          'filter': ['within', west],
+        }),
+        data: data,
+        styleZoom: 0,
+      ).single;
+      expect(filtered.length, 1);
+      expect(filtered.xy[0], closeTo(1000 / 16, 1e-3));
+
+      final weighted = HeatmapLayouter.layout(
+        theme: theme({
+          'paint': {
+            'heatmap-weight': [
+              'case',
+              ['within', west],
+              1,
+              0,
+            ],
+          },
+        }),
+        data: data,
+        styleZoom: 0,
+      ).single;
+      expect(weighted.weightsAt(0), [1, 0]);
     });
 
     test('lines and polygons are not heatmap points', () {
