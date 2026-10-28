@@ -14,6 +14,7 @@ import 'package:flutter_map_vector_tiles/src/style/feature_state.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 
+import 'fixtures/glyph_pbf_builder.dart';
 import 'fixtures/label_ids.dart';
 import 'fixtures/lifecycle_harness.dart' show boundaryKey, pumpUntil;
 import 'fixtures/mvt_builder.dart';
@@ -218,6 +219,7 @@ Future<void> _pumpMap(
   LabelMode labelMode = LabelMode.screen,
   bool retainAllProperties = false,
   TileProviders? providers,
+  GlyphSource? glyphs,
   Key? layerKey,
 }) async {
   _sizeView(tester);
@@ -244,6 +246,7 @@ Future<void> _pumpMap(
             tileFadeDuration: Duration.zero,
             labelMode: labelMode,
             retainAllProperties: retainAllProperties,
+            glyphs: glyphs,
             concurrency: 1,
             diskCacheMaximumSizeInBytes: 0,
           ),
@@ -399,6 +402,83 @@ void main() {
     final park = controller.queryRenderedFeatures(_mid).last;
     expect(park.properties, {'kind': 'grass', 'name': 'Park', 'osm': 'way/5'});
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a curved label drawn from the style\'s glyphs is found on it',
+      (tester) async {
+    // An arc over the top of the centre tile, around (128, 260) with a
+    // radius of 160 px, its middle vertex at (128, 100). "AAAA" in the
+    // test glyphs (advance 12 at size 24) turns ~0.3 rad along it, so
+    // it is drawn glyph by glyph, not as one rotated string.
+    final arc = [
+      for (var deg = 140; deg >= 40; deg -= 10)
+        (
+          (128 + 160 * math.cos(deg * math.pi / 180)) * _px,
+          (260 - 160 * math.sin(deg * math.pi / 180)) * _px,
+        ),
+    ];
+    final geometry = <int>[cmd(1, 1)];
+    var (px, py) = (0, 0);
+    for (var i = 0; i < arc.length; i++) {
+      final (x, y) = (arc[i].$1.round(), arc[i].$2.round());
+      if (i == 1) geometry.add(cmd(2, arc.length - 1));
+      geometry
+        ..add(zig(x - px))
+        ..add(zig(y - py));
+      (px, py) = (x, y);
+    }
+    const stack = 'Test Regular';
+    final glyphs = GlyphSource(
+      load: (stack, start) async => GlyphPbfBuilder()
+          .stack(stack, '$start-${start + 255}', [TestGlyph(0x41)]).build(),
+      signature: 'curved-label-test',
+    );
+    addTearDown(glyphs.dispose);
+    final controller = VectorTileLayerController();
+    await _pumpMap(
+      tester,
+      controller: controller,
+      glyphs: glyphs,
+      theme: const ThemeReader().read({
+        'layers': [
+          {
+            'id': 'name',
+            'type': 'symbol',
+            'source': 's',
+            'source-layer': 'road',
+            'layout': {
+              'symbol-placement': 'line-center',
+              'text-field': '{name}',
+              'text-font': [stack],
+              'text-size': 24,
+            },
+          },
+        ],
+      }),
+      providers: TileProviders({
+        's': MemoryVectorTileProvider(
+          tiles: {
+            _centre: MvtTileBuilder()
+                .layer('road')
+                .feature(
+                    id: 7,
+                    type: 2,
+                    geometry: geometry,
+                    properties: {'name': 'AAAA'})
+                .done()
+                .build(),
+          },
+          cacheKey: 'rendered-features-curved-glyph-label',
+        ),
+      }),
+    );
+    final onLabel = _onScreen(128, 100);
+    final found = await pumpUntil(tester,
+        () async => controller.queryRenderedFeatures(onLabel).isNotEmpty);
+    expect(found, isTrue, reason: 'the label never drew');
+    expect(_names(controller.queryRenderedFeatures(onLabel)), ['name:7']);
+    // Just off it, on the outside of the bend: half a glyph cell is 10 px.
+    expect(controller.queryRenderedFeatures(_onScreen(128, 76)), isEmpty);
   });
 
   testWidgets('labels drawn into the tiles are found too', (tester) async {
