@@ -217,6 +217,11 @@ class TextStyleMemo {
   /// unchanged the style expressions need not be re-evaluated at all.
   double zoom;
 
+  /// The feature-state version this memo was last validated at, for a
+  /// layer reading `feature-state` (0 otherwise): a state change makes
+  /// it stale at an unchanged zoom too.
+  int stateVersion;
+
   TextStyleMemo({
     required this.fillArgb,
     required this.haloArgb,
@@ -227,6 +232,7 @@ class TextStyleMemo {
     required this.styleKey,
     required this.cacheKey,
     required this.zoom,
+    this.stateVersion = 0,
   });
 
   bool matches(

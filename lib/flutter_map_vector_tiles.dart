@@ -27,3 +27,6 @@ export 'src/text/glyph_source.dart' show GlyphRangeLoader, GlyphSource;
 export 'src/tile_offset.dart';
 export 'src/tile_providers.dart';
 export 'src/vector_tile_layer.dart';
+// FeatureQueryHost stays internal: it is how a layer attaches itself.
+export 'src/vector_tile_layer_controller.dart'
+    show RenderedFeature, VectorTileLayerController;

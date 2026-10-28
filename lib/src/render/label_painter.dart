@@ -10,6 +10,7 @@ import 'package:meta/meta.dart';
 import '../cache/lru_cache.dart';
 import '../core/tile_zoom.dart';
 import '../style/expression.dart';
+import '../style/feature_state.dart';
 import '../style/sprite_atlas.dart';
 import '../style/theme.dart';
 import '../text/glyph_pbf.dart';
@@ -18,6 +19,7 @@ import '../text/glyph_shaper.dart';
 import '../text/glyph_source.dart';
 import 'fade.dart';
 import 'glyph_atlas.dart';
+import 'hit_test.dart';
 import 'label_continuity.dart';
 import 'symbol_layouter.dart';
 
@@ -323,6 +325,43 @@ class LabelPainter {
   @visibleForTesting
   int get debugGlyphCacheLength => _glyphCache.length;
 
+  /// The feature state symbol layers reading `feature-state` evaluate
+  /// their paint properties with; null evaluates every label stateless.
+  /// Set by the layer, which owns it.
+  FeatureStates? featureStates;
+
+  /// The state of [instance]'s feature, for a layer that reads it.
+  Map<String, Object?>? _stateOf(SymbolInstance instance) {
+    final layer = instance.layer;
+    if (!layer.readsFeatureState) return null;
+    return featureStates?.lookup(
+        layer.source, layer.sourceLayer, instance.featureId);
+  }
+
+  /// [featureStates]' version, or 0 without any.
+  int get _stateVersion => featureStates?.version ?? 0;
+
+  /// What the last [paint] drew, in draw order — kept so a
+  /// rendered-feature query can hit-test the labels on screen
+  /// ([hitTestLabels]) without the frame paying anything for it: the
+  /// shapes are only worked out when someone asks. Holds the frame's
+  /// text painters, so everything that disposes them between frames
+  /// ([trimCaches], [paintTile]'s retirement, [reset], [dispose]) clears
+  /// it first.
+  List<_DrawableSymbol> _lastDrawn = const [];
+
+  /// The labels and icons the last [paint] drew that [area] (in screen
+  /// pixels) touches, topmost first. Fading-out ghosts and symbols the
+  /// zoom ramp has retired are not on screen as far as a query is
+  /// concerned.
+  List<SymbolInstance> hitTestLabels(HitArea area) => [
+        for (final drawable in _lastDrawn.reversed)
+          if (drawable.opacity > 0 &&
+              !drawable.isGhost &&
+              drawable.hitQuads().any(area.hitsConvex))
+            drawable.symbol.instance,
+      ];
+
   /// Releases the shaped text and glyphs not used since the last
   /// placement pass began, keeping what is on screen and what was
   /// shaped or [prewarm]ed since — for memory pressure, see
@@ -342,6 +381,7 @@ class LabelPainter {
   /// next pass comes. That is safe because this runs between frames, so
   /// no prepared symbol still holds them.
   void trimCaches() {
+    _lastDrawn = const [];
     _textCache.removeWhere((_, text) => text.pass != _pass);
     _glyphCache.removeWhere((_, glyph) => glyph.pass != _pass);
     _disposeRetired();
@@ -492,6 +532,7 @@ class LabelPainter {
   /// where every symbol instance is replaced and layer indices change
   /// meaning.
   void reset() {
+    _lastDrawn = const [];
     _fades.clear();
     _fallbacks.clear();
     _winners.clear();
@@ -791,6 +832,7 @@ class LabelPainter {
     }
     final drawStopwatch = Stopwatch()..start();
     final drawn = _draw(canvas, toDraw, devicePixelRatio, anyFading);
+    _lastDrawn = toDraw;
     debugDrawMicros += drawStopwatch.elapsedMicroseconds;
     return drawn;
   }
@@ -916,12 +958,17 @@ class LabelPainter {
   /// the style and gates layers by their zoom range. [devicePixelRatio]
   /// is the canvas's scale to backing pixels, used exactly as [paint]
   /// uses the screen's: to size glyph-atlas cells and snap text.
+  ///
+  /// When [hits] is given, the drawn labels' hit shapes, in tile
+  /// coordinates, are added to it, for rendered-feature queries over a
+  /// tile whose labels are part of its image.
   List<PlacedSymbol> paintTile({
     required Canvas canvas,
     required List<SymbolInstance> symbols,
     required double styleZoom,
     SpriteAtlas? sprites,
     double devicePixelRatio = 1,
+    List<LabelHit>? hits,
   }) {
     developer.Timeline.startSync('VT tile labels');
     debugTilePaintCount++;
@@ -931,6 +978,8 @@ class LabelPainter {
     _memory = PlacementMemory();
     _repeatAnchors = {};
     try {
+      // The screen pass's drawables may hold painters retired since.
+      _lastDrawn = const [];
       _disposeRetired();
       _pass++;
       const tile = Size.square(displayTileSize);
@@ -964,7 +1013,15 @@ class LabelPainter {
         toDraw.add(drawable);
         anyTranslucent |= drawable.opacity < 1;
       }
-      return _draw(canvas, toDraw, devicePixelRatio, anyTranslucent);
+      final drawn = _draw(canvas, toDraw, devicePixelRatio, anyTranslucent);
+      if (hits != null) {
+        for (final drawable in toDraw) {
+          if (drawable.opacity > 0) {
+            hits.add(LabelHit(drawable.symbol.instance, drawable.hitQuads()));
+          }
+        }
+      }
+      return drawn;
     } finally {
       _memory = screenMemory;
       _repeatAnchors = screenRepeats;
@@ -1170,6 +1227,7 @@ class LabelPainter {
         properties: instance.properties,
         geometryType: instance.geometryType,
         featureId: instance.featureId,
+        featureState: _stateOf(instance),
         geometry: instance.geometry,
       );
       if (layer.textOpacity.eval(ctx) <= 0) continue;
@@ -1242,6 +1300,7 @@ class LabelPainter {
       properties: instance.properties,
       geometryType: instance.geometryType,
       featureId: instance.featureId,
+      featureState: _stateOf(instance),
       geometry: instance.geometry,
     );
 
@@ -1793,7 +1852,12 @@ class LabelPainter {
     // as-is. Only the key: the laid-out text itself belongs to the LRU,
     // which may evict and dispose it.
     final memo = instance.textStyleMemo;
-    if (memo != null && memo.zoom == ctx.zoom) {
+    // A style reading feature state is also stale once any state
+    // changed — the zoom alone does not vouch for it.
+    final stateVersion = layer.readsFeatureState ? _stateVersion : 0;
+    if (memo != null &&
+        memo.zoom == ctx.zoom &&
+        memo.stateVersion == stateVersion) {
       return _cachedOrShape(instance, memo);
     }
 
@@ -1822,6 +1886,7 @@ class LabelPainter {
         memo.matches(fillArgb, haloArgb, haloRatioQ, fonts, letterSpacingEm,
             maxWidthEm)) {
       memo.zoom = ctx.zoom;
+      memo.stateVersion = stateVersion;
       return _cachedOrShape(instance, memo);
     }
 
@@ -1840,6 +1905,7 @@ class LabelPainter {
       styleKey: styleKey,
       cacheKey: cacheKey,
       zoom: ctx.zoom,
+      stateVersion: stateVersion,
     );
     instance.textStyleMemo = built;
     return _cachedOrShape(instance, built);
@@ -2699,6 +2765,7 @@ class LabelPainter {
   }
 
   void dispose() {
+    _lastDrawn = const [];
     _textCache.clear();
     _glyphCache.clear();
     _glyphAtlas.clear();
@@ -3192,6 +3259,34 @@ class _DrawableSymbol {
               symbol.screenAnchor, text.size.width, text.size.height));
     }
     return result ?? Rect.zero;
+  }
+
+  /// The convex quads this symbol covers on the canvas it is drawn on:
+  /// its icon, and its text as one box or, curved, a box per glyph.
+  /// Tighter than [bounds], which sweeps rotated pieces into circles —
+  /// right for a fade layer, too coarse for picking what was tapped.
+  /// Reads the text painters, so only while they are alive.
+  List<List<Offset>> hitQuads() {
+    final quads = <List<Offset>>[];
+    final icon = this.icon;
+    if (icon != null) {
+      quads.add(rotatedRect(icon.rect, icon.pivot, icon.rotation));
+    }
+    final glyphs = curvedGlyphs;
+    final text = this.text;
+    if (glyphs != null) {
+      for (final glyph in glyphs) {
+        final painter = glyph.painters.fill;
+        quads.add(rotatedBox(glyph.position, painter.width * textScale,
+            painter.height * textScale, glyph.angle));
+      }
+    } else if (text != null) {
+      quads.add(textAngle == 0
+          ? rotatedRect(textRect, textRect.center, 0)
+          : rotatedBox(symbol.screenAnchor, text.size.width * textScale,
+              text.size.height * textScale, textAngle));
+    }
+    return quads;
   }
 
   void draw(Canvas canvas, double devicePixelRatio) {
