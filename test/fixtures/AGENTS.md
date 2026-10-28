@@ -19,6 +19,8 @@ expression fixtures, generated into a Dart file.
 | `lifecycle_harness.dart` | The widget-test harness: `app()` (a `FlutterMap` with one `VectorTileLayer` at a fixed 600×600, `landTheme()` unless a `theme` is passed), `CountingProvider` / `EverywhereProvider`, the pixel readers (`centrePixel`, `fullyPainted`) and the waits (`pumpUntil`, `settle`, `settleLoads`, `sampleDuring`) |
 | `maplibre_expression_fixtures.dart` | GENERATED — maplibre-style-spec's expression fixtures as one JSON string, a line per fixture, plus the spec commit they came from. Embedded in Dart, not read from disk, so the conformance test runs in the browser too. BSD-3-Clause, MapLibre contributors: `MAPLIBRE_LICENSE.txt` |
 | `maplibre_expression_fixtures_gen.dart` | Regenerates the file above from a maplibre-style-spec checkout: `dart run test/fixtures/maplibre_expression_fixtures_gen.dart <checkout>`. Then run the conformance test and update its divergence list |
+| `label_ids.dart` | `labelIdOf(label)`: one stable label id per distinct value, for hand-built `PlacedSymbol`s — the stand-in for the `LabelIdentityIndex` a real layer runs. Two candidates built from one value are copies of one label |
+| `lifecycle_harness.dart` | The widget-test harness: `app()` (a `FlutterMap` with one `VectorTileLayer` at a fixed 600×600), `CountingProvider` / `EverywhereProvider`, the pixel readers (`centrePixel`, `fullyPainted`) and the waits (`pumpUntil`, `settle`, `settleLoads`, `sampleDuring`) |
 
 ## For AI Agents
 
