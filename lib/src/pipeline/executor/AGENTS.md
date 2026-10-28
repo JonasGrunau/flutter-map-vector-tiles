@@ -14,7 +14,7 @@ This is the package's only platform-conditional code.
 | File | Description |
 |------|-------------|
 | `executor.dart` | `abstract class TilePrepareExecutor` — the contract, plus the factory redirect `factory TilePrepareExecutor({int concurrency}) = impl.PlatformExecutor` wired through a conditional import |
-| `isolate_executor.dart` | Native `PlatformExecutor`: a pool of long-lived worker isolates (default concurrency 3) with a priority queue, `_Worker` spawn/ready/idle/exit lifecycle, worker replacement on death, and a sticky inline fallback when no worker can be spawned |
+| `isolate_executor.dart` | Native `PlatformExecutor`: a pool of long-lived worker isolates (default concurrency 3) with a priority queue, `_Worker` spawn/ready/idle/exit lifecycle, worker replacement on death, and a sticky inline fallback when no worker can be spawned. Each `_Worker` remembers which `FilterIds` it was sent; a job naming one it has not seen travels as `_Filters` (the JSON sources + the input), and the worker compiles them into its `CompiledFilters` before preparing. The inline fallback resolves no filters |
 | `direct_executor.dart` | Web `PlatformExecutor`: no isolate support for this workload, so jobs run chunked on the event loop (default concurrency 2) |
 
 ## For AI Agents
@@ -41,6 +41,10 @@ This is the package's only platform-conditional code.
   and is replaced on the next dispatch — never a permanently busy ghost.
 - `dispose()` must kill isolates *and* drain pending jobs, otherwise closing a
   map leaks an isolate per open.
+- **Filter sources are tracked per worker, not per pool.** A replacement
+  worker starts with nothing compiled, so it must be sent every source
+  again; tracking at pool level would leave it resolving nothing — not
+  wrong (the UI isolate scans instead) but silently slower.
 
 ### Testing Requirements
 

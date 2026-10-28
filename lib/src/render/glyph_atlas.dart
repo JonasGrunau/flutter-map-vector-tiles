@@ -46,6 +46,12 @@ class GlyphAtlas {
   @visibleForTesting
   int get debugPageCount => _pages.length;
 
+  /// Changes whenever cells are lost — a page evicted, the atlas
+  /// cleared — so a caller that kept cells from an earlier frame can
+  /// tell whether they are still there.
+  int get generation => _generation;
+  var _generation = 0;
+
   @visibleForTesting
   int get debugCellCount => _cells.length;
 
@@ -60,6 +66,10 @@ class GlyphAtlas {
     if (cell != null) _pages[cell.page].lastUsed = _frame;
     return cell;
   }
+
+  /// Marks the page of [cell] — kept from an earlier [lookup] or
+  /// [reserve] in this [generation] — as used this frame.
+  void use(GlyphAtlasCell cell) => _pages[cell.page].lastUsed = _frame;
 
   /// Allocates a [width]×[height] device-pixel cell for [key] and queues
   /// [paint] to draw into it at the next [flush], with the canvas origin
@@ -127,6 +137,7 @@ class GlyphAtlas {
   }
 
   void _evict(int index) {
+    _generation++;
     final page = _pages[index];
     for (final key in page.keys) {
       _cells.remove(key);
@@ -166,6 +177,7 @@ class GlyphAtlas {
 
   /// Drops every page, e.g. after the GPU context may have been revoked.
   void clear() {
+    _generation++;
     for (final page in _pages) {
       page.image?.dispose();
     }

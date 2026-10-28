@@ -11,6 +11,8 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fixtures/label_ids.dart';
+
 // Which of two colliding labels of one layer wins, when neither has a
 // lower symbol-sort-key: MapLibre places a layer tile by tile and, in
 // each tile, feature by feature in source order, so the earlier
@@ -75,6 +77,7 @@ PlacedSymbol _placed(
 }) =>
     PlacedSymbol(
       instance: instance,
+      id: labelIdOf(instance.text),
       screenAnchor: tileOrigin + instance.anchor,
       screenAngle: 0,
       retained: retained,

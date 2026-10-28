@@ -2,16 +2,228 @@
 
 ## Unreleased
 
+- ✨ **Global state**: styles can use `global-state` expressions, with
+  defaults from the style's root `state`, and
+  `Theme.withGlobalState({...})` gives the theme for other values. The
+  state is compiled into the theme, so drawing costs nothing extra, and
+  the same state returns the same theme, so the call is safe in `build`.
+  When `VectorTileLayer` gets the same style under another state, it
+  redraws from the tiles it already decoded and keeps the old imagery
+  until the new one is ready. `Theme.globalState` holds the values in
+  effect.
+- ✨ **Hillshade**: `hillshade` layers draw now, shading the terrain from
+  a style's `raster-dem` source (Terrarium, Mapbox Terrain-RGB or a
+  `custom` encoding) at the layer's position, with every paint property
+  MapLibre has: all five `hillshade-method`s (`multidirectional` with up
+  to four lights), illumination direction, altitude and anchor,
+  exaggeration, shadow, highlight and accent colours, and `resampling`.
+  Before, the layer was skipped with a log line. Slopes are read across
+  tile edges from the neighbouring elevation tiles, so the shading has
+  no seams; those neighbours are fetched too. `StyleReader` puts
+  `raster-dem` sources into `style.rasterSources`, which you already
+  pass to the layer; built by hand, a `RasterTileSource` takes the new
+  `encoding` (`DemEncoding.terrarium`, `.mapbox`, or your own factors).
+  Next to MapLibre GL JS at the same camera the shading differs by 0.2–5
+  grey levels on average, natively and on the web. Tiles are shaded
+  once and turn with the map, so `hillshade-illumination-anchor:
+  viewport`, the default, is drawn as if the map were not rotated.
+  On a mid-range Android phone the shading adds about 0.2 ms of UI
+  time per tile and frame times stay where they were; the decoded
+  elevation tiles add about 35 MB of memory at z13.
+- ✨ **Heatmaps**: `heatmap` layers draw, where they were skipped with
+  a log line before. The density is MapLibre's — every point of the
+  source layer adds a Gaussian kernel of `heatmap-radius`, scaled by
+  `heatmap-weight` and `heatmap-intensity`, and `heatmap-color` is read
+  at the sum through `["heatmap-density"]` (until now a constant 0) —
+  with data-driven weights and radii, and `heatmap-opacity`. Like
+  MapLibre's it is summed in screen space across tile seams. It is
+  recomputed on a worker isolate (on the event loop on web) when the
+  zoom or the tiles change, at most every 100 ms, and follows the camera
+  in between. A heatmap draws over every geometry layer and under the
+  labels, wherever the style puts it, and counts point features only.
+  `HeatmapThemeLayer` joins the sealed `ThemeLayer` hierarchy, so a
+  `switch` over `ThemeLayer` that names every subtype needs a case for
+  it.
+- ✨ **Rendered-feature queries**: a `VectorTileLayerController` passed
+  to `VectorTileLayer.controller` answers what the layer draws at a
+  point or in a rectangle of the map widget (`queryRenderedFeatures`,
+  `queryRenderedFeaturesInRect`, optionally limited to some style layer
+  ids), topmost first, as MapLibre's `queryRenderedFeatures` does: the
+  labels and icons the last frame drew, then fill, line and circle
+  features. Each `RenderedFeature` names the style layer that drew it,
+  its source, source layer, id, properties, geometry type and state.
+  Hits follow what is drawn, holes, line widths and casings, circle
+  radii, overzoom and map rotation included; a query on a dense z16
+  screen takes 1–2 ms on a mid-range Android phone.
+- ✨ **Feature state**: `setFeatureState`, `removeFeatureState` and
+  `getFeatureState` on the controller, read in paint properties by the
+  `feature-state` expression, which used to evaluate to nothing. A change
+  re-renders only the display tiles that draw the feature from a layer
+  that reads state, labels kept in place; selecting a building
+  redraws its tiles in about a quarter of a second on the same phone.
+- ✨ Vector sources' `promoteId` is applied, so a property can stand in
+  for feature ids, in `["id"]`, feature state and query results.
+  `StyleReader` reads it; `TileProviders.promoteIds` carries it for
+  hand-built sources.
+- ✨ `VectorTileLayer.retainAllProperties` keeps every feature property
+  when tiles are decoded, so query results carry the properties the
+  style does not read too. On OpenMapTiles data the decoded tiles grow
+  by about 27%, inside the same memory cap.
+- ✨ **Style fonts**: `VectorTileLayer.glyphs` takes the style's glyph
+  PBFs, which `StyleReader` now loads as `Style.glyphs` for every style
+  that declares `glyphs`. Labels in Latin, Greek, Cyrillic, Armenian and
+  Georgian are then drawn in the style's own fonts, as MapLibre draws
+  them, wrapped into balanced lines as MapLibre wraps them, and laid out
+  in Dart from the glyphs' metrics instead of by the platform's text
+  shaper. Text that needs complex shaping (right-to-left and Indic
+  scripts, Thai and its neighbours, combining marks, emoji), CJK, and
+  text whose glyphs are missing keep the system fonts. Glyph ranges load
+  on first use, go through the style cache (so they work offline where
+  the map has been), and a tile's labels wait for theirs instead of
+  switching fonts once they arrive. New public API: `GlyphSource`,
+  `GlyphRangeLoader`.
+- 🎨 Every expression operator of the current MapLibre style spec now
+  compiles. `within` and `distance` test the feature's geometry against
+  a GeoJSON argument, `distance` in metres. Also new: `number-format`
+  (locale digits and currencies through `intl`, English unit symbols),
+  `join`, `split` and `semiliteral`. `elevation` is null, since no
+  terrain is drawn. Before, a layer using any of these got the
+  property's default and logged a warning. Checked against the 583
+  expression fixtures of `maplibre-style-spec`, 324 of the 425 that
+  MapLibre evaluates now give its result, up from 203. The rest are
+  listed with reasons in the test suite.
+- 🎨 **More of the style spec drawn on fills, lines, circles and
+  backgrounds.** `fill-translate`, `line-translate`, `circle-translate`
+  and `fill-extrusion-translate` move their geometry, patterns included
+  (Bright's and VersaTiles' raised building tops, OSM Bright's water
+  edge); `fill-sort-key`, `line-sort-key` and `circle-sort-key` order a
+  layer's features (Americana stacks its roads with them); `line-offset`
+  shifts a line sideways and insets a polygon's outline; `line-blur`
+  fades line edges over MapLibre's ramp (Americana's roads, the borders
+  of OpenFreeMap's dark and fiord styles, the MapLibre demo's
+  coastline) — a blur under about 0.6 px only thins the line, since
+  blurring costs GPU passes; `circle-blur`, `background-pattern`, and `resampling` /
+  `raster-resampling: nearest` for blocky overzoomed rasters. Until now
+  all of these were parsed past and drawn as if unset. The compiled
+  `FillThemeLayer`, `LineThemeLayer`, `CircleThemeLayer`,
+  `BackgroundThemeLayer` and `RasterThemeLayer` carry them as new
+  optional fields, and `Theme.backgroundColor` is null under a
+  `background-pattern`, which replaces the colour. `line-gradient`
+  (which needs a GeoJSON source) and `line-round-limit` are still not
+  drawn; the README's style support section has the details.
+- ⚡ With `glyphs`, laying out a tile's labels takes a small fraction
+  of the UI-thread time it did: the 222 label candidates of a dense
+  Munich tile took 31–32 ms of platform text shaping on a Nothing
+  Phone (1) and now take 0.7–0.8 ms, and the first labels of a session
+  no longer pay the ~20 ms of the platform's first shaping call. A
+  shaped label also keeps about a hundred bytes in the text cache
+  instead of two `TextPainter`s.
+- ⚡ A fresh tile no longer tests its features against the style's
+  layer filters on the UI thread. The background isolates that decode
+  tiles now also resolve every filter that reads neither the zoom nor
+  `global-state` nor the feature's geometry, so the first draw of a
+  tile only looks up the features they matched. On the Android test
+  phone this takes a dense Munich tile's filter matching from 19 ms to
+  under 1 ms of UI time and a fresh z17 tile's first draw and label
+  layout from 21 ms to 4 ms; the first complete map came 40–90 ms
+  sooner (median of five runs), and frame rates didn't change. On an
+  iPhone 15 Pro Max the same tile's filter matching drops from about
+  6 ms to under 0.5 ms. The isolates spend about 16 ms (Android) and
+  4 ms (iPhone) more per such tile. Web, whose tile preparation already
+  runs on the UI thread, is unchanged.
+- ⚡ The label pass spends less of the UI thread on bookkeeping. On
+  every frame that drew a curved label it built a `style#character`
+  string per glyph just to find that glyph's cached painters, and it
+  rehashed each label's identity key several times over; on an Android
+  phone zooming through the bench's sweeps that was up to 9 % of the UI
+  thread's samples. Shaped text now keeps its glyphs and those keys
+  carry their hash, so the label pass takes 4–10 % less UI-thread time
+  there, and frames that replay the last placement 19–31 % less.
+  Labels look the same.
+- ⚡ The label pass no longer searches for every label's previous place
+  on screen each frame, which makes its sort and fade sweep cheaper. On
+  the Nothing Phone (1), the compare harness's camera runs deliver 1 to
+  2 points more frames, with a UI-thread p90 1 to 2 ms lower.
+- 🐛 An Arabic or Hebrew label holding a Latin word read from the left:
+  labels were laid out left to right whatever their script, so
+  "شارع King Fahd" drew the Arabic word first, on the left. Each line
+  now takes its direction from its first letter, as in MapLibre, and a
+  line `text-max-width` wraps keeps the direction of the text it came
+  from.
+- 🐛 Chinese labels never wrapped at `text-max-width`: the text engine
+  reports a run of ideographs without a space as one unbreakable word,
+  so the whole name stayed on one line. Chinese and Japanese now break
+  between characters, as in MapLibre.
+- 🐛 A label with a word wider than `text-max-width` could split a
+  word across two lines: when a line began with a character made of
+  several code units (a Bengali or Devanagari syllable, an emoji, a
+  letter with a combining accent), that character stayed at the end of
+  the line above — "হযরত শা" over "হজালাল".
+- 🐛 `interpolate-hcl` and `interpolate-lab` blended in RGB, so every
+  colour between two stops differed from MapLibre's. They now blend in
+  their own colour space.
+- 🐛 `cubic-bezier` easing was off by up to 0.7% of the ramp (0.2% for
+  the common `ease` curves), because Flutter's `Cubic` only
+  approximates the curve. It is now solved to 1e-6.
+- 🐛 `to-number` gave 0 for a value it could not convert, so the
+  property drew 0 instead of its default; it now falls back as MapLibre
+  does, and still turns null into 0.
+- 🐛 String operators counted UTF-16 code units, so `length`, `slice` and
+  `index-of` split emoji and other characters outside the Basic
+  Multilingual Plane. `slice` gave an empty result for negative indices,
+  `index-of` ignored its start index, `in` found a null needle in any
+  string, and `to-string` wrote arrays and objects in Dart's notation
+  instead of JSON. `typeof` now names an array's item type.
+- 🐛 `format` drew the names of its inline images as text, in front of
+  or between the label's words. Images are now left out.
+- 🐛 Legacy zoom-and-property functions (stops keyed
+  `{"zoom": …, "value": …}`) were not understood and drew their
+  property's default. Legacy functions over numeric strings
+  (`[[0, "0"], [1, "1"]]`) blended them as numbers, and a stop listed
+  twice took the second output instead of the first.
+- 🐛 Sharp corners of miter-joined lines — `miter` is the spec's
+  default join — drew long spikes. Lines were stroked with Skia's miter
+  limit of 4 instead of the spec's `line-miter-limit` default of 2, so
+  turns leaving an angle between about 29° and 60° were mitered where
+  MapLibre bevels them. `line-miter-limit` is now read, and its default
+  applies.
+- 🐛 Circle strokes were centred on `circle-radius`, half of them over
+  the fill, so a stroked circle came out half a stroke width smaller
+  than in MapLibre. The stroke now lies outside the radius, as the spec
+  says.
 - 🐛 When two labels of one layer collide and neither has a lower
   `symbol-sort-key`, the one MapLibre shows now wins. The label higher
   on the screen used to win, so a different label could show than in
   MapLibre: at Munich's Marienplatz, the shield of staircase MP30 where
   MapLibre shows MP31's. Labels are now placed in MapLibre's order,
   tile by tile and, within a tile, feature by feature.
+- 🐛 During a fast zoom, a label the last collision pass had placed
+  could stop drawing until the next pass once its tile was replaced
+  under it (a republish, the next zoom level arriving), because the
+  label pass no longer recognised it. It now keeps drawing from the new
+  tile's copy: the bench's fastest sweep draws about half as many
+  labels again per frame.
+- 🐛 One-way arrows just past a zoom crossing could vanish at full
+  opacity instead of fading out. They fade now.
+- 🐛 A label two tiles laid out at once — the feature on a seam that
+  both neighbours claim, or the outgoing and arriving level's copy
+  during a zoom crossing — drew twice, one copy over the other, in a
+  layer with `text-allow-overlap` or `icon-allow-overlap`, where nothing
+  collided to remove the second copy. One label now draws once.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same
   stalls and the same worst frame gap), and every other device tied.
+- 📦 `intl` is now a direct dependency, for `number-format`. Every app
+  already has it through `latlong2`.
+- 🧹 Every label has an identity that outlives the tile it was laid out
+  for: when a tile publishes, its labels are matched to the ones already
+  on screen by name and position, and a republished tile, the next zoom
+  level and both sides of a seam carry the same label on. The label pass
+  keys its fades, its placement memory and the frozen decision between
+  collision passes on it, instead of matching every label by screen
+  position on every frame. Two same-named labels within 32 px of each
+  other no longer share one fade.
 
 ## 2.10.1
 

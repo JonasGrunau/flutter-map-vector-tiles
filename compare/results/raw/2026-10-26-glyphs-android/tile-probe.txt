@@ -1,0 +1,32 @@
+== main round 1
+arm main
+process-first prewarm z16 (108 candidates): 22.1 ms
+z16 108 candidates, 17 drawn | shaping median 9.3 (min 9.1, max 10.1) ms | first paint median 0.7 (min 0.7, max 2.3) ms | second paint median 0.5 (min 0.4, max 0.5) ms | glyph wait 0.0 ms | shaped 58, paragraphs
+z14 222 candidates, 37 drawn | shaping median 32.3 (min 32.0, max 37.5) ms | first paint median 1.3 (min 1.3, max 2.0) ms | second paint median 0.9 (min 0.8, max 1.0) ms | glyph wait 0.0 ms | shaped 134, paragraphs
+z16 108 candidates, 17 drawn | shaping median 9.4 (min 9.3, max 17.8) ms | first paint median 0.7 (min 0.7, max 0.8) ms | second paint median 0.4 (min 0.4, max 0.5) ms | glyph wait 0.0 ms | shaped 58, paragraphs
+z14 222 candidates, 37 drawn | shaping median 32.2 (min 31.9, max 34.2) ms | first paint median 1.4 (min 1.3, max 1.5) ms | second paint median 0.9 (min 0.9, max 1.0) ms | glyph wait 0.0 ms | shaped 134, paragraphs
+== branch round 1
+arm branch
+process-first prewarm z16 (108 candidates): 0.5 ms
+z16 108 candidates, 18 drawn | shaping median 0.3 (min 0.2, max 0.3) ms | first paint median 1.2 (min 1.0, max 1.2) ms | second paint median 0.4 (min 0.3, max 0.4) ms | glyph wait 0.0 ms | shaped 58, from glyphs 58, atlas cells 115 on 1 pages
+z14 222 candidates, 39 drawn | shaping median 0.7 (min 0.7, max 2.5) ms | first paint median 1.8 (min 1.8, max 1.9) ms | second paint median 0.8 (min 0.7, max 1.0) ms | glyph wait 0.1 ms | shaped 134, from glyphs 134, atlas cells 185 on 1 pages
+z16 108 candidates, 18 drawn | shaping median 0.3 (min 0.3, max 0.4) ms | first paint median 1.1 (min 0.9, max 1.3) ms | second paint median 0.4 (min 0.3, max 0.4) ms | glyph wait 0.0 ms | shaped 58, from glyphs 58, atlas cells 115 on 1 pages
+z14 222 candidates, 39 drawn | shaping median 0.8 (min 0.7, max 1.0) ms | first paint median 1.9 (min 1.7, max 3.8) ms | second paint median 0.7 (min 0.6, max 0.9) ms | glyph wait 0.1 ms | shaped 134, from glyphs 134, atlas cells 185 on 1 pages
+ranges requested 3: Noto Sans Italic 0, Noto Sans Regular 0, Noto Sans Bold 0; missing: 
+glyph bytes 237657; decode per range ms: 0.06, 0.05, 0.05
+== main round 2
+arm main
+process-first prewarm z16 (108 candidates): 22.2 ms
+z16 108 candidates, 17 drawn | shaping median 9.2 (min 9.1, max 10.0) ms | first paint median 0.8 (min 0.7, max 2.2) ms | second paint median 0.5 (min 0.4, max 0.5) ms | glyph wait 0.0 ms | shaped 58, paragraphs
+z14 222 candidates, 37 drawn | shaping median 31.5 (min 31.0, max 32.7) ms | first paint median 1.3 (min 1.3, max 2.1) ms | second paint median 0.9 (min 0.8, max 1.0) ms | glyph wait 0.0 ms | shaped 134, paragraphs
+z16 108 candidates, 17 drawn | shaping median 9.2 (min 9.1, max 17.1) ms | first paint median 0.7 (min 0.7, max 0.7) ms | second paint median 0.4 (min 0.4, max 0.5) ms | glyph wait 0.0 ms | shaped 58, paragraphs
+z14 222 candidates, 37 drawn | shaping median 31.3 (min 31.0, max 33.2) ms | first paint median 1.4 (min 1.3, max 1.5) ms | second paint median 0.9 (min 0.9, max 1.0) ms | glyph wait 0.0 ms | shaped 134, paragraphs
+== branch round 2
+arm branch
+process-first prewarm z16 (108 candidates): 0.5 ms
+z16 108 candidates, 18 drawn | shaping median 0.3 (min 0.2, max 0.3) ms | first paint median 1.2 (min 1.1, max 1.4) ms | second paint median 0.4 (min 0.3, max 0.4) ms | glyph wait 0.0 ms | shaped 58, from glyphs 58, atlas cells 115 on 1 pages
+z14 222 candidates, 39 drawn | shaping median 0.7 (min 0.7, max 2.4) ms | first paint median 1.8 (min 1.7, max 1.9) ms | second paint median 0.8 (min 0.6, max 0.8) ms | glyph wait 0.1 ms | shaped 134, from glyphs 134, atlas cells 185 on 1 pages
+z16 108 candidates, 18 drawn | shaping median 0.3 (min 0.3, max 0.5) ms | first paint median 1.1 (min 0.9, max 1.2) ms | second paint median 0.4 (min 0.3, max 0.4) ms | glyph wait 0.0 ms | shaped 58, from glyphs 58, atlas cells 115 on 1 pages
+z14 222 candidates, 39 drawn | shaping median 0.7 (min 0.7, max 1.0) ms | first paint median 1.9 (min 1.7, max 3.8) ms | second paint median 0.7 (min 0.6, max 0.8) ms | glyph wait 0.1 ms | shaped 134, from glyphs 134, atlas cells 185 on 1 pages
+ranges requested 3: Noto Sans Italic 0, Noto Sans Regular 0, Noto Sans Bold 0; missing: 
+glyph bytes 237657; decode per range ms: 0.07, 0.04, 0.04
