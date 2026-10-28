@@ -271,7 +271,13 @@ width — back into that key: it re-creates the full-screen re-shape per
 pinch that this design removed. Collision boxes and curved-text cluster
 metrics are the reference-size measurements multiplied by the scale.
 `text-line-height` and `text-justify` are layout inputs and part of the
-key too; a box is as wide as its longest line, as MapLibre's is.
+key too; a box is as wide as its longest line, as MapLibre's is. The
+leading is distributed evenly (`TextLeadingDistribution.even`): in
+proportion to each font's ascent and descent, a line mixing fonts takes
+its baseline from whichever font gains most, by a share that grows with
+the line height, so an Arabic word next to Latin digits sat 1.5 px
+lower than alone at 1.2 em. MapLibre keeps every line on one pitch
+whatever its fonts.
 `text-justify: auto` follows the anchor a label is placed at: the text
 is shaped centred, and multi-line text is laid out once more per side
 its anchors can ask for, inside `prewarm` and kept with the shaped text

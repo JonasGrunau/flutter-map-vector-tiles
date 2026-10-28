@@ -136,7 +136,11 @@
 - 🎨 Text lines are `text-line-height` apart (1.2 em by default, as in
   MapLibre) instead of a fixed 1.15 em, so every label's box is a little
   taller, and a wrapped label's box is as wide as its longest line
-  rather than as `text-max-width`.
+  rather than as `text-max-width`. The space a line has beyond its
+  letters goes evenly above and below them, so a line mixing fonts (an
+  Arabic street name with a Latin number) sits where it would in one
+  font, and Latin text comes out about half a pixel lower, nearer where
+  MapLibre centres it.
 - ⚡ With `glyphs`, laying out a tile's labels takes a small fraction
   of the UI-thread time it did: the 222 label candidates of a dense
   Munich tile took 31–32 ms of platform text shaping on a Nothing

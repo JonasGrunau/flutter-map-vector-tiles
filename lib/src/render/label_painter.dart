@@ -3370,8 +3370,14 @@ class LabelPainter {
       letterSpacing: letterSpacingEm == 0 ? null : letterSpacingEm * fontSize,
       color: color,
       // `text-line-height`: baselines this many ems apart, and one line's
-      // box this tall, as MapLibre sizes it.
+      // box this tall, as MapLibre sizes it. The leading goes evenly above
+      // and below each font's own height, not in proportion to it: in
+      // proportion, a line mixing fonts (Arabic with Latin digits) moves
+      // its baseline by a share of the line height that grows with it,
+      // so the same word sat lower in the mixed label than alone, where
+      // MapLibre keeps every line on one pitch whatever its fonts.
       height: lineHeightEm > 0 ? lineHeightEm : 1.2,
+      leadingDistribution: TextLeadingDistribution.even,
     );
   }
 
