@@ -14,6 +14,7 @@ import 'package:flutter_map_vector_tiles/src/style/feature_state.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 
+import 'fixtures/label_ids.dart';
 import 'fixtures/lifecycle_harness.dart' show boundaryKey, pumpUntil;
 import 'fixtures/mvt_builder.dart';
 
@@ -724,6 +725,7 @@ void main() {
         styleZoom: 14,
         symbols: [
           PlacedSymbol(
+            id: labelIdOf(instance.text),
             instance: instance,
             screenAnchor: const Offset(128, 128),
             screenAngle: 0,

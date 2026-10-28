@@ -1,9 +1,10 @@
 import 'dart:math' as math;
 import 'dart:ui' show Color;
 
-import 'package:flutter/animation.dart' show Cubic;
-
 import 'expression.dart';
+import 'geometry_expressions.dart';
+import 'interpolation.dart';
+import 'number_format.dart';
 
 /// Compiles MapLibre style expressions (and legacy filter / function
 /// syntax) into Dart closures.
@@ -15,6 +16,17 @@ import 'expression.dart';
 /// (MapTiler, ArcGIS, Protomaps, ...) rendering even when they use
 /// exotic operators.
 class ExpressionParser {
+  /// [globalState] holds the values `global-state` reads: the style's
+  /// `state` defaults with any overrides applied (see
+  /// `Theme.withGlobalState`). They are compiled in as constants, so an
+  /// expression reading only global state stays zoom-only and a filter
+  /// reading it stays cacheable — a different state is a different
+  /// theme.
+  ExpressionParser({Map<String, Object?> globalState = const {}})
+      : _globalState = globalState;
+
+  final Map<String, Object?> _globalState;
+
   /// Property names referenced via `get`/`has`/legacy filters. When an
   /// expression accesses properties dynamically, [referencesAllProperties]
   /// is set instead.
@@ -41,6 +53,18 @@ class ExpressionParser {
   /// reads state are rendered again when a feature's state changes.
   bool get readsFeatureState => _readsFeatureState;
   bool _readsFeatureState = false;
+
+  /// Whether anything parsed so far reads `global-state` — the theme
+  /// reader keeps the style document only for themes where a different
+  /// state can change anything.
+  bool get readsGlobalState => _readsGlobalState;
+  bool _readsGlobalState = false;
+
+  /// Whether anything parsed so far needs the feature's geometry
+  /// (`within`, `distance`), which the renderer then builds per feature
+  /// (see `ThemeLayer.readsGeometry`).
+  bool get readsGeometry => _readsGeometry;
+  bool _readsGeometry = false;
 
   /// Parses one style property, additionally reporting whether the
   /// compiled expression is zoom-only (reads no feature data). The
@@ -72,6 +96,7 @@ class ExpressionParser {
     'id',
     'geometry-type',
     'zoom',
+    'global-state',
     'let',
     'var',
     '!',
@@ -87,6 +112,7 @@ class ExpressionParser {
     'match',
     'coalesce',
     'within',
+    'distance',
     'step',
     'interpolate',
     'interpolate-hcl',
@@ -106,9 +132,13 @@ class ExpressionParser {
     'boolean',
     'object',
     'array',
+    'semiliteral',
     'image',
     'format',
+    'number-format',
     'concat',
+    'join',
+    'split',
     'upcase',
     'downcase',
     'is-supported-script',
@@ -146,6 +176,7 @@ class ExpressionParser {
     'heatmap-density',
     'line-progress',
     'accumulated',
+    'elevation',
   };
 
   Expr parse(Object? json) {
@@ -245,6 +276,14 @@ class ExpressionParser {
       case 'zoom':
         _readsZoom = true;
         return (ctx) => ctx.zoom;
+      case 'global-state':
+        final name = a.length == 2 ? a[1] : null;
+        if (name is! String) {
+          return _unsupported('global-state needs one property name');
+        }
+        _readsGlobalState = true;
+        final value = _globalState[name];
+        return (_) => value;
       case 'let':
         return _parseLet(a);
       case 'var':
@@ -292,7 +331,8 @@ class ExpressionParser {
           return null;
         };
       case 'within':
-        return _unsupported('within is not supported');
+      case 'distance':
+        return _parseGeometryOp(op, a);
 
       // --- ramps ---
       case 'step':
@@ -300,7 +340,7 @@ class ExpressionParser {
       case 'interpolate':
       case 'interpolate-hcl':
       case 'interpolate-lab':
-        return _parseInterpolate(a);
+        return _parseInterpolate(op, a);
 
       // --- lookup ---
       case 'in':
@@ -323,23 +363,31 @@ class ExpressionParser {
             }
             return false;
           }
-          if (h is String) return h.contains(toStringValue(n));
+          // An empty string holds nothing, not even itself.
+          if (h is String) return h.isNotEmpty && h.contains(_needleText(n));
           return false;
         };
       case 'index-of':
         final needle = parse(a.length > 1 ? a[1] : null);
         final haystack = parse(a.length > 2 ? a[2] : null);
+        final from = a.length > 3 ? parse(a[3]) : null;
         return (ctx) {
           final n = needle(ctx);
           final h = haystack(ctx);
+          if (h is! List && h is! String) return null;
+          final length = h is List ? h.length : (h as String).length;
+          var start = from == null ? 0 : (toNumber(from(ctx))?.toInt() ?? 0);
+          if (start < 0) start = h is List ? math.max(length + start, 0) : 0;
           if (h is List) {
-            for (var i = 0; i < h.length; i++) {
+            for (var i = start; i < h.length; i++) {
               if (_looseEquals(h[i], n)) return i;
             }
             return -1;
           }
-          if (h is String) return h.indexOf(toStringValue(n));
-          return -1;
+          final s = h as String;
+          final raw = s.indexOf(_needleText(n), math.min(start, s.length));
+          // Counted in characters (code points), not UTF-16 units.
+          return raw < 0 ? -1 : s.substring(0, raw).runes.length;
         };
       case 'at':
         final index = parse(a.length > 1 ? a[1] : null);
@@ -356,20 +404,19 @@ class ExpressionParser {
         final end = a.length > 3 ? parse(a[3]) : null;
         return (ctx) {
           final t = target(ctx);
-          final s = toNumber(start(ctx))?.toInt() ?? 0;
+          final s = toNumber(start(ctx));
+          if (s == null) return null;
+          final e = end == null ? null : toNumber(end(ctx));
           if (t is String) {
-            final e = end != null
-                ? (toNumber(end(ctx))?.toInt() ?? t.length)
-                : t.length;
-            if (s < 0 || s > t.length) return '';
-            return t.substring(s, e.clamp(s, t.length));
+            // By character (code point), so a slice never splits a
+            // surrogate pair.
+            final chars = t.runes.toList();
+            final (from, to) = _sliceRange(chars.length, s, e);
+            return String.fromCharCodes(chars, from, to);
           }
           if (t is List) {
-            final e = end != null
-                ? (toNumber(end(ctx))?.toInt() ?? t.length)
-                : t.length;
-            if (s < 0 || s > t.length) return const <Object?>[];
-            return t.sublist(s, e.clamp(s, t.length));
+            final (from, to) = _sliceRange(t.length, s, e);
+            return t.sublist(from, to);
           }
           return null;
         };
@@ -377,7 +424,7 @@ class ExpressionParser {
         final e = parse(a.length > 1 ? a[1] : null);
         return (ctx) {
           final v = e(ctx);
-          if (v is String) return v.length;
+          if (v is String) return v.runes.length;
           if (v is List) return v.length;
           return null;
         };
@@ -390,10 +437,14 @@ class ExpressionParser {
         final es = a.skip(1).map(parse).toList();
         return (ctx) {
           for (final e in es) {
-            final n = toNumber(e(ctx));
+            final v = e(ctx);
+            // Null converts, to 0; an input nothing converts is an
+            // error — null here, so the property keeps its default.
+            if (v == null) return 0.0;
+            final n = toNumber(v);
             if (n != null) return n;
           }
-          return 0.0;
+          return null;
         };
       case 'to-boolean':
         final e = parse(a.length > 1 ? a[1] : null);
@@ -409,15 +460,7 @@ class ExpressionParser {
         };
       case 'typeof':
         final e = parse(a.length > 1 ? a[1] : null);
-        return (ctx) => switch (e(ctx)) {
-              null => 'null',
-              bool _ => 'boolean',
-              num _ => 'number',
-              String _ => 'string',
-              Color _ => 'color',
-              List<Object?> _ => 'array',
-              _ => 'object',
-            };
+        return (ctx) => _typeName(e(ctx));
       case 'string':
       case 'number':
       case 'boolean':
@@ -441,20 +484,50 @@ class ExpressionParser {
           }
           return null;
         };
+      case 'semiliteral':
+        // A JSON array whose elements may be expressions.
+        if (a.length != 2) {
+          return _unsupported('semiliteral needs exactly one argument');
+        }
+        final value = a[1];
+        if (value is! List) return (_) => value;
+        if (!value.any((e) => e is List)) return (_) => value;
+        final es = value.map(parse).toList();
+        return (ctx) => [for (final e in es) e(ctx)];
       case 'image':
         final e = parse(a.length > 1 ? a[1] : null);
         return (ctx) => toStringValue(e(ctx));
       case 'format':
         // Rich text formatting: flatten to plain concatenated text.
+        // Inline images cannot be drawn into a label; leaving them out
+        // keeps their names from being drawn as text instead.
         final parts = <Object?>[
           for (var i = 1; i < a.length; i++)
-            if (a[i] is! Map) a[i], // style overrides — ignored
+            if (a[i] is! Map && !_isImage(a[i])) a[i], // overrides ignored
         ];
         return _concatExpr(parts);
+      case 'number-format':
+        return _parseNumberFormat(a);
 
       // --- strings ---
       case 'concat':
         return _concatExpr(a.skip(1).toList());
+      case 'join':
+        final input = parse(a.length > 1 ? a[1] : null);
+        final separator = parse(a.length > 2 ? a[2] : null);
+        return (ctx) {
+          final v = input(ctx);
+          if (v is! List) return null;
+          return v.map(toStringValue).join(toStringValue(separator(ctx)));
+        };
+      case 'split':
+        final input = parse(a.length > 1 ? a[1] : null);
+        final separator = parse(a.length > 2 ? a[2] : null);
+        return (ctx) {
+          final v = input(ctx);
+          if (v is! String) return null;
+          return v.split(toStringValue(separator(ctx)));
+        };
       case 'upcase':
         final e = parse(a.length > 1 ? a[1] : null);
         return (ctx) => toStringValue(e(ctx)).toUpperCase();
@@ -588,24 +661,137 @@ class ExpressionParser {
         _readsFeature = true;
         _readsFeatureState = true;
         final key = a.length > 1 ? a[1] : null;
-        if (key is String) {
-          return (ctx) =>
-              ctx is FeatureStateEvalContext ? ctx.featureState[key] : null;
-        }
+        if (key is String) return (ctx) => _featureStateOf(ctx)?[key];
         final keyExpr = parse(key);
-        return (ctx) => ctx is FeatureStateEvalContext
-            ? ctx.featureState[toStringValue(keyExpr(ctx))]
-            : null;
+        return (ctx) => _featureStateOf(ctx)?[toStringValue(keyExpr(ctx))];
 
       // --- heatmap / line metrics — not applicable here ---
       case 'heatmap-density':
       case 'line-progress':
       case 'accumulated':
         return (_) => 0.0;
+      // Only meaningful in a `color-relief` layer over a `raster-dem`
+      // source, neither of which is drawn: no elevation is known.
+      case 'elevation':
+        return (_) => null;
 
       default:
         return _unsupported('unsupported operator "$op"');
     }
+  }
+
+  /// The state `feature-state` reads: the feature's, carried by a
+  /// [FeatureEvalContext]; none in any other context.
+  static Map<String, Object?>? _featureStateOf(EvalContext ctx) =>
+      ctx is FeatureEvalContext ? ctx.featureState : null;
+
+  /// `within` and `distance`: a GeoJSON literal compiled once, tested
+  /// against the feature's geometry ([FeatureEvalContext]). The answer
+  /// depends on nothing but the feature, so it is kept per feature —
+  /// against its coordinate list, weakly — and a paint property reading
+  /// it costs the geometry test once per feature, not once per display
+  /// tile.
+  Expr _parseGeometryOp(String op, List<Object?> a) {
+    if (a.length != 2) {
+      return _unsupported('$op needs exactly one GeoJSON argument');
+    }
+    final shapes = GeoShapes.parse(a[1]);
+    if (shapes == null || (op == 'within' && shapes.polygons.isEmpty)) {
+      return _unsupported('$op needs GeoJSON geometry'
+          '${op == 'within' ? ' with polygons' : ''}');
+    }
+    _readsFeature = true;
+    _readsGeometry = true;
+    final memo = Expando<Object>(op);
+    if (op == 'within') {
+      return (ctx) {
+        final geometry = ctx is FeatureEvalContext ? ctx.geometry : null;
+        if (geometry == null) return false;
+        return memo[geometry.parts] ??= featureWithin(geometry, shapes);
+      };
+    }
+    return (ctx) {
+      final geometry = ctx is FeatureEvalContext ? ctx.geometry : null;
+      if (geometry == null) return null;
+      final cached = memo[geometry.parts];
+      if (cached != null) return cached is double ? cached : null;
+      final d = featureDistance(geometry, shapes);
+      memo[geometry.parts] = d ?? false;
+      return d;
+    };
+  }
+
+  /// `number-format`. Every option may be an expression; the usual
+  /// literal ones compile to constants, and `formatNumber` keeps the
+  /// formats it builds, so a style formatting every feature the same way
+  /// builds one.
+  Expr _parseNumberFormat(List<Object?> a) {
+    final options = a.length > 2 ? a[2] : null;
+    if (a.length != 3 || options is! Map) {
+      return _unsupported('number-format needs a number and options');
+    }
+    if (options['currency'] != null && options['unit'] != null) {
+      return _unsupported('number-format: currency and unit exclude '
+          'each other');
+    }
+    final input = parse(a[1]);
+    Expr option(String key) => parse(options[key]);
+    final locale = option('locale');
+    final currency = option('currency');
+    final unit = option('unit');
+    final minDigits = option('min-fraction-digits');
+    final maxDigits = option('max-fraction-digits');
+    String? text(Object? v) => v == null ? null : toStringValue(v);
+    return (ctx) {
+      final n = toNumber(input(ctx));
+      if (n == null) return null;
+      return formatNumber(
+        n,
+        locale: text(locale(ctx)),
+        currency: text(currency(ctx)),
+        unit: text(unit(ctx)),
+        minFractionDigits: toNumber(minDigits(ctx))?.toInt(),
+        maxFractionDigits: toNumber(maxDigits(ctx))?.toInt(),
+      );
+    };
+  }
+
+  static bool _isImage(Object? json) =>
+      json is List && json.isNotEmpty && json[0] == 'image';
+
+  /// What a needle looks like inside a string haystack: its string
+  /// form, `null` included.
+  static String _needleText(Object? v) => v == null ? 'null' : toStringValue(v);
+
+  /// [start]/[end] resolved against [length] as JavaScript's `slice`
+  /// does: negative counts from the end, everything clamped, an end
+  /// before the start empty.
+  static (int, int) _sliceRange(int length, double start, double? end) {
+    int resolve(double v) {
+      final i = v.isFinite ? v.truncate() : (v < 0 ? -length : length);
+      return i < 0 ? math.max(length + i, 0) : math.min(i, length);
+    }
+
+    final from = resolve(start);
+    final to = end == null ? length : resolve(end);
+    return (from, math.max(from, to));
+  }
+
+  /// `typeof`: arrays name their item type and length, as
+  /// `array<number, 3>`; mixed or empty ones `array<value, n>`.
+  static String _typeName(Object? v) => switch (v) {
+        null => 'null',
+        bool _ => 'boolean',
+        num _ => 'number',
+        String _ => 'string',
+        Color _ => 'color',
+        final List<Object?> l => 'array<${_itemType(l)}, ${l.length}>',
+        _ => 'object',
+      };
+
+  static String _itemType(List<Object?> items) {
+    final types = {for (final e in items) _typeName(e)};
+    return types.length == 1 ? types.single : 'value';
   }
 
   /// Concatenation shared by `concat` and `format`, over raw argument
@@ -790,9 +976,14 @@ class ExpressionParser {
     };
   }
 
-  Expr _parseInterpolate(List<Object?> a) {
+  Expr _parseInterpolate(String op, List<Object?> a) {
     if (a.length < 5) return _unsupported('interpolate needs stops');
     final type = a[1];
+    final space = switch (op) {
+      'interpolate-hcl' => ColorSpace.hcl,
+      'interpolate-lab' => ColorSpace.lab,
+      _ => ColorSpace.rgb,
+    };
     double Function(double t) easing = (t) => t;
     var base = 1.0;
     if (type is List && type.isNotEmpty) {
@@ -803,12 +994,12 @@ class ExpressionParser {
           base = type.length > 1 ? (toNumber(type[1]) ?? 1.0) : 1.0;
         case 'cubic-bezier':
           if (type.length >= 5) {
-            easing = Cubic(
+            easing = cubicBezier(
               toNumber(type[1]) ?? 0,
               toNumber(type[2]) ?? 0,
               toNumber(type[3]) ?? 1,
               toNumber(type[4]) ?? 1,
-            ).transform;
+            );
           }
       }
     }
@@ -835,7 +1026,7 @@ class ExpressionParser {
       final lo = hi - 1;
       final t =
           easing(_intervalFactor(v, stops, lo, base, invDenom).clamp(0.0, 1.0));
-      return _interpolateValues(outputs[lo](ctx), outputs[hi](ctx), t);
+      return _interpolateValues(outputs[lo](ctx), outputs[hi](ctx), t, space);
     };
   }
 
@@ -865,17 +1056,19 @@ class ExpressionParser {
     return (math.pow(base, v - stops[lo]).toDouble() - 1) * inv;
   }
 
-  static Object? _interpolateValues(Object? a, Object? b, double t) {
-    final na = toNumber(a);
-    final nb = toNumber(b);
-    if (na != null && nb != null) return na + (nb - na) * t;
+  static Object? _interpolateValues(
+      Object? a, Object? b, double t, ColorSpace space) {
+    // Numbers, not numeric strings: a string-valued property ramped by
+    // a legacy function ("0" → "1") holds each stop like any other
+    // string, as it does in MapLibre.
+    if (a is num && b is num) return a + (b - a) * t;
     final ca = toColor(a);
     final cb = toColor(b);
-    if (ca != null && cb != null) return Color.lerp(ca, cb, t);
+    if (ca != null && cb != null) return lerpColor(ca, cb, t, space);
     if (a is List && b is List && a.length == b.length) {
       final out = <Object?>[];
       for (var i = 0; i < a.length; i++) {
-        out.add(_interpolateValues(a[i], b[i], t));
+        out.add(_interpolateValues(a[i], b[i], t, space));
       }
       return out;
     }
@@ -885,6 +1078,59 @@ class ExpressionParser {
     // Snapping at the midpoint switched a zoom-staged `text-field` half
     // a level early.
     return a;
+  }
+
+  static ColorSpace _legacyColorSpace(Map<String, Object?> json) =>
+      switch (json['colorSpace']) {
+        'hcl' => ColorSpace.hcl,
+        'lab' => ColorSpace.lab,
+        _ => ColorSpace.rgb,
+      };
+
+  /// A legacy zoom-and-property function, whose stops key on
+  /// `{"zoom": z, "value": v}`: one property function per zoom, the
+  /// zooms ramped with the function's base — or stepped through, for
+  /// `interval` and `categorical` functions.
+  Expr _parseCompositeFunction(Map<String, Object?> json, List<Object?> stops) {
+    final byZoom = <double, List<Object?>>{};
+    for (final stop in stops) {
+      if (stop is! List || stop.length < 2 || stop[0] is! Map) continue;
+      final key = stop[0] as Map;
+      final zoom = toNumber(key['zoom']);
+      if (zoom == null) continue;
+      (byZoom[zoom] ??= []).add([key['value'], stop[1]]);
+    }
+    if (byZoom.isEmpty) {
+      return _unsupported('unsupported legacy function $json');
+    }
+    _readsZoom = true;
+    final zooms = byZoom.keys.toList()..sort();
+    final perZoom = [
+      for (final z in zooms)
+        _parseLegacyFunction({...json, 'stops': byZoom[z]}),
+    ];
+    final type = json['type'] as String? ?? 'exponential';
+    final base = toNumber(json['base']) ?? 1.0;
+    final space = _legacyColorSpace(json);
+    final stepped = type != 'exponential';
+    final invDenom =
+        stepped || base == 1.0 ? null : _inverseDenominators(zooms, base);
+    return (ctx) {
+      final z = ctx.zoom;
+      if (z <= zooms.first) return perZoom.first(ctx);
+      if (z >= zooms.last) return perZoom.last(ctx);
+      var hi = 1;
+      while (hi < zooms.length && zooms[hi] <= z) {
+        hi++;
+      }
+      final lo = hi - 1;
+      if (stepped) return perZoom[lo](ctx);
+      final lower = perZoom[lo](ctx);
+      final upper = perZoom[hi](ctx);
+      if (lower == null || upper == null) return null;
+      return _interpolateValues(lower, upper,
+          _intervalFactor(z, zooms, lo, base, invDenom).clamp(0.0, 1.0), space);
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -917,7 +1163,12 @@ class ExpressionParser {
       // A plain object value (e.g. a constant) — pass through.
       return (_) => json;
     }
+    final first = stopsJson.first;
+    if (first is List && first.isNotEmpty && first.first is Map) {
+      return _parseCompositeFunction(json, stopsJson);
+    }
     final base = toNumber(json['base']) ?? 1.0;
+    final space = _legacyColorSpace(json);
     final property = json['property'] as String?;
     if (property != null) {
       _refProp(property);
@@ -974,10 +1225,14 @@ class ExpressionParser {
       while (hi < stops.length && stops[hi] <= v) {
         hi++;
       }
-      final lo = hi - 1;
+      var lo = hi - 1;
+      // On a stop the style lists twice, the first of them holds.
+      while (lo > 0 && stops[lo - 1] == stops[lo]) {
+        lo--;
+      }
       if (isInterval) return outputs[lo];
-      return _interpolateValues(outputs[lo], outputs[hi],
-          _intervalFactor(v, stops, lo, base, invDenom).clamp(0.0, 1.0));
+      return _interpolateValues(outputs[lo], outputs[lo + 1],
+          _intervalFactor(v, stops, lo, base, invDenom).clamp(0.0, 1.0), space);
     };
   }
 

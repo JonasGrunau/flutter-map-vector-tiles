@@ -108,6 +108,9 @@ void main() {
     Object? eval(Object json, Map<String, Object?>? state) =>
         ExpressionParser().parse(json)(featureContext(
           zoom: 10,
+          properties: const {},
+          geometryType: '',
+          featureId: null,
           featureState: state,
         ));
 
@@ -209,7 +212,7 @@ void main() {
       final line = theme.layers[1] as LineThemeLayer;
       expect(line.width.zoomOnly, isFalse);
       expect(
-          line.width.eval(const FeatureStateEvalContext(
+          line.width.eval(const FeatureEvalContext(
               zoom: 10, featureState: {'selected': true})),
           4);
       expect(line.width.eval(const EvalContext(zoom: 10)), 1);

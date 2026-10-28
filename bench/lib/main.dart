@@ -87,7 +87,9 @@ const _retainAll = bool.fromEnvironment('BENCH_RETAIN_ALL');
 const _logGone = bool.fromEnvironment('BENCH_LOG_GONE');
 
 /// `BENCH_WATCH=<regexp>` prints every rejection, frame by frame, of the
-/// labels whose continuity key matches — for chasing one blink.
+/// labels whose continuity key matches, and a `DRAWN` line (label id,
+/// screen position, opacity) for every frame one is drawn — for chasing
+/// one blink.
 const _watch = String.fromEnvironment('BENCH_WATCH');
 final _watchRe = _watch.isEmpty ? null : RegExp(_watch);
 
@@ -185,6 +187,17 @@ class _BenchPageState extends State<BenchPage>
   var _allFrames = 0;
   DateTime? _recordStart;
 
+  // Opening: from the first build with the style until the map has drawn
+  // its first screen and gone quiet — the OPEN line. Covers what no phase
+  // sees: the process's first tiles and first labels, fonts included.
+  var _opening = true;
+  DateTime? _openStart;
+  DateTime? _firstLabelAt;
+  DateTime? _lastOpenFrameAt;
+  final _openBuild = <int>[];
+  var _openShapeMax = 0;
+  var _openShapeUs0 = 0;
+
   // Manual mode: zoom band covered inside the current reporting window, and
   // the live zoom for the overlay. The notifier deliberately bypasses
   // setState — rebuilding the whole page on every frame of a pinch would put
@@ -224,6 +237,11 @@ class _BenchPageState extends State<BenchPage>
   final _labelsGone = <_GoneLabel>[];
   final _labelsAppeared = <_GoneLabel>[];
   final _rejects = <String, int>{};
+
+  /// The continuity key of every label id drawn so far: a fade-out with
+  /// no copy left to draw (`ghost:none`) is reported by id alone, and
+  /// this names it, for the tallies and for `BENCH_WATCH`.
+  final _keyOfId = <int, Object>{};
   var _stab = _StabilityCounters();
 
   @override
@@ -247,6 +265,7 @@ class _BenchPageState extends State<BenchPage>
       LabelPainter.debugDrawnProbe = _onLabelsDrawn;
       LabelPainter.debugRejectProbe = (key, reason, replay) {
         if (!_recording) return;
+        if (key is int) key = _keyOfId[key] ?? key;
         final k = '$reason${replay ? '/replay' : ''} $key';
         if (_watchRe?.hasMatch('$key') ?? false) {
           debugPrint('BENCH[$_label] WATCH z=${_zoomNow()?.toStringAsFixed(3)} '
@@ -302,6 +321,12 @@ class _BenchPageState extends State<BenchPage>
     _frameShapeUs += shape;
     _frameSweepUs += sweep;
     _frameDrawUs += draw;
+    if (_opening && _openStart != null) {
+      final now = DateTime.now();
+      _lastOpenFrameAt = now;
+      if (labels > 0) _firstLabelAt ??= now;
+      if (shape > _openShapeMax) _openShapeMax = shape;
+    }
     if (!_recording || raster + layout + labels <= 6000) return;
     String ms(int us) => (us / 1000).toStringAsFixed(1);
     final zoom = _zoomNow();
@@ -343,6 +368,18 @@ class _BenchPageState extends State<BenchPage>
   /// while a window is recording; the frame-to-frame memory runs
   /// always, so a window never opens against an empty previous frame.
   void _onLabelsDrawn(double styleZoom, List<DrawnLabelRecord> drawn) {
+    final watch = _recording ? _watchRe : null;
+    for (final record in drawn) {
+      _keyOfId[record.id] = record.key;
+      if (watch != null && watch.hasMatch('${record.key}')) {
+        debugPrint('BENCH[$_label] DRAWN z=${_zoomNow()?.toStringAsFixed(3)} '
+            't=${DateTime.now().millisecondsSinceEpoch % 100000} '
+            'id=${record.id} at=${record.position.dx.toStringAsFixed(1)},'
+            '${record.position.dy.toStringAsFixed(1)} '
+            'opacity=${record.opacity.toStringAsFixed(2)}'
+            '${record.ghost ? ' ghost' : ''} ${record.key}');
+      }
+    }
     if (!_mapReady.isCompleted) return;
     final camera = _controller.camera;
     final scale = math.pow(2.0, 20 - camera.zoom).toDouble();
@@ -885,6 +922,11 @@ class _BenchPageState extends State<BenchPage>
 
   void _onTimings(List<FrameTiming> timings) {
     _allFrames += timings.length;
+    if (_opening) {
+      for (final timing in timings) {
+        _openBuild.add(timing.buildDuration.inMicroseconds);
+      }
+    }
     if (!_recording) return;
     // The zoom is sampled rather than derived from the driver — in manual
     // mode the camera is in the user's hands. The timings callback lags the
@@ -911,12 +953,45 @@ class _BenchPageState extends State<BenchPage>
     }
   }
 
+  /// Waits for the first screen to finish — no frame for 2 s, at most 20 s
+  /// — and reports how opening went: when the first label frame came, when
+  /// the last frame did, and the UI-thread frames on the way.
+  Future<void> _reportOpening() async {
+    final start = _openStart!;
+    while (true) {
+      final now = DateTime.now();
+      final last = _lastOpenFrameAt ?? start;
+      if (now.difference(last) > const Duration(seconds: 2) ||
+          now.difference(start) > const Duration(seconds: 20)) {
+        break;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    // Let the timings callback deliver the last batch.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    _opening = false;
+    String ms(num us) => (us / 1000).toStringAsFixed(1);
+    final sorted = [..._openBuild]..sort();
+    final over = sorted.where((b) => b > 16667).length;
+    final total = sorted.fold<int>(0, (a, b) => a + b);
+    debugPrint('BENCH[$_label] OPEN '
+        'firstLabel=${_firstLabelAt?.difference(start).inMilliseconds}ms '
+        'settled=${(_lastOpenFrameAt ?? start).difference(start).inMilliseconds}ms '
+        'frames=${sorted.length} build=${ms(total)}ms '
+        'max=${sorted.isEmpty ? '-' : ms(sorted.last)}ms '
+        'top3=${sorted.reversed.take(3).map(ms).join('/')} '
+        '>16.7=$over '
+        'shape=${ms(LabelPainter.debugShapeMicros - _openShapeUs0)}ms '
+        'shapeMaxFrame=${ms(_openShapeMax)}ms');
+  }
+
   Future<void> _run() async {
     final style = await _style;
     // The map lives behind a FutureBuilder, so the style future completing is
     // not the same as the map being laid out — the controller throws until it
     // has rendered once.
     await _mapReady.future;
+    await _reportOpening();
     await Future<void>.delayed(const Duration(milliseconds: 500));
 
     if (_mode == 'idle') {
@@ -1201,6 +1276,10 @@ class _BenchPageState extends State<BenchPage>
               return const Center(child: CircularProgressIndicator());
             }
             final style = snapshot.data!;
+            if (_openStart == null) {
+              _openStart = DateTime.now();
+              _openShapeUs0 = LabelPainter.debugShapeMicros;
+            }
             return Stack(children: [
               FlutterMap(
                 mapController: _controller,

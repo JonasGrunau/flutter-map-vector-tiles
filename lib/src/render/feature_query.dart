@@ -120,7 +120,8 @@ abstract final class FeatureQuery {
     final states = layer.readsFeatureState
         ? data.featureStates?.sourceLayer(layer.source, sourceLayerName)
         : null;
-    final matched = MatchedFeatures.of(layer, sourceLayer);
+    final matched = MatchedFeatures.of(layer, sourceLayer, tile: tile.key);
+    final readsGeometry = layer.readsGeometry;
     for (final feature in matched ?? sourceLayer.features) {
       if (feature.maxX < minX ||
           feature.minX > maxX ||
@@ -134,6 +135,9 @@ abstract final class FeatureQuery {
         geometryType: feature.geometryType,
         featureId: feature.id,
         featureState: FeatureStates.stateOf(states, feature.id),
+        geometry: readsGeometry
+            ? featureGeometry(tile.key, sourceLayer, feature)
+            : null,
       );
       if (matched == null && !layer.matches(ctx)) continue;
       final hit = switch (layer) {

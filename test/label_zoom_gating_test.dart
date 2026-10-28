@@ -7,6 +7,8 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fixtures/label_ids.dart';
+
 SymbolThemeLayer _symbolLayer({
   double? minzoom,
   double? maxzoom,
@@ -51,6 +53,7 @@ PlacedSymbol _symbolAt(
         geometryType: 'Point',
         featureId: null,
       ),
+      id: labelIdOf(text),
       screenAnchor: screenAnchor,
       screenAngle: 0,
       order: order,

@@ -1,8 +1,37 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' show Color;
 
 import 'package:meta/meta.dart';
 
 import 'css_color.dart';
+
+/// The geometry of the feature being evaluated, in the data tile it was
+/// decoded from — what `within` and `distance` read. The renderer builds
+/// one only for layers whose expressions use them
+/// (`ThemeLayer.readsGeometry`) and hands it over in a
+/// [FeatureEvalContext]; in any other context those operators answer
+/// as for a feature without geometry.
+@internal
+final class FeatureGeometry {
+  /// The data tile, whose extent the coordinates in [parts] span.
+  final int z, x, y;
+  final int extent;
+
+  /// 'Point', 'LineString' or 'Polygon' — see `PreparedFeature.parts`
+  /// for how each lays out its runs.
+  final String type;
+  final List<Float32List> parts;
+
+  const FeatureGeometry({
+    required this.z,
+    required this.x,
+    required this.y,
+    required this.extent,
+    required this.type,
+    required this.parts,
+  });
+}
 
 /// Evaluation context for compiled style expressions.
 class EvalContext {
@@ -40,63 +69,76 @@ class EvalContext {
   static const empty = EvalContext(zoom: 0);
 }
 
-/// An [EvalContext] that also carries the feature's state, as set
-/// through `VectorTileLayerController.setFeatureState`, for the
-/// `feature-state` expression; in any other context it reads null. Only
-/// a feature that has state gets one, through [featureContext]: a
-/// context is allocated per feature evaluated, and a field more on every
-/// one made filter matching on a fresh tile measurably slower on a phone.
+/// An [EvalContext] that also carries what only some layers read about a
+/// feature: its geometry, for `within` and `distance`, and its state, as
+/// set through `VectorTileLayerController.setFeatureState`, for
+/// `feature-state`. In a plain [EvalContext] those operators answer as for
+/// a feature without geometry or state. Only a feature that needs one gets
+/// it, through [featureContext]: a context is allocated per feature
+/// evaluated, and a field more on every one made filter matching on a
+/// fresh tile measurably slower on a phone.
 @internal
-final class FeatureStateEvalContext extends EvalContext {
-  final Map<String, Object?> featureState;
+final class FeatureEvalContext extends EvalContext {
+  /// The feature's geometry, for a layer that reads it
+  /// (`ThemeLayer.readsGeometry`); null otherwise.
+  final FeatureGeometry? geometry;
 
-  const FeatureStateEvalContext({
+  /// The feature's state, for a layer that reads it
+  /// (`ThemeLayer.readsFeatureState`) when the feature has some; null
+  /// otherwise.
+  final Map<String, Object?>? featureState;
+
+  const FeatureEvalContext({
     required super.zoom,
     super.properties,
     super.geometryType,
     super.featureId,
     super.vars,
-    required this.featureState,
+    this.geometry,
+    this.featureState,
   });
 
   @override
-  EvalContext withVars(Map<String, Object?> newVars) => FeatureStateEvalContext(
+  EvalContext withVars(Map<String, Object?> newVars) => FeatureEvalContext(
         zoom: zoom,
         properties: properties,
         geometryType: geometryType,
         featureId: featureId,
         vars: {...?vars, ...newVars},
+        geometry: geometry,
         featureState: featureState,
       );
 }
 
-/// The context to evaluate one feature in: a [FeatureStateEvalContext]
-/// when [featureState] is given, a plain [EvalContext] otherwise.
+/// The context to evaluate one feature in: a [FeatureEvalContext] when
+/// [geometry] or [featureState] is given, a plain [EvalContext] otherwise.
 ///
 /// Inlined, so a call site compiles to the constructor it replaced plus
-/// a null check: left to the inliner, it cost the screen pass enough
+/// the null checks: left to the inliner, it cost the screen pass enough
 /// UI time on a fresh zoom level to drop frames on the Android phone.
 @internal
 @pragma('vm:prefer-inline')
 EvalContext featureContext({
   required double zoom,
-  Map<String, Object?> properties = const {},
-  String geometryType = '',
-  Object? featureId,
+  required Map<String, Object?> properties,
+  required String geometryType,
+  required Object? featureId,
+  FeatureGeometry? geometry,
   Map<String, Object?>? featureState,
 }) =>
-    featureState == null
+    geometry == null && featureState == null
         ? EvalContext(
             zoom: zoom,
             properties: properties,
             geometryType: geometryType,
             featureId: featureId,
           )
-        : FeatureStateEvalContext(
+        : FeatureEvalContext(
             zoom: zoom,
             properties: properties,
             geometryType: geometryType,
             featureId: featureId,
+            geometry: geometry,
             featureState: featureState,
           );
 
@@ -143,8 +185,21 @@ String toStringValue(Object? v) {
     return 'rgba(${chan(v.r).round()},${chan(v.g).round()},'
         '${chan(v.b).round()},${v.a})';
   }
+  // Arrays and objects as JSON, as the style spec's `to-string` does.
+  if (v is List || v is Map) return _json(v);
   return v.toString();
 }
+
+String _json(Object? v) => switch (v) {
+      null => 'null',
+      final String s => jsonEncode(s),
+      num _ || bool _ => toStringValue(v),
+      final List<Object?> l => '[${l.map(_json).join(',')}]',
+      final Map<Object?, Object?> m => '{${m.entries.map(
+            (e) => '${jsonEncode('${e.key}')}:${_json(e.value)}',
+          ).join(',')}}',
+      _ => jsonEncode(toStringValue(v)),
+    };
 
 Color? toColor(Object? v) {
   if (v is Color) return v;
