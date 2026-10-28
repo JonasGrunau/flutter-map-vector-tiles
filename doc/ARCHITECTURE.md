@@ -475,7 +475,12 @@ Impeller the same object every frame; it re-blurs only when the drawn
 scale changes. Curved glyphs take their blur into the glyph atlas,
 whose cells grow by three sigma. An SDF icon's halo blur needs no such
 care: it only widens the ramp of the colour matrix that thresholds the
-distance field.
+distance field. Text drawn from the style's glyphs is blurred the same
+way: its halo is a threshold on the glyph's distance field, so a blur
+widens that threshold's ramp by 2 × 1.19 × the blur, as MapLibre's
+shader does, in the halo's atlas cell, which is rasterized once per
+glyph, size, halo width and blur. Only platform-shaped text replays a
+blurred picture.
 
 That shaping is the expensive half — several times a frame's whole
 render budget on a dense city tile, against sub-millisecond extraction —

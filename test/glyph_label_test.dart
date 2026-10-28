@@ -55,6 +55,7 @@ SymbolThemeLayer _layer({
   double size = 24,
   String color = '#00ff00',
   double haloWidth = 0,
+  double haloBlur = 0,
   Map<String, Object?> layout = const {},
 }) {
   final theme = const ThemeReader().read({
@@ -74,6 +75,7 @@ SymbolThemeLayer _layer({
           'text-color': color,
           'text-halo-color': '#ff0000',
           'text-halo-width': haloWidth,
+          'text-halo-blur': haloBlur,
         },
       },
     ],
@@ -207,6 +209,40 @@ void main() {
     expect(_argb(pixels, 84, 50), 0xffffffff); // past the 3 px halo
     painter.dispose();
     glyphs.dispose();
+  });
+
+  test('text-halo-blur softens a glyph halo\'s edge', () async {
+    // How many pixels of the row through 'A' fade between the white
+    // background and the red halo, left of the glyph. Compared between
+    // two renders on one renderer, never against fixed values. At size
+    // 48 a 4 px halo blurred by 2 px stays inside the glyph's 3 px
+    // distance-field border (6 px here), which would cut its ramp off.
+    Future<int> fading(double blur) async {
+      final glyphs = _source();
+      final painter = LabelPainter()..glyphs = glyphs;
+      final symbols = [
+        _symbol(_layer(size: 48, haloWidth: 4, haloBlur: blur), 'AB',
+            const Offset(100, 50)),
+      ];
+      await _load(painter, symbols);
+      final (drawn, pixels) = await _paint(painter, symbols);
+      expect(drawn, hasLength(1));
+      expect(painter.debugGlyphShapedTextCount, 1);
+      painter.dispose();
+      glyphs.dispose();
+      var count = 0;
+      // 'A' starts at column 78; its halo reaches out to the left.
+      for (var x = 62; x < 78; x++) {
+        final argb = _argb(pixels, x, 50);
+        if (argb != 0xffffffff && argb != 0xffff0000) count++;
+      }
+      return count;
+    }
+
+    final sharp = await fading(0);
+    final blurred = await fading(2);
+    expect(sharp, greaterThan(0));
+    expect(blurred, greaterThan(sharp + 1));
   });
 
   test('text-justify and text-line-height lay glyph lines out', () async {

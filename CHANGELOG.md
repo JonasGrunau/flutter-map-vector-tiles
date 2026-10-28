@@ -121,8 +121,12 @@
   `text-variable-anchor-offset`, `text-rotate`, `text-translate` /
   `icon-translate` with their anchors, and `icon-keep-upright`. All of
   them used to be ignored; Liberty's and Positron's place and POI labels
-  now get the soft halo the style asks for. `text-writing-mode` is
-  still unsupported and logged.
+  now get the soft halo the style asks for. Text drawn in the style's
+  own fonts (`glyphs`) blurs its halo the way MapLibre does, by widening
+  the edge of the glyph's distance field; that edge is drawn once per
+  glyph and size, so it adds nothing to a frame. Other text blurs its
+  halo with a mask filter. `text-writing-mode` is still unsupported and
+  logged.
 - 🎨 Point labels with `text-rotation-alignment: map` turn with the map
   instead of staying upright.
 - 🎨 Within a layer, symbols that may overlap (`*-allow-overlap`,

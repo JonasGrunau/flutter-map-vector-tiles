@@ -2665,6 +2665,7 @@ class LabelPainter {
       fillArgb: memo.fillArgb,
       haloArgb: memo.haloArgb,
       haloRatioQ: memo.haloRatioQ,
+      haloBlurQ: memo.haloBlurQ,
     );
   }
 
@@ -3075,16 +3076,22 @@ class LabelPainter {
       final glyph = glyphs[i];
       final page = run.pages[i];
       for (var kind = 0; kind < (halo ? 2 : 1); kind++) {
-        final key =
-            (run.fontStack, glyph.id, sizeKey, kind == 0 ? 0 : run.haloRatioQ);
+        final key = kind == 0
+            ? (run.fontStack, glyph.id, sizeKey, 0, 0)
+            : (run.fontStack, glyph.id, sizeKey, run.haloRatioQ, run.haloBlurQ);
         var cell = atlas.lookup(key);
         if (cell == null && rasterizeGlyphs) {
-          // `text-halo-width` in glyph pixels moves the cut outward.
-          final edge = kind == 0
-              ? _sdfOutline
-              : math.max(0.0,
-                  _sdfOutline - run.haloRatioQ / 128 * glyphPbfEm * _sdfPixel);
-          final paint = _coveragePaint(edge, f);
+          // `text-halo-width` in glyph pixels moves the cut outward, and
+          // `text-halo-blur` in device pixels widens its ramp.
+          final paint = kind == 0
+              ? _coveragePaint(_sdfOutline, f)
+              : _coveragePaint(
+                  math.max(
+                      0.0,
+                      _sdfOutline -
+                          run.haloRatioQ / 128 * glyphPbfEm * _sdfPixel),
+                  f,
+                  blur: run.haloBlurQ / 128 * glyphPbfEm * f);
           final w = glyph.bitmapWidth * f;
           final h = glyph.bitmapHeight * f;
           cell = atlas.reserve(key, w.ceil(), h.ceil(), (canvas) {
@@ -3115,8 +3122,13 @@ class LabelPainter {
   /// [_glyphEdgeWidth] ramp between. Thresholding after the bilinear
   /// sampling is what keeps a magnified field's edge sharp — the same
   /// colour-matrix technique as SDF icons ([_DrawableIcon._sdfPaint]).
-  static Paint _coveragePaint(double edge, double f) {
-    final slope = f / _sdfPixel / _glyphEdgeWidth;
+  ///
+  /// A [blur] (`text-halo-blur`, in device pixels) widens the ramp by
+  /// 2 × 1.19 × [blur], the ±1.19 × blur MapLibre's shader fades a
+  /// halo's edge over. That is the whole of a blurred glyph halo: no
+  /// mask filter, no offscreen pass, and the cell is rasterized once.
+  static Paint _coveragePaint(double edge, double f, {double blur = 0}) {
+    final slope = f / _sdfPixel / (_glyphEdgeWidth + 2 * 1.19 * blur);
     final shift = 0.5 - edge * slope;
     return Paint()
       // Bilinear only: mipmaps blur the field, which erodes the shape.
@@ -3698,6 +3710,11 @@ class _GlyphRun {
   /// `text-halo-width` in 1/128 em; 0 for no halo.
   final int haloRatioQ;
 
+  /// `text-halo-blur` in 1/128 em; 0 for a crisp halo. The halo cells
+  /// bake it in as a wider edge ramp (see [LabelPainter._coveragePaint]),
+  /// so a blurred glyph halo costs nothing per frame.
+  final int haloBlurQ;
+
   /// The atlas cells last resolved for this text: for which device
   /// size key and atlas generation, and per glyph its fill cell then
   /// its halo cell (null without a halo). A label keeps its size for
@@ -3714,6 +3731,7 @@ class _GlyphRun {
     required this.fillArgb,
     required this.haloArgb,
     required this.haloRatioQ,
+    this.haloBlurQ = 0,
   });
 
   /// This run with its lines aligned to [justify] (see
@@ -3725,6 +3743,7 @@ class _GlyphRun {
         fillArgb: fillArgb,
         haloArgb: haloArgb,
         haloRatioQ: haloRatioQ,
+        haloBlurQ: haloBlurQ,
       );
 }
 

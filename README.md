@@ -749,7 +749,8 @@ style was designed with. Without it every label uses the system font.
   `text-max-width` wrapping into balanced lines (a two-line name gets
   two similar lines, not a full line and a dangling word),
   `text-line-height` and `text-justify`, halos at MapLibre's
-  distance-field threshold.
+  distance-field threshold, and `text-halo-blur` as a wider edge on
+  that threshold, as MapLibre blurs them.
 - **Cheaper to lay out.** The text is laid out in Dart from the glyph
   metrics, not by the platform's text shaper, which on a dense tile
   was the largest single cost on the UI thread: 31–32 ms for one dense
