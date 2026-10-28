@@ -788,30 +788,30 @@ class TileRasterizer {
           // MapLibre fades both edges of a casing inwards from where
           // they stand: the outer one into the casing, the inner one
           // into the gap. Narrowing each stroke by the blur centres the
-          // ramps on them, as for a plain line (see [_lineStyle]).
+          // ramps on them, as for a plain line (see [_lineStyle]). Only
+          // the outer edge is blurred: Impeller erases the whole layer
+          // for a mask-blurred `BlendMode.clear` stroke on a bent path,
+          // so the inner edge stays sharp, at the middle of its ramp.
           final aa = 1 / pixelScale;
           final ramp = math.min(style.blur + aa, style.width);
-          final maskFilter = _blurFilter(ramp, pixelScale);
           casing
             ..strokeWidth = outer - (ramp - aa)
-            ..maskFilter = maskFilter;
-          gap
-            ..strokeWidth = math.max(0.0, style.gapWidth - (ramp - aa))
-            ..maskFilter = maskFilter;
-          // MapLibre blurs across a line, not along it. A blurred butt
-          // end of the gap would fade out where the casing's ends, and
-          // close it with a faint bar; a square one fades out past it.
+            ..maskFilter = _blurFilter(ramp, pixelScale);
+          gap.strokeWidth = math.max(0.0, style.gapWidth - (ramp - aa));
+          // MapLibre blurs across a line, not along it. The blurred end
+          // of the casing reaches past a butt end of the gap and would
+          // close it with a faint bar; a square one erases it.
           if (gap.strokeCap == StrokeCap.butt) gap.strokeCap = StrokeCap.square;
         }
-        canvas.drawPath(path, casing);
+        _drawStroke(canvas, path, casing);
         if (gap.strokeWidth > 0) canvas.drawPath(path, gap);
         canvas.restore();
       } else if (batch == null) {
-        canvas.drawPath(path, style.paint);
+        _drawStroke(canvas, path, style.paint);
       }
       painted = true;
     }, translate: translate);
-    if (batch != null && painted) canvas.drawPath(batch, blurred!);
+    if (batch != null && painted) _drawStroke(canvas, batch, blurred!);
     return painted;
   }
 
@@ -918,6 +918,31 @@ class TileRasterizer {
       miterLimit: miterLimit,
       paint: paint,
     );
+  }
+
+  /// Strokes [path] with [paint], minus its mask filter when the path
+  /// lies on one horizontal or vertical line: Impeller draws nothing for
+  /// a mask-blurred path of several contours whose bounds have no width
+  /// or no height (a dashed or batched axis-aligned run). Such a line is
+  /// drawn narrowed but sharp.
+  static void _drawStroke(Canvas canvas, Path path, Paint paint) {
+    if (paint.maskFilter != null) {
+      final bounds = path.getBounds();
+      if ((bounds.width == 0 || bounds.height == 0) &&
+          path.computeMetrics().take(2).length > 1) {
+        canvas.drawPath(
+            path,
+            Paint()
+              ..color = paint.color
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = paint.strokeWidth
+              ..strokeCap = paint.strokeCap
+              ..strokeJoin = paint.strokeJoin
+              ..strokeMiterLimit = paint.strokeMiterLimit);
+        return;
+      }
+    }
+    canvas.drawPath(path, paint);
   }
 
   /// The Gaussian that, after anti-aliasing's own one-device-pixel

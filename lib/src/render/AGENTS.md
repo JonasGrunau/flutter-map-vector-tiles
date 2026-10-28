@@ -286,7 +286,13 @@ for frames with no per-frame label work in them.
   a device pixel of σ (Americana's 0.5 px road blurs fall under it; the
   stroke keeps only the narrowing that makes its ink match MapLibre's),
   and `_paintLine` draws a layer's shared, opaque blurred stroke above
-  it as one batched path. Do not put a mask filter on
+  it as one batched path. Two Impeller faults shape the rest (found on
+  an iPhone, reproduced with `flutter test --enable-impeller`; Skia
+  draws both): a mask-blurred `BlendMode.clear` stroke on a bent path
+  erases the whole layer, so a casing blurs its outer stroke only, and
+  a mask-blurred path of several contours on one horizontal or vertical
+  line draws nothing, so `_drawStroke` drops the mask filter there. The
+  two tests after the blur profiles fail under Impeller without these. Do not put a mask filter on
   something drawn per feature without measuring frames delivered on a
   phone (`bench/` fps, `compare/`).
 - **SDF icons need the SDF paint path** (`_sdfPaint` with an edge threshold

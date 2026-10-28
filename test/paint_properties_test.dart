@@ -412,7 +412,8 @@ void main() {
     test('fades the edges over the blur, as MapLibre does', () async {
       for (final blur in [2.0, 4.0]) {
         final r = await compare(8, blur);
-        expect(r.maxError, lessThan(0.08), reason: 'blur $blur');
+        // Skia stays within 0.06 of the ramp, Impeller within about 0.1.
+        expect(r.maxError, lessThan(0.12), reason: 'blur $blur');
         // A line `width` wide holds width − blur pixels of ink.
         expect(r.ink, closeTo(8 - blur, 0.05), reason: 'blur $blur');
       }
@@ -470,6 +471,50 @@ void main() {
       }
       expect(worst, lessThanOrEqualTo(2));
       expect(batched.grey(384, 192), _near(0, 30), reason: 'blurred core');
+    });
+
+    // The next two hold on Skia either way; under Impeller
+    // (`flutter test --enable-impeller`) they fail without the
+    // workarounds in `_paintLine` and `_drawStroke`.
+
+    test('a blurred dashed line along an axis still draws', () async {
+      // Several contours on one horizontal line: Impeller draws nothing
+      // for such a path under a mask filter.
+      final pixels = await _render(
+        _theme([
+          {
+            'type': 'line',
+            'paint': {
+              'line-width': 6,
+              'line-blur': 2,
+              'line-dasharray': [3, 2],
+            },
+          },
+        ]),
+        _tile([
+          _line([20, 128, 236, 128]),
+        ]),
+        devicePixelRatio: 2,
+      );
+      expect(pixels.ink(2 * 30, 2 * 110, 2 * 146), greaterThan(4));
+    });
+
+    test('a blurred casing on a bent line keeps its casing', () async {
+      // Impeller erased the whole layer for a mask-blurred gap stroke.
+      final pixels = await _render(
+        _theme([
+          {
+            'type': 'line',
+            'paint': {'line-width': 4, 'line-gap-width': 12, 'line-blur': 2},
+          },
+        ]),
+        _tile([
+          _line([20, 128, 128, 128, 236, 200]),
+        ]),
+        devicePixelRatio: 2,
+      );
+      expect(pixels.grey(2 * 64, 2 * 128), 255, reason: 'the gap');
+      expect(pixels.ink(2 * 64, 2 * 100, 2 * 160), greaterThan(8));
     });
 
     test('a blur reading the feature applies per feature', () async {
@@ -724,7 +769,10 @@ void main() {
         ]),
         _tile([_point(128, 128)]),
       );
-      expect(pixels.at(128, 128), _red);
+      // The centre is the fill; a gradient lands within a step of it.
+      final centre = pixels.at(128, 128);
+      expect(centre.r, greaterThan(0.97));
+      expect(centre.g + centre.b, lessThan(0.03));
       // Between the radius and the edge's ramp: stroke, opaque.
       final stroke = pixels.at(128 + 30, 128);
       expect(stroke.b, greaterThan(0.9));

@@ -202,7 +202,12 @@ still left 49 of 58. So a blur under three quarters of a device pixel of
 σ (about 0.6 px at a pixel ratio of 3) keeps just the narrowing, its
 edges about a device pixel sharper than MapLibre's, and costs nothing;
 above it, a layer whose blurred stroke is the same for every feature and
-opaque draws all its features as one path, a pass per layer and tile. Circle strokes lie outside the radius, as
+opaque draws all its features as one path, a pass per layer and tile.
+Impeller, the renderer on iOS and Android, has two faults here that
+Skia does not: it erases a whole layer for a mask-blurred clear stroke
+on a bent path, and draws nothing for a mask-blurred path of several
+contours along one axis. So a casing's inner edge stays sharp, and such
+a path is drawn narrowed without the blur. Circle strokes lie outside the radius, as
 the spec says, and `circle-blur` draws the circle as one disc whose
 radial gradient samples MapLibre's circle shader. Several properties
 are deliberately not drawn: `line-gradient` needs a GeoJSON source with

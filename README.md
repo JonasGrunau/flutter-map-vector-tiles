@@ -357,7 +357,10 @@ segments cross. A `line-blur` under about 0.6 px on a 3× screen (0.9 px on
 a 2× one) only narrows the line by what the blur takes, without
 softening its edges: a blur costs GPU passes, and blurring every road of
 a style by 0.5 px cost a phone a sixth to two thirds of its frames while
-tiles were drawn.
+tiles were drawn. A blurred casing (`line-gap-width`) softens only its
+outer edge, and a blurred dashed line running exactly along a tile axis
+is drawn sharp: Impeller, Flutter's renderer on iOS and Android, draws
+those two wrongly when blurred.
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
 per `icon-color`, `icon-halo-color` and `icon-halo-width`; dark MapLibre
