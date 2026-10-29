@@ -973,6 +973,46 @@ and its tiles hold label text (baked into the raster with
 The style disk cache holds the document as served; the rewrite runs on
 every read.
 
+Global state is compiled in, too. `["global-state", name]` becomes a
+constant: the style's root `state` default, or the value the theme was
+asked for with `Theme.withGlobalState`. A runtime lookup would have had
+to version three caches that all assume a theme never changes what it
+computes — the zoom memo in the typed props, the per-tile filter matches
+and the finished-tile cache — so instead each state is its own `Theme`.
+When any layer reads global state, `ThemeReader` keeps the style
+document in a family that compiles siblings on demand and keeps the
+eight most recent, so the same state is the same instance, a `build`
+method asking again changes nothing, and the default state keeps the
+style's plain id while others append `|state=<json>`. Siblings read the
+same feature properties from the same sources, so `VectorTileLayer`
+does not rebuild its stores for one: it re-renders the live tiles from
+the decoded data, as for a sprites change, the old imagery holding
+until each replacement lands. Recompiling Liberty takes 0.4–0.8 ms
+on a Nothing Phone (1); the cost of a state change is drawing every
+visible tile again.
+
+`within` and `distance` read the feature's geometry, which nothing else
+in the engine does. The parser flags them (`ThemeLayer.readsGeometry`),
+and only for such layers do the filter matcher, the rasterizer and the
+symbol layouter build a `FeatureGeometry` — the data tile's z/x/y and
+extent plus the feature's coordinate runs — and evaluate in a
+`GeometryEvalContext`, an internal subclass that carries it; symbol
+instances carry it for the per-frame label pass. Every other layer
+keeps the plain `EvalContext`: one is allocated per feature evaluated,
+and a field more on every one made filter matching on a fresh tile
+measurably slower on a phone. The GeoJSON
+argument is parsed once. `within` runs in Web Mercator on the feature's
+own grid, `distance` on a local flat approximation of the ellipsoid
+around the feature's first coordinate, both following MapLibre's
+definitions. The answer depends only on the feature, so it is memoized
+per feature (an `Expando` on its coordinate list) and costs one
+geometry test per feature, not one per display tile.
+
+The engine is held to maplibre-style-spec's own expression fixtures
+(`test/maplibre_expression_conformance_test.dart`): every fixture
+MapLibre evaluates must give MapLibre's result as the renderer reads it,
+or be listed with the reason it does not.
+
 The sprite sheet is repacked once after decoding (`padSpriteSheet` in
 `style/sprite_packer.dart`): every distinct sprite rectangle is copied
 byte for byte into a new sheet with a 2 px transparent gutter, and the

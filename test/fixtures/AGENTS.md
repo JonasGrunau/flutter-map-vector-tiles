@@ -7,7 +7,8 @@
 
 Test data builders. There are no checked-in binary tile fixtures — test tiles
 are constructed programmatically so the input to a failing test is readable in
-the test itself.
+the test itself. The one exception is data, not tiles: maplibre-style-spec's
+expression fixtures, generated into a Dart file.
 
 ## Key Files
 
@@ -15,7 +16,9 @@ the test itself.
 |------|-------------|
 | `mvt_builder.dart` | `MvtTileBuilder` / `MvtLayerBuilder` — a minimal MVT (protobuf) encoder: layers, features, tags, geometry commands, varint and tag writing |
 | `pmtiles_builder.dart` | `PmTilesArchiveBuilder` — a minimal PMTiles v3 archive writer: header, delta-varint directories, optional leaf splitting and pluggable compression. Web-safe (arithmetic only) so the same fixtures run in the browser suite |
-| `lifecycle_harness.dart` | The widget-test harness: `app()` (a `FlutterMap` with one `VectorTileLayer` at a fixed 600×600), `CountingProvider` / `EverywhereProvider`, the pixel readers (`centrePixel`, `fullyPainted`) and the waits (`pumpUntil`, `settle`, `settleLoads`, `sampleDuring`) |
+| `lifecycle_harness.dart` | The widget-test harness: `app()` (a `FlutterMap` with one `VectorTileLayer` at a fixed 600×600, `landTheme()` unless a `theme` is passed), `CountingProvider` / `EverywhereProvider`, the pixel readers (`centrePixel`, `fullyPainted`) and the waits (`pumpUntil`, `settle`, `settleLoads`, `sampleDuring`) |
+| `maplibre_expression_fixtures.dart` | GENERATED — maplibre-style-spec's expression fixtures as one JSON string, a line per fixture, plus the spec commit they came from. Embedded in Dart, not read from disk, so the conformance test runs in the browser too. BSD-3-Clause, MapLibre contributors: `MAPLIBRE_LICENSE.txt` |
+| `maplibre_expression_fixtures_gen.dart` | Regenerates the file above from a maplibre-style-spec checkout: `dart run test/fixtures/maplibre_expression_fixtures_gen.dart <checkout>`. Then run the conformance test and update its divergence list |
 
 ## For AI Agents
 
