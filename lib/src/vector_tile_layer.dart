@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:developer' as developer;
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -26,18 +27,22 @@ import 'pipeline/executor/executor.dart';
 import 'pipeline/prepared_tile.dart';
 import 'render/display_tile_data.dart';
 import 'render/fade.dart';
+import 'render/feature_query.dart';
 import 'render/hillshade_renderer.dart';
+import 'render/hit_test.dart';
 import 'render/label_continuity.dart';
 import 'render/label_identity.dart';
 import 'render/label_painter.dart';
 import 'render/pattern_resolver.dart';
 import 'render/symbol_layouter.dart';
 import 'render/tile_rasterizer.dart';
+import 'style/feature_state.dart';
 import 'style/sprite_atlas.dart';
 import 'style/theme.dart';
 import 'text/glyph_source.dart';
 import 'tile_offset.dart';
 import 'tile_providers.dart';
+import 'vector_tile_layer_controller.dart';
 
 /// A vector tile layer for `flutter_map`, drawing a MapLibre-style
 /// [Theme] from MVT tile sources.
@@ -168,6 +173,24 @@ class VectorTileLayer extends StatefulWidget {
   /// are dropped where they would cross a tile edge — see [LabelMode].
   final LabelMode labelMode;
 
+  /// Queries this layer's rendered features and sets the feature state
+  /// its style reads — see [VectorTileLayerController]. Optional: a layer
+  /// without one pays nothing for either.
+  final VectorTileLayerController? controller;
+
+  /// Whether decoded tiles keep every feature property, rather than only
+  /// the properties the style reads — which is all that drawing needs,
+  /// and all a [VectorTileLayerController.queryRenderedFeatures] result
+  /// carries otherwise.
+  ///
+  /// Costs memory and decode time in proportion to what the tiles carry
+  /// beyond the style: OpenMapTiles-schema tiles, for instance, ship a
+  /// name in dozens of languages for every place and POI. Decoded tiles
+  /// stay within [memoryCacheMaxBytes] either way, so the cost shows as
+  /// fewer tiles held — more decoding on the way back to an area — not
+  /// as unbounded growth.
+  final bool retainAllProperties;
+
   final Logger logger;
 
   const VectorTileLayer({
@@ -188,6 +211,8 @@ class VectorTileLayer extends StatefulWidget {
     this.rasterCacheMaxBytes = autoRasterCacheBytes,
     this.showLabels = true,
     this.labelMode = LabelMode.screen,
+    this.controller,
+    this.retainAllProperties = false,
     this.logger = const Logger.noop(),
   });
 
@@ -304,7 +329,8 @@ class VectorTileLayer extends StatefulWidget {
 }
 
 class _VectorTileLayerState extends State<VectorTileLayer>
-    with TickerProviderStateMixin, WidgetsBindingObserver {
+    with TickerProviderStateMixin, WidgetsBindingObserver
+    implements FeatureQueryHost {
   late TilePrepareExecutor _executor;
   late final Future<ByteCache?> _diskCache;
   final _stores = <String, TileStore>{};
@@ -595,8 +621,24 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _fadeTicker = createTicker(_onFadeTick);
     _renderTicker = createTicker(_pumpRenderQueue);
     _diskCache = _obtainDiskCache();
+    _attach(widget.controller);
     _buildStores();
     _recoverIfSuspect();
+  }
+
+  // A controller follows the layer in and out of the tree, a reparented
+  // layer included. Detaching is identity-guarded: a layer remounted
+  // under a new key has attached before the old one is deactivated.
+  @override
+  void deactivate() {
+    widget.controller?.detach(this);
+    super.deactivate();
+  }
+
+  @override
+  void activate() {
+    super.activate();
+    widget.controller?.attach(this);
   }
 
   @override
@@ -697,22 +739,39 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       final bySourceLayer = propsBySource[source] ??= {};
       if (bySourceLayer.containsKey(sourceLayer)) {
         final existing = bySourceLayer[sourceLayer];
-        final incoming = layer.referencedProperties;
+        final incoming =
+            widget.retainAllProperties ? null : layer.referencedProperties;
         bySourceLayer[sourceLayer] = (existing == null || incoming == null)
             ? null
             : {...existing, ...incoming};
       } else {
-        bySourceLayer[sourceLayer] = layer.referencedProperties?.toSet();
+        bySourceLayer[sourceLayer] = widget.retainAllProperties
+            ? null
+            : layer.referencedProperties?.toSet();
       }
     }
 
     widget.tileProviders.providers.forEach((sourceId, provider) {
       final layerProperties = propsBySource[sourceId];
       if (layerProperties == null) return; // source unused by theme
+      // The source's `promoteId` names, per source layer, the property
+      // decoding turns into the feature id — so decoding must keep it.
+      final promoteId = widget.tileProviders.promoteIds[sourceId];
+      final promoteIds = <String, String>{};
+      if (promoteId != null) {
+        for (final sourceLayer in layerProperties.keys.toList()) {
+          final property = promoteId.propertyFor(sourceLayer);
+          if (property == null) continue;
+          promoteIds[sourceLayer] = property;
+          final keep = layerProperties[sourceLayer];
+          if (keep != null) layerProperties[sourceLayer] = {...keep, property};
+        }
+      }
       final store = TileStore(
         provider: provider,
         executor: _executor,
         layerProperties: layerProperties,
+        promoteIds: promoteIds,
         diskCache: _diskCache,
         memoryCacheMaxBytes: widget.memoryCacheMaxBytes,
         logger: widget.logger,
@@ -793,6 +852,25 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   void didUpdateWidget(covariant VectorTileLayer oldWidget) {
     super.didUpdateWidget(oldWidget);
     var refresh = false;
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller?.detach(this);
+      _attach(widget.controller);
+      // The tiles were drawn with the old controller's feature state —
+      // and, drawing labels into them without a controller, recorded no
+      // label shapes for the new one to query.
+      if (!(oldWidget.controller?.featureStates.isEmpty ?? true) ||
+          !(widget.controller?.featureStates.isEmpty ?? true) ||
+          (oldWidget.controller == null && _tileLabels)) {
+        refresh = true;
+      }
+      for (final tile in _tiles.values) {
+        if (widget.controller == null) {
+          tile.sources = null;
+        } else if (tile.sources == null) {
+          _adoptSources(tile);
+        }
+      }
+    }
     if (oldWidget.sprites != widget.sprites) {
       // Fill/line patterns are baked into the rasters, so live tiles
       // must be re-rasterized with the new atlas.
@@ -860,7 +938,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     if ((themeChanged && !siblingTheme) ||
         oldWidget.tileProviders != widget.tileProviders ||
         oldWidget.rasterSources != widget.rasterSources ||
-        oldWidget.tileOffset.zoomOffset != widget.tileOffset.zoomOffset) {
+        oldWidget.tileOffset.zoomOffset != widget.tileOffset.zoomOffset ||
+        oldWidget.retainAllProperties != widget.retainAllProperties) {
       _buildStores();
     } else if (refresh) {
       _refreshTiles();
@@ -968,10 +1047,19 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       for (final entry in widget.rasterSources.entries)
         'raster:${entry.key}=${entry.value.provider.cacheKey}',
     ]..sort();
+    // A promoted id is what `["id"]` and feature state see.
+    final promoteIds = [
+      for (final entry in widget.tileProviders.promoteIds.entries)
+        '${entry.key}=${entry.value}',
+    ]..sort();
     return '${widget.theme.id}|${widget.tileOffset.zoomOffset}|'
         '$devicePixelRatio|${widget.showLabels}|${widget.labelMode.name}|'
         '${widget.sprites?.signature}|${widget.glyphs?.signature}|'
-        '${providers.join(',')}';
+        '${providers.join(',')}'
+        '${promoteIds.isEmpty ? '' : '|promoteId:${promoteIds.join(',')}'}'
+        // Cached labels carry their feature's properties, which are
+        // all of them only with this set.
+        '${widget.retainAllProperties ? '|retainAllProperties' : ''}';
   }
 
   /// Memoized [_signatureOf] for the current widget: it is consulted on
@@ -1024,6 +1112,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   @override
   void dispose() {
+    widget.controller?.detach(this);
     WidgetsBinding.instance.removeObserver(this);
     _mounted.remove(this);
     unawaited(_mapEvents?.cancel());
@@ -1302,6 +1391,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _DisplayTile tile,
     int priority, {
     bool fadeIn = true,
+    Set<String>? keepSymbolsWith,
   }) async {
     final generation = _generation;
     final tileGeneration = tile.loadGeneration;
@@ -1313,9 +1403,22 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // and revalidation paths reset `renderedWith` after invalidating
     // their cache entries, so they can never be served stale content.
     if (tile.renderedWith == null) {
-      final cached = _resultCache?.get(tile.key);
+      // A cached result was drawn without feature state: it cannot
+      // stand in for a tile that may draw a feature that has some.
+      var cached =
+          _mayDrawFeatureState(tile.key) ? null : _resultCache?.get(tile.key);
+      // Labels drawn into a tile by a layer without a controller left no
+      // shapes to query; with one, the tile is drawn again instead.
+      if (cached != null &&
+          _tileLabels &&
+          widget.controller != null &&
+          cached.labelHits == null) {
+        cached = null;
+      }
       if (cached != null) {
         tile.renderedWith = cached.renderedWith;
+        tile.labelHits = cached.labelHits ?? const [];
+        if (widget.controller != null) _adoptSources(tile);
         final owesShaping = cached.symbols.isNotEmpty;
         tile.setImage(
           image: cached.image?.clone(),
@@ -1592,7 +1695,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           provisional: false,
           priority: priority,
           fadeIn: fadeIn,
-          complete: !missing);
+          complete: !missing,
+          // Kept only when the labels were laid out from exactly these
+          // sources: one that failed then and arrived now brings labels
+          // of its own.
+          keepSymbols:
+              keepSymbolsWith != null && setEquals(keepSymbolsWith, resolved));
     }
 
     if (missing && tile.retryAttempt < _maxLoadRetries) {
@@ -1658,6 +1766,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     required int priority,
     bool fadeIn = true,
     bool complete = false,
+    bool keepSymbols = false,
   }) {
     final job = _RenderJob(
         sources: sources,
@@ -1669,7 +1778,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         priority: priority,
         fadeIn: fadeIn,
         complete: complete,
-        generation: tile.loadGeneration);
+        generation: tile.loadGeneration,
+        keepSymbols: keepSymbols,
+        stateVersion: _featureStates?.version ?? 0);
     if (tile.cancellation.isCancelled) {
       job.dispose();
       return;
@@ -1694,7 +1805,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _renderQueue.enqueueRaster(tile, priority, job);
     // The accepted raster decides anew whether symbols will follow
     // (any pending symbol job for this tile was just superseded).
-    tile.symbolsPending = _symbolsFollow(tile, sources);
+    tile.symbolsPending = !keepSymbols && _symbolsFollow(tile, sources);
     // That flag feeds the retained-label decision: a tile awaiting
     // symbols keeps the previous level's labels covering it.
     _labelCandidatesChanged();
@@ -1845,6 +1956,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         rasters: job.rasters,
         descendantSources: job.descendantSources,
         descendantRasters: job.descendantRasters,
+        featureStates: _featureStates,
         neighbourRasters: job.neighbourRasters,
         demEncodings: _demEncodings);
     // A theme change rebuilds the stores, which empties this queue, and
@@ -1873,7 +1985,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     final geometry = TileRasterizer.compose([...job.geometryParts]);
     job.geometryParts.clear();
 
-    final symbolsFollow = _symbolsFollow(tile, job.sources);
+    final symbolsFollow = !job.keepSymbols && _symbolsFollow(tile, job.sources);
     if (symbolsFollow && _tileLabels) {
       // The labels go into the same image, so nothing is published
       // until they are drawn: the geometry is only recorded here, and
@@ -1892,6 +2004,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             fadeIn: job.fadeIn,
             complete: job.complete,
             generation: job.generation,
+            stateVersion: job.stateVersion,
             geometry: geometry,
           )..recordedPixelRatio = job.recordedPixelRatio);
       return true;
@@ -1909,6 +2022,20 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       fadeIn: job.fadeIn && widget.tileFadeDuration > Duration.zero,
       symbolsPending: symbolsFollow,
     );
+    tile.labelHits = const [];
+    tile.sources = widget.controller == null ? null : job.sources;
+    if (job.keepSymbols) {
+      // Drawn again for a feature-state change, which a symbol layout
+      // cannot read: the published labels stand, and so does the
+      // placement over them — nothing for the label pass to redo. They
+      // are the layouter's whole list only while the tile is current: a
+      // retained tile's were cut to what was drawn.
+      if (identical(_tiles[tile.key], tile)) {
+        _cacheResult(tile, job, tile.symbols);
+      }
+      _repaint.trigger();
+      return true;
+    }
     if (symbolsFollow) {
       // The symbol phase reuses the prepared sources; the raster
       // handles are not carried over — they die with this job.
@@ -1923,13 +2050,16 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             fadeIn: job.fadeIn,
             complete: job.complete,
             generation: job.generation,
+            stateVersion: job.stateVersion,
           )..recordedPixelRatio = job.recordedPixelRatio);
     } else {
       // Still a publish: a tile that finishes with no labels at all is
       // what releases the retained level's labels over it into their
       // fade-out.
       _setTileSymbols(tile, const [], provisional: job.provisional);
-      _cacheResult(tile, job, const []);
+      // Drawing labels into tiles, this one has none to query.
+      _cacheResult(tile, job, const [],
+          labelHits: _tileLabels ? const [] : null);
     }
     _labelCandidatesChanged();
     _repaint.trigger();
@@ -2010,14 +2140,19 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // The tile's first publish: its geometry and labels in one image,
       // and no placement candidates — nothing is left for the
       // per-frame pass.
+      // Recorded only for a controller to query: a layer without one pays
+      // nothing for it.
+      final labelHits = widget.controller == null ? null : <LabelHit>[];
       tile.setImage(
-        image: _rasterizeWithLabels(job, symbols, styleZoom),
+        image: _rasterizeWithLabels(job, symbols, styleZoom, labelHits),
         provisional: job.provisional,
         fadeIn: job.fadeIn && widget.tileFadeDuration > Duration.zero,
         symbolsPending: false,
       );
+      tile.labelHits = labelHits ?? const [];
+      tile.sources = widget.controller == null ? null : job.sources;
       _setTileSymbols(tile, const [], provisional: job.provisional);
-      _cacheResult(tile, job, const []);
+      _cacheResult(tile, job, const [], labelHits: labelHits);
     } else {
       _setTileSymbols(tile, symbols, provisional: job.provisional);
       _cacheResult(tile, job, symbols);
@@ -2090,8 +2225,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// the same backgrounding workaround: it only runs inside the render
   /// pump, which the lifecycle gate parks, and the glyph-atlas pages
   /// it may add to are discarded with the rest on the way back in.
-  ui.Image? _rasterizeWithLabels(
-      _RenderJob job, List<SymbolInstance> symbols, double styleZoom) {
+  ///
+  /// The drawn labels' hit shapes are added to [labelHits], when given,
+  /// for rendered-feature queries.
+  ui.Image? _rasterizeWithLabels(_RenderJob job, List<SymbolInstance> symbols,
+      double styleZoom, List<LabelHit>? labelHits) {
     developer.Timeline.startSync('VT rasterize with labels');
     try {
       // The ratio the geometry was recorded at, which the screen may
@@ -2113,6 +2251,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         styleZoom: styleZoom,
         sprites: widget.sprites,
         devicePixelRatio: scale,
+        hits: labelHits,
       );
       final picture = recorder.endRecording();
       if (geometry == null && drawn.isEmpty) {
@@ -2131,9 +2270,21 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// [symbols] is the layouter's canonical output in its canonical
   /// order, which the collision and draw-order tiebreaks of every
   /// future session inherit through the shared entry.
+  ///
+  /// A tile drawn with feature state is not cached either: the cache is
+  /// shared by every layer over the style, and state belongs to one
+  /// layer's controller.
   void _cacheResult(
-      _DisplayTile tile, _RenderJob job, List<SymbolInstance> symbols) {
+      _DisplayTile tile, _RenderJob job, List<SymbolInstance> symbols,
+      {List<LabelHit>? labelHits}) {
     if (job.provisional || !job.complete || job.fromCache) return;
+    // Judged against the state now; a change since the job began may
+    // have left a recording of the state before it, so that is not
+    // cached either.
+    if (job.stateVersion != (_featureStates?.version ?? 0) ||
+        _drewFeatureState(tile.key, job.sources)) {
+      return;
+    }
     // An image rasterized at a pixel ratio the screen has since left
     // would be stored under the new ratio's signature.
     if (job.recordedPixelRatio case final dpr? when dpr != _devicePixelRatio) {
@@ -2144,7 +2295,302 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       image: tile.image?.clone(),
       symbols: symbols,
       renderedWith: tile.renderedWith ?? const {},
+      labelHits: labelHits,
     );
+  }
+
+  // -------------------------------------------------------------------
+  // Rendered-feature queries and feature state — what a
+  // [VectorTileLayerController] asks of the layer it is attached to.
+
+  /// The camera the next paint draws with — what a query's screen
+  /// pixels are mapped through. Null before the first build.
+  MapCamera? _camera;
+
+  /// The feature state tiles and labels are drawn with: the
+  /// controller's, or none.
+  FeatureStates? get _featureStates => widget.controller?.featureStates;
+
+  void _attach(VectorTileLayerController? controller) {
+    controller?.attach(this);
+    _labelPainter.featureStates = controller?.featureStates;
+  }
+
+  /// The `(source, source layer)` pairs drawn into the tile images by a
+  /// layer that reads `feature-state`: state anywhere else changes no
+  /// image. Symbol layers count only while labels are drawn into the
+  /// tiles — in screen space they follow state every frame. Memoized
+  /// per theme and label mode.
+  Set<(String, String)> get _stateSourceLayers {
+    final tileLabels = _tileLabels;
+    if (!identical(_stateSourceLayersTheme, widget.theme) ||
+        _stateSourceLayersTileLabels != tileLabels) {
+      _stateSourceLayersTheme = widget.theme;
+      _stateSourceLayersTileLabels = tileLabels;
+      _stateSourceLayersMemo = {
+        for (final layer in widget.theme.layers)
+          if (layer.readsFeatureState &&
+              (tileLabels || layer is! SymbolThemeLayer) &&
+              layer.source != null &&
+              layer.sourceLayer != null)
+            (layer.source!, layer.sourceLayer!),
+      };
+    }
+    return _stateSourceLayersMemo;
+  }
+
+  Theme? _stateSourceLayersTheme;
+  bool? _stateSourceLayersTileLabels;
+  Set<(String, String)> _stateSourceLayersMemo = const {};
+
+  /// Fetches the decoded data behind [tile], whose image came from the
+  /// finished-tile cache without it — with a controller attached a live
+  /// tile keeps the data it is drawn from, to answer queries and state
+  /// changes even after the decoded-tile cache let it go. Data already
+  /// in memory is taken at once; the rest is loaded at the lowest
+  /// priority.
+  void _adoptSources(_DisplayTile tile) {
+    final offset = widget.tileOffset.zoomOffset;
+    final sources = <String, PreparedTile>{};
+    final pending = <String, Future<PreparedTile?>>{};
+    _stores.forEach((id, store) {
+      final dataKey = store.dataKeyFor(tile.key, offset);
+      if (dataKey == null) return;
+      final data = store.peek(dataKey);
+      if (data != null) {
+        sources[id] = data;
+      } else {
+        pending[id] = store.obtain(dataKey,
+            priority: _adoptPriority, cancellation: tile.cancellation);
+      }
+    });
+    tile.sources = sources;
+    for (final entry in pending.entries) {
+      unawaited(entry.value.then((data) {
+        // A render since then brought the tile its own sources.
+        if (data != null && identical(tile.sources, sources)) {
+          sources[entry.key] = data;
+        }
+      }));
+    }
+  }
+
+  /// Behind every load a tile needs to show anything.
+  static const _adoptPriority = 1 << 30;
+
+  /// Whether display tile [displayKey] may draw a feature whose state is
+  /// set, judged from the decoded tiles in memory — a source whose tile
+  /// is not counts as yes, since it cannot be checked. A finished result
+  /// cached without state cannot stand in for such a tile.
+  bool _mayDrawFeatureState(TileKey displayKey) {
+    final states = _featureStates;
+    if (states == null || states.isEmpty) return false;
+    for (final (source, sourceLayer) in _stateSourceLayers) {
+      final ids = states.sourceLayer(source, sourceLayer);
+      final store = _stores[source];
+      if (ids == null || store == null) continue;
+      final dataKey =
+          store.dataKeyFor(displayKey, widget.tileOffset.zoomOffset);
+      if (dataKey == null) continue;
+      final data = store.peek(dataKey);
+      if (data == null ||
+          FeatureQuery.drawsAny(displayKey, data, sourceLayer, ids.keys)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Whether a tile drawn from [sources] drew a feature with state.
+  bool _drewFeatureState(
+      TileKey displayKey, Map<String, PreparedTile> sources) {
+    final states = _featureStates;
+    if (states == null || states.isEmpty) return false;
+    for (final (source, sourceLayer) in _stateSourceLayers) {
+      final ids = states.sourceLayer(source, sourceLayer);
+      final data = sources[source];
+      if (ids != null &&
+          data != null &&
+          FeatureQuery.drawsAny(displayKey, data, sourceLayer, ids.keys)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  @override
+  void featureStateChanged(String source, String sourceLayer, Set<Object> ids) {
+    if (!mounted) return;
+    var geometry = false;
+    var labels = false;
+    for (final layer in widget.theme.layers) {
+      if (!layer.readsFeatureState ||
+          layer.source != source ||
+          layer.sourceLayer != sourceLayer) {
+        continue;
+      }
+      if (layer is SymbolThemeLayer) {
+        labels = true;
+      } else {
+        geometry = true;
+      }
+    }
+    // Screen-space labels evaluate their paint every frame, against a
+    // style memo the state version invalidates: one repaint is all they
+    // need. Drawn into the tiles, they are part of the image.
+    if (labels && _screenLabels) _repaint.trigger();
+    if (!geometry && !(labels && _tileLabels)) return;
+    final store = _stores[source];
+    if (store == null) return;
+    final offset = widget.tileOffset.zoomOffset;
+    for (final tile in _tiles.values) {
+      final dataKey = store.dataKeyFor(tile.key, offset);
+      final data = tile.sources?[source] ??
+          (dataKey == null ? null : store.peek(dataKey));
+      if (data == null) {
+        // A tile still loading is drawn with the new state when its
+        // data arrives. One already showing an image whose data cannot
+        // be checked — let go of by the decoded-tile cache, or still
+        // being fetched after a cache hit — is drawn again, which
+        // fetches it.
+        if (tile.state != _TileState.loading) _renderForFeatureState(tile);
+        continue;
+      }
+      // One that never draws the feature — most of them, at overzoom —
+      // keeps its image.
+      if (FeatureQuery.drawsAny(tile.key, data, sourceLayer, ids)) {
+        _renderForFeatureState(tile);
+      }
+    }
+  }
+
+  /// Ahead of everything queued: a state change answers a tap.
+  static const _featureStateRenderPriority = -1;
+
+  /// Draws [tile] again with the current feature state, from the
+  /// decoded data it already has. Only the geometry is redone when the
+  /// tile's labels are published and live outside its image: no symbol
+  /// layout can read state, so they stand, and so does their placement.
+  /// The swap does not fade — the change is the point.
+  void _renderForFeatureState(_DisplayTile tile) {
+    final keepSymbols = !_tileLabels &&
+        tile.state == _TileState.ready &&
+        !tile.isProvisional &&
+        !tile.symbolsPending &&
+        !tile.symbolsProvisional;
+    final renderedWith = tile.renderedWith;
+    tile.renderedWith = null; // identical sources must still re-enqueue
+    tile.loadGeneration++; // drops a job recorded with the old state
+    unawaited(_loadTile(tile, _featureStateRenderPriority,
+        fadeIn: false, keepSymbolsWith: keepSymbols ? renderedWith : null));
+  }
+
+  @override
+  List<RenderedFeature> queryRenderedFeatures(
+      HitArea area, Set<String>? layerIds) {
+    final camera = _camera;
+    if (!mounted || camera == null) return const [];
+    final states = _featureStates;
+    final results = <RenderedFeature>[];
+    final seen = <(String, Object)>{};
+    void add(ThemeLayer layer, Object? id, Map<String, Object?> properties,
+        String geometryType) {
+      final source = layer.source, sourceLayer = layer.sourceLayer;
+      if (source == null || sourceLayer == null) return;
+      // One result per feature and layer: its id, or — without one —
+      // the decoded feature itself, which every display tile cut from
+      // one data tile shares.
+      final key =
+          id == null ? _Identity(properties) : FeatureStates.normalizeId(id);
+      if (!seen.add((layer.id, key))) return;
+      results.add(RenderedFeature(
+        layerId: layer.id,
+        source: source,
+        sourceLayer: sourceLayer,
+        id: id,
+        properties: UnmodifiableMapView(properties),
+        geometryType: geometryType,
+        state: Map.unmodifiable(
+            states?.lookup(source, sourceLayer, id) ?? const {}),
+      ));
+    }
+
+    bool wanted(ThemeLayer layer) =>
+        layerIds == null || layerIds.contains(layer.id);
+
+    // Labels draw above every tile image, so they come first.
+    if (_screenLabels) {
+      for (final instance in _labelPainter.hitTestLabels(area)) {
+        if (wanted(instance.layer)) {
+          add(instance.layer, instance.featureId, instance.properties,
+              instance.geometryType);
+        }
+      }
+    }
+
+    // The query in world pixels at the camera zoom — the inverse of the
+    // painter's translate · rotate — then in each tile's logical pixels.
+    final screenCenter = camera.nonRotatedSize.center(Offset.zero);
+    final worldCenter = camera.projectAtZoom(camera.center, camera.zoom);
+    final cosR = math.cos(-camera.rotationRad);
+    final sinR = math.sin(-camera.rotationRad);
+    final world = area.map((p) {
+      final d = p - screenCenter;
+      return Offset(worldCenter.dx + d.dx * cosR - d.dy * sinR,
+          worldCenter.dy + d.dx * sinR + d.dy * cosR);
+    });
+    const tileSquare = Rect.fromLTWH(
+        0, 0, TileRasterizer.logicalTileSize, TileRasterizer.logicalTileSize);
+    final offset = widget.tileOffset.zoomOffset;
+    final tileLabels = <(int, int, SymbolInstance)>[];
+    final geometry = <(int, int, GeometryHit)>[];
+    for (final tile in _tiles.values) {
+      final rect = displayTileRect(tile.key, camera.zoom);
+      if (!rect.inflate(1).overlaps(world.bounds.inflate(1))) continue;
+      final scale = TileRasterizer.logicalTileSize / rect.width;
+      final local =
+          world.map((p) => (p - rect.topLeft) * scale).clipTo(tileSquare);
+      if (local == null) continue;
+      for (final hit in tile.labelHits) {
+        if (wanted(hit.instance.layer) && hit.hits(local)) {
+          tileLabels
+              .add((hit.instance.layerIndex, tileLabels.length, hit.instance));
+        }
+      }
+      // What the tile is drawn from: its own data, or — still loading —
+      // the ancestor its provisional image comes from.
+      final sources = <String, PreparedTile>{};
+      _stores.forEach((id, store) {
+        final dataKey = store.dataKeyFor(tile.key, offset);
+        final data = tile.sources?[id] ??
+            (dataKey == null ? null : store.peekWithAncestors(dataKey));
+        if (data != null) sources[id] = data;
+      });
+      if (sources.isEmpty) continue;
+      for (final hit in FeatureQuery.hitTile(
+        theme: widget.theme,
+        data: DisplayTileData(
+            displayKey: tile.key, sources: sources, featureStates: states),
+        styleZoom: _styleZoomOf(tile.key.z.toDouble()),
+        area: local,
+        layerIds: layerIds,
+      )) {
+        geometry.add((hit.layerIndex, geometry.length, hit));
+      }
+    }
+    // Topmost first: the higher style layer, then within one layer what
+    // was drawn later.
+    int topmostFirst((int, int, Object) a, (int, int, Object) b) =>
+        a.$1 != b.$1 ? b.$1 - a.$1 : b.$2 - a.$2;
+    for (final (_, _, instance) in tileLabels..sort(topmostFirst)) {
+      add(instance.layer, instance.featureId, instance.properties,
+          instance.geometryType);
+    }
+    for (final (_, _, hit) in geometry..sort(topmostFirst)) {
+      add(hit.layer, hit.feature.id, hit.feature.properties,
+          hit.feature.geometryType);
+    }
+    return results;
   }
 
   /// Drops parked fade-out fallbacks whose fade window has passed — any
@@ -2219,6 +2665,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
+    _camera = camera;
     _updateLabelCamera(camera);
     // Sized before the grid update: that is what triggers the loads
     // that consult the result cache.
@@ -2289,6 +2736,16 @@ class _RenderJob {
   /// sources predate whatever replaced them.
   final int generation;
 
+  /// Whether this job draws a published tile again for a feature-state
+  /// change: geometry only, keeping the tile's labels, which no state
+  /// can move (see `_renderForFeatureState`).
+  final bool keepSymbols;
+
+  /// The feature-state version when the job began. A result finished
+  /// under another one may hold the state before the change, and is not
+  /// cached.
+  final int stateVersion;
+
   /// Whether this job's content came straight out of the result cache,
   /// in which case it is already there and must not be re-put — a
   /// second `put` under the same key mints a second master image and
@@ -2352,6 +2809,8 @@ class _RenderJob {
     this.descendantRasters = const {},
     this.neighbourRasters = const {},
     this.fromCache = false,
+    this.keepSymbols = false,
+    this.stateVersion = 0,
     this.symbols,
     this.geometry,
   });
@@ -2397,6 +2856,17 @@ class _DisplayTile {
   /// dipping to the background colour.
   ui.Image? underlay;
   List<SymbolInstance> symbols = const [];
+
+  /// [LabelMode.tile] only: the labels drawn into [image], for
+  /// rendered-feature queries — the per-frame pass has none to offer.
+  List<LabelHit> labelHits = const [];
+
+  /// With a controller attached only: the decoded data [image] was drawn
+  /// from — held so queries and feature-state changes can answer for
+  /// the tile after the decoded-tile cache let the data go. Null without
+  /// a controller, so a layer without one holds nothing beyond that
+  /// cache's budget.
+  Map<String, PreparedTile>? sources;
 
   /// The label id of each of [symbols], as `LabelIdentityIndex`
   /// assigned them — this tile holds them until it hands them back.
@@ -2513,6 +2983,8 @@ class _DisplayTile {
     underlay?.dispose();
     underlay = null;
     symbols = const [];
+    labelHits = const [];
+    sources = null;
     labelIds = _noIds;
     symbolsProvisional = false;
     symbolsPending = false;
@@ -2733,4 +3205,19 @@ class _VectorMapPainter extends CustomPainter {
       oldDelegate.camera != camera ||
       oldDelegate.state != state ||
       oldDelegate.devicePixelRatio != devicePixelRatio;
+}
+
+/// Identity as a set key: a feature without an id is the same feature
+/// wherever it is reached from only if it is the same decoded object.
+final class _Identity {
+  final Object value;
+
+  const _Identity(this.value);
+
+  @override
+  bool operator ==(Object other) =>
+      other is _Identity && identical(other.value, value);
+
+  @override
+  int get hashCode => identityHashCode(value);
 }

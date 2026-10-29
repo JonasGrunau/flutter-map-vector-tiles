@@ -29,6 +29,10 @@ class TileStore {
   /// Per source-layer property keep-lists derived from the theme.
   final Map<String, Set<String>?> layerProperties;
 
+  /// Per source-layer: the property promoted to feature id (the
+  /// source's `promoteId`), kept by [layerProperties] too.
+  final Map<String, String> promoteIds;
+
   /// Decoded tiles, shared process-wide between every store built on the
   /// same source *and* the same property keep-lists.
   ///
@@ -58,12 +62,13 @@ class TileStore {
     required this.provider,
     required this.executor,
     required this.layerProperties,
+    this.promoteIds = const {},
     Future<ByteCache?>? diskCache,
     int memoryCacheMaxBytes = 32 * 1024 * 1024,
     this.logger = const Logger.noop(),
   })  : _bytes = TileByteLoader(provider, diskCache ?? Future.value()),
         _memory = _memoryCaches.putIfAbsent(
-          _memorySignature(provider, layerProperties),
+          _memorySignature(provider, layerProperties, promoteIds),
           () => LruCache(
             maxEntries: 256,
             maxCost: memoryCacheMaxBytes,
@@ -76,10 +81,12 @@ class TileStore {
   /// The source alone is not enough: prepared tiles are trimmed to the
   /// properties the theme reads, so two themes over the same source produce
   /// different content for the same key. The details and monitoring styles of
-  /// one map provider are exactly that case.
+  /// one map provider are exactly that case. A promoted id changes the
+  /// content too.
   static String _memorySignature(
     VectorTileProvider provider,
     Map<String, Set<String>?> layerProperties,
+    Map<String, String> promoteIds,
   ) {
     final buffer = StringBuffer(provider.cacheKey);
     for (final sourceLayer in layerProperties.keys.toList()..sort()) {
@@ -87,6 +94,8 @@ class TileStore {
       buffer.write('|$sourceLayer:');
       buffer.write(
           properties == null ? '*' : (properties.toList()..sort()).join(','));
+      final promoteId = promoteIds[sourceLayer];
+      if (promoteId != null) buffer.write('#id=$promoteId');
     }
     return buffer.toString();
   }
@@ -175,6 +184,7 @@ class TileStore {
             y: dataKey.y,
             bytes: bytes,
             layerProperties: layerProperties,
+            promoteIds: promoteIds,
           ),
           priority: priority,
           cancellation: cancellation,
@@ -270,6 +280,7 @@ class TileStore {
             y: dataKey.y,
             bytes: bytes,
             layerProperties: layerProperties,
+            promoteIds: promoteIds,
           ),
           priority: priority,
           cancellation: _lifetime,
