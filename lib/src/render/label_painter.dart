@@ -84,9 +84,10 @@ class PlacedSymbol {
   final bool retained;
 
   /// Insertion index within the frame's symbol list, the final
-  /// placement tiebreaker: the caller adds current-level tiles before
-  /// retained previous-level ones, so on an exact tie the current
-  /// level's copy wins deterministically (`List.sort` is not stable).
+  /// placement tiebreaker, which keeps the winner deterministic
+  /// (`List.sort` is not stable). Only candidates that agree on
+  /// everything else reach it: one anchor laid out by two world copies
+  /// of a tile, or hand-built instances.
   final int order;
 
   /// Whether this candidate's label is steadily visible on screen right
@@ -840,18 +841,39 @@ class LabelPainter {
   /// Placement priority: topmost style layers first (they win space),
   /// then incumbents — labels on screen right now, which a same-layer
   /// newcomer must not evict (see [PlacedSymbol.incumbent]) — then by
-  /// symbol-sort-key, then by y, then by insertion order — the last
-  /// term keeps the non-stable sort deterministic and lets current-level
-  /// tiles beat retained ones on exact ties. A total order: `order` is
-  /// unique per frame.
+  /// symbol-sort-key, then current-level tiles ahead of retained ones,
+  /// then MapLibre's order: data tiles by zoom (deepest first), x and y,
+  /// and within a tile the features in source order, each one's parts
+  /// in order and its anchors along a part from the start (see
+  /// [SymbolInstance.sourceTile]). None of these terms reads the
+  /// camera, so a pan or a rotation never reorders two labels. The last
+  /// term, insertion order, keeps the non-stable sort deterministic. A
+  /// total order: `order` is unique per frame.
   static int _byPlacementPriority(PlacedSymbol a, PlacedSymbol b) {
-    final byLayer = b.instance.layerIndex - a.instance.layerIndex;
+    final ai = a.instance;
+    final bi = b.instance;
+    final byLayer = bi.layerIndex - ai.layerIndex;
     if (byLayer != 0) return byLayer;
     if (a.incumbent != b.incumbent) return a.incumbent ? -1 : 1;
-    final bySortKey = a.instance.sortKey.compareTo(b.instance.sortKey);
+    final bySortKey = ai.sortKey.compareTo(bi.sortKey);
     if (bySortKey != 0) return bySortKey;
-    final byY = a.screenAnchor.dy.compareTo(b.screenAnchor.dy);
-    if (byY != 0) return byY;
+    if (a.retained != b.retained) return a.retained ? 1 : -1;
+    final at = ai.sourceTile;
+    final bt = bi.sourceTile;
+    if (!identical(at, bt)) {
+      final byZ = bt.z - at.z;
+      if (byZ != 0) return byZ;
+      final byX = at.x - bt.x;
+      if (byX != 0) return byX;
+      final byY = at.y - bt.y;
+      if (byY != 0) return byY;
+    }
+    final byFeature = ai.featureIndex - bi.featureIndex;
+    if (byFeature != 0) return byFeature;
+    final byPart = ai.part - bi.part;
+    if (byPart != 0) return byPart;
+    final byDistance = ai.pathDistance.compareTo(bi.pathDistance);
+    if (byDistance != 0) return byDistance;
     return a.order - b.order;
   }
 
@@ -1094,9 +1116,9 @@ class LabelPainter {
   /// republish and level swap performs, precisely when it matters most.
   /// It also settles which of a label's *own* rivals draws: a street
   /// name repeated on the parallel carriageway is another label of the
-  /// same name, and since only the one on screen is an incumbent, a slow
-  /// pan that reorders their screen y no longer walks the name across
-  /// the street.
+  /// same name, and since only the one on screen is an incumbent, a
+  /// zoom crossing that swaps the tiles and features the two sort by no
+  /// longer walks the name across the street.
   void _flagIncumbents(List<PlacedSymbol> candidates) {
     for (final candidate in candidates) {
       candidate.incumbent =
@@ -1107,8 +1129,9 @@ class LabelPainter {
   /// Moves the copy each label was last drawn from ahead of the label's
   /// other copies, in place, so a pass keeps a label on the copy it is
   /// on for as long as that copy still fits: which copy sorts first
-  /// depends on their screen y, and rotating the map reorders two copies
-  /// a few pixels apart.
+  /// depends on the tile and feature it comes from, and at a zoom
+  /// crossing the arriving level's copy sorts ahead of the outgoing one
+  /// already drawn.
   ///
   /// Only the order *inside* one label id changes: the label still
   /// competes for space at the position its best copy earned, so this
