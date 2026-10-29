@@ -3245,7 +3245,9 @@ class _VectorMapPainter extends CustomPainter {
           // Point symbols use the map angle for explicit `map` icon
           // alignment; along-line symbols add their local bearing.
           screenAngle: symbol.angle + rotation,
-          transform: symbol.alongLine ? transform : null,
+          // Along-line symbols project their line through it;
+          // `symbol-avoid-edges` reads every symbol's tile bounds off it.
+          transform: transform,
           ghostOnly: ghostOnly,
           retained: retained,
           order: placed.length,

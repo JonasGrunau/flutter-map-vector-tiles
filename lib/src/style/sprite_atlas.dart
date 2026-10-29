@@ -61,11 +61,38 @@ class SpriteAtlas {
             height: h.toDouble(),
             pixelRatio: (v['pixelRatio'] as num?)?.toDouble() ?? 1,
             sdf: v['sdf'] == true,
+            stretchX: _ranges(v['stretchX']),
+            stretchY: _ranges(v['stretchY']),
+            content: _content(v['content']),
           );
         }
       }
     });
     return sprites;
+  }
+
+  /// `stretchX` / `stretchY`: a list of `[from, to]` pixel ranges.
+  static List<(double, double)>? _ranges(Object? json) {
+    if (json is! List || json.isEmpty) return null;
+    final ranges = <(double, double)>[];
+    for (final range in json) {
+      if (range is! List || range.length != 2) return null;
+      final from = range[0], to = range[1];
+      if (from is! num || to is! num || to < from) return null;
+      ranges.add((from.toDouble(), to.toDouble()));
+    }
+    return ranges;
+  }
+
+  /// `content`: `[left, top, right, bottom]` in pixels.
+  static ui.Rect? _content(Object? json) {
+    if (json is! List || json.length != 4 || json.any((e) => e is! num)) {
+      return null;
+    }
+    final [left, top, right, bottom] = json.cast<num>();
+    if (right < left || bottom < top) return null;
+    return ui.Rect.fromLTRB(
+        left.toDouble(), top.toDouble(), right.toDouble(), bottom.toDouble());
   }
 }
 
@@ -84,6 +111,17 @@ class Sprite {
   /// colour, which on dark styles reads as a dark blob.
   final bool sdf;
 
+  /// The pixel ranges, along x and along y, that `icon-text-fit` may
+  /// stretch (`stretchX` / `stretchY` in the index); the rest of the
+  /// image keeps its size. Null stretches the whole image.
+  final List<(double, double)>? stretchX;
+  final List<(double, double)>? stretchY;
+
+  /// The part of the image `icon-text-fit` fits around the text
+  /// (`content` in the index), in the image's own pixels. Null fits the
+  /// whole image.
+  final ui.Rect? content;
+
   const Sprite({
     required this.x,
     required this.y,
@@ -91,6 +129,9 @@ class Sprite {
     required this.height,
     required this.pixelRatio,
     this.sdf = false,
+    this.stretchX,
+    this.stretchY,
+    this.content,
   });
 
   ui.Rect get sourceRect => ui.Rect.fromLTWH(x, y, width, height);

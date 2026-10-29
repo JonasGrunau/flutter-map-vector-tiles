@@ -357,7 +357,7 @@ void _expectHalo(LabelImage plain, LabelImage haloed) {
 /// fonts in it — a line ending in a space taken from the Latin font
 /// stands a little taller than one that does not.
 Future<void> _expectLines(LabelImage label, List<String> lines) async {
-  const pitch = textSize * 1.15 * 2;
+  const pitch = textSize * 1.2 * 2;
   var inkOfLines = 0;
   for (var k = 0; k < lines.length; k++) {
     final alone = await drawLabel(lines[k], layout: {'text-max-width': 30});
