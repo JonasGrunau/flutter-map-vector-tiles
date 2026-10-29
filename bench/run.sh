@@ -26,9 +26,10 @@ if [[ ! -d ios ]]; then
 fi
 
 # STYLE_URL / MAPTILER_KEY / BENCH_SETUP / BENCH_MODE / BENCH_LAT_E5 /
-# BENCH_LON_E5 / BENCH_LOG_GONE / BENCH_WATCH pass through from the environment
-# when set, so app-specific styles and keys are given per invocation and
-# never land in this repo.
+# BENCH_LON_E5 / BENCH_LOG_GONE / BENCH_WATCH / BENCH_ZOOM10 /
+# BENCH_RETAIN_ALL pass through from the environment when set, so
+# app-specific styles and keys are given per invocation and never land in
+# this repo.
 flutter run --profile -d "$DEVICE" \
   --dart-define=BENCH_LABEL="$LABEL" \
   --dart-define=BENCH_LO="$LO" \
@@ -36,11 +37,14 @@ flutter run --profile -d "$DEVICE" \
   ${STYLE_URL:+--dart-define=STYLE_URL=$STYLE_URL} \
   ${MAPTILER_KEY:+--dart-define=MAPTILER_KEY=$MAPTILER_KEY} \
   ${BENCH_SETUP:+--dart-define=BENCH_SETUP=$BENCH_SETUP} \
+  ${BENCH_HALO_BLUR:+--dart-define=BENCH_HALO_BLUR=$BENCH_HALO_BLUR} \
   ${BENCH_MODE:+--dart-define=BENCH_MODE=$BENCH_MODE} \
   ${BENCH_LAT_E5:+--dart-define=BENCH_LAT_E5=$BENCH_LAT_E5} \
   ${BENCH_LON_E5:+--dart-define=BENCH_LON_E5=$BENCH_LON_E5} \
   ${BENCH_LOG_GONE:+--dart-define=BENCH_LOG_GONE=$BENCH_LOG_GONE} \
-  ${BENCH_WATCH:+--dart-define=BENCH_WATCH=$BENCH_WATCH} > "$OUT" 2>&1 &
+  ${BENCH_WATCH:+--dart-define=BENCH_WATCH=$BENCH_WATCH} \
+  ${BENCH_ZOOM10:+--dart-define=BENCH_ZOOM10=$BENCH_ZOOM10} \
+  ${BENCH_RETAIN_ALL:+--dart-define=BENCH_RETAIN_ALL=$BENCH_RETAIN_ALL} > "$OUT" 2>&1 &
 PID=$!
 
 for _ in $(seq 1 180); do

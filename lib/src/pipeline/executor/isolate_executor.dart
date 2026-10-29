@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:meta/meta.dart';
 
 import '../../core/cancellation.dart';
+import '../../style/filter_ids.dart';
 import '../prepared_tile.dart';
+import '../tile_filters.dart';
 import '../tile_processor.dart';
 import 'executor.dart';
 
@@ -180,6 +183,10 @@ class _Worker {
   _Job? _current;
   var _disposed = false;
 
+  /// The `FilterIds` this worker has been sent the source of. Each goes
+  /// once per worker, with the first job that needs it.
+  final _sentFilters = <int>{};
+
   _Worker._(this._isolate, this._sendPort, this._receivePort, this._exitPort,
       {required this.onIdle, required this.onDied}) {
     _receivePort.listen(_onResult);
@@ -224,7 +231,15 @@ class _Worker {
   void run(_Job job) {
     assert(_current == null);
     _current = job;
-    _sendPort.send(job.input);
+    Map<int, String>? sources;
+    for (final ids in job.input.filterIds?.values ?? const <Int32List>[]) {
+      for (final id in ids) {
+        if (_sentFilters.add(id)) {
+          (sources ??= {})[id] = FilterIds.sourceOf(id);
+        }
+      }
+    }
+    _sendPort.send(sources == null ? job.input : _Filters(sources, job.input));
   }
 
   void _onResult(Object? message) {
@@ -266,21 +281,40 @@ class _Worker {
   }
 }
 
+/// A job carrying the sources of filters its worker has not compiled
+/// yet.
+class _Filters {
+  final Map<int, String> sources;
+  final PrepareInput input;
+
+  const _Filters(this.sources, this.input);
+}
+
 void _workerMain(SendPort startup) {
   final commandPort = ReceivePort();
   startup.send(commandPort.sendPort);
   SendPort? resultPort;
+  final filters = CompiledFilters();
   commandPort.listen((message) {
     if (message is SendPort) {
       resultPort = message;
-    } else if (message is PrepareInput) {
-      Object? result;
-      try {
-        result = prepareTileSync(message);
-      } catch (_) {
-        result = null;
-      }
-      resultPort?.send(result);
+      return;
     }
+    final PrepareInput input;
+    if (message is _Filters) {
+      filters.addAll(message.sources);
+      input = message.input;
+    } else if (message is PrepareInput) {
+      input = message;
+    } else {
+      return;
+    }
+    Object? result;
+    try {
+      result = prepareTileSync(input, filters: filters);
+    } catch (_) {
+      result = null;
+    }
+    resultPort?.send(result);
   });
 }

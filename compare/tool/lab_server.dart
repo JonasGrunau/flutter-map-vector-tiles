@@ -385,7 +385,11 @@ class _LabServer {
     run.inflight++;
     run.lastActivity = run.lastContact = DateTime.now();
     try {
-      final fetched = await _fetch(path);
+      // `styles/<name>-heatmap` is OpenFreeMap's `styles/<name>` with a
+      // heatmap layer added (see [_withPoiHeatmap]).
+      final heatmap = path.startsWith('styles/') && path.endsWith('-heatmap');
+      final fetched = await _fetch(
+          heatmap ? path.substring(0, path.length - '-heatmap'.length) : path);
       if (latency > Duration.zero) await Future<void>.delayed(latency);
       // Upstream's own status (a 404, a 429, a 5xx) or 504 for an offline
       // miss or a timeout, uncached by the client (`no-store`) and by
@@ -400,6 +404,7 @@ class _LabServer {
         final base = 'http://$host${port == null ? '' : ':$port'}'
             '/r/${run.id}/ofm/';
         body = utf8.encode(utf8.decode(body).replaceAll(_upstream, base));
+        if (heatmap) body = _withPoiHeatmap(body);
       }
       run.bytes += body.length;
       // OpenFreeMap lets browsers cache everything it serves, for a day
@@ -418,6 +423,64 @@ class _LabServer {
       run.inflight--;
       run.lastActivity = DateTime.now();
     }
+  }
+
+  /// [style] with a heatmap of the OpenMapTiles `poi` points added, for
+  /// measuring a layer type OpenFreeMap's styles do not use, on the same
+  /// tiles and for both renderers (`maplibre.html` reads it too). It goes
+  /// above the last layer that is not a symbol layer — the place a
+  /// screen-space heatmap is drawn by `flutter_map_vector_tiles` — so
+  /// the two draw the same thing. The weight reads the feature and the
+  /// radius and intensity the zoom, as typical heatmap styles do.
+  static List<int> _withPoiHeatmap(List<int> style) {
+    final json = jsonDecode(utf8.decode(style)) as Map<String, dynamic>;
+    final layers = json['layers'] as List<dynamic>;
+    var at = 0;
+    for (var i = 0; i < layers.length; i++) {
+      if ((layers[i] as Map)['type'] != 'symbol') at = i + 1;
+    }
+    layers.insert(at, {
+      'id': 'lab-poi-heatmap',
+      'type': 'heatmap',
+      'source': 'openmaptiles',
+      'source-layer': 'poi',
+      'paint': {
+        'heatmap-weight': [
+          'interpolate',
+          ['linear'],
+          [
+            'coalesce',
+            ['get', 'rank'],
+            30
+          ],
+          1,
+          1,
+          30,
+          0.25,
+        ],
+        'heatmap-intensity': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          12,
+          0.5,
+          17,
+          1.5,
+        ],
+        'heatmap-radius': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          12,
+          10,
+          17,
+          40,
+        ],
+        'heatmap-opacity': 0.75,
+      },
+    });
+    json['name'] = '${json['name']} + POI heatmap';
+    return utf8.encode(jsonEncode(json));
   }
 
   /// Disk-cached upstream fetch, coalesced per path. Only a 200 is cached.

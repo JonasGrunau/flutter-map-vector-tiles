@@ -5,7 +5,12 @@ import 'provider/vector_tile_provider.dart';
 class TileProviders {
   final Map<String, VectorTileProvider> providers;
 
-  const TileProviders(this.providers);
+  /// The sources' `promoteId`, keyed by style source id: which feature
+  /// property stands in for the feature id. `StyleReader` fills it from
+  /// the style document; sources without one use their tiles' own ids.
+  final Map<String, PromoteId> promoteIds;
+
+  const TileProviders(this.providers, {this.promoteIds = const {}});
 
   VectorTileProvider? operator [](String source) => providers[source];
 
@@ -16,8 +21,73 @@ class TileProviders {
   }
 }
 
-/// A raster tile source declared inside a vector style, referenced by
-/// `raster` layers (satellite/hybrid imagery, pre-rendered hillshading).
+/// A vector source's `promoteId`: the feature property used as the
+/// feature id — by the `id` expression, by feature state, and in
+/// `VectorTileLayerController.queryRenderedFeatures` results — instead
+/// of the id the tile encodes. For tiles whose features carry no id,
+/// or ids that are not stable across tiles.
+///
+/// The style spec allows one property for every source layer
+/// (`"promoteId": "osm_id"`) or one per source layer
+/// (`"promoteId": {"building": "osm_id"}`); a source layer the map does
+/// not name keeps its encoded ids. A feature whose property is absent,
+/// or not a number, string or boolean, has no id.
+class PromoteId {
+  /// The property promoted in every source layer, unless
+  /// [bySourceLayer] names one for it.
+  final String? property;
+
+  /// Source layer → the property promoted there.
+  final Map<String, String> bySourceLayer;
+
+  const PromoteId(String this.property) : bySourceLayer = const {};
+
+  const PromoteId.bySourceLayer(this.bySourceLayer) : property = null;
+
+  /// Parses a style document's `promoteId` value; null when it is
+  /// neither a string nor an object of strings.
+  static PromoteId? parse(Object? json) {
+    if (json is String && json.isNotEmpty) return PromoteId(json);
+    if (json is Map) {
+      final bySourceLayer = <String, String>{
+        for (final entry in json.entries)
+          if (entry.key is String && entry.value is String)
+            entry.key as String: entry.value as String,
+      };
+      if (bySourceLayer.isNotEmpty) {
+        return PromoteId.bySourceLayer(bySourceLayer);
+      }
+    }
+    return null;
+  }
+
+  /// The property promoted in [sourceLayer], or null for none.
+  String? propertyFor(String sourceLayer) =>
+      bySourceLayer[sourceLayer] ?? property;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PromoteId &&
+      other.property == property &&
+      other.bySourceLayer.length == bySourceLayer.length &&
+      bySourceLayer.entries.every((e) => other.bySourceLayer[e.key] == e.value);
+
+  @override
+  int get hashCode => Object.hash(
+      property,
+      Object.hashAllUnordered(
+          bySourceLayer.entries.map((e) => Object.hash(e.key, e.value))));
+
+  @override
+  String toString() => property != null
+      ? 'PromoteId($property)'
+      : 'PromoteId.bySourceLayer($bySourceLayer)';
+}
+
+/// A raster tile source declared inside a vector style: imagery for
+/// `raster` layers (satellite/hybrid, pre-rendered hillshading), or —
+/// with an [encoding] — elevations for `hillshade` layers (a
+/// `raster-dem` source).
 ///
 /// The [provider] serves encoded image bytes (PNG/JPEG/WebP) instead of
 /// MVT data — the [VectorTileProvider] interface is just bytes per tile
@@ -30,7 +100,61 @@ class RasterTileSource {
   /// scale.
   final int tileSize;
 
-  const RasterTileSource({required this.provider, this.tileSize = 512});
+  /// How the source's pixels encode elevation, for a `raster-dem`
+  /// source; null for imagery.
+  final DemEncoding? encoding;
+
+  const RasterTileSource({
+    required this.provider,
+    this.tileSize = 512,
+    this.encoding,
+  });
 
   void dispose() => provider.dispose();
+}
+
+/// How a `raster-dem` source packs an elevation into a pixel's red,
+/// green and blue channels (each 0–255): metres = r·[redFactor] +
+/// g·[greenFactor] + b·[blueFactor] − [baseShift].
+class DemEncoding {
+  final double redFactor;
+  final double greenFactor;
+  final double blueFactor;
+  final double baseShift;
+
+  /// A `custom` encoding, with the factors the source declares.
+  const DemEncoding({
+    this.redFactor = 1,
+    this.greenFactor = 1,
+    this.blueFactor = 1,
+    this.baseShift = 0,
+  });
+
+  /// Mapbox Terrain-RGB (the style spec's default), also MapTiler's.
+  static const mapbox = DemEncoding(
+      redFactor: 6553.6, greenFactor: 25.6, blueFactor: 0.1, baseShift: 10000);
+
+  /// Mapzen Terrarium, as served from AWS's open terrain tiles.
+  static const terrarium = DemEncoding(
+      redFactor: 256, greenFactor: 1, blueFactor: 1 / 256, baseShift: 32768);
+
+  /// The elevation in metres of a pixel with these channel values.
+  double elevation(int r, int g, int b) =>
+      r * redFactor + g * greenFactor + b * blueFactor - baseShift;
+
+  @override
+  bool operator ==(Object other) =>
+      other is DemEncoding &&
+      other.redFactor == redFactor &&
+      other.greenFactor == greenFactor &&
+      other.blueFactor == blueFactor &&
+      other.baseShift == baseShift;
+
+  @override
+  int get hashCode =>
+      Object.hash(redFactor, greenFactor, blueFactor, baseShift);
+
+  @override
+  String toString() => 'DemEncoding($redFactor, $greenFactor, $blueFactor, '
+      '$baseShift)';
 }

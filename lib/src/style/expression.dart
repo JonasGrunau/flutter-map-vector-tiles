@@ -1,6 +1,37 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' show Color;
 
+import 'package:meta/meta.dart';
+
 import 'css_color.dart';
+
+/// The geometry of the feature being evaluated, in the data tile it was
+/// decoded from — what `within` and `distance` read. The renderer builds
+/// one only for layers whose expressions use them
+/// (`ThemeLayer.readsGeometry`) and hands it over in a
+/// [FeatureEvalContext]; in any other context those operators answer
+/// as for a feature without geometry.
+@internal
+final class FeatureGeometry {
+  /// The data tile, whose extent the coordinates in [parts] span.
+  final int z, x, y;
+  final int extent;
+
+  /// 'Point', 'LineString' or 'Polygon' — see `PreparedFeature.parts`
+  /// for how each lays out its runs.
+  final String type;
+  final List<Float32List> parts;
+
+  const FeatureGeometry({
+    required this.z,
+    required this.x,
+    required this.y,
+    required this.extent,
+    required this.type,
+    required this.parts,
+  });
+}
 
 /// Evaluation context for compiled style expressions.
 class EvalContext {
@@ -37,6 +68,87 @@ class EvalContext {
 
   static const empty = EvalContext(zoom: 0);
 }
+
+/// An [EvalContext] that also carries what only some layers read about a
+/// feature: its geometry, for `within` and `distance`, and its state, as
+/// set through `VectorTileLayerController.setFeatureState`, for
+/// `feature-state`; and the kernel density a heatmap layer's
+/// `heatmap-color` ramp reads through `heatmap-density`. In a plain
+/// [EvalContext] those operators answer as for a feature without geometry
+/// or state, and the density reads 0. Only a feature that needs one gets
+/// it, through [featureContext], and the ramp builds its own: a context
+/// is allocated per feature evaluated, and a field more on every one made
+/// filter matching on a fresh tile measurably slower on a phone.
+@internal
+final class FeatureEvalContext extends EvalContext {
+  /// The feature's geometry, for a layer that reads it
+  /// (`ThemeLayer.readsGeometry`); null otherwise.
+  final FeatureGeometry? geometry;
+
+  /// The feature's state, for a layer that reads it
+  /// (`ThemeLayer.readsFeatureState`) when the feature has some; null
+  /// otherwise.
+  final Map<String, Object?>? featureState;
+
+  /// The density `["heatmap-density"]` reads, while a heatmap layer's
+  /// `heatmap-color` ramp is evaluated; null otherwise.
+  final double? heatmapDensity;
+
+  const FeatureEvalContext({
+    required super.zoom,
+    super.properties,
+    super.geometryType,
+    super.featureId,
+    super.vars,
+    this.geometry,
+    this.featureState,
+    this.heatmapDensity,
+  });
+
+  @override
+  EvalContext withVars(Map<String, Object?> newVars) => FeatureEvalContext(
+        zoom: zoom,
+        properties: properties,
+        geometryType: geometryType,
+        featureId: featureId,
+        vars: {...?vars, ...newVars},
+        geometry: geometry,
+        featureState: featureState,
+        heatmapDensity: heatmapDensity,
+      );
+}
+
+/// The context to evaluate one feature in: a [FeatureEvalContext] when
+/// [geometry] or [featureState] is given, a plain [EvalContext] otherwise.
+///
+/// Inlined, so a call site compiles to the constructor it replaced plus
+/// the null checks: left to the inliner, it cost the screen pass enough
+/// UI time on a fresh zoom level to drop frames on the Android phone.
+@internal
+@pragma('vm:prefer-inline')
+EvalContext featureContext({
+  required double zoom,
+  required Map<String, Object?> properties,
+  required String geometryType,
+  required Object? featureId,
+  FeatureGeometry? geometry,
+  Map<String, Object?>? featureState,
+}) =>
+    geometry == null && featureState == null
+        ? EvalContext(
+            zoom: zoom,
+            properties: properties,
+            geometryType: geometryType,
+            featureId: featureId,
+          )
+        : FeatureEvalContext(
+            zoom: zoom,
+            properties: properties,
+            geometryType: geometryType,
+            featureId: featureId,
+            geometry: geometry,
+            featureState: featureState,
+          );
 
 /// A compiled style expression.
 typedef Expr = Object? Function(EvalContext ctx);
@@ -81,8 +193,21 @@ String toStringValue(Object? v) {
     return 'rgba(${chan(v.r).round()},${chan(v.g).round()},'
         '${chan(v.b).round()},${v.a})';
   }
+  // Arrays and objects as JSON, as the style spec's `to-string` does.
+  if (v is List || v is Map) return _json(v);
   return v.toString();
 }
+
+String _json(Object? v) => switch (v) {
+      null => 'null',
+      final String s => jsonEncode(s),
+      num _ || bool _ => toStringValue(v),
+      final List<Object?> l => '[${l.map(_json).join(',')}]',
+      final Map<Object?, Object?> m => '{${m.entries.map(
+            (e) => '${jsonEncode('${e.key}')}:${_json(e.value)}',
+          ).join(',')}}',
+      _ => jsonEncode(toStringValue(v)),
+    };
 
 Color? toColor(Object? v) {
   if (v is Color) return v;
@@ -188,6 +313,9 @@ class StringProp {
         zoomOnly = false;
 
   String eval(EvalContext ctx) {
+    // Most layout strings are a style's literal or the spec default, read
+    // per symbol per frame by the label pass: no closure, no coercion.
+    if (isConstant) return fallback;
     if (zoomOnly) {
       if (ctx.zoom == _memoZoom) return _memoValue;
       _memoZoom = ctx.zoom;
@@ -202,19 +330,26 @@ class StringProp {
   }
 }
 
-/// See [DoubleProp] for [zoomOnly] semantics.
+/// See [DoubleProp] for [isConstant]/[zoomOnly] semantics.
 class BoolProp {
   final Expr _expr;
   final bool fallback;
+  final bool isConstant;
   final bool zoomOnly;
   double _memoZoom = double.nan;
   bool _memoValue = false;
 
-  BoolProp(this._expr, this.fallback, {this.zoomOnly = false});
+  BoolProp(this._expr, this.fallback, {this.zoomOnly = false})
+      : isConstant = false;
 
-  factory BoolProp.constant(bool value) => BoolProp((_) => value, value);
+  BoolProp.constant(bool value)
+      : _expr = ((_) => value),
+        fallback = value,
+        isConstant = true,
+        zoomOnly = false;
 
   bool eval(EvalContext ctx) {
+    if (isConstant) return fallback;
     if (zoomOnly) {
       if (ctx.zoom == _memoZoom) return _memoValue;
       _memoZoom = ctx.zoom;
@@ -312,5 +447,59 @@ class StringListProp {
     if (v is List) return v.map(toStringValue).toList();
     if (v is String) return [v];
     return fallback;
+  }
+}
+
+/// One entry of a `text-variable-anchor-offset` collection: an anchor
+/// name and the offset, in ems, the text takes at it.
+typedef AnchorOffset = ({String anchor, double x, double y});
+
+/// `variableAnchorOffsetCollection` property: a flat list alternating
+/// anchor names and `[x, y]` em offsets. Literal collections are
+/// converted once; an expression's result is converted per evaluation,
+/// and anything that does not have that shape evaluates to null.
+class AnchorOffsetsProp {
+  final Expr _expr;
+  final List<AnchorOffset>? _constant;
+  final bool zoomOnly;
+  double _memoZoom = double.nan;
+  List<AnchorOffset>? _memoValue;
+
+  AnchorOffsetsProp(this._expr, {this.zoomOnly = false}) : _constant = null;
+
+  AnchorOffsetsProp.constant(List<AnchorOffset> value)
+      : _expr = constExpr(value),
+        _constant = List.unmodifiable(value),
+        zoomOnly = false;
+
+  bool get isConstant => _constant != null;
+
+  List<AnchorOffset>? eval(EvalContext ctx) {
+    final constant = _constant;
+    if (constant != null) return constant;
+    if (zoomOnly) {
+      if (ctx.zoom == _memoZoom) return _memoValue;
+      _memoZoom = ctx.zoom;
+      return _memoValue = parse(_expr(ctx));
+    }
+    return parse(_expr(ctx));
+  }
+
+  /// [value] as a collection, or null when it is not one.
+  static List<AnchorOffset>? parse(Object? value) {
+    if (value is! List || value.isEmpty || value.length.isOdd) return null;
+    final out = <AnchorOffset>[];
+    for (var i = 0; i < value.length; i += 2) {
+      final anchor = value[i];
+      final offset = value[i + 1];
+      if (anchor is! String || offset is! List || offset.length != 2) {
+        return null;
+      }
+      final x = toNumber(offset[0]);
+      final y = toNumber(offset[1]);
+      if (x == null || y == null) return null;
+      out.add((anchor: anchor, x: x, y: y));
+    }
+    return out;
   }
 }

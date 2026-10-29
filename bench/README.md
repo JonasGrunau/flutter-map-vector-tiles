@@ -108,6 +108,36 @@ between placement passes), from `LabelPainter.debugRejectProbe`. To chase
 one label, `BENCH_WATCH=<regexp>` prints its rejections frame by frame and
 `BENCH_LOG_GONE=true` prints every on-screen disappearance with its zoom.
 
+## Queries and feature state (query mode)
+
+`BENCH_MODE=query` measures `VectorTileLayerController` at a parked
+camera — Munich at z16 is the dense case:
+
+```sh
+BENCH_MODE=query BENCH_ZOOM10=160 ./run.sh <device> query
+BENCH_MODE=query BENCH_ZOOM10=160 BENCH_RETAIN_ALL=true ./run.sh <device> query-all
+```
+
+```
+BENCH[query] QUERY point n=240 p50=… p90=… p99=… max=… ms hits/query=…
+BENCH[query] STATE set   ms … · frames … · tiles … · raster-ms …
+BENCH[query] DECODE tiles=9 z14 styled … MiB … ms · all … MiB … ms · ×…
+BENCH[query] MEMORY retainAllProperties=false rss=… MiB
+```
+
+`QUERY` times point and 48 px rectangle queries over a 12×20 grid of
+the screen. `STATE` selects and clears 20 buildings found by those
+queries, one at a time, through a selection layer the harness adds over
+the style's buildings (no hosted style reads feature state): time and
+frames until the last re-rendered tile landed, how many tiles that was,
+and their recording time; its `relayouts` should be 0, since a state
+change redraws geometry only. `SHOT` is printed with a building held
+selected for 6 s — the cue for `adb exec-out screencap`. `DECODE`
+decodes the data tiles under the screen on the UI thread both ways —
+the style's keep-lists and every property — which is what
+`retainAllProperties` costs per tile on the worker. `MEMORY` is the
+process RSS after the same four-screen walk; compare the two runs.
+
 ## Reading the output
 
 ```
@@ -122,10 +152,13 @@ BENCH[after]   RASTER n=961 p50=0.80 p90=1.08 p99=1.67 max=4.76 >8.3=0 (0.0%) �
 | `BUILD` | UI thread. Tile rasterization, symbol layout and text shaping all land here — the render pump runs on this thread. |
 | `RASTER` | GPU thread. `saveLayer` costs show up here and **nowhere else**: a `saveLayer` only records an op during picture recording, so no Dart-side stopwatch can see it. |
 | `layouts` / `rasterizes` | Symbol extractions and tile rasterizations during the window. **Zero means the crossing was served entirely from the finished-tile cache** — the single clearest signal that caching is working. |
+| `OPEN` | One line per run, before the first phase: how the map's first screen came up in a fresh process. The harness waits until no frame has come for 2 s (at most 20 s) and reports `firstLabel` (ms from the first build with the style to the first frame whose label pass had candidates), `settled` (to the last frame), the UI-thread frames on the way (`frames`, summed `build`, `max`, `top3`, `>16.7`), and the label shaping done meanwhile (`shape`) with the worst single frame of it (`shapeMaxFrame`) — where a cost paid once per process, such as loading a typeface, would show. |
 | `WORK` | The window's publish work split into UI-thread wall time: `rasterize` (picture recording + `toImageSync`), `layout` (symbol extraction), `labels` (the per-frame label pass). Whatever BUILD holds beyond these three is flutter_map and widget overhead. A per-frame `WORK z=… tiles=N …` line fires whenever a single frame's split alone exceeds 6 ms — that is the attribution for an adjacent `JANK` line. |
 | `LAYERS` | The same rasterize time broken down by style layer id, worst first — names the culprit layer directly. |
-| `PLACE` | BUILD of the frames that ran placement work (`LabelPainter.debugPlacingFrames` moved during the frame), with `jank=a/b`: a of the window's b frames over 16.7 ms were such frames. Frames are matched to their timings by engine frame number; `unmatched` counts timings at the window's edges that no frame callback tagged. |
-| `DRAWN` | Labels drawn per frame at non-zero opacity (fade-out ghosts counted apart), as mean and p10/p50/p90, and the mean per fifth of a style zoom level (`byZoom`). Frame times say nothing about a placement change that drops or doubles labels mid-sweep; compare this line with the baseline's. |
+| `B-PLACE` / `B-OTHER` | BUILD of the frames that did placement work — an in-frame collision pass, or with the placement worker a pass request or the adoption of an answer — and of the rest, matched to their frame timings by engine frame number. |
+| `SLOW` | How many of the window's BUILD frames over 16.7 ms were placing frames — the share a placement change has to move. `matched` counts the timings tagged at all. |
+| `DRAWN` | Labels drawn per frame by placement (mean and p10/p50/p90), `ghosts=` the mean of fade-out ghosts drawn beside them, and `byZoom` the mean per fifth of a style zoom level. A placement change that drops or doubles labels during a sweep shows here and nowhere in the frame times. In `stability` mode every pop-in also prints a `POPIN` line: zoom, whether that frame adopted a placement worker's answer, the distance to the nearest same-key label of the frame before, and the key. |
+| `WORKER` | The label placement worker, when it ran: pass requests and the UI time each cost, adopted answers and how many frames after their request, the worker's own time per pass, and the symbol lists mirrored to it (KB, UI time, and the estimated KB it holds now). `bench/lib/worker_stats.dart` holds these; swap it for a stub returning nothing to run the same harness on a checkout without the worker. |
 | `>8.3` / `>16.7` | Frames over the 120 Hz and 60 Hz budgets. On a ProMotion device the 8.3 ms column is the one that matters; clearing 16.7 there is not "smooth". |
 | `fps` | Frames actually produced. Pinned at ~120 (or ~60) means nothing is stalling. |
 
@@ -176,11 +209,13 @@ All via `--dart-define`. Zooms and coordinates are integers because
 | `BENCH_LABEL` | `run` | tag for the log lines, so two runs can be diffed |
 | `BENCH_LO` / `BENCH_HI` | `163` / `177` | sweep bounds in tenths of a zoom level |
 | `BENCH_LAT_E5` / `BENCH_LON_E5` | Munich centre | centre, in 1e-5 degrees |
-| `BENCH_MODE` | `bench` | `idle` parks the map at `BENCH_ZOOM10` for inspection; `manual` enables gestures and reports windows + per-jank lines while you drive; `stability` runs four slow monotonic sweeps and counts label pop-ins/pop-outs/blinks (see below) |
+| `BENCH_MODE` | `bench` | `idle` parks the map at `BENCH_ZOOM10` for inspection; `manual` enables gestures and reports windows + per-jank lines while you drive; `stability` runs four slow monotonic sweeps and counts label pop-ins/pop-outs/blinks (see below); `query` measures rendered-feature queries and feature state at `BENCH_ZOOM10` (see above) |
 | `BENCH_SETUP` | `default` | `safenow` mirrors the SafeNow app's layer wiring: no raster sources, 16 MiB memory cache, 150 MiB disk cache, zoom 2–21, the app's gesture set in manual mode. Combine with that app's `STYLE_URL`/`MAPTILER_KEY` — keys are passed per invocation and never committed |
-| `BENCH_ZOOM10` | `170` | idle-mode zoom, in tenths |
+| `BENCH_ZOOM10` | `170` | idle- and query-mode zoom, in tenths |
+| `BENCH_RETAIN_ALL` | `false` | query mode: run the layer with `retainAllProperties` |
 | `BENCH_WATCH` | — | stability/manual: regexp over continuity keys whose every rejection is printed as a `WATCH` line |
 | `BENCH_LOG_GONE` | `false` | stability/manual: print a `GONE` line for every on-screen label that stops drawing |
+| `BENCH_HALO_BLUR` | `true` | `false` draws text halos crisp, ignoring `text-halo-blur` (`LabelPainter.debugHaloBlur`), so an A/B against the default puts a number on the blur's raster cost |
 
 The phase matrix (speed × labels on/off × cache budget × cold/warm) is the
 `_phases` list in `lib/main.dart`. The labels-off arm is a control, not filler:
