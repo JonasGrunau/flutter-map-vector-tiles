@@ -27,7 +27,7 @@ every `ui.Image` has exactly one owner and is disposed on eviction.
 | `CLAUDE.md` | Agent working agreements — doc-sync rules, README/version rules, release gate. Imports this file via `@AGENTS.md` |
 | `analysis_options.yaml` | `flutter_lints` + strict casts/inference/raw-types, plus `prefer_final_locals`, `unawaited_futures`, `avoid_print`, `directives_ordering` |
 | `.gitignore` | Repo exclusions |
-| `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs |
+| `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs, `bench/`, `compare/` and the script suite's fonts and goldens (`test/scripts/`) |
 | `.tool-versions` | Pinned Flutter version — also the one the publish workflow installs |
 | `.github/workflows/checks.yml` | Reusable check suite: format, analyze, VM + Chrome tests, publish dry run, optional pana. Called by the two below |
 | `.github/workflows/ci.yml` | Runs `checks.yml` on every push to `main` and every PR into it |
@@ -40,7 +40,7 @@ every `ui.Image` has exactly one owner and is disposed on eviction.
 | Directory | Purpose |
 |-----------|---------|
 | `lib/` | Package source — the entire library (see `lib/AGENTS.md`) |
-| `test/` | Unit and widget tests, no mocking framework (see `test/AGENTS.md`) |
+| `test/` | Unit and widget tests, no mocking framework (see `test/AGENTS.md`); `test/scripts/` draws labels in 23 scripts with bundled Noto fonts and is the guard for any shaping or wrapping change |
 | `bench/` | On-device frame-timing and label-stability harness for zoom crossings — profile-mode app that sweeps a zoom band (or records while you zoom by hand in `manual` mode) and reports UI/raster frame-time distributions, cache-hit counters and, in `stability` mode, label pop/blink counts. Not published (see `bench/AGENTS.md`) |
 | `compare/` | Head-to-head with `vector_map_tiles` 9.0.0-beta.13: one app that is the device benchmark (driven by a record/replay lab server, fresh process per arm, frames-delivered as the headline metric, fidelity screenshots next to MapLibre GL JS) and the web demo deployed to GitHub Pages. Results in `compare/RESULTS.md`. Public API only. Not published (see `compare/AGENTS.md`) |
 | `example/` | Runnable example app driven by `--dart-define` (see `example/AGENTS.md`) |
