@@ -279,23 +279,24 @@ void main() {
       );
     });
 
-    test('place the current level ahead of a retained one', () {
-      // The retained candidate comes from a deeper tile and an earlier
-      // feature, and sits higher: it still loses.
-      expect(
-        _drawn([
-          _placed(
-              _instance(const Offset(100, 100), 'B',
-                  sourceTile: const TileKey(15, 0, 0)),
-              0,
-              retained: true),
-          _placed(
-              _instance(const Offset(100, 105), 'A',
-                  sourceTile: const TileKey(14, 0, 0), featureIndex: 5),
-              1),
-        ]),
-        ['A'],
-      );
+    test('place a retained level in the same order as the current one', () {
+      // MapLibre gives the level a zoom crossing keeps no rank of its
+      // own: its tiles sort by zoom like any other. [retained] is listed
+      // second, sits lower and is a later feature, so only the tiles'
+      // zoom decides.
+      List<String> winner(TileKey retained, TileKey current) => _drawn([
+            _placed(
+                _instance(const Offset(100, 105), 'R',
+                    sourceTile: retained, featureIndex: 5),
+                1,
+                retained: true),
+            _placed(
+                _instance(const Offset(100, 100), 'C', sourceTile: current), 0),
+          ]);
+      // A zoom-out: the outgoing level is the deeper one, and wins.
+      expect(winner(const TileKey(15, 0, 0), const TileKey(14, 0, 0)), ['R']);
+      // A zoom-in: the outgoing level is the shallower one, and loses.
+      expect(winner(const TileKey(13, 0, 0), const TileKey(14, 0, 0)), ['C']);
     });
   });
 }
