@@ -698,6 +698,65 @@ priority order is total (insertion order breaks every tie), so the
 winners come out exactly as a full sort would order them; sorting
 everything cost 2.7 ms per frame on a phone during fast sweeps.
 
+**The placement pass runs off the UI thread** where isolates exist. A
+pass is the expensive half of the per-frame label work: on a Nothing
+Phone (1), zooming over Munich with Liberty, the frames that placed took
+15 ms of BUILD at the median and 30 ms at p90, against 8 ms for the
+frames that replayed, and they were half to three quarters of the frames
+that missed a 60 Hz vsync. Once the text is shaped nothing in a pass
+needs `dart:ui`, so the layer starts a dedicated isolate the first time
+screen-space labels paint, and hands it a copy of the theme (style
+expressions are closures, which isolates of one group may share by
+message) and a *mirror* of every symbol list on offer: the anchors,
+lines, properties and sort keys of its symbols, and the metrics of the
+text the UI shaped for them — width and height at the 16 px reference
+size, and the grapheme clusters of curved text. Shaping stays on the UI
+isolate, where `ParagraphBuilder` lives; the worker places by what the
+UI measured. A list is mirrored once, inside the render pump, when its
+tile publishes, and the retention pin's cut of a list goes over as
+indices into its tile's mirror.
+
+When the throttle says a pass is due, the frame sends a request instead
+of placing: each tile's mirror, label ids and screen transform, the
+decision in force (its label ids are the incumbents) and the copy each
+label was drawn from. The worker runs the screen pass's own placement
+code — `_prepare`, the priority sort, incumbency, one copy per label
+with the drawn copy tried first, repeat suppression, placement memory —
+and answers with the winning label ids, the copy each won with, and the
+variable anchor each chose and whether it dropped its text or its icon
+(`text-optional`, `icon-optional`). The first frame that finds
+the answer adopts it: a replay of the new decision, with the authority
+of a pass (it bumps the pass counter, prunes placement memory and may
+start fade-outs). The frames in between replay the decision in force,
+as every frame between passes already does. On the phone the answer
+came back one frame after the request (1.0–1.6 on average), from
+5–10 ms of work on the worker, and placing frames cost about what
+replaying frames cost: in a 400 ms zoom sweep the frames over 16.7 ms
+fell from 7–10 % to about 2 %, and BUILD p99 from 25–32 ms to 18–19 ms.
+
+The price is that frame of latency. A pass is taken at one camera and
+shown from the next frame on, so in a very fast zoom (a level in a
+tenth of a second) a fifth of a pass's winners have already left the
+screen or the zoom range by the frame that would first draw them; such
+a sweep draws about a fifth fewer labels per frame than an in-frame
+pass would — about as many as before labels had ids. In slower sweeps
+the difference is a few percent.
+
+Web keeps the pass in-frame (no isolates for this workload), and so do
+fades turned off — they place every frame, which a worker could only
+answer late — `LabelMode.tile`, whose `paintTile` places per tile
+inside the render pump, and a style with a symbol layer whose
+expressions read the feature's geometry (`within`, `distance`): the
+mirrors carry no geometry. They do carry what placement orders ties by
+(the data tile, the feature's index in its source layer and the part),
+so the worker places in the same order as the frame would, and every
+candidate's tile transform, which `symbol-avoid-edges` and the
+map-anchored `*-translate` read. An icon fitted around its text
+(`icon-text-fit`) is fitted to the mirrored text box, from the sprite
+index the worker is installed with. A pass the worker has not answered within a
+second is placed in-frame; a worker that dies, or is sent something
+that cannot cross isolates, hands placement back to the frame for good.
+
 Curved text draws from a glyph atlas (`glyph_atlas.dart`). Each
 grapheme is rasterized once per style and snapped device size onto a
 1024² page, and a curved label then draws in one `drawRawAtlas` call
@@ -1248,6 +1307,13 @@ tile pool would queue it behind tile preparation exactly when a zoom
 crossing needs both. One pass is in flight at a time; a disposed layer
 completes it with null, never an error. If the isolate cannot be
 spawned the passes run on the event loop, as they do on web.
+
+Label placement passes run on one more isolate per layer, apart from the
+pool so that a pass never queues behind tile decoding: it holds a copy
+of the theme and the mirrored symbol lists, and answers one pass request
+at a time (see *The placement pass runs off the UI thread* above). It is
+started lazily, the first time screen-space labels paint, and not at all
+on web.
 
 ## Caching
 
