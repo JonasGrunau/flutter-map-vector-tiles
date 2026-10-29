@@ -20,7 +20,8 @@ import 'fixtures/label_ids.dart';
 // icon-text-fit with stretchable sprites, justification and line height,
 // anchor offsets, text rotation, translation, upright icons, z-order and
 // tile-edge avoidance. The test font draws every glyph as a solid em
-// square, which makes text extents exact in pixels.
+// square, which makes text extents exact in pixels. Every placing frame
+// is placed again by a placement worker, which must decide the same.
 
 const _canvas = Size(400, 400);
 var _generation = 0;
@@ -80,6 +81,68 @@ PlacedSymbol _symbol(
       order: order,
     );
 
+/// The placement worker each painter's passes are checked against.
+final _workers = Expando<LabelPainter>();
+
+/// Runs [frame], one frame of [painter] over [symbols]. When the frame
+/// places, a placement worker paired with [painter] must reach the same
+/// decision from the same candidates, mirrored with the text metrics
+/// [painter] shaped: the same winners, each at the same variable anchor,
+/// with the same text or icon dropped.
+T _checked<T>(LabelPainter painter, List<PlacedSymbol> symbols,
+    SpriteAtlas? sprites, T Function() frame) {
+  final before = painter.debugDecision;
+  final passes = LabelPainter.debugPlacingFrames;
+  final result = frame();
+  if (LabelPainter.debugPlacingFrames == passes) return result;
+  final worker = _workers[painter] ??= () {
+    final worker = LabelPainter.worker()..installWorker(sprites?.sprites);
+    addTearDown(worker.dispose);
+    return worker;
+  }();
+  final winners = worker.placeForWorker(
+    screenSize: _canvas,
+    styleZoom: 12,
+    symbols: [
+      for (final symbol in symbols)
+        PlacedSymbol(
+          instance: worker
+              .adoptMirror(
+                  painter.mirrorOf([symbol.instance]),
+                  Theme(
+                      id: 'worker',
+                      layers: List.filled(symbol.instance.layerIndex + 1,
+                          symbol.instance.layer)))
+              .single!,
+          id: symbol.id,
+          screenAnchor: symbol.screenAnchor,
+          screenAngle: symbol.screenAngle,
+          transform: symbol.transform,
+          ghostOnly: symbol.ghostOnly,
+          retained: symbol.retained,
+          order: symbol.order,
+        ),
+    ],
+    incumbents: before.winners,
+    drawnCopies: [
+      for (final symbol in symbols)
+        if (identical(before.drawnCopies[symbol.id], symbol.instance))
+          symbol.order,
+    ],
+  );
+  expect(
+      {for (final winner in winners) winner.id}, painter.debugDecision.winners,
+      reason: 'the placement worker places what the frame placed');
+  for (final winner in winners) {
+    final decision = worker.decisionOf(winner);
+    final sitting = painter.debugPlacement.lookup(winner.id);
+    if (decision.anchor != null) expect(sitting?.anchor, decision.anchor);
+    expect(sitting?.textDropped ?? false, decision.textDropped);
+    expect(sitting?.iconDropped ?? false, decision.iconDropped);
+  }
+  return result;
+}
+
 /// Paints one placing frame and returns what was drawn, in draw order.
 List<PlacedSymbol> _paint(
   List<PlacedSymbol> symbols, {
@@ -89,14 +152,18 @@ List<PlacedSymbol> _paint(
 }) {
   final own = painter ?? LabelPainter();
   final recorder = ui.PictureRecorder();
-  final drawn = own.paint(
-    canvas: Canvas(recorder),
-    screenSize: _canvas,
-    styleZoom: 12,
-    symbols: symbols,
-    sprites: sprites,
-    placementGeneration: generation ?? _generation++,
-  );
+  final drawn = _checked(
+      own,
+      symbols,
+      sprites,
+      () => own.paint(
+            canvas: Canvas(recorder),
+            screenSize: _canvas,
+            styleZoom: 12,
+            symbols: symbols,
+            sprites: sprites,
+            placementGeneration: generation ?? _generation++,
+          ));
   recorder.endRecording().dispose();
   if (painter == null) own.dispose();
   return drawn;
@@ -107,14 +174,18 @@ Future<ByteData> _render(List<PlacedSymbol> symbols,
     {SpriteAtlas? sprites}) async {
   final painter = LabelPainter();
   final recorder = ui.PictureRecorder();
-  painter.paint(
-    canvas: Canvas(recorder),
-    screenSize: _canvas,
-    styleZoom: 12,
-    symbols: symbols,
-    sprites: sprites,
-    placementGeneration: _generation++,
-  );
+  _checked(
+      painter,
+      symbols,
+      sprites,
+      () => painter.paint(
+            canvas: Canvas(recorder),
+            screenSize: _canvas,
+            styleZoom: 12,
+            symbols: symbols,
+            sprites: sprites,
+            placementGeneration: _generation++,
+          ));
   final picture = recorder.endRecording();
   final image = await picture.toImage(400, 400);
   picture.dispose();
@@ -130,16 +201,20 @@ Future<ByteData> _render(List<PlacedSymbol> symbols,
 Future<ByteData> _fadedFrame(LabelPainter painter, List<PlacedSymbol> symbols,
     SpriteAtlas? sprites, int generation, DateTime now) async {
   final recorder = ui.PictureRecorder();
-  painter.paint(
-    canvas: Canvas(recorder),
-    screenSize: _canvas,
-    styleZoom: 12,
-    symbols: symbols,
-    sprites: sprites,
-    labelFadeDuration: const Duration(milliseconds: 300),
-    placementGeneration: generation,
-    now: now,
-  );
+  _checked(
+      painter,
+      symbols,
+      sprites,
+      () => painter.paint(
+            canvas: Canvas(recorder),
+            screenSize: _canvas,
+            styleZoom: 12,
+            symbols: symbols,
+            sprites: sprites,
+            labelFadeDuration: const Duration(milliseconds: 300),
+            placementGeneration: generation,
+            now: now,
+          ));
   final picture = recorder.endRecording();
   final image = await picture.toImage(400, 400);
   picture.dispose();
@@ -602,16 +677,21 @@ void main() {
       addTearDown(painter.dispose);
       Future<ByteData> frame(int generation, DateTime now) async {
         final recorder = ui.PictureRecorder();
-        painter.paint(
-          canvas: Canvas(recorder),
-          screenSize: _canvas,
-          styleZoom: 12,
-          symbols: [blocker, poi, copy],
-          sprites: atlas,
-          labelFadeDuration: const Duration(milliseconds: 300),
-          placementGeneration: generation,
-          now: now,
-        );
+        final symbols = [blocker, poi, copy];
+        _checked(
+            painter,
+            symbols,
+            atlas,
+            () => painter.paint(
+                  canvas: Canvas(recorder),
+                  screenSize: _canvas,
+                  styleZoom: 12,
+                  symbols: symbols,
+                  sprites: atlas,
+                  labelFadeDuration: const Duration(milliseconds: 300),
+                  placementGeneration: generation,
+                  now: now,
+                ));
         final picture = recorder.endRecording();
         final image = await picture.toImage(400, 400);
         picture.dispose();
