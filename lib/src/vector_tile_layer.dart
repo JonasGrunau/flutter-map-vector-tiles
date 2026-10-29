@@ -28,6 +28,7 @@ import 'render/display_tile_data.dart';
 import 'render/fade.dart';
 import 'render/hillshade_renderer.dart';
 import 'render/label_continuity.dart';
+import 'render/label_identity.dart';
 import 'render/label_painter.dart';
 import 'render/pattern_resolver.dart';
 import 'render/symbol_layouter.dart';
@@ -189,6 +190,25 @@ class VectorTileLayer extends StatefulWidget {
   @visibleForTesting
   static int debugRetainedTileCount = 0;
 
+  /// The labels the mounted layers' identity indexes hold, and the
+  /// distinct label ids their tiles and parked cohorts actually offer —
+  /// test instrumentation for the holder contract: whatever a tile takes
+  /// when it publishes it hands back when it goes, so the two are equal.
+  @visibleForTesting
+  static ({int held, int offered}) debugLabelIds() {
+    var held = 0;
+    var offered = 0;
+    for (final layer in _VectorTileLayerState._mounted) {
+      held += layer._labelIds.length;
+      offered += {
+        for (final tile in [...layer._tiles.values, ...layer._retained.values])
+          ...tile.labelIds,
+        for (final ghosts in layer._ghostLabels) ...ghosts.ids,
+      }.length;
+    }
+    return (held: held, offered: offered);
+  }
+
   /// Replaces the render pump's per-frame time budget in tests. Zero
   /// makes every frame do exactly one unit of work — one layer of a
   /// tile's recording, or one label of its shaping — which spreads each
@@ -292,6 +312,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   final _repaint = _RepaintNotifier();
   final _labelPainter = LabelPainter();
+
+  /// The label ids of every symbol on offer — current, retained and
+  /// parked tiles alike. Each holder takes its ids when it publishes
+  /// ([_setTileSymbols]) and hands them back when it stops offering
+  /// them, so a label keeps its id across republishes, zoom crossings
+  /// and seams for exactly as long as something can draw it.
+  final _labelIds = LabelIdentityIndex();
   PatternResolver? _patterns;
   late final Ticker _fadeTicker;
   late final Ticker _renderTicker;
@@ -405,15 +432,15 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// plain Dart objects — no tile texture is pinned by a fade.
   final _ghostLabels = <_GhostLabels>[];
 
-  /// The symbols the last label pass actually drew, by identity.
+  /// The label ids the last label pass actually drew.
   ///
   /// A tile's `symbols` are placement *candidates*: the collision pass
-  /// picks the winners afresh every frame, and on a dense screen most
-  /// of them lose. Only the winners were ever on screen, so only they
-  /// survive the retention pin (see `_updateGrid`): an outgoing level
-  /// exists to keep what was visible, never to introduce labels.
-  /// Rebuilt in place each frame, so the pin never guesses.
-  final _drawnLastFrame = <SymbolInstance>{};
+  /// picks the winners, and on a dense screen most of them lose. Only
+  /// the winners were ever on screen, so only they survive the retention
+  /// pin (see `_updateGrid`): an outgoing level exists to keep what was
+  /// visible, never to introduce labels. Rebuilt in place each frame, so
+  /// the pin never guesses.
+  final _drawnLastFrame = <int>{};
 
   /// Bounded retries for tiles that finalized with a source missing
   /// after a transient failure. Fired just past the stores' failure
@@ -732,6 +759,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     VectorTileLayer.debugRetainedTileCount = 0;
     _labelCandidatesChanged();
     _ghostLabels.clear();
+    // Every holder just went at once.
+    _labelIds.clear();
     // A theme or provider swap replaces every symbol instance and
     // changes what layer indices mean; stale fade state, a stale frozen
     // placement or a stale drawn snapshot would pin the old theme's
@@ -765,7 +794,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // scheduling frames for labels that no longer paint.
       _labelPainter.reset();
       _drawnLastFrame.clear();
-      _ghostLabels.clear();
+      _clearGhostLabels();
     }
     if (widget.labelMode != oldWidget.labelMode ||
         (widget.labelMode == LabelMode.tile &&
@@ -776,7 +805,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // same reason as above: the per-frame pass starts or stops.
       _labelPainter.reset();
       _drawnLastFrame.clear();
-      _ghostLabels.clear();
+      _clearGhostLabels();
       refresh = true;
     }
     if (oldWidget.memoryCacheMaxBytes != widget.memoryCacheMaxBytes) {
@@ -1045,8 +1074,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           // candidates are dropped for good right here. (Skipped when
           // nothing tracks _drawnLastFrame — see the label pass — where
           // pinning would empty every retained cohort instead.)
-          entry.value.symbols =
-              drawnLabels(entry.value.symbols, _drawnLastFrame);
+          _pinToDrawn(entry.value);
         }
         _retained[entry.key] = entry.value;
       }
@@ -1185,9 +1213,55 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         widget.labelFadeDuration <= Duration.zero) {
       return;
     }
-    _ghostLabels
-        .add((key: tile.key, symbols: tile.symbols, since: DateTime.now()));
+    // The parked cohort takes the tile's labels over, ids and all: they
+    // are still on offer, as fade-out fallbacks, and no longer the tile's.
+    _ghostLabels.add((
+      key: tile.key,
+      symbols: tile.symbols,
+      ids: tile.labelIds,
+      since: DateTime.now(),
+    ));
+    tile.symbols = const [];
+    tile.labelIds = _DisplayTile._noIds;
     _ensureFadeTicker();
+  }
+
+  /// Drops every parked cohort, handing its label ids back.
+  void _clearGhostLabels() {
+    for (final ghosts in _ghostLabels) {
+      _labelIds.release(ghosts.key, ghosts.ids);
+    }
+    _ghostLabels.clear();
+  }
+
+  /// Publishes [symbols] as [tile]'s labels, with the label ids
+  /// [_labelIds] matches them to: a label this tile, a neighbour or
+  /// another level already offers keeps its id, and the tile's previous
+  /// ids are handed back.
+  void _setTileSymbols(
+    _DisplayTile tile,
+    List<SymbolInstance> symbols, {
+    required bool provisional,
+  }) {
+    final ids = _labelIds.assign(tile.key, symbols, replacing: tile.labelIds);
+    tile.setSymbols(symbols, ids, provisional: provisional);
+  }
+
+  /// Cuts [tile]'s labels to the ones the last label pass drew — the
+  /// retention pin (see `_updateGrid`) — handing the others' ids back.
+  void _pinToDrawn(_DisplayTile tile) {
+    final ids = tile.labelIds;
+    final kept = drawnLabels(ids, _drawnLastFrame);
+    if (kept == null) return;
+    final symbols = tile.symbols;
+    tile.symbols = [for (final i in kept) symbols[i]];
+    tile.labelIds = Int32List.fromList([for (final i in kept) ids[i]]);
+    _labelIds.release(
+        tile.key,
+        Int32List.fromList([
+          for (final id in ids)
+            if (!_drawnLastFrame.contains(id)) id,
+        ]));
   }
 
   /// Disposes a tile that has left the grid, dropping any jobs still
@@ -1196,6 +1270,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// the tile object) for as many frames as the queue is deep.
   void _disposeTile(_DisplayTile tile) {
     _renderQueue.remove(tile);
+    _labelIds.release(tile.key, tile.labelIds);
     tile.dispose();
   }
 
@@ -1264,7 +1339,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
             unawaited(_renderTicker.start());
           }
         } else {
-          tile.setSymbols(const [], provisional: false);
+          _setTileSymbols(tile, const [], provisional: false);
         }
         _labelCandidatesChanged();
         _repaint.trigger();
@@ -1823,7 +1898,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // Still a publish: a tile that finishes with no labels at all is
       // what releases the retained level's labels over it into their
       // fade-out.
-      tile.setSymbols(const [], provisional: job.provisional);
+      _setTileSymbols(tile, const [], provisional: job.provisional);
       _cacheResult(tile, job, const []);
     }
     _labelCandidatesChanged();
@@ -1899,10 +1974,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         fadeIn: job.fadeIn && widget.tileFadeDuration > Duration.zero,
         symbolsPending: false,
       );
-      tile.setSymbols(const [], provisional: job.provisional);
+      _setTileSymbols(tile, const [], provisional: job.provisional);
       _cacheResult(tile, job, const []);
     } else {
-      tile.setSymbols(symbols, provisional: job.provisional);
+      _setTileSymbols(tile, symbols, provisional: job.provisional);
       _cacheResult(tile, job, symbols);
     }
     _labelCandidatesChanged();
@@ -1984,8 +2059,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// tile was disposed. Returns whether any are left, so the fade
   /// ticker knows to keep going.
   bool _expireGhostLabels(DateTime now) {
-    _ghostLabels.removeWhere((ghosts) =>
-        fadeProgressOf(ghosts.since, now, widget.labelFadeDuration) >= 1);
+    _ghostLabels.removeWhere((ghosts) {
+      if (fadeProgressOf(ghosts.since, now, widget.labelFadeDuration) < 1) {
+        return false;
+      }
+      _labelIds.release(ghosts.key, ghosts.ids);
+      return true;
+    });
     return _ghostLabels.isNotEmpty;
   }
 
@@ -2190,6 +2270,7 @@ class _RenderJob {
 typedef _GhostLabels = ({
   TileKey key,
   List<SymbolInstance> symbols,
+  Int32List ids,
   DateTime since,
 });
 
@@ -2207,6 +2288,11 @@ class _DisplayTile {
   /// dipping to the background colour.
   ui.Image? underlay;
   List<SymbolInstance> symbols = const [];
+
+  /// The label id of each of [symbols], as `LabelIdentityIndex`
+  /// assigned them — this tile holds them until it hands them back.
+  Int32List labelIds = _noIds;
+  static final _noIds = Int32List(0);
 
   /// Whether [symbols] came from a provisional (ancestor-data) layout
   /// rather than this tile's own final data. Provisional labels bridge
@@ -2278,16 +2364,19 @@ class _DisplayTile {
     }
   }
 
-  /// Publishes [symbols] as this tile's labels. Which of them fade in
-  /// — and what their arrival fades *out* — is not decided here: the
-  /// label painter tracks one opacity per label identity across all
-  /// tiles, so a republish (provisional→final swap, refresh, retry) or
-  /// a zoom crossing simply changes which instances carry each key.
+  /// Publishes [symbols] as this tile's labels, with their [labelIds].
+  /// Which of them fade in — and what their arrival fades *out* — is
+  /// not decided here: the label painter tracks one opacity per label
+  /// id across all tiles, so a republish (provisional→final swap,
+  /// refresh, retry) or a zoom crossing simply changes which instances
+  /// carry each id.
   void setSymbols(
-    List<SymbolInstance> symbols, {
+    List<SymbolInstance> symbols,
+    Int32List labelIds, {
     required bool provisional,
   }) {
     this.symbols = symbols;
+    this.labelIds = labelIds;
     symbolsProvisional = provisional;
     symbolsPending = false;
     if (!isProvisional && state == _TileState.loading) {
@@ -2315,6 +2404,7 @@ class _DisplayTile {
     underlay?.dispose();
     underlay = null;
     symbols = const [];
+    labelIds = _noIds;
     symbolsProvisional = false;
     symbolsPending = false;
   }
@@ -2430,7 +2520,8 @@ class _VectorMapPainter extends CustomPainter {
     // keys mid-fade-out, nothing more.
     void addSymbols(
       TileKey key,
-      List<SymbolInstance> symbols, {
+      List<SymbolInstance> symbols,
+      Int32List ids, {
       bool ghostOnly = false,
       bool retained = false,
     }) {
@@ -2446,9 +2537,11 @@ class _VectorMapPainter extends CustomPainter {
         scale: tileScale,
         rotation: rotation,
       );
-      for (final symbol in symbols) {
+      for (var i = 0; i < symbols.length; i++) {
+        final symbol = symbols[i];
         placed.add(PlacedSymbol(
           instance: symbol,
+          id: ids[i],
           screenAnchor: transform.apply(symbol.anchor),
           // Point symbols use the map angle for explicit `map` icon
           // alignment; along-line symbols add their local bearing.
@@ -2462,7 +2555,7 @@ class _VectorMapPainter extends CustomPainter {
     }
 
     for (final tile in state._tiles.values) {
-      addSymbols(tile.key, tile.symbols);
+      addSymbols(tile.key, tile.symbols, tile.labelIds);
     }
     // While a zoom level change is in flight, keep the previous level's
     // labels wherever the new level has no label data yet — otherwise
@@ -2475,14 +2568,14 @@ class _VectorMapPainter extends CustomPainter {
       final needed =
           state._retainedSymbolKeys ??= state._retainedKeysWithSymbols();
       for (final retained in state._retained.values) {
-        addSymbols(retained.key, retained.symbols,
+        addSymbols(retained.key, retained.symbols, retained.labelIds,
             ghostOnly: !needed.contains(retained.key), retained: true);
       }
     }
     // Parked labels of disposed retained tiles — fallbacks for fades
     // their tile no longer exists to draw.
     for (final ghosts in state._ghostLabels) {
-      addSymbols(ghosts.key, ghosts.symbols, ghostOnly: true);
+      addSymbols(ghosts.key, ghosts.symbols, ghosts.ids, ghostOnly: true);
     }
     if (placed.isEmpty) {
       state._drawnLastFrame.clear();
@@ -2514,7 +2607,7 @@ class _VectorMapPainter extends CustomPainter {
     state._drawnLastFrame.clear();
     if (state.widget.labelFadeDuration > Duration.zero) {
       for (final symbol in drawn) {
-        state._drawnLastFrame.add(symbol.instance);
+        state._drawnLastFrame.add(symbol.id);
       }
       // A fade can begin on any painted frame, and a frame that replayed
       // a frozen placement owes a pass, so the ticker that keeps both
