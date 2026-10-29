@@ -1,14 +1,19 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_map_vector_tiles/src/cache/byte_cache.dart';
 import 'package:flutter_map_vector_tiles/src/core/cancellation.dart';
 import 'package:flutter_map_vector_tiles/src/core/tile_key.dart';
 import 'package:flutter_map_vector_tiles/src/grid/tile_store.dart';
 import 'package:flutter_map_vector_tiles/src/pipeline/executor/executor.dart';
 import 'package:flutter_map_vector_tiles/src/pipeline/prepared_tile.dart';
+import 'package:flutter_map_vector_tiles/src/pipeline/tile_filters.dart';
 import 'package:flutter_map_vector_tiles/src/provider/memory_vector_tile_provider.dart';
 import 'package:flutter_map_vector_tiles/src/provider/vector_tile_provider.dart';
+import 'package:flutter_map_vector_tiles/src/render/matched_features.dart';
+import 'package:flutter_map_vector_tiles/src/style/theme.dart';
+import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fixtures/mvt_builder.dart';
@@ -72,6 +77,58 @@ void main() {
     final feature = tile.layers['water']!.features.single;
     expect(feature.properties, {'class': 'lake'}); // name trimmed
     s.dispose();
+  });
+
+  group('zoom-free filters', () {
+    Theme waterTheme(String cls) => const ThemeReader().read({
+          'layers': [
+            {
+              'id': 'water',
+              'type': 'fill',
+              'source': 's',
+              'source-layer': 'water',
+              'filter': ['==', 'class', cls],
+            },
+          ],
+        });
+    TileStore filteredStore(Theme theme) => TileStore(
+          provider: MemoryVectorTileProvider(
+              tiles: {const TileKey(2, 1, 1): _tileBytes()}),
+          executor: executor,
+          layerProperties: {
+            'water': {'class'},
+          },
+          filterPlan:
+              TileFilterPlan(theme.layers, minimumZoom: 0, maximumZoom: 14),
+        );
+
+    test('are resolved by native workers, and by the UI isolate on web',
+        () async {
+      final theme = waterTheme('lake');
+      final s = filteredStore(theme);
+      addTearDown(s.dispose);
+      final tile = (await s.obtain(const TileKey(2, 1, 1)))!;
+      final water = tile.layers['water']!;
+      final layer = theme.layers.single;
+      expect(water.matches.containsKey(layer.filterId), !kIsWeb);
+      expect(MatchedFeatures.of(layer, water, tile: tile.key), water.features);
+    });
+
+    test('a tile cached for another theme serves this one', () async {
+      final lakes = filteredStore(waterTheme('lake'));
+      addTearDown(lakes.dispose);
+      await lakes.obtain(const TileKey(2, 1, 1));
+
+      // Same source, same properties: the decoded tile is shared, and
+      // its match list — another filter's — is not read for this one.
+      final rivers = waterTheme('river');
+      final s = filteredStore(rivers);
+      addTearDown(s.dispose);
+      final tile = s.peek(const TileKey(2, 1, 1))!;
+      final water = tile.layers['water']!;
+      expect(MatchedFeatures.of(rivers.layers.single, water, tile: tile.key),
+          isEmpty);
+    });
   });
 
   test('missing tiles resolve as empty, not error', () async {

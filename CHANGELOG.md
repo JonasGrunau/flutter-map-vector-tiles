@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- ⚡ The label pass spends less of the UI thread on bookkeeping. On
+  every frame that drew a curved label it built a `style#character`
+  string per glyph just to find that glyph's cached painters, and it
+  rehashed each label's identity key several times over; on an Android
+  phone zooming through the bench's sweeps that was up to 9 % of the UI
+  thread's samples. Shaped text now keeps its glyphs and those keys
+  carry their hash, so the label pass takes 4–10 % less UI-thread time
+  there, and frames that replay the last placement 19–31 % less.
+  Labels look the same.
+- ⚡ A fresh tile no longer tests its features against the style's
+  layer filters on the UI thread. The background isolates that decode
+  tiles now also resolve every filter that reads neither the zoom nor
+  `global-state` nor the feature's geometry, so the first draw of a
+  tile only looks up the features they matched. On the Android test
+  phone this takes a dense Munich tile's filter matching from 19 ms to
+  under 1 ms of UI time and a fresh z17 tile's first draw and label
+  layout from 21 ms to 4 ms; the first complete map came 40–90 ms
+  sooner (median of five runs), and frame rates didn't change. On an
+  iPhone 15 Pro Max the same tile's filter matching drops from about
+  6 ms to under 0.5 ms. The isolates spend about 16 ms (Android) and
+  4 ms (iPhone) more per such tile. Web, whose tile preparation already
+  runs on the UI thread, is unchanged.
+- 🐛 An Arabic or Hebrew label holding a Latin word read from the left:
+  labels were laid out left to right whatever their script, so
+  "شارع King Fahd" drew the Arabic word first, on the left. Each line
+  now takes its direction from its first letter, as in MapLibre, and a
+  line `text-max-width` wraps keeps the direction of the text it came
+  from.
+- 🐛 Chinese labels never wrapped at `text-max-width`: the text engine
+  reports a run of ideographs without a space as one unbreakable word,
+  so the whole name stayed on one line. Chinese and Japanese now break
+  between characters, as in MapLibre.
+- 🐛 A label with a word wider than `text-max-width` could split a
+  word across two lines: when a line began with a character made of
+  several code units (a Bengali or Devanagari syllable, an emoji, a
+  letter with a combining accent), that character stayed at the end of
+  the line above — "হযরত শা" over "হজালাল".
 - ✨ **Global state**: styles can use `global-state` expressions, with
   defaults from the style's root `state`, and
   `Theme.withGlobalState({...})` gives the theme for other values. The
