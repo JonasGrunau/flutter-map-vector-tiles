@@ -264,9 +264,10 @@ void main() {
             for (var i = 39; i >= 0; i--)
               _symbolAt(layer, const Offset(200, 200), 'Main St', order: i),
           ];
-      // Passed in reverse insertion order: the sort alone (layer, sort
-      // key and y all tie) must still let order 0 — the current level
-      // in production — win the spot, and keep winning across frames.
+      // Passed in reverse insertion order: the sort alone (every other
+      // term ties, as for one anchor two world copies of a tile laid
+      // out) must still let order 0 win the spot, and keep winning
+      // across frames.
       final first = _paint(layer, frame());
       expect(first, hasLength(1));
       expect(first.single.order, 0);
