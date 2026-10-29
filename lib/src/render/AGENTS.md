@@ -206,11 +206,14 @@ for frames with no per-frame label work in them.
   Text whose evaluated `text-size` is below 1 px is skipped, never
   clamped up — tiny-but-visible text floods the collision grid.
 - **Placement order is MapLibre's, and reads no camera.** The full
-  priority is layer, incumbency (see above), `symbol-sort-key`,
-  current level before retained, then MapLibre's order: the data tile
-  (`SymbolInstance.sourceTile`: deepest zoom first, then x, then y),
-  the feature's index in it, the anchor's part and its distance along
-  that part, and last `PlacedSymbol.order` (insertion order). The
+  priority is layer, incumbency (see above), `symbol-sort-key`, then
+  MapLibre's order: the data tile (`SymbolInstance.sourceTile`:
+  deepest zoom first, then x, then y), the feature's index in it, the
+  anchor's part and its distance along that part, and last
+  `PlacedSymbol.order` (insertion order). A retained level gets no
+  term of its own: its tiles sort among the current level's, as in
+  MapLibre, so on a zoom-out the outgoing level's label wins a tie
+  with the arriving one's (and on a zoom-in loses it). The
   layouter numbers features over the data tile's source layer, never
   per display tile, so the display tiles cut from one data tile agree;
   a term read from the screen (as screen y once was) would let a pan or
