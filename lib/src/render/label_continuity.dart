@@ -284,6 +284,15 @@ class SittingPlacement {
   /// back in for those frames.
   bool textDropped = false;
 
+  /// The same for the icon: it lost its space at the last placement and
+  /// only the text was drawn (`icon-optional`).
+  bool iconDropped = false;
+
+  /// The placement pass that last seated a symbol here, as `LabelPainter`
+  /// stamps its passes. Several copies of one label share a sitting; the
+  /// first placed in a pass owns the choices above for that pass.
+  int seatedPass = 0;
+
   int _seen;
 
   SittingPlacement._(this._seen);

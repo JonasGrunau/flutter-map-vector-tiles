@@ -92,7 +92,9 @@ map behaviour. Monotonic sweeps are the point: a zoom gate
 fires at most once per direction, so every blink is a genuine placement
 flip-flop rather than the style re-crossing its thresholds. Labels are
 matched frame-to-frame in zoom-20 world space (48 px continuation radius,
-64 px blink radius, 4 s blink window) from a painter probe
+closest pairs first, so a newcomer drawn next to a label of the same name
+never takes that label's place; 64 px blink radius, 4 s blink window)
+from a painter probe
 (`LabelPainter.debugDrawnProbe`) that costs one skipped null-check outside
 this mode and `manual` mode — which appends the same `STABILITY` line to
 each of its windows.
@@ -153,6 +155,10 @@ BENCH[after]   RASTER n=961 p50=0.80 p90=1.08 p99=1.67 max=4.76 >8.3=0 (0.0%) �
 | `OPEN` | One line per run, before the first phase: how the map's first screen came up in a fresh process. The harness waits until no frame has come for 2 s (at most 20 s) and reports `firstLabel` (ms from the first build with the style to the first frame whose label pass had candidates), `settled` (to the last frame), the UI-thread frames on the way (`frames`, summed `build`, `max`, `top3`, `>16.7`), and the label shaping done meanwhile (`shape`) with the worst single frame of it (`shapeMaxFrame`) — where a cost paid once per process, such as loading a typeface, would show. |
 | `WORK` | The window's publish work split into UI-thread wall time: `rasterize` (picture recording + `toImageSync`), `layout` (symbol extraction), `labels` (the per-frame label pass). Whatever BUILD holds beyond these three is flutter_map and widget overhead. A per-frame `WORK z=… tiles=N …` line fires whenever a single frame's split alone exceeds 6 ms — that is the attribution for an adjacent `JANK` line. |
 | `LAYERS` | The same rasterize time broken down by style layer id, worst first — names the culprit layer directly. |
+| `B-PLACE` / `B-OTHER` | BUILD of the frames that did placement work — an in-frame collision pass, or with the placement worker a pass request or the adoption of an answer — and of the rest, matched to their frame timings by engine frame number. |
+| `SLOW` | How many of the window's BUILD frames over 16.7 ms were placing frames — the share a placement change has to move. `matched` counts the timings tagged at all. |
+| `DRAWN` | Labels drawn per frame by placement (mean and p10/p50/p90), `ghosts=` the mean of fade-out ghosts drawn beside them, and `byZoom` the mean per fifth of a style zoom level. A placement change that drops or doubles labels during a sweep shows here and nowhere in the frame times. In `stability` mode every pop-in also prints a `POPIN` line: zoom, whether that frame adopted a placement worker's answer, the distance to the nearest same-key label of the frame before, and the key. |
+| `WORKER` | The label placement worker, when it ran: pass requests and the UI time each cost, adopted answers and how many frames after their request, the worker's own time per pass, and the symbol lists mirrored to it (KB, UI time, and the estimated KB it holds now). `bench/lib/worker_stats.dart` holds these; swap it for a stub returning nothing to run the same harness on a checkout without the worker. |
 | `>8.3` / `>16.7` | Frames over the 120 Hz and 60 Hz budgets. On a ProMotion device the 8.3 ms column is the one that matters; clearing 16.7 there is not "smooth". |
 | `fps` | Frames actually produced. Pinned at ~120 (or ~60) means nothing is stalling. |
 
@@ -209,6 +215,7 @@ All via `--dart-define`. Zooms and coordinates are integers because
 | `BENCH_RETAIN_ALL` | `false` | query mode: run the layer with `retainAllProperties` |
 | `BENCH_WATCH` | — | stability/manual: regexp over continuity keys whose every rejection is printed as a `WATCH` line |
 | `BENCH_LOG_GONE` | `false` | stability/manual: print a `GONE` line for every on-screen label that stops drawing |
+| `BENCH_HALO_BLUR` | `true` | `false` draws text halos crisp, ignoring `text-halo-blur` (`LabelPainter.debugHaloBlur`), so an A/B against the default puts a number on the blur's raster cost |
 
 The phase matrix (speed × labels on/off × cache budget × cold/warm) is the
 `_phases` list in `lib/main.dart`. The labels-off arm is a control, not filler:

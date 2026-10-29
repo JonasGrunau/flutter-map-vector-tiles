@@ -26,7 +26,7 @@ layers; this package only draws the map.
 | 🔍 **Crisp labels** | Text and icons drawn per frame in screen space: upright under rotation, sharp at fractional zoom, and **one global collision pass**, so nothing is duplicated or clipped at a tile seam. Or, with `labelMode: LabelMode.tile`, drawn into the tiles once, for no per-frame label cost at all — see [Choosing a label mode](#choosing-a-label-mode) |
 | 🌫️ **No white flashes** | New tiles fade in over retained ancestor imagery. Fast zoom-ins render from already-decoded parent tiles, zoom-outs compose the decoded children until the new level arrives |
 | 🎚️ **Correct MapLibre zoom semantics** | The default `TileOffset.maplibre` renders 512px-convention styles *exactly* as their authors designed them |
-| 🧵 **Isolate pipeline** | Tiles decode, trim and match the style's layer filters on a worker-isolate pool (a yielding event-loop queue on web), viewport-centre first. Cancellation is a state, **never an exception** in your crash reporting |
+| 🧵 **Isolate pipeline** | Tiles decode, trim and match the style's layer filters on a worker-isolate pool (a yielding event-loop queue on web), viewport-centre first, and label collision is decided on an isolate of its own. Cancellation is a state, **never an exception** in your crash reporting |
 | 💾 **Deterministic caching** | LRU memory caches with byte budgets, plus a size-capped disk cache with no index files to corrupt. Every `ui.Image` is disposed on eviction |
 | ✈️ **Works offline** | The style bundle and recently viewed tiles are cached on disk (native), so places you visited keep rendering with no network |
 | 🌐 **All six platforms** | Android, iOS, macOS, Linux, Windows and web. See [Web support](#-web-support) for the browser differences |
@@ -251,15 +251,14 @@ native:
   Tiles and the style bundle rely on the in-memory caches plus the
   browser's HTTP cache instead.
 - **Decoding runs on the event loop.** A yielding queue replaces the
-  worker-isolate pool, and `concurrency` is ignored. A heatmap layer's
-  density is computed there too, after the frame that asked for it.
-- **CORS.** The browser fetches style.json, TileJSON, sprites, glyphs and
-  tiles directly, so every host involved must send
   worker-isolate pool, and `concurrency` is ignored. Layer filters are
   matched against a tile's features when it is first drawn, not while it
-  is decoded.
-- **CORS.** The browser fetches style.json, TileJSON, sprites and tiles
-  directly, so every host involved must send
+  is decoded, and a heatmap layer's density is computed on the event loop
+  too, after the frame that asked for it.
+- **Label collision runs in the frame.** The placement pass that runs on
+  an isolate of its own elsewhere costs the frame it is due in.
+- **CORS.** The browser fetches style.json, TileJSON, sprites, glyphs and
+  tiles directly, so every host involved must send
   `Access-Control-Allow-Origin`. MapTiler, OpenFreeMap and Stadia do;
   self-hosted tile servers need it configured. PMTiles hosts additionally
   need range requests to pass CORS, meaning `Range` in
@@ -460,8 +459,7 @@ would.
 | Type | Support |
 |---|---|
 | `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, `background-pattern`, dashes and casing, `line-offset`, `line-blur`, `line-miter-limit`, `circle-blur`, the `*-translate` and `*-sort-key` properties; see the notes below the table |
-| `symbol` | full, including curved line text and `text-variable-anchor` / `text-radial-offset`; see [Labels](#-labels) below |
-| `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity` and brightness/contrast/saturation/hue-rotate matching MapLibre's shader math |
+| `symbol` | every layout and paint property but `text-writing-mode` and the pitch alignments (flutter_map has no pitch), including curved line text, variable anchors and `icon-text-fit`; see *Symbol properties* and [Labels](#-labels) below |
 | `hillshade` | terrain shading computed from a `raster-dem` source (`terrarium`, `mapbox` or `custom` encoding), drawn at its layer position with every paint property: all five `hillshade-method`s (`standard`, `basic`, `combined`, `igor`, `multidirectional`, up to four lights), illumination direction, altitude and anchor, exaggeration, shadow/highlight/accent colours and `resampling`. Slopes are read across tile edges from the neighbouring elevation tiles, so the shading has no seams. One difference: tiles are shaded once and turn with the map, so `hillshade-illumination-anchor: viewport` (the default) is drawn as if the map were not rotated; with `map` it matches MapLibre at every bearing |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity`, brightness/contrast/saturation/hue-rotate matching MapLibre's shader math, and `resampling` / `raster-resampling` |
 | `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, patterned ones included, so a building part over its outline does not draw darker; the alpha of `fill-extrusion-color` is ignored, as the spec says |
@@ -487,14 +485,44 @@ is drawn sharp: Impeller, Flutter's renderer on iOS and Android, draws
 those two wrongly when blurred.
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
-per `icon-color`, `icon-halo-color` and `icon-halo-width`; dark MapLibre
-styles ship their icons this way. Ordinary sprites are drawn with the
-colours baked into the sheet. `StyleReader` repacks the sheet with a
+per `icon-color`, `icon-halo-color`, `icon-halo-width` and
+`icon-halo-blur`; dark MapLibre styles ship their icons this way.
+Ordinary sprites are drawn with the colours baked into the sheet. `StyleReader` repacks the sheet with a
 transparent gutter around every icon, as MapLibre does, so a scaled icon
 never picks up the edge of its neighbour in the sheet. `icon-rotate` and
 `icon-rotation-alignment` follow MapLibre's viewport/map/line semantics,
 including camera bearing, icon anchor/offset rotation and rotated collision
 bounds.
+
+**Symbol properties.** Beyond text, icons and their anchors, offsets,
+sizes and colours, the label pass reads:
+
+- `text-halo-blur`, a soft halo edge as MapLibre draws it;
+- `icon-text-fit` and `icon-text-fit-padding`, honouring a sprite's
+  `stretchX`, `stretchY` and `content`, so a road shield stretches
+  where its designer said it may and frames its text;
+- `text-variable-anchor-offset`, and `text-offset` with
+  `text-variable-anchor` (taken as distances away from each anchor, as
+  in MapLibre);
+- `text-justify` (with `auto`) and `text-line-height` for multi-line
+  labels;
+- `text-optional` and `icon-optional`, `icon-padding`, `text-overlap` /
+  `icon-overlap` (`never`, `always`, `cooperative`), the older
+  `*-allow-overlap`, and `*-ignore-placement`;
+- `symbol-sort-key`, `symbol-z-order` and `symbol-avoid-edges`;
+- `text-rotate`, `text-rotation-alignment: map` for point labels,
+  `icon-keep-upright`, and `text-translate` / `icon-translate` with their
+  anchors.
+
+`text-writing-mode` is not supported: CJK text is laid out
+horizontally, and the reader logs the property. `symbol-avoid-edges`
+keeps a symbol inside the 256 px display tile it was laid out in, which
+past a source's maxzoom is smaller than the data tile MapLibre bounds it
+by, so more labels near seams give way. `text-rotate` turns
+point labels only, and text with an icon fitted around it is drawn
+straight even along a line. Without the style's glyphs (see
+[Fonts](#fonts)), `text-font` picks the weight and style of the
+platform's fonts.
 
 **Heatmaps.** A heatmap's density spans tiles — a kernel near
 a seam reaches into the neighbour — so it is drawn in screen space, like
@@ -597,6 +625,13 @@ mode](#choosing-a-label-mode) has what changes then.
   exempt, as in MapLibre. The fit is a placement decision, so it is
   judged when collision is (see *Collision is decided on a timer*
   below), not on every frame.
+- **Overlap as in MapLibre.** A symbol allowed to overlap
+  (`*-allow-overlap`, `*-overlap: always`) may be drawn over others but
+  still reserves its own space, so a later label that may not overlap
+  keeps clear of it; only `*-ignore-placement` gives the space away. A
+  symbol's text and icon are tested separately, each with its own
+  overlap setting, and `text-optional` / `icon-optional` decide whether
+  one may show without the other.
 - **Words stay whole.** `text-max-width` wraps between words; a single
   word wider than it gets a line of its own, as in MapLibre, rather
   than breaking where the width runs out, and the lines around it
@@ -692,7 +727,10 @@ mode](#choosing-a-label-mode) has what changes then.
   too sharply under it or the label outgrow its stretch of road; it then
   fades out instead of vanishing. An unchanged
   repaint creates no new placement work, so the animation ticker settles
-  when the last real change has been placed.
+  when the last real change has been placed. Except on web (and for
+  styles whose label expressions use `within` or `distance`), the
+  decision itself is taken on a separate isolate, from the text the map
+  has already shaped, and shown from the frame after it was asked for.
 
 #### Fonts
 
@@ -711,8 +749,10 @@ style was designed with. Without it every label uses the system font.
   labels whose glyphs the font lacks.
 - **Laid out like MapLibre.** Advances, `text-letter-spacing`,
   `text-max-width` wrapping into balanced lines (a two-line name gets
-  two similar lines, not a full line and a dangling word), 1.2 em line
-  spacing, halos at MapLibre's distance-field threshold.
+  two similar lines, not a full line and a dangling word),
+  `text-line-height` and `text-justify`, halos at MapLibre's
+  distance-field threshold, and `text-halo-blur` as a wider edge on
+  that threshold, as MapLibre blurs them.
 - **Cheaper to lay out.** The text is laid out in Dart from the glyph
   metrics, not by the platform's text shaper, which on a dense tile
   was the largest single cost on the UI thread: 31–32 ms for one dense
@@ -733,11 +773,11 @@ style was designed with. Without it every label uses the system font.
 
 The screen-space pass is what makes labels behave as above, and it is
 also the one part of a moving map that costs UI-thread time on every
-frame: every placed label laid out and drawn again, and, every
-`labelFadeDuration` (300 ms at most), a collision pass over every
-candidate. On a label-dense screen and a mid-range phone that cost
-decides whether panning, rotating and pinching hold the display's frame
-rate.
+frame: every placed label laid out and drawn again. The collision pass
+over every candidate, every `labelFadeDuration` (300 ms at most), runs on
+an isolate of its own — except on web, where it runs in the frame. On a
+label-dense screen and a mid-range phone that cost decides whether
+panning, rotating and pinching hold the display's frame rate.
 
 `labelMode: LabelMode.tile` removes it. Labels and icons are placed and
 drawn once per tile, when the tile is rendered, into the same image as
@@ -748,7 +788,7 @@ they inherit the limits of any pre-rendered tile:
 
 | | `LabelMode.screen` (default) | `LabelMode.tile` |
 |---|---|---|
-| Per-frame label work | placed labels laid out and drawn every frame, a collision pass every `labelFadeDuration` (at most 300 ms) | none |
+| Per-frame label work | placed labels laid out and drawn every frame, a collision pass every `labelFadeDuration` (at most 300 ms) on a separate isolate (in-frame on web) | none |
 | Collision | one pass across the whole screen | within each tile |
 | At tile seams | seamless | a label that would cross a tile edge is dropped, so labels thin out along tile seams; a road name repeated along a road is thinned out only within a tile, so it can show on both sides of a seam |
 | Under rotation | text stays upright | text rotates with the map |
@@ -808,7 +848,8 @@ style.json ─► StyleReader ─► compiled Theme (expressions → closures)
 camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
    bytes ◄─ disk cache ◄─ network        ─► isolate: decode + trim + filter
    PreparedTile ─► rasterize once ─► GPU image ─► textured quad per frame
-   symbols ─────► per-frame screen-space label pass (global collision)
+   symbols ─────► per-frame screen-space label pass (global collision,
+                  decided on its own isolate)
            └────► or, LabelMode.tile: drawn into that GPU image, once
    heatmap points ─► worker: density + colour ramp ─► one screen image
    finished tiles (image + symbols) ─► shared LRU ─► instant re-crossings

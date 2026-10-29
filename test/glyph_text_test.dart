@@ -191,6 +191,35 @@ void main() {
       expect(shaped.height, closeTo(57.6, 1e-9));
     });
 
+    test('text-justify aligns the lines to either side', () {
+      // "ab" (24 px) in "abcd" (48 px): its first glyph at 0, 12 or 24.
+      double secondLine(double justify) =>
+          shapeGlyphs('abcd\nab', (c) => font[c], justify: justify)!
+              .positions[8];
+      expect([secondLine(0), secondLine(0.5), secondLine(1)], [0, 12, 24]);
+    });
+
+    test('justified realigns shaped text as shaping it so would', () {
+      final centred = shape('abcd\nab')!;
+      for (final justify in const [0.0, 1.0]) {
+        final shaped =
+            shapeGlyphs('abcd\nab', (c) => font[c], justify: justify)!;
+        final realigned = centred.justified(justify);
+        expect(realigned.positions, shaped.positions);
+        expect(realigned.justify, justify);
+      }
+      final single = shape('abc')!;
+      expect(single.justified(0), same(single));
+    });
+
+    test('text-line-height sets the line pitch and the block height', () {
+      // 2 em lines: middles 24 and 72 px down, a 96 px block.
+      final shaped = shapeGlyphs('abcd\nab', (c) => font[c], lineHeightEm: 2)!;
+      expect(shaped.positions[1], 24);
+      expect(shaped.positions[9], 72);
+      expect(shaped.height, 96);
+    });
+
     test('no wrapping without a width, or when the text fits', () {
       expect(lines(shape('aaa bbb ccc')!), ['aaabbbccc']);
       expect(lines(shape('aaa bbb ccc', maxWidthEm: 10)!), ['aaabbbccc']);

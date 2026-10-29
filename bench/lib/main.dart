@@ -25,6 +25,7 @@ library;
 import 'dart:async';
 import 'dart:io' show ProcessInfo;
 import 'dart:math' as math;
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -42,6 +43,8 @@ import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart'
 import 'package:flutter_map_vector_tiles/src/render/tile_rasterizer.dart'
     show TileRasterizer;
 import 'package:latlong2/latlong.dart';
+
+import 'worker_stats.dart';
 
 /// Key-free by default so the harness is reproducible without a key. Any
 /// MapLibre style URL works; `{key}` is substituted from [_apiKey].
@@ -101,6 +104,10 @@ final _watchRe = _watch.isEmpty ? null : RegExp(_watch);
 /// app's style document and pass its key via `MAPTILER_KEY` on the command
 /// line — keys must never be committed to this repo.
 const _setup = String.fromEnvironment('BENCH_SETUP', defaultValue: 'default');
+
+/// `false` draws text halos crisp, ignoring `text-halo-blur`, to put a
+/// number on the blur's cost (A/B against the default).
+const _haloBlur = bool.fromEnvironment('BENCH_HALO_BLUR', defaultValue: true);
 const _safenow = _setup == 'safenow';
 
 /// Reporting cadence for `manual` mode.
@@ -130,7 +137,10 @@ const _hi = int.fromEnvironment('BENCH_HI', defaultValue: 177) / 10;
 const _lat = int.fromEnvironment('BENCH_LAT_E5', defaultValue: 4813720) / 1e5;
 const _lon = int.fromEnvironment('BENCH_LON_E5', defaultValue: 1157550) / 1e5;
 
-void main() => runApp(const BenchApp());
+void main() {
+  LabelPainter.debugHaloBlur = _haloBlur;
+  runApp(const BenchApp());
+}
 
 class BenchApp extends StatelessWidget {
   const BenchApp({super.key});
@@ -182,6 +192,26 @@ class _BenchPageState extends State<BenchPage>
 
   var _build = <int>[];
   var _raster = <int>[];
+
+  // BUILD split by whether the frame ran a label placement pass, matched
+  // to its FrameTiming by engine frame number — placing frames are where
+  // the label pass's jank concentrates, so their share of the slow frames
+  // is the number a placement change has to move. Plus the labels drawn
+  // per frame, which a placement change must not quietly cut.
+  var _buildPlacing = <int>[];
+  var _buildOther = <int>[];
+  final _framePlacing = <int, bool>{};
+  var _framePlacingCount = 0;
+  var _frameWorkerEvents = 0;
+  var _workerBefore = const <int>[];
+  var _drawnThisFrame = -1;
+  var _ghostsThisFrame = 0;
+  var _drawnZoomThisFrame = 0.0;
+  var _drawnCounts = <int>[];
+  var _ghostCounts = <int>[];
+  // Labels drawn per frame by style zoom, in fifths of a level.
+  var _drawnByZoom = <int, List<int>>{};
+  var _lastCommits = 0;
   var _recording = false;
   var _interrupted = false;
   var _allFrames = 0;
@@ -261,6 +291,10 @@ class _BenchPageState extends State<BenchPage>
       });
     SchedulerBinding.instance.addTimingsCallback(_onTimings);
     SchedulerBinding.instance.addPostFrameCallback(_onFrameEnd);
+    if (_mode == 'bench') {
+      // Only the count: the stability matcher is not needed here.
+      LabelPainter.debugDrawnProbe = _countDrawn;
+    }
     if (_mode == 'stability' || _mode == 'manual') {
       LabelPainter.debugDrawnProbe = _onLabelsDrawn;
       LabelPainter.debugRejectProbe = (key, reason, replay) {
@@ -321,6 +355,25 @@ class _BenchPageState extends State<BenchPage>
     _frameShapeUs += shape;
     _frameSweepUs += sweep;
     _frameDrawUs += draw;
+    // A placing frame runs a pass in-frame or, with the placement worker,
+    // sends one or adopts one's answer.
+    final events = placementWorkerEvents() - _frameWorkerEvents;
+    _frameWorkerEvents += events;
+    final placing =
+        LabelPainter.debugPlacingFrames - _framePlacingCount + events;
+    _framePlacingCount += placing - events;
+    final drawn = _drawnThisFrame;
+    _drawnThisFrame = -1;
+    if (_recording) {
+      _framePlacing[PlatformDispatcher.instance.frameData.frameNumber] =
+          placing > 0;
+      if (drawn >= 0) {
+        _drawnCounts.add(drawn - _ghostsThisFrame);
+        _ghostCounts.add(_ghostsThisFrame);
+        (_drawnByZoom[(_drawnZoomThisFrame * 5).floor()] ??= [])
+            .add(drawn - _ghostsThisFrame);
+      }
+    }
     if (_opening && _openStart != null) {
       final now = DateTime.now();
       _lastOpenFrameAt = now;
@@ -358,6 +411,18 @@ class _BenchPageState extends State<BenchPage>
   /// before matching or every twin count change reads as an event.
   static const _twinRadiusPx = 4.0;
 
+  /// What one frame drew, for the DRAWN line: labels, ghosts and the
+  /// style zoom. Bench mode's whole probe, and the first step of the
+  /// stability one.
+  void _countDrawn(double styleZoom, List<DrawnLabelRecord> drawn) {
+    _drawnThisFrame = drawn.length;
+    _drawnZoomThisFrame = styleZoom;
+    _ghostsThisFrame = 0;
+    for (final label in drawn) {
+      if (label.ghost) _ghostsThisFrame++;
+    }
+  }
+
   /// Consumes one frame's drawn-label report from the painter. Converts
   /// every anchor to zoom-20 world pixels, matches it against last
   /// frame's, and counts the three stability violations: a label
@@ -368,6 +433,11 @@ class _BenchPageState extends State<BenchPage>
   /// while a window is recording; the frame-to-frame memory runs
   /// always, so a window never opens against an empty previous frame.
   void _onLabelsDrawn(double styleZoom, List<DrawnLabelRecord> drawn) {
+    _countDrawn(styleZoom, drawn);
+    // Whether this label pass adopted a placement worker's answer.
+    final commits = placementWorkerCommits();
+    final adopted = commits != _lastCommits;
+    _lastCommits = commits;
     final watch = _recording ? _watchRe : null;
     for (final record in drawn) {
       _keyOfId[record.id] = record.key;
@@ -411,8 +481,8 @@ class _BenchPageState extends State<BenchPage>
         twin.opacity = math.max(twin.opacity, record.opacity);
         twin.ghost = twin.ghost && record.ghost;
       } else {
-        list.add(
-            _SeenLabel(world, record.opacity, record.ghost, record.alongLine));
+        list.add(_SeenLabel(
+            world, record.opacity, record.ghost, record.alongLine, record.id));
       }
     }
 
@@ -440,29 +510,47 @@ class _BenchPageState extends State<BenchPage>
 
     current.forEach((key, list) {
       final prev = _labelsPrev[key];
-      for (final label in list) {
-        _SeenLabel? match;
-        var best = contR2;
-        if (prev != null) {
+      // Closest pairs first, so the order labels are drawn in cannot
+      // decide which one continues a label from the last frame: matched
+      // in list order, a newcomer drawn ahead of a label of the same name
+      // next to it took that label's predecessor, and the label that had
+      // not moved counted as a pop-in.
+      final continued = Set<_SeenLabel>.identity();
+      if (prev != null) {
+        final pairs = <(double, _SeenLabel, _SeenLabel)>[];
+        for (final label in list) {
           for (final p in prev) {
-            if (p.matched) continue;
             final d = (p.world - label.world).distanceSquared;
-            if (d < best) {
-              best = d;
-              match = p;
-            }
+            if (d < contR2) pairs.add((d, label, p));
           }
         }
-        if (match != null) {
-          match.matched = true;
-          continue;
+        pairs.sort((a, b) => a.$1.compareTo(b.$1));
+        for (final (_, label, p) in pairs) {
+          if (p.matched || continued.contains(label)) continue;
+          p.matched = true;
+          continued.add(label);
         }
+      }
+      for (final label in list) {
+        if (continued.contains(label)) continue;
         // A ghost never starts a life: an unmatched one is the tail of a
         // fade whose start this tracker missed.
         if (label.ghost || !_recording || !onScreen(label.world)) continue;
         label.alongLine ? _stab.appearLn++ : _stab.appearPt++;
         if (label.opacity >= 1) {
           label.alongLine ? _stab.popInLn++ : _stab.popInPt++;
+          // The same key's labels around this one, last frame and now:
+          // which id drew here before, and what else draws here now.
+          final near = 64 * scale;
+          String around(List<_SeenLabel>? labels) => [
+                for (final l in labels ?? const <_SeenLabel>[])
+                  if (!identical(l, label) &&
+                      (l.world - label.world).distance < near)
+                    l.describe(label.world, scale),
+              ].join(', ');
+          debugPrint('BENCH[$_label] POPIN z=${camera.zoom.toStringAsFixed(2)} '
+              'adopt=$adopted ${label.describe(label.world, scale)} '
+              'before=[${around(prev)}] now=[${around(list)}] key=$key');
         }
         var explained = false;
         for (var i = 0; i < _labelsGone.length; i++) {
@@ -592,6 +680,7 @@ class _BenchPageState extends State<BenchPage>
         _stab = _StabilityCounters();
         _build = <int>[];
         _raster = <int>[];
+        _resetSplit();
         _allFrames = 0;
         _interrupted = false;
         final layouts0 = SymbolLayouter.debugLayoutCount;
@@ -621,6 +710,16 @@ class _BenchPageState extends State<BenchPage>
     }
     debugPrint('BENCH[$_label] ===== END =====');
     _say('stability done');
+  }
+
+  void _resetSplit() {
+    _workerBefore = placementWorkerCounters();
+    _buildPlacing = <int>[];
+    _buildOther = <int>[];
+    _framePlacing.clear();
+    _drawnCounts = <int>[];
+    _ghostCounts = <int>[];
+    _drawnByZoom = {};
   }
 
   /// The style plus a fill over its buildings and a line over its roads,
@@ -943,6 +1042,13 @@ class _BenchPageState extends State<BenchPage>
       final raster = timing.rasterDuration.inMicroseconds;
       _build.add(build);
       _raster.add(raster);
+      switch (_framePlacing.remove(timing.frameNumber)) {
+        case true:
+          _buildPlacing.add(build);
+        case false:
+          _buildOther.add(build);
+        case null:
+      }
       // A frame past the 60 Hz budget is a hitch anyone can see; log it the
       // moment it happens so it lines up with what the finger just did.
       if (zoom != null && (build > 16667 || raster > 16667)) {
@@ -1050,6 +1156,7 @@ class _BenchPageState extends State<BenchPage>
     while (mounted) {
       _build = <int>[];
       _raster = <int>[];
+      _resetSplit();
       _allFrames = 0;
       _interrupted = false;
       _windowZoomLo = double.infinity;
@@ -1133,6 +1240,7 @@ class _BenchPageState extends State<BenchPage>
     _say('${phase.ms}ms · labels=${phase.labels} · cache=$cache ($kind)');
     _build = <int>[];
     _raster = <int>[];
+    _resetSplit();
     _allFrames = 0;
     _interrupted = false;
     final layouts0 = SymbolLayouter.debugLayoutCount;
@@ -1237,6 +1345,37 @@ class _BenchPageState extends State<BenchPage>
         'layouts=$layouts rasterizes=$rasters interrupted=$_interrupted');
     debugPrint('BENCH[$_label]   ${stats("BUILD ", _build)}');
     debugPrint('BENCH[$_label]   ${stats("RASTER", _raster)}');
+    // BUILD of the frames that ran a placement pass vs the rest, and how
+    // many of the slow (>16.7 ms) frames the placing ones are. Frames whose
+    // timing could not be matched to a post-frame record count in BUILD only.
+    debugPrint('BENCH[$_label]   ${stats("B-PLACE", _buildPlacing)}');
+    debugPrint('BENCH[$_label]   ${stats("B-OTHER", _buildOther)}');
+    final slowPlacing = _buildPlacing.where((x) => x > 16667).length;
+    final slowAll = _build.where((x) => x > 16667).length;
+    debugPrint('BENCH[$_label]   SLOW   >16.7=$slowAll placing=$slowPlacing '
+        '(${slowAll == 0 ? 0 : (100 * slowPlacing / slowAll).round()}%) '
+        'matched=${_buildPlacing.length + _buildOther.length}/${_build.length}');
+    final worker = placementWorkerLine(_workerBefore);
+    if (worker != null) debugPrint('BENCH[$_label]   $worker');
+    if (_drawnCounts.isNotEmpty) {
+      final sorted = [..._drawnCounts]..sort();
+      int at(double p) => sorted[((sorted.length - 1) * p).round()];
+      final mean = sorted.reduce((a, b) => a + b) / sorted.length;
+      final ghosts = _ghostCounts.isEmpty
+          ? 0.0
+          : _ghostCounts.reduce((a, b) => a + b) / _ghostCounts.length;
+      // A placement change that drops or doubles labels mid-sweep shows
+      // as a zoom band out of line with the baseline's.
+      final bands = (_drawnByZoom.keys.toList()..sort()).map((band) {
+        final counts = _drawnByZoom[band]!;
+        final mean = counts.reduce((a, b) => a + b) / counts.length;
+        return '${(band / 5).toStringAsFixed(1)}:${mean.round()}';
+      });
+      debugPrint('BENCH[$_label]   DRAWN  frames=${sorted.length} '
+          'mean=${mean.toStringAsFixed(1)} p10=${at(0.1)} p50=${at(0.5)} '
+          'p90=${at(0.9)} ghosts=${ghosts.toStringAsFixed(1)} '
+          'byZoom ${bands.join(' ')}');
+    }
     // Where the window's publish work went, in UI-thread wall time. The
     // remainder of BUILD (flutter_map, widget build, everything else) is
     // whatever these three do not account for.
@@ -1365,9 +1504,17 @@ class _SeenLabel {
   double opacity;
   bool ghost;
   final bool alongLine;
+
+  /// The label id of the copy drawn here (the first one, for merged
+  /// seam twins); for the `POPIN` line.
+  final int id;
   bool matched = false;
 
-  _SeenLabel(this.world, this.opacity, this.ghost, this.alongLine);
+  _SeenLabel(this.world, this.opacity, this.ghost, this.alongLine, this.id);
+
+  String describe(Offset from, double scale) =>
+      '#$id@${((world - from).distance / scale).toStringAsFixed(0)}px'
+      '${ghost ? ' ghost' : ''} ${opacity.toStringAsFixed(2)}';
 }
 
 /// A label that stopped drawing, kept for [_blinkWindow] so a

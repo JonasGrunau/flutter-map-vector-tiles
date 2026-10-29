@@ -8,6 +8,7 @@ import 'package:flutter/painting.dart';
 import 'package:meta/meta.dart';
 
 import '../cache/lru_cache.dart';
+import '../core/tile_key.dart';
 import '../core/tile_zoom.dart';
 import '../style/expression.dart';
 import '../style/feature_state.dart';
@@ -21,6 +22,7 @@ import 'fade.dart';
 import 'glyph_atlas.dart';
 import 'hit_test.dart';
 import 'label_continuity.dart';
+import 'label_worker.dart';
 import 'symbol_layouter.dart';
 
 /// The affine transform from a display tile's logical coordinates to
@@ -44,6 +46,24 @@ class TileTransform {
         origin.dx + (p.dx * _cosR - p.dy * _sinR) * scale,
         origin.dy + (p.dx * _sinR + p.dy * _cosR) * scale,
       );
+
+  /// Screen bounds of the display tile this transform places — the
+  /// axis-aligned box around its four corners, as MapLibre bounds a
+  /// rotated tile for `symbol-avoid-edges`.
+  late final Rect tileBounds = () {
+    const size = displayTileSize;
+    final corners = [
+      apply(Offset.zero),
+      apply(const Offset(size, 0)),
+      apply(const Offset(0, size)),
+      apply(const Offset(size, size)),
+    ];
+    var bounds = Rect.fromPoints(corners[0], corners[1]);
+    for (final corner in corners.skip(2)) {
+      bounds = bounds.expandToInclude(Rect.fromPoints(corner, corner));
+    }
+    return bounds;
+  }();
 }
 
 /// A symbol candidate projected to screen coordinates.
@@ -63,8 +83,10 @@ class PlacedSymbol {
   /// bearing for along-line symbols (radians).
   final double screenAngle;
 
-  /// Tile→screen transform, present for along-line symbols so curved
-  /// text can project the line geometry.
+  /// Tile→screen transform of the display tile the symbol was laid out
+  /// in: along-line symbols project their line through it (curved text,
+  /// the fit on the line), and `symbol-avoid-edges` reads the tile's
+  /// screen bounds off it. Null only for hand-built point candidates.
   final TileTransform? transform;
 
   /// A ghost-only candidate never competes for placement: it exists
@@ -128,6 +150,20 @@ typedef DrawnLabelRecord = ({
   bool alongLine,
 });
 
+/// One display tile's candidates as the layer offers them to
+/// [LabelPainter.paint], next to the flattened candidate list: what a
+/// placement worker needs to project them itself. [ids] are the label
+/// ids of [symbols], and [order] is the [PlacedSymbol.order] of the
+/// list's first candidate.
+typedef LabelCohortInput = ({
+  List<SymbolInstance> symbols,
+  Int32List ids,
+  TileTransform transform,
+  bool ghostOnly,
+  bool retained,
+  int order,
+});
+
 /// Draws all visible labels/icons in one screen-space pass per frame,
 /// with global collision detection across tile borders. Text stays
 /// crisp at fractional zoom and upright under rotation.
@@ -138,9 +174,41 @@ class LabelPainter {
   /// [glyphCapacity] stands in for [glyphCacheEntries], for tests that
   /// need the glyph cache to evict.
   LabelPainter({@visibleForTesting int glyphCapacity = glyphCacheEntries})
-      : _glyphCapacity = glyphCapacity;
+      : _glyphCapacity = glyphCapacity,
+        _measured = null;
+
+  /// The painter a placement worker runs passes with: it never shapes
+  /// or draws, and places text by the metrics the UI's shaping measured,
+  /// mirrored with each symbol list ([adoptMirror]).
+  @internal
+  LabelPainter.worker()
+      : _glyphCapacity = glyphCacheEntries,
+        _measured = Expando<_MeasuredText>();
 
   final int _glyphCapacity;
+
+  /// Mirrored text metrics, per instance — set only in a worker.
+  final Expando<_MeasuredText>? _measured;
+
+  /// The sprite index a worker places icons by; the screen pass reads
+  /// it from the atlas it is handed instead.
+  Map<String, Sprite>? _workerSprites;
+
+  /// Where this painter's placement passes run, when not in-frame. Set
+  /// by the layer on platforms with isolates; see [LabelPlacementWorker].
+  LabelPlacementWorker? worker;
+
+  /// The pass request awaiting the worker's answer, and the answer once
+  /// it has arrived — adopted by the next [paint].
+  _PassInFlight? _inFlight;
+  LabelPassResult? _arrived;
+  var _requests = 0;
+  var _frames = 0;
+
+  /// The worker's per-winner choices, by label id, written into
+  /// [_memory] on the frame that adopts its pass so that the replay
+  /// reproduces them.
+  final _adopted = <int, (String?, bool, bool)>{};
 
   /// Cache capacities. One dense-city screen of distinct labels is the
   /// floor (below it every frame evicts entries the same frame still
@@ -183,8 +251,15 @@ class LabelPainter {
   static const double _minVisibleTextSize = 1.0;
 
   /// Slack added to a fade layer's bounds, covering halo strokes and the
-  /// widest text halo a style is likely to ask for.
-  static const double _fadeLayerPadding = 16.0;
+  /// widest halo the painter draws: 8 px of `text-halo-width` blurred by
+  /// 8 px of `text-halo-blur`, both at their clamps, reach ~22 px.
+  static const double _fadeLayerPadding = 24.0;
+
+  /// The Gaussian sigma, per px of `text-halo-blur`, that blurs a halo
+  /// the way MapLibre's shader does: it fades the halo's edge over
+  /// ±1.19 × blur px with a smoothstep, whose 10–90 % rise this sigma
+  /// matches.
+  static const double _haloBlurSigma = 0.565;
 
   /// Draw opacities are quantized to this many steps so translucent
   /// symbols group into a handful of `saveLayer` buckets instead of one
@@ -204,6 +279,11 @@ class LabelPainter {
   /// collision for a second.
   static const Duration _maxPlacementInterval = Duration(milliseconds: 300);
 
+  /// How long a pass sent to the [worker] may go unanswered before the
+  /// painter places in-frame instead. A pass takes the worker a few
+  /// milliseconds; this only catches one that is not coming.
+  static const Duration _maxPassWait = Duration(seconds: 1);
+
   /// How far past vertical an along-line label's direction must swing
   /// before its reading direction flips, as a cosine of the on-screen
   /// line angle (≈4.6°). See [_readsBackwards].
@@ -218,6 +298,18 @@ class LabelPainter {
   /// that zoom motion does not re-shape text.
   @visibleForTesting
   int debugShapedTextCount = 0;
+
+  /// False draws every text halo crisp, ignoring `text-halo-blur` — for
+  /// `bench/` to put a number on what the blur costs (`BENCH_HALO_BLUR`).
+  /// Set it before the first label is shaped: shaped text keeps its halo.
+  @visibleForTesting
+  static bool debugHaloBlur = true;
+
+  /// Multi-line text laid out again aligned to another side for
+  /// `text-justify: auto` (see `_LaidOutText.justified`), across all
+  /// painters.
+  @visibleForTesting
+  static int debugJustifiedLayouts = 0;
 
   /// The part of [debugShapedTextCount] shaped from [glyphs] rather
   /// than by the platform.
@@ -517,6 +609,16 @@ class LabelPainter {
   @visibleForTesting
   PlacementMemory get debugPlacement => _memory;
 
+  /// The decision in force, as a pass request hands it to the placement
+  /// worker: the labels it placed and the copy of each the last frame
+  /// drew. Copies, for tests that compare it before and after a frame.
+  @visibleForTesting
+  ({
+    Set<int> winners,
+    Map<int, SymbolInstance> drawnCopies
+  }) get debugDecision =>
+      (winners: {..._winners}, drawnCopies: {..._drawnCopy});
+
   /// Whether the last paint left any label fade mid-flight. The widget
   /// keeps its fade ticker running while this is true — placement (and
   /// with it a fade's start or end) can change on any painted frame,
@@ -527,7 +629,8 @@ class LabelPainter {
   /// replayed a frozen decision. The widget keeps scheduling frames
   /// while this is true, so the decision taken during a gesture is
   /// re-evaluated once at the camera the gesture ended at.
-  bool get placementPending => _placement.deferred;
+  bool get placementPending =>
+      _placement.deferred || _inFlight != null || _arrived != null;
 
   /// Forgets all fade and placement state — for theme/provider swaps,
   /// where every symbol instance is replaced and layer indices change
@@ -541,6 +644,17 @@ class LabelPainter {
     _drawing.clear();
     _memory.clear();
     _placement.reset();
+    dropPendingPass();
+  }
+
+  /// Forgets a pass sent to the [worker] and not adopted yet — for a
+  /// worker that was handed a new theme or sprite sheet, which answers
+  /// nothing asked before. The next due pass asks again.
+  void dropPendingPass() {
+    if (_inFlight != null || _arrived != null) _placement.reset();
+    _inFlight = null;
+    _arrived = null;
+    _adopted.clear();
   }
 
   /// How often the collision pass re-runs at this fade duration.
@@ -584,6 +698,7 @@ class LabelPainter {
     double devicePixelRatio = 1,
     Duration labelFadeDuration = Duration.zero,
     required int placementGeneration,
+    List<LabelCohortInput>? cohorts,
     DateTime? now,
   }) {
     developer.Timeline.startSync('VT labels');
@@ -598,6 +713,7 @@ class LabelPainter {
           devicePixelRatio,
           labelFadeDuration,
           placementGeneration,
+          cohorts,
           now ?? DateTime.now());
     } finally {
       debugPaintMicros += stopwatch.elapsedMicroseconds;
@@ -614,9 +730,11 @@ class LabelPainter {
     double devicePixelRatio,
     Duration labelFadeDuration,
     int placementGeneration,
+    List<LabelCohortInput>? cohorts,
     DateTime now,
   ) {
     _disposeRetired();
+    _frames++;
     final fades = labelFadeDuration > Duration.zero;
     if (fades) {
       _fades.beginFrame(now, labelFadeDuration);
@@ -630,14 +748,53 @@ class LabelPainter {
     // Whether this frame decides placement afresh or replays the last
     // decision. Layout happens either way — only the winners move on a
     // replay frame, not the choice of who they are.
-    final placing = _placement.shouldPlace(
-      now: now,
-      interval: placementInterval(labelFadeDuration),
-      generation: placementGeneration,
-      screenSize: screenSize,
-    );
-    if (placing) _pass++;
-    _memory.beginFrame(prune: placing);
+    //
+    // With a placement worker, no frame decides: a due pass is sent to
+    // the worker, and the frame its answer arrives by adopts it — a
+    // replay of the new decision, with the authority of a pass (it may
+    // start fade-outs). Fades off place every frame, which the worker
+    // could only answer frames late; those stay in-frame.
+    final worker = this.worker;
+    // A pass the worker has not answered in [_maxPassWait] is given up
+    // (a stepped clock, too, makes the wait unmeasurable), and this frame
+    // places in-frame rather than leave the decision frozen.
+    final inFlight = _inFlight;
+    final stalled = inFlight != null &&
+        _arrived == null &&
+        (now.difference(inFlight.sentAt) > _maxPassWait ||
+            now.isBefore(inFlight.sentAt));
+    if (stalled) dropPendingPass();
+    final offload =
+        worker != null && worker.ready && fades && cohorts != null && !stalled;
+    var placing = false;
+    var adopting = false;
+    if (offload) {
+      final arrived = _arrived;
+      if (arrived != null) adopting = _adopt(arrived);
+      if (_inFlight == null &&
+          _placement.shouldPlace(
+            now: now,
+            interval: placementInterval(labelFadeDuration),
+            generation: placementGeneration,
+            screenSize: screenSize,
+          )) {
+        _request(worker, cohorts, screenSize, styleZoom, now);
+      }
+    } else {
+      // A worker that stopped answering (or fades just turned off)
+      // leaves nothing pending behind it.
+      _inFlight = null;
+      _arrived = null;
+      placing = _placement.shouldPlace(
+        now: now,
+        interval: placementInterval(labelFadeDuration),
+        generation: placementGeneration,
+        screenSize: screenSize,
+      );
+    }
+    final pass = placing || adopting;
+    if (pass) _pass++;
+    _memory.beginFrame(prune: pass);
     // Quantize the eval zoom to [_zoomStep] steps: the per-instance
     // memo and the zoom-only expression memos compare against the exact
     // zoom, so evaluating at the raw fractional zoom would miss every
@@ -706,6 +863,7 @@ class LabelPainter {
     if (placing) {
       _winners.clear();
       _repeatAnchors.clear();
+      _seating = ++_seatings;
     }
     final loopStopwatch = Stopwatch()..start();
     for (final candidate in candidates) {
@@ -720,6 +878,15 @@ class LabelPainter {
       // a crossing — already drew: one label draws once. Skipped before
       // any layout work.
       if (_drawing.containsKey(candidate.id)) continue;
+      if (adopting) {
+        final choice = _adopted[candidate.id];
+        if (choice != null) {
+          final sitting = _memory.sitting(candidate.id);
+          if (choice.$1 != null) sitting.anchor = choice.$1;
+          sitting.textDropped = choice.$2;
+          sitting.iconDropped = choice.$3;
+        }
+      }
       final drawable =
           _prepare(candidate, zoom, styleZoom, collision, sprites, screenSize);
       if (drawable == null) {
@@ -760,6 +927,7 @@ class LabelPainter {
       toDraw.add(drawable);
       anyFading |= drawable.opacity < 1;
     }
+    if (adopting) LabelPlacementWorker.debugAdoptedDrawn += _drawing.length;
     if (placing) {
       debugPlaceMicros += loopStopwatch.elapsedMicroseconds;
     } else {
@@ -807,12 +975,13 @@ class LabelPainter {
           // Replay frames hold: a winner missing mid-interval may only
           // be between copies (its tile gone, the successor not yet
           // published), and only a pass may start a fade-out.
-          hold: !placing);
+          hold: !pass);
       _fallbacks.clear();
     }
     final drawnCopy = _drawnCopy;
     _drawnCopy = _drawing;
     _drawing = drawnCopy..clear();
+    _adopted.clear();
     debugSweepMicros += sweepStopwatch.elapsedMicroseconds;
     final probe = debugDrawnProbe;
     if (probe != null) {
@@ -890,8 +1059,13 @@ class LabelPainter {
     // insertion-order tiebreaker keeps draw order stable across frames.
     toDraw.sort((a, b) {
       final byLayer =
-          a.symbol.instance.layerIndex.compareTo(b.symbol.instance.layerIndex);
+          a.symbol.instance.layerIndex - b.symbol.instance.layerIndex;
       if (byLayer != 0) return byLayer;
+      // `symbol-z-order` within the layer; see [_zOrderKey].
+      final ka = a.drawKey;
+      final kb = b.drawKey;
+      if (ka < kb) return -1;
+      if (ka > kb) return 1;
       return a.symbol.order - b.symbol.order;
     });
     _prepareAtlasGlyphs(toDraw, devicePixelRatio);
@@ -1004,6 +1178,7 @@ class LabelPainter {
       _lastDrawn = const [];
       _disposeRetired();
       _pass++;
+      _seating = ++_seatings;
       const tile = Size.square(displayTileSize);
       final candidates = [
         for (var i = 0; i < symbols.length; i++)
@@ -1051,6 +1226,344 @@ class LabelPainter {
       developer.Timeline.finishSync();
     }
   }
+
+  /// Mirrors [symbols] into the placement worker ahead of the first pass
+  /// that offers them. The layer calls this as a tile publishes, inside
+  /// the render pump's budget, so that a pass request finds every list
+  /// already there instead of packing it inside a frame.
+  void mirror(List<SymbolInstance> symbols) {
+    final worker = this.worker;
+    if (worker == null || !worker.ready || symbols.isEmpty) return;
+    worker.mirror(symbols, () => mirrorOf(symbols));
+  }
+
+  /// Sends the pass due this frame to [worker]: the cohorts on offer
+  /// (mirroring any list it does not hold yet) and the fade sittings it
+  /// recognises incumbents by. The frame itself replays the decision in
+  /// force; [_adopt] takes the answer on a later one.
+  void _request(LabelPlacementWorker worker, List<LabelCohortInput> cohorts,
+      Size screenSize, double styleZoom, DateTime now) {
+    final stopwatch = Stopwatch()..start();
+    final mirroring = LabelPlacementWorker.debugMirrorMicros;
+    final sent = <LabelCohort>[];
+    final offered = <LabelCohortInput>[];
+    final drawnCopies = <int>[];
+    for (final cohort in cohorts) {
+      if (cohort.ghostOnly || cohort.symbols.isEmpty) continue;
+      final symbols = cohort.symbols;
+      final transform = cohort.transform;
+      offered.add(cohort);
+      if (_drawnCopy.isNotEmpty) {
+        for (var i = 0; i < symbols.length; i++) {
+          if (identical(_drawnCopy[cohort.ids[i]], symbols[i])) {
+            drawnCopies.add(cohort.order + i);
+          }
+        }
+      }
+      sent.add((
+        mirror: worker.mirror(symbols, () => mirrorOf(symbols)),
+        ids: cohort.ids,
+        originX: transform.origin.dx,
+        originY: transform.origin.dy,
+        scale: transform.scale,
+        rotation: transform.rotation,
+        retained: cohort.retained,
+        order: cohort.order,
+      ));
+    }
+    final id = ++_requests;
+    _inFlight = _PassInFlight(id, offered, _frames, now);
+    worker.place((
+      id: id,
+      width: screenSize.width,
+      height: screenSize.height,
+      styleZoom: styleZoom,
+      cohorts: sent,
+      incumbents: Int32List.fromList(_winners.toList()),
+      drawnCopies: Int32List.fromList(drawnCopies),
+    ), (result) {
+      if (_inFlight?.id == result.id) _arrived = result;
+    });
+    LabelPlacementWorker.debugRequests++;
+    LabelPlacementWorker.debugRequestMicros += stopwatch.elapsedMicroseconds -
+        (LabelPlacementWorker.debugMirrorMicros - mirroring);
+  }
+
+  /// Takes the worker's answer as the decision in force: its winners —
+  /// label ids, so a winner whose tile republished since the request is
+  /// still a winner in its successor — and their choices, for this
+  /// frame's replay to reproduce. False when the answer is not to the
+  /// request in flight.
+  bool _adopt(LabelPassResult result) {
+    _arrived = null;
+    final request = _inFlight;
+    _inFlight = null;
+    if (request == null || request.id != result.id) return false;
+    _winners.clear();
+    _adopted.clear();
+    final winners = result.winners;
+    for (var w = 0; w < winners.length; w++) {
+      final id = winners[w];
+      _winners.add(id);
+      _adopted[id] = (
+        result.anchors[w],
+        result.textDropped[w] == 1,
+        result.iconDropped[w] == 1,
+      );
+      // The copy the worker placed is the one to replay: another copy of
+      // the label may be the one the pass rejected.
+      final copy = request.copyAt(result.copies[w]);
+      if (copy != null) _drawnCopy[id] = copy;
+    }
+    LabelPlacementWorker.debugCommits++;
+    LabelPlacementWorker.debugMissingCohorts += result.missingCohorts;
+    LabelPlacementWorker.debugAdoptedWinners += winners.length;
+    LabelPlacementWorker.debugCommitLatencyFrames += _frames - request.frame;
+    LabelPlacementWorker.debugWorkerMicros += result.micros;
+    return true;
+  }
+
+  /// [symbols] packed for a placement worker ([LabelMirror]), with the
+  /// metrics of the text this painter shaped for them — [prewarm] has
+  /// by the time a tile publishes: each label's extent, and the
+  /// clusters of the ones that may curve. A label whose text was never
+  /// shaped (its layer's opacity or size gated it out at the tile's
+  /// zoom) goes without, and the worker places only its icon.
+  @internal
+  LabelMirror mirrorOf(List<SymbolInstance> symbols) {
+    final count = symbols.length;
+    final ints = Int32List(count * LabelMirror.intsPerSymbol);
+    final reals = Float64List(count * LabelMirror.realsPerSymbol);
+    final texts = <String>[];
+    final icons = <String?>[];
+    final clusters = <Float32List?>[];
+    final paths = Map<SymbolPath, int>.identity();
+    final pathPoints = <Float32List>[];
+    final pathCumulative = <Float32List>[];
+    // Features by properties map (identity — `Map` keeps `Object.==`),
+    // geometry type and id: a feature's symbols share all three.
+    final features = <(Map<String, Object?>, String, Object?), int>{};
+    final properties = <Map<String, Object?>>[];
+    final geometryTypes = <String>[];
+    final featureIds = <Object?>[];
+    for (var i = 0; i < count; i++) {
+      final symbol = symbols[i];
+      final path = symbol.path;
+      final pathIndex = path == null
+          ? -1
+          : paths.putIfAbsent(path, () {
+              pathPoints.add(path.points);
+              pathCumulative.add(path.cumulative);
+              return pathPoints.length - 1;
+            });
+      final feature = features.putIfAbsent(
+          (symbol.properties, symbol.geometryType, symbol.featureId), () {
+        properties.add(symbol.properties);
+        geometryTypes.add(symbol.geometryType);
+        featureIds.add(symbol.featureId);
+        return properties.length - 1;
+      });
+      final o = i * LabelMirror.intsPerSymbol;
+      ints[o] = symbol.layerIndex;
+      ints[o + 1] = symbol.alongLine ? LabelMirror.flagAlongLine : 0;
+      ints[o + 2] = pathIndex;
+      ints[o + 3] = feature;
+      ints[o + 4] = symbol.featureIndex;
+      ints[o + 5] = symbol.part;
+      ints[o + 6] = symbol.sourceTile.z;
+      ints[o + 7] = symbol.sourceTile.x;
+      ints[o + 8] = symbol.sourceTile.y;
+      var width = -1.0;
+      var height = -1.0;
+      Float32List? glyphs;
+      final memo = symbol.textStyleMemo;
+      final text = memo == null || symbol.text.isEmpty
+          ? null
+          : _textCache.peek(memo.cacheKey);
+      if (symbol.text.isNotEmpty && text == null) {
+        LabelPlacementWorker.debugUnmeasured++;
+      }
+      if (text != null) {
+        width = text.size.width;
+        height = text.size.height;
+        if (symbol.alongLine && symbol.curveSafe && path != null) {
+          final shaped = text.clusters;
+          glyphs = Float32List(shaped.length * 2);
+          for (var c = 0; c < shaped.length; c++) {
+            glyphs[c * 2] = shaped[c].center;
+            glyphs[c * 2 + 1] = shaped[c].width;
+          }
+        }
+      }
+      final r = i * LabelMirror.realsPerSymbol;
+      reals[r] = symbol.anchor.dx;
+      reals[r + 1] = symbol.anchor.dy;
+      reals[r + 2] = symbol.angle;
+      reals[r + 3] = symbol.pathDistance;
+      reals[r + 4] = symbol.sortKey;
+      reals[r + 5] = width;
+      reals[r + 6] = height;
+      texts.add(symbol.text);
+      icons.add(symbol.iconName);
+      clusters.add(glyphs);
+    }
+    return LabelMirror(
+      ints: ints,
+      reals: reals,
+      texts: texts,
+      icons: icons,
+      clusters: clusters,
+      pathPoints: pathPoints,
+      pathCumulative: pathCumulative,
+      properties: properties,
+      geometryTypes: geometryTypes,
+      featureIds: featureIds,
+    );
+  }
+
+  /// A worker's side of [mirrorOf]: the instances again, on [theme] —
+  /// the worker's copy of the UI's — with their mirrored metrics standing
+  /// in for shaped text. An entry whose layer [theme] does not have as a
+  /// symbol layer (a mirror racing a theme swap) is null, so indices
+  /// still match the UI's list.
+  @internal
+  List<SymbolInstance?> adoptMirror(LabelMirror mirror, Theme theme) {
+    final measured = _measured!;
+    final paths = [
+      for (var p = 0; p < mirror.pathPoints.length; p++)
+        SymbolPath(mirror.pathPoints[p], mirror.pathCumulative[p]),
+    ];
+    final ints = mirror.ints;
+    final reals = mirror.reals;
+    return [
+      for (var i = 0; i < mirror.length; i++)
+        () {
+          final o = i * LabelMirror.intsPerSymbol;
+          final r = i * LabelMirror.realsPerSymbol;
+          final layerIndex = ints[o];
+          final layer = layerIndex < theme.layers.length
+              ? theme.layers[layerIndex]
+              : null;
+          if (layer is! SymbolThemeLayer) return null;
+          final feature = ints[o + 3];
+          final pathIndex = ints[o + 2];
+          final instance = SymbolInstance(
+            layer: layer,
+            layerIndex: layerIndex,
+            anchor: Offset(reals[r], reals[r + 1]),
+            angle: reals[r + 2],
+            alongLine: ints[o + 1] & LabelMirror.flagAlongLine != 0,
+            path: pathIndex < 0 ? null : paths[pathIndex],
+            pathDistance: reals[r + 3],
+            text: mirror.texts[i],
+            iconName: mirror.icons[i],
+            sortKey: reals[r + 4],
+            properties: mirror.properties[feature],
+            geometryType: mirror.geometryTypes[feature],
+            featureId: mirror.featureIds[feature],
+            sourceTile: TileKey(ints[o + 6], ints[o + 7], ints[o + 8]),
+            featureIndex: ints[o + 4],
+            part: ints[o + 5],
+          );
+          final width = reals[r + 5];
+          if (width >= 0) {
+            final glyphs = mirror.clusters[i];
+            measured[instance] = _MeasuredText(Size(width, reals[r + 6]), [
+              if (glyphs != null)
+                for (var c = 0; c < glyphs.length ~/ 2; c++)
+                  _Cluster('', glyphs[c * 2], glyphs[c * 2 + 1]),
+            ]);
+          }
+          return instance;
+        }(),
+    ];
+  }
+
+  /// A worker's theme install: the sprites it places icons by, and none
+  /// of the previous theme's placement state.
+  @internal
+  void installWorker(Map<String, Sprite>? sprites) {
+    _workerSprites = sprites;
+    reset();
+  }
+
+  /// A placement worker's pass: decides which of [symbols] win space on
+  /// a [screenSize] screen at [styleZoom] exactly as a placing frame of
+  /// [paint] does — same priority, incumbents, one copy per label (the
+  /// one last drawn tried first), repeat suppression and placement
+  /// memory — and returns the winners in placement order. Nothing is
+  /// drawn and no fade runs. [incumbents] is the decision in force on
+  /// the UI, whose labels a same-layer newcomer must not evict, and
+  /// [drawnCopies] the [PlacedSymbol.order]s of the copies it drew.
+  @internal
+  List<PlacedSymbol> placeForWorker({
+    required Size screenSize,
+    required double styleZoom,
+    required List<PlacedSymbol> symbols,
+    required Iterable<int> incumbents,
+    Iterable<int> drawnCopies = const [],
+  }) {
+    _pass++;
+    _memory.beginFrame(prune: true);
+    final zoom = (styleZoom * _zoomStep).round() / _zoomStep;
+    final collision = _CollisionIndex(screenSize);
+    _winners
+      ..clear()
+      ..addAll(incumbents);
+    _drawnCopy.clear();
+    final drawn = drawnCopies.toSet();
+    if (drawn.isNotEmpty) {
+      for (final candidate in symbols) {
+        if (drawn.contains(candidate.order)) {
+          _drawnCopy[candidate.id] = candidate.instance;
+        }
+      }
+    }
+    _flagIncumbents(symbols);
+    symbols.sort(_byPlacementPriority);
+    _promoteDrawnCopies(symbols);
+    _winners.clear();
+    _repeatAnchors.clear();
+    _seating = ++_seatings;
+    final placed = <PlacedSymbol>[];
+    for (final candidate in symbols) {
+      if (candidate.ghostOnly || _winners.contains(candidate.id)) continue;
+      final drawable =
+          _prepare(candidate, zoom, styleZoom, collision, null, screenSize);
+      if (drawable == null) continue;
+      _winners.add(candidate.id);
+      final repeatKey = drawable.repeatKey;
+      if (repeatKey != null &&
+          drawable.drawsText &&
+          zoomRangeOpacity(candidate.instance.layer, styleZoom) > 0) {
+        (_repeatAnchors[repeatKey] ??= []).add(_RepeatAnchor(candidate));
+      }
+      placed.add(candidate);
+    }
+    return placed;
+  }
+
+  /// The choices [winner] was placed with at the last [placeForWorker].
+  @internal
+  ({String? anchor, bool textDropped, bool iconDropped}) decisionOf(
+      PlacedSymbol winner) {
+    final sitting = _memory.lookup(winner.id);
+    return (
+      anchor: sitting?.anchor,
+      textDropped: sitting?.textDropped ?? false,
+      iconDropped: sitting?.iconDropped ?? false,
+    );
+  }
+
+  /// The current pass's stamp, renewed as each pass (or [paintTile])
+  /// begins and unique across painters: a sitting whose
+  /// [SittingPlacement.seatedPass] holds it was already placed at in this
+  /// pass. The first placement at a sitting owns its remembered choices
+  /// for the pass; see [_rememberDrops] and [_prepareVariableAnchor]. A
+  /// stamp rather than a set of sittings: it is read for every symbol
+  /// placed.
+  int _seating = 0;
+  static int _seatings = 0;
 
   /// Repeat suppression for `symbol-placement: line` text, rebuilt on
   /// every placing pass: per `(source, source-layer, text)`, the anchors
@@ -1253,7 +1766,12 @@ class LabelPainter {
         featureState: _stateOf(instance),
         geometry: instance.geometry,
       );
-      if (layer.textOpacity.eval(ctx) <= 0) continue;
+      // A fitted icon (`icon-text-fit`) is sized by its text's box even
+      // while the text is faded out, so [_prepare] lays such text out
+      // regardless: shape it here too.
+      final fitsText =
+          instance.iconName != null && layer.iconTextFit.eval(ctx) != 'none';
+      if (!fitsText && layer.textOpacity.eval(ctx) <= 0) continue;
       final size = layer.textSize.eval(ctx);
       // Written as a positive test, like the one in [_prepare]: a NaN
       // size — a style expression dividing by zero — fails `>=` and is
@@ -1262,6 +1780,19 @@ class LabelPainter {
       if (size >= _minVisibleTextSize) {
         final fontSize = size.clamp(_minVisibleTextSize, 96.0);
         final text = _layoutText(instance, layer, ctx, fontSize);
+        // `text-justify: auto` aligns multi-line text to the anchor's
+        // side: lay out every side its anchors can ask for now, so a
+        // pass that moves the label does not shape inside a frame.
+        if (!instance.alongLine && layer.textJustify.eval(ctx) == 'auto') {
+          final anchors = _variableAnchors(layer, ctx);
+          if (anchors == null) {
+            _justifiedFor(text, layer, ctx, layer.textAnchor.eval(ctx));
+          } else {
+            for (final entry in anchors) {
+              _justifiedFor(text, layer, ctx, entry.anchor);
+            }
+          }
+        }
         // The per-grapheme work is the expensive half for road labels.
         // Glyph-drawn text has none: its glyphs are the clusters.
         if (text.glyphRun == null &&
@@ -1326,35 +1857,56 @@ class LabelPainter {
       featureState: _stateOf(instance),
       geometry: instance.geometry,
     );
+    final rules = _rulesFor(layer, instance.layerIndex, evalZoom);
 
     // A label the style has faded out is skipped rather than laid out:
     // reserving collision space for invisible text would suppress the
     // visible labels around it.
     //
-    // A replaying frame decides no space, so it also re-reads the one
-    // space decision that changes what is drawn rather than where:
-    // `text-optional` text that lost its box at the last pass stays
-    // dropped until the next one.
-    _LaidOutText? text;
+    // A replaying frame decides no space, so it also re-reads the space
+    // decisions that change what is drawn rather than where: text or an
+    // icon that lost its box at the last pass (`text-optional`,
+    // `icon-optional`) stays dropped until the next one.
+    //
+    // An icon fitted around its text (`icon-text-fit`) is sized by the
+    // text's box whether or not the text shows, as in MapLibre, so such
+    // text is laid out even when faded out or dropped, and only left
+    // out of what is drawn and placed.
+    final replaying = collision.permissive;
+    final iconName = instance.iconName;
+    // A worker places icons by the sprites it was installed with.
+    final spriteIndex = sprites?.sprites ?? _workerSprites;
+    final fitsText = iconName != null &&
+        spriteIndex != null &&
+        rules.iconTextFit(ctx) != 'none';
+    final dropText = replaying && sitting.textDropped;
+    _TextShape? text;
+    var textShown = false;
     var fontSize = _shapeSize;
     var textScale = 1.0;
-    final replaying = collision.permissive;
-    if (!replaying) sitting.textDropped = false;
-    if (!(replaying && sitting.textDropped) &&
-        instance.text.isNotEmpty &&
-        layer.textOpacity.eval(ctx) > 0) {
-      final size = layer.textSize.eval(ctx);
+    if ((!dropText || fitsText) && instance.text.isNotEmpty) {
+      textShown = !dropText && layer.textOpacity.eval(ctx) > 0;
+      final size = textShown || fitsText ? layer.textSize.eval(ctx) : 0.0;
       if (size >= _minVisibleTextSize) {
         fontSize = size.clamp(_minVisibleTextSize, 96.0);
         textScale = fontSize / _shapeSize;
-        text = _layoutText(instance, layer, ctx, fontSize);
+        text = _measured == null
+            ? _layoutText(instance, layer, ctx, fontSize)
+            : _measured[instance];
+        // A worker without metrics for the text places the icon alone.
+        if (text == null) textShown = false;
+      } else {
+        textShown = false;
       }
     }
+    final variableAnchors =
+        textShown && !instance.alongLine ? _variableAnchors(layer, ctx) : null;
 
     _DrawableIcon? icon;
-    final iconName = instance.iconName;
-    if (iconName != null && sprites != null) {
-      final sprite = sprites[iconName];
+    if (!(replaying && sitting.iconDropped) &&
+        iconName != null &&
+        spriteIndex != null) {
+      final sprite = spriteIndex[iconName];
       if (sprite != null) {
         final iconSize = layer.iconSize.eval(ctx);
         final opacity = layer.iconOpacity.eval(ctx).clamp(0.0, 1.0);
@@ -1364,8 +1916,9 @@ class LabelPainter {
           final offset = layer.iconOffset.eval(ctx);
           final dx = offset.isNotEmpty ? offset[0] * iconSize : 0.0;
           final dy = offset.length > 1 ? offset[1] * iconSize : 0.0;
+          final pivot = anchor + rules.iconTranslation(ctx, placed);
           final rect = _anchoredRect(
-              layer.iconAnchor.eval(ctx), anchor + Offset(dx, dy), w, h);
+              layer.iconAnchor.eval(ctx), pivot + Offset(dx, dy), w, h);
           // `auto` follows the line when the symbol sits on one, else the
           // viewport — matching `text-rotation-alignment`'s default.
           // Explicit `map` alignment always includes the map bearing;
@@ -1375,6 +1928,17 @@ class LabelPainter {
           final followsMap =
               alignment == 'map' || (alignment == 'auto' && instance.alongLine);
           final rotateRad = layer.iconRotate.eval(ctx) * math.pi / 180;
+          var rotation =
+              followsMap ? placed.screenAngle + rotateRad : rotateRad;
+          // `icon-keep-upright` turns an icon that follows its line
+          // around where the line runs right to left on screen, deciding
+          // that the way kept-upright text does.
+          if (followsMap &&
+              instance.alongLine &&
+              layer.iconKeepUpright.eval(ctx) &&
+              _readsBackwards(sitting, math.cos(placed.screenAngle))) {
+            rotation += math.pi;
+          }
           icon = _DrawableIcon(
             atlas: sprites,
             sprite: sprite,
@@ -1385,22 +1949,24 @@ class LabelPainter {
             tint: sprite.sdf ? layer.iconColor.eval(ctx) : null,
             haloColor: sprite.sdf ? layer.iconHaloColor.eval(ctx) : null,
             haloWidth: sprite.sdf ? layer.iconHaloWidth.eval(ctx) : 0,
+            haloBlur: sprite.sdf ? layer.iconHaloBlur.eval(ctx) : 0,
             iconSize: iconSize,
-            pivot: anchor,
-            rotation: followsMap ? placed.screenAngle + rotateRad : rotateRad,
+            pivot: pivot,
+            rotation: rotation,
+            padding: rules.iconPadding(ctx),
           );
         }
       }
     }
 
-    if (text == null && icon == null) return null;
+    if (!textShown && icon == null) return null;
 
     // Repeat suppression, decided here rather than before layout so the
     // exact opacity, size and placement evaluations above are not paid
     // twice. Placing frames only — a replay reproduces the last
     // decision — and never for retained-level or ghost candidates.
     Object? repeatKey;
-    if (text != null &&
+    if (textShown &&
         instance.alongLine &&
         !replaying &&
         !placed.retained &&
@@ -1410,37 +1976,113 @@ class LabelPainter {
       if (source != null && sourceLayer != null) {
         repeatKey = (source, sourceLayer, instance.text);
         if (_repeatSuppressed(repeatKey, placed, layer.spacing.eval(ctx) / 2,
-            text.size.height * textScale)) {
+            text!.size.height * textScale)) {
           debugRejectProbe?.call(instance.continuityKey, 'repeat', false);
           return null;
         }
       }
     }
 
-    // Variable anchors: try each candidate until one fits.
-    final variableAnchors = text != null && !instance.alongLine
-        ? layer.textVariableAnchor?.eval(ctx)
+    // `icon-text-fit` sizes the icon to the text's box, so the icon is
+    // fitted wherever that box ends up.
+    final fit =
+        text != null && icon != null && fitsText ? rules.iconTextFit(ctx) : '';
+    final fitting = fit == 'width' || fit == 'height' || fit == 'both';
+    // `symbol-avoid-edges`: every box inside the tile the symbol was
+    // laid out in. A replay reproduces the pass's decision.
+    final edges = !replaying && rules.avoidEdges(ctx)
+        ? placed.transform?.tileBounds
         : null;
-    if (text != null && variableAnchors != null && variableAnchors.isNotEmpty) {
-      return _prepareVariableAnchor(placed, layer, ctx, text, fontSize,
-          textScale, icon, variableAnchors, collision, sitting);
+    final textAnchor =
+        text == null ? anchor : anchor + rules.textTranslation(ctx, placed);
+
+    // Variable anchors: try each candidate until one fits.
+    if (text != null && variableAnchors != null) {
+      return _ordered(
+          _prepareVariableAnchor(
+              placed,
+              layer,
+              ctx,
+              text,
+              fontSize,
+              textScale,
+              icon,
+              fitting ? fit : null,
+              variableAnchors,
+              textAnchor,
+              rules.pointTextAngle(ctx, placed),
+              collision,
+              sitting,
+              edges),
+          layer,
+          ctx,
+          placed);
     }
 
     // Along-line text follows the line glyph by glyph, unless the style
-    // pins it to the viewport or the script needs shaping we can't
-    // preserve per-glyph.
-    var lineTextAngle = 0.0;
+    // pins it to the viewport, the script needs shaping we can't
+    // preserve per-glyph, or an icon is fitted around it — a shield
+    // stays a straight box, and so does the text in it.
+    var textAngle = 0.0;
     if (text != null && instance.alongLine) {
       if (layer.textRotationAlignment.eval(ctx) != 'viewport') {
-        if (instance.path != null &&
+        if (!fitting &&
+            textShown &&
+            instance.path != null &&
             placed.transform != null &&
             instance.curveSafe) {
-          return _prepareCurved(placed, layer, ctx, text, fontSize, textScale,
-              icon, collision, sitting)
-            ?..repeatKey = repeatKey;
+          return _ordered(
+              _prepareCurved(placed, layer, ctx, text, fontSize, textScale,
+                  icon, textAnchor - anchor, collision, sitting, edges)
+                ?..repeatKey = repeatKey,
+              layer,
+              ctx,
+              placed);
         }
-        lineTextAngle = _uprightAngle(sitting, placed.screenAngle);
+        textAngle = _uprightAngle(sitting, placed.screenAngle);
       }
+    } else if (text != null) {
+      textAngle = rules.pointTextAngle(ctx, placed);
+    }
+
+    var textRect = Rect.zero;
+    if (text != null) {
+      // Text that follows the anchor's side keeps lines aligned to it.
+      if (!instance.alongLine) {
+        text = _justifiedFor(text, layer, ctx, layer.textAnchor.eval(ctx));
+      }
+      // Shaped at the reference size: screen dimensions carry the scale.
+      final width = text.size.width * textScale;
+      final height = text.size.height * textScale;
+      if (instance.alongLine) {
+        // Along-line text is centered on the anchor.
+        textRect =
+            Rect.fromCenter(center: textAnchor, width: width, height: height);
+      } else {
+        final offset = layer.textOffset.eval(ctx);
+        final em = fontSize;
+        final shifted = textAnchor +
+            Offset(
+              offset.isNotEmpty ? offset[0] * em : 0,
+              offset.length > 1 ? offset[1] * em : 0,
+            );
+        textRect =
+            _anchoredRect(layer.textAnchor.eval(ctx), shifted, width, height);
+      }
+      if (fitting) {
+        // Fitted to the text where `text-translate` did not move it, and
+        // moved by `icon-translate` instead, as in MapLibre.
+        final pivot = icon!.pivot;
+        icon = _fitIcon(
+            icon,
+            fit,
+            layer,
+            ctx,
+            textRect.shift(pivot - textAnchor),
+            pivot,
+            instance.alongLine ? textAngle : icon.rotation);
+      }
+      if (!textShown) text = null;
     }
 
     // Everything else along a line, a road shield or an arrow, a
@@ -1460,70 +2102,346 @@ class LabelPainter {
       return null;
     }
 
-    // Compute collision boxes.
-    final boxes = <Rect>[];
-    var textRect = Rect.zero;
-    var angle = 0.0;
-    if (text != null) {
-      final padding = layer.textPadding.eval(ctx);
-      final offset = layer.textOffset.eval(ctx);
-      // Shaped at the reference size: screen dimensions carry the scale.
-      final width = text.size.width * textScale;
-      final height = text.size.height * textScale;
-      final em = fontSize;
-      final shifted = anchor +
-          Offset(
-            offset.isNotEmpty ? offset[0] * em : 0,
-            offset.length > 1 ? offset[1] * em : 0,
-          );
-      textRect =
-          _anchoredRect(layer.textAnchor.eval(ctx), shifted, width, height);
-      if (instance.alongLine) {
-        angle = lineTextAngle;
-        // Along-line text is centered on the anchor.
-        textRect =
-            Rect.fromCenter(center: anchor, width: width, height: height);
-        boxes.add(_rotatedBounds(textRect, anchor, angle).inflate(padding));
-      } else {
-        boxes.add(textRect.inflate(padding));
-      }
-    }
-    if (icon != null) {
-      boxes.add(icon.bounds.inflate(2));
-    }
-
-    final allowOverlap = text != null
-        ? layer.textAllowOverlap.eval(ctx)
-        : layer.iconAllowOverlap.eval(ctx);
-    if (allowOverlap ? !collision.fits(boxes) : !collision.tryPlaceAll(boxes)) {
+    final placement = _place(
+      layer,
+      ctx,
+      collision,
+      text == null
+          ? null
+          : [
+              _rotatedBounds(textRect, textAnchor, textAngle)
+                  .inflate(layer.textPadding.eval(ctx)),
+            ],
+      icon == null ? null : [icon.collisionBox],
+      edges,
+    );
+    if (placement == null) {
       debugRejectProbe?.call(placed.instance.continuityKey, 'collision', false);
-      // Icon may still be placed when text is optional.
-      if (icon != null &&
-          text != null &&
-          layer.textOptional.eval(ctx) &&
-          collision.tryPlaceAll([icon.bounds.inflate(2)])) {
-        sitting.textDropped = true;
-        return _DrawableSymbol(placed, icon: icon);
-      }
       return null;
     }
+    _rememberDrops(collision, sitting, placement, text != null, icon != null);
+    return _ordered(
+        _DrawableSymbol(
+          placed,
+          icon: placement.icon ? icon : null,
+          text: placement.text ? text : null,
+          textRect: textRect,
+          textAnchor: textAnchor,
+          textAngle: textAngle,
+          textScale: textScale,
+        )..repeatKey = repeatKey,
+        layer,
+        ctx,
+        placed);
+  }
 
-    return _DrawableSymbol(
-      placed,
-      icon: icon,
-      text: text,
-      textRect: textRect,
-      textAngle: angle,
-      textScale: textScale,
-    )..repeatKey = repeatKey;
+  /// [layer]'s rules at [zoom], found by its style index: the one
+  /// lookup a symbol pays per frame. It also primes [_SymbolRules.of]
+  /// for the helpers the symbol then goes through.
+  _SymbolRules _rulesFor(SymbolThemeLayer layer, int index, double zoom) {
+    final byIndex = _rulesByIndex;
+    if (index >= byIndex.length) byIndex.length = index + 1;
+    var rules = byIndex[index];
+    if (rules == null || !identical(rules.layer, layer)) {
+      rules = byIndex[index] = _SymbolRules.of(layer, zoom);
+    }
+    rules._resolve(zoom);
+    return _SymbolRules._last = rules;
+  }
+
+  final _rulesByIndex = <_SymbolRules?>[];
+
+  /// [drawable] with its `symbol-z-order` key (see [_zOrderKey]).
+  static _DrawableSymbol? _ordered(_DrawableSymbol? drawable,
+          SymbolThemeLayer layer, EvalContext ctx, PlacedSymbol placed) =>
+      drawable
+        ?..drawKey = _SymbolRules.of(layer, ctx.zoom).zOrderKey(ctx, placed);
+
+  /// MapLibre's rule for a symbol's text and icon: each is tested
+  /// against the placed symbols with its own overlap mode (`*-overlap`,
+  /// else `*-allow-overlap`), then `text-optional` / `icon-optional` say
+  /// whether one may show without the other, and whatever shows reserves
+  /// its space unless its `*-ignore-placement` says otherwise. Null
+  /// [textBoxes] / [iconBoxes] mean the symbol has no text / icon;
+  /// [textFits] false means it has text that cannot be placed at all
+  /// (no anchor fits it, or its line bends too sharply), so only the
+  /// icon may still show. [edges] confines every box, for
+  /// `symbol-avoid-edges`. Returns what was placed, or null for
+  /// nothing.
+  ({bool text, bool icon})? _place(
+    SymbolThemeLayer layer,
+    EvalContext ctx,
+    _CollisionIndex collision,
+    List<Rect>? textBoxes,
+    List<Rect>? iconBoxes,
+    Rect? edges, {
+    bool textFits = true,
+  }) {
+    final hasText = textBoxes != null;
+    final hasIcon = iconBoxes != null;
+    // A replay decides no space: what the last pass dropped is already
+    // left out, and the rest is placed as it was.
+    if (collision.permissive && textFits) {
+      return hasText || hasIcon ? (text: hasText, icon: hasIcon) : null;
+    }
+    final rules = _SymbolRules.of(layer, ctx.zoom);
+    final textOverlap = hasText ? rules.textOverlap(ctx) : _Overlap.never;
+    final iconOverlap = hasIcon ? rules.iconOverlap(ctx) : _Overlap.never;
+    var placeText =
+        hasText && textFits && collision.free(textBoxes, textOverlap, edges);
+    var placeIcon = hasIcon && collision.free(iconBoxes, iconOverlap, edges);
+    final iconWithoutText = !hasText || rules.textOptional(ctx);
+    final textWithoutIcon = !hasIcon || rules.iconOptional(ctx);
+    if (!iconWithoutText && !textWithoutIcon) {
+      placeText = placeIcon = placeText && placeIcon;
+    } else if (!textWithoutIcon) {
+      placeText = placeText && placeIcon;
+    } else if (!iconWithoutText) {
+      placeIcon = placeIcon && placeText;
+    }
+    if (!placeText && !placeIcon) return null;
+    if (placeText && !rules.textIgnore(ctx)) {
+      collision.insert(textBoxes!, textOverlap);
+    }
+    if (placeIcon && !rules.iconIgnore(ctx)) {
+      collision.insert(iconBoxes!, iconOverlap);
+    }
+    return (text: placeText, icon: placeIcon);
+  }
+
+  /// Records which half of a placed symbol a pass dropped, so replay
+  /// frames — which decide no space — keep it dropped. Only on a pass,
+  /// and only for the first candidate placed at a sitting in it: several
+  /// copies of one label (a zoom crossing's two levels, a seam's two
+  /// tiles) share a sitting, and a later copy must not rewrite what the
+  /// one on screen decided.
+  void _rememberDrops(_CollisionIndex collision, SittingPlacement sitting,
+      ({bool text, bool icon}) placement, bool hasText, bool hasIcon) {
+    if (collision.permissive || sitting.seatedPass == _seating) return;
+    sitting.seatedPass = _seating;
+    sitting.textDropped = hasText && !placement.text;
+    sitting.iconDropped = hasIcon && !placement.icon;
+  }
+
+  static _Overlap _overlapOf(
+      StringProp? overlap, BoolProp allowOverlap, EvalContext ctx) {
+    if (overlap == null) {
+      return allowOverlap.eval(ctx) ? _Overlap.always : _Overlap.never;
+    }
+    return switch (overlap.eval(ctx)) {
+      'always' => _Overlap.always,
+      'cooperative' => _Overlap.cooperative,
+      _ => _Overlap.never,
+    };
+  }
+
+  /// `text-translate` / `icon-translate` as a screen offset: px right and
+  /// down, turned with the map when its anchor is `map`.
+  static Offset _translation(NumListProp translate, StringProp anchor,
+      EvalContext ctx, PlacedSymbol placed) {
+    final t = translate.eval(ctx);
+    final dx = t.isNotEmpty ? t[0] : 0.0;
+    final dy = t.length > 1 ? t[1] : 0.0;
+    if (dx == 0 && dy == 0) return Offset.zero;
+    if (anchor.eval(ctx) == 'viewport') return Offset(dx, dy);
+    final bearing = placed.transform?.rotation ??
+        (placed.instance.alongLine ? 0.0 : placed.screenAngle);
+    if (bearing == 0) return Offset(dx, dy);
+    final cosB = math.cos(bearing);
+    final sinB = math.sin(bearing);
+    return Offset(dx * cosB - dy * sinB, dx * sinB + dy * cosB);
+  }
+
+  /// `icon-padding`'s one to four values as a CSS-order inset (top,
+  /// right, bottom, left). A constant padding evaluates to the same list
+  /// every time, so its inset is built once rather than per icon per
+  /// frame.
+  static EdgeInsets _padding(List<double> values) =>
+      _paddings[values] ??= _insetsOf(values);
+
+  static final _paddings = Expando<EdgeInsets>();
+
+  static EdgeInsets _insetsOf(List<double> values) => switch (values.length) {
+        0 => EdgeInsets.zero,
+        1 => EdgeInsets.all(values[0]),
+        2 => EdgeInsets.symmetric(vertical: values[0], horizontal: values[1]),
+        3 => EdgeInsets.fromLTRB(values[1], values[0], values[1], values[2]),
+        _ => EdgeInsets.fromLTRB(values[3], values[0], values[1], values[2]),
+      };
+
+  /// Where [placed] sorts among its layer's symbols when drawn —
+  /// `symbol-z-order`, as MapLibre resolves it: by `symbol-sort-key`
+  /// when the key varies by feature (and the order is not
+  /// `viewport-y`), else by screen y when the order allows it and the
+  /// layer lets symbols overlap, else in source order (0 — the
+  /// insertion-order tiebreak then decides).
+  static double _zOrderKey(
+      SymbolThemeLayer layer, EvalContext ctx, PlacedSymbol placed) {
+    final zOrder = layer.symbolZOrder.eval(ctx);
+    final byKey = zOrder != 'viewport-y' && !layer.sortKey.isConstant;
+    if (byKey) return placed.instance.sortKey;
+    if (zOrder == 'source') return 0;
+    final overlaps =
+        _overlapOf(layer.textOverlap, layer.textAllowOverlap, ctx) !=
+                _Overlap.never ||
+            _overlapOf(layer.iconOverlap, layer.iconAllowOverlap, ctx) !=
+                _Overlap.never ||
+            layer.textIgnorePlacement.eval(ctx) ||
+            layer.iconIgnorePlacement.eval(ctx);
+    return overlaps ? placed.screenAnchor.dy : 0;
+  }
+
+  /// [icon] stretched around [textRect] per `icon-text-fit` [fit] — the
+  /// fitted axes span the text plus `icon-text-fit-padding`, the others
+  /// keep the icon's size, centred on the text — and turned with the
+  /// text by [rotation] about [textAnchor]. A sprite declaring
+  /// `stretchX` / `stretchY` stretches only there, keeping its other
+  /// pixels at their size, and fits its `content` box to the text
+  /// rather than its whole image, as in MapLibre.
+  _DrawableIcon _fitIcon(
+    _DrawableIcon icon,
+    String fit,
+    SymbolThemeLayer layer,
+    EvalContext ctx,
+    Rect textRect,
+    Offset textAnchor,
+    double rotation,
+  ) {
+    final sprite = icon.sprite;
+    final unit = icon.iconSize / sprite.pixelRatio;
+    final pad = layer.iconTextFitPadding.eval(ctx);
+    double padAt(int i) => i < pad.length ? pad[i] : (pad.isEmpty ? 0 : pad[0]);
+    final offset = layer.iconOffset.eval(ctx);
+    final dx = offset.isNotEmpty ? offset[0] * icon.iconSize : 0.0;
+    final dy = offset.length > 1 ? offset[1] * icon.iconSize : 0.0;
+    final content = sprite.content;
+    // An axis that is not fitted centres on the text alone, padding aside.
+    final fitX = fit != 'height';
+    final fitY = fit != 'width';
+    final xs = _fitAxis(
+      fitX,
+      textRect.left + dx - (fitX ? padAt(3) : 0),
+      textRect.right + dx + (fitX ? padAt(1) : 0),
+      sprite.width,
+      content?.left ?? 0,
+      content?.right ?? sprite.width,
+      sprite.stretchX,
+      unit,
+    );
+    final ys = _fitAxis(
+      fitY,
+      textRect.top + dy - (fitY ? padAt(0) : 0),
+      textRect.bottom + dy + (fitY ? padAt(2) : 0),
+      sprite.height,
+      content?.top ?? 0,
+      content?.bottom ?? sprite.height,
+      sprite.stretchY,
+      unit,
+    );
+    final rect =
+        Rect.fromLTRB(xs.first.$3, ys.first.$3, xs.last.$4, ys.last.$4);
+    return icon.fitted(
+      rect: rect,
+      pivot: textAnchor,
+      rotation: rotation,
+      mesh: xs.length == 1 && ys.length == 1
+          ? null
+          : _IconMesh(
+              xs: [xs.first.$3, for (final x in xs) x.$4],
+              ys: [ys.first.$3, for (final y in ys) y.$4],
+              us: [sprite.x + xs.first.$1, for (final x in xs) sprite.x + x.$2],
+              vs: [sprite.y + ys.first.$1, for (final y in ys) sprite.y + y.$2],
+            ),
+    );
+  }
+
+  /// One axis of [_fitIcon]: the sprite's slices along it, as (source
+  /// from, source to, screen from, screen to). Without [fitted] the
+  /// icon keeps its size, centred on [lo]..[hi]. Fitted, [contentLo] ..
+  /// [contentHi] (sprite pixels) is mapped onto [lo]..[hi] (screen):
+  /// the [stretch] ranges — the whole image when there are none — share
+  /// whatever the fixed pixels, drawn at [unit] screen px per sprite
+  /// px, leave of the span.
+  static List<(double, double, double, double)> _fitAxis(
+    bool fitted,
+    double lo,
+    double hi,
+    double size,
+    double contentLo,
+    double contentHi,
+    List<(double, double)>? stretch,
+    double unit,
+  ) {
+    if (!fitted) {
+      final start = (lo + hi) / 2 - size * unit / 2;
+      return [(0, size, start, start + size * unit)];
+    }
+    final ranges = stretch == null || stretch.isEmpty ? [(0.0, size)] : stretch;
+    final cuts = <double>{0, size, contentLo, contentHi};
+    for (final (from, to) in ranges) {
+      cuts
+        ..add(from.clamp(0, size))
+        ..add(to.clamp(0, size));
+    }
+    final sorted = cuts.toList()..sort();
+    bool stretches(double from, double to) =>
+        ranges.any((r) => from >= r.$1 && to <= r.$2);
+    var stretchInContent = 0.0;
+    var fixedInContent = 0.0;
+    for (var i = 0; i + 1 < sorted.length; i++) {
+      final from = sorted[i], to = sorted[i + 1];
+      if (from < contentLo || to > contentHi) continue;
+      if (stretches(from, to)) {
+        stretchInContent += to - from;
+      } else {
+        fixedInContent += to - from;
+      }
+    }
+    // Screen px per stretched sprite px: what the fixed pixels leave of
+    // the span. Nothing stretchable inside the content box: the icon
+    // cannot fit, and keeps its size.
+    final k = stretchInContent > 0
+        ? math.max(0.0, (hi - lo - fixedInContent * unit) / stretchInContent)
+        : unit;
+    // Neighbouring slices drawn at the same scale are one slice: a
+    // seam between two draws of one image can show.
+    final slices = <(double, double, double, double)>[];
+    var at = 0.0;
+    double? contentAt;
+    bool? lastStretches;
+    for (var i = 0; i + 1 < sorted.length; i++) {
+      final from = sorted[i], to = sorted[i + 1];
+      if (from == contentLo) contentAt = at;
+      final stretched = stretches(from, to);
+      final length = (to - from) * (stretched ? k : unit);
+      if (stretched == lastStretches) {
+        final last = slices.removeLast();
+        slices.add((last.$1, to, last.$3, at + length));
+      } else {
+        slices.add((from, to, at, at + length));
+      }
+      lastStretches = stretched;
+      at += length;
+    }
+    if (contentLo >= size) contentAt = at;
+    // Shift so the content box starts at [lo] — or, when it could not
+    // stretch, so it is centred on the span.
+    final contentStart = contentAt ?? 0;
+    final shift = stretchInContent > 0
+        ? lo - contentStart
+        : (lo + hi) / 2 - (contentStart + (contentHi - contentLo) * unit / 2);
+    return [
+      for (final (from, to, start, end) in slices)
+        if (to > from) (from, to, start + shift, end + shift),
+    ];
   }
 
   /// Whether [placed]'s label fits on its line: the longer of its text
   /// and its icon, centred on the anchor, within the line's ends.
   /// MapLibre's anchor test, with the label measured on screen and the
   /// line in tile-logical units, which [PlacedSymbol.transform] relates.
-  static bool _fitsLine(PlacedSymbol placed, _LaidOutText? text,
-      double textScale, _DrawableIcon? icon) {
+  static bool _fitsLine(PlacedSymbol placed, _TextShape? text, double textScale,
+      _DrawableIcon? icon) {
     final instance = placed.instance;
     final path = instance.path;
     final transform = placed.transform;
@@ -1535,11 +2453,71 @@ class LabelPainter {
         instance.pathDistance + half <= path.length;
   }
 
-  /// `text-variable-anchor` placement: anchors are tried in style order
-  /// — except for the one this label was last placed at, which is tried
-  /// ahead of them all — and the first whose boxes fit the collision
-  /// index wins. `text-offset` is ignored in this mode;
-  /// `text-radial-offset` applies per anchor.
+  /// The anchors a variable-anchor label tries, each with its em offset:
+  /// `text-variable-anchor-offset` as given; otherwise
+  /// `text-variable-anchor` with `text-radial-offset` pointing away from
+  /// each anchor, or — without a radial offset — `text-offset`'s
+  /// magnitudes pointing away from it, as MapLibre turns them into
+  /// per-anchor offsets. Null when the layer has no variable anchors.
+  static List<AnchorOffset>? _variableAnchors(
+      SymbolThemeLayer layer, EvalContext ctx) {
+    final explicit = layer.textVariableAnchorOffset?.eval(ctx);
+    if (explicit != null) return explicit.isEmpty ? null : explicit;
+    final names = layer.textVariableAnchor?.eval(ctx);
+    if (names == null || names.isEmpty) return null;
+    final radial = layer.textRadialOffset.eval(ctx);
+    final offset = layer.textOffset.eval(ctx);
+    final ox = radial != 0 || offset.isEmpty ? 0.0 : offset[0].abs();
+    final oy = radial != 0 || offset.length < 2 ? 0.0 : offset[1].abs();
+    // A constant anchor list is the same object every time: its offsets
+    // are worked out once per distinct offset, not per label per frame.
+    final memo = _anchorOffsets[names];
+    if (memo != null && memo.$1 == radial && memo.$2 == ox && memo.$3 == oy) {
+      return memo.$4;
+    }
+    final anchors = _offsetsFor(names, radial, ox, oy);
+    _anchorOffsets[names] = (radial, ox, oy, anchors);
+    return anchors;
+  }
+
+  static final _anchorOffsets =
+      Expando<(double, double, double, List<AnchorOffset>)>();
+
+  static List<AnchorOffset> _offsetsFor(
+      List<String> names, double radial, double ox, double oy) {
+    if (radial != 0) {
+      return [
+        for (final name in names)
+          () {
+            final shift = _radialShift(name, math.max(0, radial));
+            return (anchor: name, x: shift.dx, y: shift.dy);
+          }(),
+      ];
+    }
+    return [
+      for (final name in names)
+        (
+          anchor: name,
+          x: switch (name) {
+            'left' || 'top-left' || 'bottom-left' => ox,
+            'right' || 'top-right' || 'bottom-right' => -ox,
+            _ => 0.0,
+          },
+          y: switch (name) {
+            'top' || 'top-left' || 'top-right' => oy,
+            'bottom' || 'bottom-left' || 'bottom-right' => -oy,
+            _ => 0.0,
+          },
+        ),
+    ];
+  }
+
+  /// Variable-anchor placement: anchors are tried in style order —
+  /// except for the one this label was last placed at, which is tried
+  /// ahead of them all — and the first whose text box fits the
+  /// collision index wins, with the icon then placed as for any symbol
+  /// (see [_place]). An icon fitted to the text moves with it, so it
+  /// must fit at the anchor too.
   ///
   /// Preferring the sitting anchor is what keeps a label from hopping
   /// around its own point: without it, a neighbour that brushes past
@@ -1550,52 +2528,99 @@ class LabelPainter {
     PlacedSymbol placed,
     SymbolThemeLayer layer,
     EvalContext ctx,
-    _LaidOutText text,
+    _TextShape text,
     double fontSize,
     double textScale,
     _DrawableIcon? icon,
-    List<String> anchors,
+    String? fit,
+    List<AnchorOffset> anchors,
+    Offset textAnchor,
+    double textAngle,
     _CollisionIndex collision,
     SittingPlacement sitting,
+    Rect? edges,
   ) {
     final padding = layer.textPadding.eval(ctx);
-    final radial = layer.textRadialOffset.eval(ctx) * fontSize;
-    final allowOverlap = layer.textAllowOverlap.eval(ctx);
+    final rules = _SymbolRules.of(layer, ctx.zoom);
+    final textOverlap = rules.textOverlap(ctx);
+    final iconOverlap = rules.iconOverlap(ctx);
     final width = text.size.width * textScale;
     final height = text.size.height * textScale;
     // Index -1 is the remembered anchor, which the style-order loop
     // then skips. A remembered anchor the style no longer offers (a
     // data-driven anchor list) is ignored.
     final remembered = sitting.anchor;
-    final seat =
-        remembered != null && anchors.contains(remembered) ? remembered : null;
-    for (var i = seat == null ? 0 : -1; i < anchors.length; i++) {
-      final anchorName = i < 0 ? seat! : anchors[i];
-      if (i >= 0 && anchorName == seat) continue;
-      final shifted = placed.screenAnchor + _radialShift(anchorName, radial);
-      final textRect = _anchoredRect(anchorName, shifted, width, height);
-      final boxes = [
-        textRect.inflate(padding),
-        if (icon != null) icon.bounds.inflate(2),
+    AnchorOffset? seat;
+    for (final entry in anchors) {
+      if (entry.anchor == remembered) seat = entry;
+    }
+    // Another copy of this label (the other level of a zoom crossing, the
+    // other tile at a seam) already took this sitting in this pass: this
+    // one may only stand in at the same anchor, never draw the label a
+    // second time at another.
+    final taken = !collision.permissive && sitting.seatedPass == _seating;
+    if (taken && seat == null) return null;
+    for (var i = seat == null ? 0 : -1; i < (taken ? 0 : anchors.length); i++) {
+      final entry = i < 0 ? seat! : anchors[i];
+      if (i >= 0 && identical(entry, seat)) continue;
+      final textRect = _anchoredRect(
+          entry.anchor,
+          textAnchor + Offset(entry.x * fontSize, entry.y * fontSize),
+          width,
+          height);
+      final textBoxes = [
+        _rotatedBounds(textRect, textAnchor, textAngle).inflate(padding),
       ];
-      if (allowOverlap ? collision.fits(boxes) : collision.tryPlaceAll(boxes)) {
-        sitting.anchor = anchorName;
-        return _DrawableSymbol(placed,
-            icon: icon, text: text, textRect: textRect, textScale: textScale);
+      if (!collision.free(textBoxes, textOverlap, edges)) continue;
+      final fitted = fit == null || icon == null
+          ? icon
+          : _fitIcon(
+              icon,
+              fit,
+              layer,
+              ctx,
+              textRect.shift(icon.pivot - textAnchor),
+              icon.pivot,
+              icon.rotation);
+      final iconBoxes = fitted == null ? null : [fitted.collisionBox];
+      if (fit != null &&
+          iconBoxes != null &&
+          !collision.free(iconBoxes, iconOverlap, edges)) {
+        continue;
       }
+      // The text is free here, so only an icon it cannot do without can
+      // still stop it — at every anchor alike, since an icon that is not
+      // fitted to the text stays put.
+      final placement =
+          _place(layer, ctx, collision, textBoxes, iconBoxes, edges);
+      if (placement == null) break;
+      _rememberDrops(collision, sitting, placement, true, icon != null);
+      sitting.anchor = entry.anchor;
+      return _DrawableSymbol(placed,
+          icon: placement.icon ? fitted : null,
+          // `text-justify: auto` aligns the lines to this anchor's side;
+          // the box is the same whichever side they align to.
+          text: _justifiedFor(text, layer, ctx, entry.anchor),
+          textRect: textRect,
+          textAnchor: textAnchor,
+          textAngle: textAngle,
+          textScale: textScale);
     }
-    if (icon != null &&
-        layer.textOptional.eval(ctx) &&
-        collision.tryPlaceAll([icon.bounds.inflate(2)])) {
-      sitting.textDropped = true;
-      return _DrawableSymbol(placed, icon: icon);
+    // No anchor fits the text: the icon alone may still show.
+    final placement = icon == null || fit != null
+        ? null
+        : _place(layer, ctx, collision, const [], [icon.collisionBox], edges,
+            textFits: false);
+    if (placement == null) {
+      debugRejectProbe?.call(placed.instance.continuityKey, 'collision', false);
+      return null;
     }
-    debugRejectProbe?.call(placed.instance.continuityKey, 'collision', false);
-    return null;
+    _rememberDrops(collision, sitting, placement, true, true);
+    return _DrawableSymbol(placed, icon: icon);
   }
 
   /// Shift that moves the text box away from the anchor point by
-  /// [r] pixels, in the direction implied by the anchor name.
+  /// [r] (pixels or ems), in the direction implied by the anchor name.
   static Offset _radialShift(String anchorName, double r) {
     if (r == 0) return Offset.zero;
     const d = 0.7071067811865476; // 1/sqrt(2)
@@ -1615,32 +2640,53 @@ class LabelPainter {
   /// Curved line text: each glyph cluster is placed and rotated
   /// individually along the projected line. Labels that don't fit their
   /// line or bend sharper than `text-max-angle` are not placed, matching
-  /// MapLibre.
+  /// MapLibre. [shift] is `text-translate`, moving every glyph.
   _DrawableSymbol? _prepareCurved(
     PlacedSymbol placed,
     SymbolThemeLayer layer,
     EvalContext ctx,
-    _LaidOutText text,
+    _TextShape text,
     double fontSize,
     double textScale,
     _DrawableIcon? icon,
+    Offset shift,
     _CollisionIndex collision,
     SittingPlacement sitting,
+    Rect? edges,
   ) {
     final instance = placed.instance;
     final path = instance.path!;
     final transform = placed.transform!;
     final clusters = text.clusters;
     if (clusters.isEmpty) return null;
+    final textAnchor = placed.screenAnchor + shift;
 
-    _DrawableSymbol? iconFallback() {
-      if (icon != null &&
-          layer.textOptional.eval(ctx) &&
-          collision.tryPlaceAll([icon.bounds.inflate(2)])) {
-        sitting.textDropped = true;
-        return _DrawableSymbol(placed, icon: icon);
+    // Text that cannot go on its line at all: the icon alone may still
+    // show, per `text-optional`.
+    _DrawableSymbol? textRejected() {
+      if (icon == null) return null;
+      final placement = _place(
+          layer, ctx, collision, const [], [icon.collisionBox], edges,
+          textFits: false);
+      if (placement == null) return null;
+      _rememberDrops(collision, sitting, placement, true, true);
+      return _DrawableSymbol(placed, icon: icon);
+    }
+
+    // Places the text's [boxes] with the icon, then builds what shows;
+    // null when neither does.
+    _DrawableSymbol? placeWith(List<Rect> boxes,
+        _DrawableSymbol Function(_DrawableIcon? icon) drawable) {
+      final placement = _place(layer, ctx, collision, boxes,
+          icon == null ? null : [icon.collisionBox], edges);
+      if (placement == null) {
+        debugRejectProbe?.call(
+            placed.instance.continuityKey, 'collision', false);
+        return null;
       }
-      return null;
+      _rememberDrops(collision, sitting, placement, true, icon != null);
+      if (!placement.text) return _DrawableSymbol(placed, icon: icon);
+      return drawable(placement.icon ? icon : null);
     }
 
     // What a replay or a ghost draws for a label it cannot curve: the
@@ -1650,13 +2696,14 @@ class LabelPainter {
     // vanishing at full opacity, ghost and all.
     _DrawableSymbol straightAtAnchor() {
       final textRect = Rect.fromCenter(
-          center: placed.screenAnchor,
+          center: textAnchor,
           width: text.size.width * textScale,
           height: text.size.height * textScale);
       return _DrawableSymbol(placed,
           icon: icon,
           text: text,
           textRect: textRect,
+          textAnchor: textAnchor,
           textAngle: layer.textKeepUpright.eval(ctx)
               ? _uprightAngle(sitting, placed.screenAngle)
               : placed.screenAngle,
@@ -1676,7 +2723,7 @@ class LabelPainter {
       // frame.
       if (collision.permissive) return straightAtAnchor();
       debugRejectProbe?.call(instance.continuityKey, 'fit', false);
-      return iconFallback();
+      return textRejected();
     }
 
     // Reading direction: walk the path backwards when the label would
@@ -1727,7 +2774,7 @@ class LabelPainter {
         // line bends too sharply for this label
         debugRejectProbe?.call(
             instance.continuityKey, 'angle', collision.permissive);
-        return iconFallback();
+        return textRejected();
       }
       if (keepUpright && angle.abs() > math.pi / 2 + _uprightSlack) {
         // The reading direction is chosen once per label, from its
@@ -1739,13 +2786,13 @@ class LabelPainter {
         // the label; a replay or a ghost draws it straight.
         if (collision.permissive) return straightAtAnchor();
         debugRejectProbe?.call(instance.continuityKey, 'upright', false);
-        return iconFallback();
+        return textRejected();
       }
       previousAngle = angle;
       firstAngle ??= angle;
       maxDeviation =
           math.max(maxDeviation, _foldAngle(angle - firstAngle).abs());
-      var pos = transform.apply(path.pointAt(d));
+      var pos = transform.apply(path.pointAt(d)) + shift;
       if (perp != 0) {
         pos += Offset(-math.sin(angle), math.cos(angle)) * perp;
       }
@@ -1759,57 +2806,66 @@ class LabelPainter {
     if (placements.isEmpty) return null;
 
     final padding = layer.textPadding.eval(ctx);
-    final allowOverlap = layer.textAllowOverlap.eval(ctx);
 
     // The window under the label is essentially straight: draw it as a
     // single rotated string, which is much cheaper.
     if (maxDeviation < 0.02 && perp == 0) {
       final angle = _orientAngle(placed.screenAngle, backwards);
       final textRect = Rect.fromCenter(
-          center: placed.screenAnchor,
+          center: textAnchor,
           width: text.size.width * textScale,
           height: text.size.height * textScale);
-      final boxes = [
-        _rotatedBounds(textRect, placed.screenAnchor, angle).inflate(padding),
-        if (icon != null) icon.bounds.inflate(2),
-      ];
-      if (allowOverlap
-          ? !collision.fits(boxes)
-          : !collision.tryPlaceAll(boxes)) {
-        debugRejectProbe?.call(
-            placed.instance.continuityKey, 'collision', false);
-        return iconFallback();
-      }
-      return _DrawableSymbol(placed,
-          icon: icon,
-          text: text,
-          textRect: textRect,
-          textAngle: angle,
-          textScale: textScale);
+      return placeWith(
+          [
+            _rotatedBounds(textRect, textAnchor, angle).inflate(padding),
+          ],
+          (icon) => _DrawableSymbol(placed,
+              icon: icon,
+              text: text,
+              textRect: textRect,
+              textAnchor: textAnchor,
+              textAngle: angle,
+              textScale: textScale));
     }
 
     // Per-glyph collision boxes.
     final glyphHeight = fontSize * 1.2;
-    final boxes = <Rect>[
-      for (final p in placements)
-        _rotatedBounds(
-                Rect.fromCenter(
-                    center: p.pos, width: p.width, height: glyphHeight),
-                p.pos,
-                p.angle)
-            .inflate(padding),
-      if (icon != null) icon.bounds.inflate(2),
-    ];
-    if (allowOverlap ? !collision.fits(boxes) : !collision.tryPlaceAll(boxes)) {
-      debugRejectProbe?.call(placed.instance.continuityKey, 'collision', false);
-      return iconFallback();
-    }
+    return placeWith(
+        [
+          for (final p in placements)
+            _rotatedBounds(
+                    Rect.fromCenter(
+                        center: p.pos, width: p.width, height: glyphHeight),
+                    p.pos,
+                    p.angle)
+                .inflate(padding),
+        ],
+        (icon) => _DrawableSymbol(placed,
+            icon: icon,
+            // Glyph-drawn text keeps its laid-out text, whose run it
+            // draws from.
+            text: text is _LaidOutText && text.glyphRun != null ? text : null,
+            curvedGlyphs: _curvedGlyphs(placements, text),
+            textScale: textScale));
+  }
 
-    final run = text.glyphRun;
+  /// The glyphs of curved [text] at [placements]: per grapheme cluster
+  /// its painters, or for glyph-drawn text its index into the run.
+  List<_CurvedGlyph> _curvedGlyphs(
+      List<({_Cluster cluster, Offset pos, double angle, double width})>
+          placements,
+      _TextShape text) {
+    // A worker only measures: it has neither paragraphs nor glyph
+    // pages, and the drawable it returns is never drawn.
+    final laidOut = text is _LaidOutText ? text : null;
+    final run = laidOut?.glyphRun;
     final glyphs = <_CurvedGlyph>[];
     for (final p in placements) {
-      if (run == null) {
-        final painters = _glyphPainters(p.cluster, text);
+      if (laidOut == null) {
+        glyphs.add(
+            _CurvedGlyph(extent: Size.zero, position: p.pos, angle: p.angle));
+      } else if (run == null) {
+        final painters = _glyphPainters(p.cluster, laidOut);
         final painter = painters.halo ?? painters.fill;
         glyphs.add(_CurvedGlyph(
           painters: painters,
@@ -1830,12 +2886,7 @@ class LabelPainter {
         ));
       }
     }
-    // Glyph-drawn text keeps its laid-out text, whose run it draws from.
-    return _DrawableSymbol(placed,
-        icon: icon,
-        text: run == null ? null : text,
-        curvedGlyphs: glyphs,
-        textScale: textScale);
+    return glyphs;
   }
 
   /// Folds an angle into (-π, π].
@@ -1853,23 +2904,64 @@ class LabelPainter {
   /// Returns the shaped text for [instance], shaped at [_shapeSize]
   /// regardless of [fontSize] — the caller scales at draw time. The
   /// cache key therefore contains no font size, and `text-opacity` /
-  /// `text-halo-width` enter it quantized: a `text-size` ramp reuses
-  /// one shaped paragraph across the whole pinch, and opacity/halo
-  /// ramps rotate the key a bounded number of times instead of per
-  /// eval-zoom step.
+  /// `text-halo-width` / `text-halo-blur` enter it quantized: a
+  /// `text-size` ramp reuses one shaped paragraph across the whole
+  /// pinch, and opacity/halo ramps rotate the key a bounded number of
+  /// times instead of per eval-zoom step. `text-justify: auto` is laid
+  /// out centred here; [_justifiedFor] aligns it to an anchor's side.
   _LaidOutText _layoutText(
     SymbolInstance instance,
     SymbolThemeLayer layer,
     EvalContext ctx,
     double fontSize,
   ) =>
-      _lookupText(instance, layer, ctx, fontSize)..pass = _pass;
+      _lookupText(instance, layer, ctx, fontSize,
+          _SymbolRules.of(layer, ctx.zoom).baseJustify(ctx))
+        ..pass = _pass;
+
+  /// [text] with its lines aligned for a label at [anchor] — itself,
+  /// unless `text-justify` is `auto` and the text has more than one line.
+  /// A worker's measured text is its own answer: alignment keeps the box.
+  static _TextShape _justifiedFor(
+      _TextShape text, SymbolThemeLayer layer, EvalContext ctx, String anchor) {
+    if (text is! _LaidOutText) return text;
+    final value = _SymbolRules.of(layer, ctx.zoom).justify(ctx);
+    return value == 'auto' ? text.justified(_justify(value, anchor)) : text;
+  }
+
+  static TextAlign _textAlign(String justify) => switch (justify) {
+        'left' => TextAlign.left,
+        'right' => TextAlign.right,
+        _ => TextAlign.center,
+      };
+
+  /// [_textAlign] for glyph text: where a line sits in the block's
+  /// width, from its left edge.
+  static double _justifyFraction(String justify) => switch (justify) {
+        'left' => 0,
+        'right' => 1,
+        _ => 0.5,
+      };
+
+  /// `text-justify` [value] resolved for text at [anchor]: `auto`
+  /// justifies towards the side of the box the anchor is on.
+  static String _justify(String value, String anchor) => switch (value) {
+        // The default first: read for every label shaped or looked up.
+        'center' || 'left' || 'right' => value,
+        'auto' => switch (anchor) {
+            'left' || 'top-left' || 'bottom-left' => 'left',
+            'right' || 'top-right' || 'bottom-right' => 'right',
+            _ => 'center',
+          },
+        _ => 'center',
+      };
 
   _LaidOutText _lookupText(
     SymbolInstance instance,
     SymbolThemeLayer layer,
     EvalContext ctx,
     double fontSize,
+    String justify,
   ) {
     // Fast path: at an unchanged eval zoom the memoized key is valid
     // as-is. Only the key: the laid-out text itself belongs to the LRU,
@@ -1880,6 +2972,7 @@ class LabelPainter {
     final stateVersion = layer.readsFeatureState ? _stateVersion : 0;
     if (memo != null &&
         memo.zoom == ctx.zoom &&
+        memo.justify == justify &&
         memo.stateVersion == stateVersion) {
       return _cachedOrShape(instance, memo);
     }
@@ -1897,34 +2990,43 @@ class LabelPainter {
     // 1/128 em (≤0.06px error at 16px — imperceptible).
     final haloRatioQ =
         haloColor.a <= 0 ? 0 : (haloWidth / fontSize * 128).round();
+    // The blur is a font-size ratio like the width, for the same reason.
+    final haloBlurQ = haloRatioQ == 0 || !debugHaloBlur
+        ? 0
+        : (layer.textHaloBlur.eval(ctx).clamp(0.0, 8.0) / fontSize * 128)
+            .round();
     final fillArgb = color.toARGB32();
     final haloArgb = haloRatioQ == 0 ? 0 : haloColor.toARGB32();
     final fonts = layer.textFont.eval(ctx);
     final letterSpacingEm = layer.textLetterSpacing.eval(ctx);
     final maxWidthEm = layer.textMaxWidth.eval(ctx);
+    final lineHeightEm = layer.textLineHeight.eval(ctx);
 
     // A zoom step rarely moves any quantized primitive: revalidate the
     // memo by value and reuse its key strings without rebuilding them.
     if (memo != null &&
-        memo.matches(fillArgb, haloArgb, haloRatioQ, fonts, letterSpacingEm,
-            maxWidthEm)) {
+        memo.matches(fillArgb, haloArgb, haloRatioQ, haloBlurQ, fonts,
+            letterSpacingEm, maxWidthEm, justify, lineHeightEm)) {
       memo.zoom = ctx.zoom;
       memo.stateVersion = stateVersion;
       return _cachedOrShape(instance, memo);
     }
 
-    final styleKey =
-        '$fillArgb|$haloArgb|$haloRatioQ|${fonts.join(',')}|$letterSpacingEm';
+    final styleKey = '$fillArgb|$haloArgb|$haloRatioQ|$haloBlurQ|'
+        '${fonts.join(',')}|$letterSpacingEm|$lineHeightEm';
     // Along-line labels never wrap.
-    final cacheKey =
-        '${instance.text}|$styleKey|$maxWidthEm|${instance.alongLine}';
+    final cacheKey = '${instance.text}|$styleKey|$maxWidthEm|$justify|'
+        '${instance.alongLine}';
     final built = TextStyleMemo(
       fillArgb: fillArgb,
       haloArgb: haloArgb,
       haloRatioQ: haloRatioQ,
+      haloBlurQ: haloBlurQ,
       fonts: fonts,
       letterSpacingEm: letterSpacingEm,
       maxWidthEm: maxWidthEm,
+      justify: justify,
+      lineHeightEm: lineHeightEm,
       styleKey: styleKey,
       cacheKey: cacheKey,
       zoom: ctx.zoom,
@@ -1976,6 +3078,7 @@ class LabelPainter {
           size: Size(
               run.shaped.width * _glyphScale, run.shaped.height * _glyphScale),
           styleKey: memo.styleKey,
+          justify: memo.justify,
         );
         _textCache.put(memo.cacheKey, laidOut);
         return laidOut;
@@ -2025,6 +3128,8 @@ class LabelPainter {
       // Along-line labels never wrap; point labels wrap at
       // `text-max-width`, at least two ems as the paragraph path does.
       maxWidthEm: instance.alongLine ? null : math.max(memo.maxWidthEm, 2),
+      lineHeightEm: memo.lineHeightEm,
+      justify: _justifyFraction(memo.justify),
     );
     if (shaped == null) return missing ? null : loading;
     return _GlyphRun(
@@ -2037,6 +3142,7 @@ class LabelPainter {
       fillArgb: memo.fillArgb,
       haloArgb: memo.haloArgb,
       haloRatioQ: memo.haloRatioQ,
+      haloBlurQ: memo.haloBlurQ,
     );
   }
 
@@ -2047,8 +3153,9 @@ class LabelPainter {
     var maxWidth = singleLine
         ? double.infinity
         : math.max(_shapeSize * memo.maxWidthEm, _shapeSize * 2);
-    final style = _textStyle(
-        memo.fonts, _shapeSize, memo.letterSpacingEm, Color(memo.fillArgb));
+    final style = _textStyle(memo.fonts, _shapeSize, memo.letterSpacingEm,
+        Color(memo.fillArgb), memo.lineHeightEm);
+    final align = _textAlign(memo.justify);
     final paragraphs = instance.text.split('\n');
     final rtl = paragraphs.map(_readsRightToLeft).toList();
     var text = _isolateRightToLeft(paragraphs, rtl);
@@ -2056,10 +3163,13 @@ class LabelPainter {
     // the min intrinsic width is the paragraph's widest unbreakable run.
     // After a constrained layout that broke a word, Skia reports a
     // width that depends on where it broke, often less than the word.
+    // The box is as wide as the longest line, as MapLibre's is — not
+    // `text-max-width` — and `text-justify` aligns the lines within it.
     final fill = TextPainter(
       text: TextSpan(text: text, style: style),
       textDirection: TextDirection.ltr,
-      textAlign: TextAlign.center,
+      textAlign: align,
+      textWidthBasis: TextWidthBasis.longestLine,
       maxLines: maxLines,
     )..layout();
     // Text on one line needs no second layout. Text that wraps keeps
@@ -2093,19 +3203,24 @@ class LabelPainter {
 
     TextPainter? halo;
     TextStyle? haloStyle;
+    // (haloBlurQ/128) · _shapeSize, as a Gaussian sigma.
+    final blurSigma = memo.haloBlurQ / 8 * _haloBlurSigma;
     if (memo.haloRatioQ > 0) {
-      haloStyle = style.copyWith(
-        foreground: Paint()
-          ..style = PaintingStyle.stroke
-          // 2 · (haloRatioQ/128) · _shapeSize
-          ..strokeWidth = memo.haloRatioQ / 4
-          ..strokeJoin = StrokeJoin.round
-          ..color = Color(memo.haloArgb),
-      );
+      final paint = Paint()
+        ..style = PaintingStyle.stroke
+        // 2 · (haloRatioQ/128) · _shapeSize
+        ..strokeWidth = memo.haloRatioQ / 4
+        ..strokeJoin = StrokeJoin.round
+        ..color = Color(memo.haloArgb);
+      if (blurSigma > 0) {
+        paint.maskFilter = MaskFilter.blur(BlurStyle.normal, blurSigma);
+      }
+      haloStyle = style.copyWith(foreground: paint);
       halo = TextPainter(
         text: TextSpan(text: text, style: haloStyle),
         textDirection: TextDirection.ltr,
-        textAlign: TextAlign.center,
+        textAlign: align,
+        textWidthBasis: TextWidthBasis.longestLine,
         maxLines: maxLines,
       )..layout(maxWidth: maxWidth);
     }
@@ -2118,7 +3233,11 @@ class LabelPainter {
       styleKey: memo.styleKey,
       fillStyle: style,
       haloStyle: haloStyle,
-    );
+      haloBlurSigma: blurSigma,
+      justify: memo.justify,
+      maxLines: maxLines,
+      layoutWidth: maxWidth,
+    ).._haloPicture;
   }
 
   /// [text] with explicit line breaks for a `text-max-width` of
@@ -2321,7 +3440,7 @@ class LabelPainter {
     final pending = <_DrawableSymbol>[];
     for (final drawable in toDraw) {
       drawable.atlasSprites = null;
-      final run = drawable.text?.glyphRun;
+      final run = drawable.glyphRun;
       final glyphs = drawable.curvedGlyphs;
       if (run == null && glyphs == null) continue;
       final deviceScale = devicePixelRatio *
@@ -2434,16 +3553,22 @@ class LabelPainter {
       final glyph = glyphs[i];
       final page = run.pages[i];
       for (var kind = 0; kind < (halo ? 2 : 1); kind++) {
-        final key =
-            (run.fontStack, glyph.id, sizeKey, kind == 0 ? 0 : run.haloRatioQ);
+        final key = kind == 0
+            ? (run.fontStack, glyph.id, sizeKey, 0, 0)
+            : (run.fontStack, glyph.id, sizeKey, run.haloRatioQ, run.haloBlurQ);
         var cell = atlas.lookup(key);
         if (cell == null && rasterizeGlyphs) {
-          // `text-halo-width` in glyph pixels moves the cut outward.
-          final edge = kind == 0
-              ? _sdfOutline
-              : math.max(0.0,
-                  _sdfOutline - run.haloRatioQ / 128 * glyphPbfEm * _sdfPixel);
-          final paint = _coveragePaint(edge, f);
+          // `text-halo-width` in glyph pixels moves the cut outward, and
+          // `text-halo-blur` in device pixels widens its ramp.
+          final paint = kind == 0
+              ? _coveragePaint(_sdfOutline, f)
+              : _coveragePaint(
+                  math.max(
+                      0.0,
+                      _sdfOutline -
+                          run.haloRatioQ / 128 * glyphPbfEm * _sdfPixel),
+                  f,
+                  blur: run.haloBlurQ / 128 * glyphPbfEm * f);
           final w = glyph.bitmapWidth * f;
           final h = glyph.bitmapHeight * f;
           cell = atlas.reserve(key, w.ceil(), h.ceil(), (canvas) {
@@ -2474,8 +3599,13 @@ class LabelPainter {
   /// [_glyphEdgeWidth] ramp between. Thresholding after the bilinear
   /// sampling is what keeps a magnified field's edge sharp — the same
   /// colour-matrix technique as SDF icons ([_DrawableIcon._sdfPaint]).
-  static Paint _coveragePaint(double edge, double f) {
-    final slope = f / _sdfPixel / _glyphEdgeWidth;
+  ///
+  /// A [blur] (`text-halo-blur`, in device pixels) widens the ramp by
+  /// 2 × 1.19 × [blur], the ±1.19 × blur MapLibre's shader fades a
+  /// halo's edge over. That is the whole of a blurred glyph halo: no
+  /// mask filter, no offscreen pass, and the cell is rasterized once.
+  static Paint _coveragePaint(double edge, double f, {double blur = 0}) {
+    final slope = f / _sdfPixel / (_glyphEdgeWidth + 2 * 1.19 * blur);
     final shift = 0.5 - edge * slope;
     return Paint()
       // Bilinear only: mipmaps blur the field, which erodes the shape.
@@ -2528,10 +3658,15 @@ class LabelPainter {
         }
       }
     } else {
-      final symbol = drawable.symbol;
       final angle = drawable.textAngle;
+      // Turned text turns about its anchor, and a box offset from it
+      // (point text with an anchor or offset) keeps that offset in the
+      // turned frame, as paragraphs do in [_DrawableSymbol.draw].
       final center =
-          angle != 0 ? symbol.screenAnchor : drawable.textRect.center;
+          angle != 0 ? drawable.textAnchor : drawable.textRect.center;
+      final boxOffset = angle != 0
+          ? drawable.textRect.center - drawable.textAnchor
+          : Offset.zero;
       final cosA = math.cos(angle);
       final sinA = math.sin(angle);
       for (var i = 0; i < glyphs.length; i++) {
@@ -2555,8 +3690,8 @@ class LabelPainter {
               (center.dy * devicePixelRatio + y).roundToDouble() /
                   devicePixelRatio);
         } else {
-          final dx = x / devicePixelRatio;
-          final dy = y / devicePixelRatio;
+          final dx = x / devicePixelRatio + boxOffset.dx;
+          final dy = y / devicePixelRatio + boxOffset.dy;
           position = Offset(center.dx + dx * cosA - dy * sinA,
               center.dy + dx * sinA + dy * cosA);
         }
@@ -2666,12 +3801,15 @@ class LabelPainter {
         textDirection: TextDirection.ltr,
       )..layout();
     }
-    // Room for the halo stroke, which straddles the outline, and for
-    // glyph overhang past the advance box.
+    // Room for the halo stroke, which straddles the outline, its blur,
+    // and glyph overhang past the advance box.
     final stroke = text.haloStyle?.foreground?.strokeWidth ?? 0;
-    final glyph =
-        _GlyphText(key: key, fill: fill, halo: halo, pad: 2 + stroke / 2)
-          ..pass = _pass;
+    final glyph = _GlyphText(
+        key: key,
+        fill: fill,
+        halo: halo,
+        pad: 2 + stroke / 2 + 3 * text.haloBlurSigma)
+      ..pass = _pass;
     _glyphCache.put(key, glyph);
     return cluster.glyph = glyph;
   }
@@ -2681,6 +3819,7 @@ class LabelPainter {
     double fontSize,
     double letterSpacingEm,
     ui.Color color,
+    double lineHeightEm,
   ) {
     final joined = fonts.join(' ').toLowerCase();
     var weight = FontWeight.w400;
@@ -2707,7 +3846,15 @@ class LabelPainter {
           joined.contains('italic') ? FontStyle.italic : FontStyle.normal,
       letterSpacing: letterSpacingEm == 0 ? null : letterSpacingEm * fontSize,
       color: color,
-      height: 1.15,
+      // `text-line-height`: baselines this many ems apart, and one line's
+      // box this tall, as MapLibre sizes it. The leading goes evenly above
+      // and below each font's own height, not in proportion to it: in
+      // proportion, a line mixing fonts (Arabic with Latin digits) moves
+      // its baseline by a share of the line height that grows with it,
+      // so the same word sat lower in the mixed label than alone, where
+      // MapLibre keeps every line on one pitch whatever its fonts.
+      height: lineHeightEm > 0 ? lineHeightEm : 1.2,
+      leadingDistribution: TextLeadingDistribution.even,
     );
   }
 
@@ -2772,6 +3919,7 @@ class LabelPainter {
       opacity >= 1 ? color : color.withValues(alpha: color.a * opacity);
 
   static Rect _rotatedBounds(Rect rect, Offset pivot, double angle) {
+    if (angle == 0) return rect;
     final cosA = math.cos(angle);
     final sinA = math.sin(angle);
     final delta = rect.center - pivot;
@@ -2796,10 +3944,57 @@ class LabelPainter {
   }
 }
 
-/// Text shaped at [LabelPainter._shapeSize]; every metric ([size],
-/// cluster positions/widths) is in reference-size units and is scaled
-/// by the evaluated `text-size / _shapeSize` at use sites.
-class _LaidOutText {
+/// A pass request the worker has not answered yet, with what it offered
+/// and the frame and time it was sent in.
+class _PassInFlight {
+  final int id;
+
+  /// The cohorts the request offered, in order: the answer names each
+  /// winner's copy by its [PlacedSymbol.order] among them.
+  final List<LabelCohortInput> cohorts;
+  final int frame;
+  final DateTime sentAt;
+
+  _PassInFlight(this.id, this.cohorts, this.frame, this.sentAt);
+
+  /// The instance at [order] among [cohorts], or null.
+  SymbolInstance? copyAt(int order) {
+    for (final cohort in cohorts) {
+      final index = order - cohort.order;
+      if (index >= 0 && index < cohort.symbols.length) {
+        return cohort.symbols[index];
+      }
+    }
+    return null;
+  }
+}
+
+/// What placement reads of a label's text: its extent and its grapheme
+/// clusters, at [LabelPainter._shapeSize]. Every metric is in
+/// reference-size units and is scaled by the evaluated
+/// `text-size / _shapeSize` at use sites.
+///
+/// [_LaidOutText] is the shaped text the screen pass draws; a placement
+/// worker, which cannot shape (text layout is root-isolate only), places
+/// [_MeasuredText] — the same metrics, copied from the UI's shaping.
+abstract class _TextShape {
+  Size get size;
+  List<_Cluster> get clusters;
+}
+
+/// Metrics-only text, mirrored into a placement worker. Its clusters
+/// carry no grapheme: the worker only measures with them.
+class _MeasuredText implements _TextShape {
+  @override
+  final Size size;
+  @override
+  final List<_Cluster> clusters;
+
+  _MeasuredText(this.size, this.clusters);
+}
+
+/// Text shaped at [LabelPainter._shapeSize]; see [_TextShape].
+class _LaidOutText implements _TextShape {
   final String text;
 
   /// The paragraphs, for text the platform shaped; null for text drawn
@@ -2810,10 +4005,31 @@ class _LaidOutText {
   /// The glyphs, for text shaped from the style's glyph source; null
   /// for paragraphs.
   final _GlyphRun? glyphRun;
+  @override
   final Size size;
   final String styleKey;
   final TextStyle? fillStyle;
   final TextStyle? haloStyle;
+
+  /// The halo's blur sigma at the reference size; 0 for a crisp halo.
+  /// Platform-shaped text only: glyph text blurs its halo in its atlas
+  /// cells (see [_GlyphRun.haloBlurQ]).
+  final double haloBlurSigma;
+
+  /// The `text-justify` side the lines are aligned to — never `auto`.
+  final String justify;
+
+  /// The line limit and width [fill] was laid out with, for laying the
+  /// same text out aligned to another side (see [justified]).
+  final int maxLines;
+  final double layoutWidth;
+
+  /// Lines of text: alignment changes nothing in a single one.
+  late final int lineCount =
+      glyphRun?.shaped.lineCount ?? fill!.computeLineMetrics().length;
+
+  /// [justified] layouts of this text, made on first request.
+  Map<String, _LaidOutText>? _variants;
 
   /// The glyph ranges this text would have been drawn from had they
   /// been loaded: set on platform-shaped text that only fell back
@@ -2828,6 +4044,22 @@ class _LaidOutText {
 
   List<_Cluster>? _clusters;
 
+  /// A blurred halo, recorded once, when the text is shaped. Impeller
+  /// blurs text drawn with a mask filter in an offscreen pass, and
+  /// reuses the result on later frames only for the very same text
+  /// object at the same scale — a paragraph paint makes a new one every
+  /// time, a recorded picture replays the one it holds. Painted
+  /// directly, every blurred label would cost its own offscreen pass on
+  /// every frame. Recorded with the shaping, so the render pump pays
+  /// for it, not the frame that first draws the label.
+  late final ui.Picture? _haloPicture = () {
+    final halo = this.halo;
+    if (halo == null || haloBlurSigma <= 0) return null;
+    final recorder = ui.PictureRecorder();
+    halo.paint(Canvas(recorder), Offset.zero);
+    return recorder.endRecording();
+  }();
+
   _LaidOutText({
     required this.text,
     required TextPainter this.fill,
@@ -2836,6 +4068,10 @@ class _LaidOutText {
     required this.styleKey,
     required TextStyle this.fillStyle,
     required this.haloStyle,
+    this.haloBlurSigma = 0,
+    this.justify = 'center',
+    this.maxLines = 1,
+    this.layoutWidth = double.infinity,
   }) : glyphRun = null;
 
   _LaidOutText.glyphs({
@@ -2843,21 +4079,89 @@ class _LaidOutText {
     required _GlyphRun run,
     required this.size,
     required this.styleKey,
+    this.justify = 'center',
   })  : glyphRun = run,
         fill = null,
         halo = null,
         fillStyle = null,
-        haloStyle = null;
+        haloStyle = null,
+        haloBlurSigma = 0,
+        maxLines = 1,
+        layoutWidth = double.infinity;
+
+  /// This text with its lines aligned to [side] (`left`, `center`,
+  /// `right`). Text on one line looks the same aligned anywhere, so it is
+  /// its own answer; other text is laid out once more per side and kept
+  /// with this one — in the same cache entry, under the same key.
+  _LaidOutText justified(String side) {
+    if (side == justify || lineCount < 2) return this;
+    return (_variants ??= {})[side] ??= () {
+      LabelPainter.debugJustifiedLayouts++;
+      final run = glyphRun;
+      if (run != null) {
+        return _LaidOutText.glyphs(
+          text: text,
+          run: run.justified(LabelPainter._justifyFraction(side)),
+          size: size,
+          styleKey: styleKey,
+          justify: side,
+        );
+      }
+      final fillStyle = this.fillStyle!;
+      TextPainter layOut(TextStyle style) => TextPainter(
+            text: TextSpan(text: text, style: style),
+            textDirection: TextDirection.ltr,
+            textAlign: LabelPainter._textAlign(side),
+            textWidthBasis: TextWidthBasis.longestLine,
+            maxLines: maxLines,
+          )..layout(maxWidth: layoutWidth);
+      final fill = layOut(fillStyle);
+      final haloStyle = this.haloStyle;
+      return _LaidOutText(
+        text: text,
+        fill: fill,
+        halo: haloStyle == null ? null : layOut(haloStyle),
+        size: fill.size,
+        styleKey: styleKey,
+        fillStyle: fillStyle,
+        haloStyle: haloStyle,
+        haloBlurSigma: haloBlurSigma,
+        justify: side,
+        maxLines: maxLines,
+        layoutWidth: layoutWidth,
+      ).._haloPicture;
+    }();
+  }
+
+  /// Paints the halo, if there is one, with its top-left at [topLeft].
+  void paintHalo(Canvas canvas, Offset topLeft) {
+    final halo = this.halo;
+    if (halo == null) return;
+    final picture = _haloPicture;
+    if (picture == null) {
+      halo.paint(canvas, topLeft);
+      return;
+    }
+    canvas.save();
+    canvas.translate(topLeft.dx, topLeft.dy);
+    canvas.drawPicture(picture);
+    canvas.restore();
+  }
 
   /// Grapheme clusters with their advance-centre x positions in the
   /// laid-out string — spacing and kerning come from the full layout,
   /// so curved glyphs keep the string's metrics. Whitespace clusters
   /// are omitted (their advance still separates the neighbours).
+  @override
   List<_Cluster> get clusters => _clusters ??= _computeClusters();
 
   void dispose() {
     fill?.dispose();
     halo?.dispose();
+    if (haloBlurSigma > 0) _haloPicture?.dispose();
+    for (final variant in _variants?.values ?? const <_LaidOutText>[]) {
+      variant.dispose();
+    }
   }
 
   List<_Cluster> _computeClusters() {
@@ -2938,6 +4242,11 @@ class _GlyphRun {
   /// `text-halo-width` in 1/128 em; 0 for no halo.
   final int haloRatioQ;
 
+  /// `text-halo-blur` in 1/128 em; 0 for a crisp halo. The halo cells
+  /// bake it in as a wider edge ramp (see [LabelPainter._coveragePaint]),
+  /// so a blurred glyph halo costs nothing per frame.
+  final int haloBlurQ;
+
   /// The atlas cells last resolved for this text: for which device
   /// size key and atlas generation, and per glyph its fill cell then
   /// its halo cell (null without a halo). A label keeps its size for
@@ -2954,7 +4263,20 @@ class _GlyphRun {
     required this.fillArgb,
     required this.haloArgb,
     required this.haloRatioQ,
+    this.haloBlurQ = 0,
   });
+
+  /// This run with its lines aligned to [justify] (see
+  /// [ShapedGlyphs.justified]); the glyphs and their cells are the same.
+  _GlyphRun justified(double justify) => _GlyphRun(
+        shaped: shaped.justified(justify),
+        pages: pages,
+        fontStack: fontStack,
+        fillArgb: fillArgb,
+        haloArgb: haloArgb,
+        haloRatioQ: haloRatioQ,
+        haloBlurQ: haloBlurQ,
+      );
 }
 
 class _GlyphText {
@@ -3051,7 +4373,8 @@ typedef _Sprite = ({
 });
 
 class _CurvedGlyph {
-  /// The grapheme's paragraphs, for text the platform shaped.
+  /// The grapheme's paragraphs, for text the platform shaped; null for
+  /// glyph-drawn text and in a placement worker, which never draws.
   final _GlyphText? painters;
 
   /// The glyph's index in its label's [_GlyphRun], for glyph-drawn text.
@@ -3080,7 +4403,8 @@ class _DrawableIcon {
   static const double _sdfTexels = 8;
   static const double _sdfEdge = 6 / _sdfTexels;
 
-  final SpriteAtlas atlas;
+  /// Null in a placement worker, which never draws.
+  final SpriteAtlas? atlas;
   final Sprite sprite;
   final Rect rect;
   final double opacity;
@@ -3089,6 +4413,10 @@ class _DrawableIcon {
   final Color? tint;
   final Color? haloColor;
   final double haloWidth;
+
+  /// `icon-halo-blur`, in px: the halo's edge fades over ±1.19 × this,
+  /// as in MapLibre's shader.
+  final double haloBlur;
 
   /// `icon-size`, which `icon-halo-width` is measured relative to.
   final double iconSize;
@@ -3102,6 +4430,14 @@ class _DrawableIcon {
   /// `icon-anchor` and `icon-offset` turn with the sprite.
   final double rotation;
 
+  /// `icon-padding`, around [bounds] in [collisionBox].
+  final EdgeInsets padding;
+
+  /// For an icon stretched by `icon-text-fit` around a sprite's
+  /// `stretchX` / `stretchY` zones: the grid its slices form, covering
+  /// [rect]. Null draws the whole sprite into [rect].
+  final _IconMesh? mesh;
+
   _DrawableIcon({
     required this.atlas,
     required this.sprite,
@@ -3110,16 +4446,50 @@ class _DrawableIcon {
     this.tint,
     this.haloColor,
     this.haloWidth = 0,
+    this.haloBlur = 0,
     this.iconSize = 1,
     required this.pivot,
     this.rotation = 0,
+    this.padding = const EdgeInsets.all(2),
+    this.mesh,
   });
+
+  /// This icon drawn into [rect] instead, sliced by [mesh], about
+  /// [pivot] at [rotation] — `icon-text-fit`'s result.
+  _DrawableIcon fitted({
+    required Rect rect,
+    required Offset pivot,
+    required double rotation,
+    _IconMesh? mesh,
+  }) =>
+      _DrawableIcon(
+        atlas: atlas,
+        sprite: sprite,
+        rect: rect,
+        opacity: opacity,
+        tint: tint,
+        haloColor: haloColor,
+        haloWidth: haloWidth,
+        haloBlur: haloBlur,
+        iconSize: iconSize,
+        pivot: pivot,
+        rotation: rotation,
+        padding: padding,
+        mesh: mesh,
+      );
 
   /// Screen extent of the (rotated) sprite. Read once per collision
   /// box, fallback attempt, variable anchor tried and fade layer, so
   /// the rotation maths runs once rather than per read.
   late final Rect bounds =
       rotation == 0 ? rect : LabelPainter._rotatedBounds(rect, pivot, rotation);
+
+  /// [bounds] plus `icon-padding`: the space the icon claims.
+  late final Rect collisionBox = Rect.fromLTRB(
+      bounds.left - padding.left,
+      bounds.top - padding.top,
+      bounds.right + padding.right,
+      bounds.bottom + padding.bottom);
 
   void draw(Canvas canvas, double devicePixelRatio) {
     if (rotation == 0) {
@@ -3137,10 +4507,8 @@ class _DrawableIcon {
   void _paint(Canvas canvas, double devicePixelRatio) {
     final color = tint;
     if (color == null) {
-      canvas.drawImageRect(
-        atlas.image,
-        sprite.sourceRect,
-        rect,
+      _drawSprite(
+        canvas,
         Paint()
           ..filterQuality = FilterQuality.medium
           ..color = Color.fromRGBO(255, 255, 255, opacity),
@@ -3149,30 +4517,62 @@ class _DrawableIcon {
     }
     final halo = haloColor;
     if (halo != null && halo.a > 0 && haloWidth > 0) {
-      canvas.drawImageRect(
-        atlas.image,
-        sprite.sourceRect,
-        rect,
+      _drawSprite(
+        canvas,
         _sdfPaint(
           halo,
           ((6 - haloWidth / iconSize) / _sdfTexels).clamp(0.0, _sdfEdge),
           devicePixelRatio,
+          blur: haloBlur,
         ),
       );
     }
-    canvas.drawImageRect(atlas.image, sprite.sourceRect, rect,
-        _sdfPaint(color, _sdfEdge, devicePixelRatio));
+    _drawSprite(canvas, _sdfPaint(color, _sdfEdge, devicePixelRatio));
   }
+
+  void _drawSprite(Canvas canvas, Paint paint) {
+    final atlas = this.atlas!;
+    final mesh = this.mesh;
+    if (mesh == null) {
+      canvas.drawImageRect(atlas.image, sprite.sourceRect, rect, paint);
+      return;
+    }
+    // One mesh, so neighbouring slices share their edges: drawn slice by
+    // slice, each slice's antialiased edge let the background through
+    // along the seams wherever they fell between pixels.
+    final vertices = mesh.vertices();
+    canvas.drawVertices(vertices, BlendMode.srcOver,
+        paint..shader = _shaderFor(atlas, paint.filterQuality));
+    vertices.dispose();
+  }
+
+  /// One shader over [atlas]'s sheet per filter quality, living as long
+  /// as the atlas: never disposed here, since on the web disposing an
+  /// `ImageShader` disposes the image it samples, which the atlas owns.
+  static ImageShader _shaderFor(SpriteAtlas atlas, FilterQuality quality) =>
+      (_shaders[atlas] ??= {})[quality] ??= ImageShader(
+          atlas.image, TileMode.clamp, TileMode.clamp, _identity,
+          filterQuality: quality);
+
+  static final _shaders = Expando<Map<FilterQuality, ImageShader>>();
+  static final _identity =
+      Float64List.fromList([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
   /// Thresholds the distance field at [edge] and tints what survives
   /// with [color]. A colour matrix is applied *after* texture sampling,
   /// so the threshold lands on interpolated distances and the edge stays
   /// crisp at any scale — the same reason MapLibre does this in a
   /// fragment shader. The ramp is steepened to span roughly one device
-  /// pixel at the size this icon is drawn, which is what antialiases it.
-  Paint _sdfPaint(Color color, double edge, double devicePixelRatio) {
-    final drawnPerTexel = rect.width * devicePixelRatio / sprite.width;
-    final slope = (_sdfTexels * drawnPerTexel).clamp(4.0, 128.0);
+  /// pixel at the size this icon is drawn, which is what antialiases it,
+  /// widened by 2 × 1.19 × [blur] px for a blurred halo.
+  Paint _sdfPaint(Color color, double edge, double devicePixelRatio,
+      {double blur = 0}) {
+    // Device px per sprite texel, at the icon's own scale (a stretched
+    // icon keeps it in its fixed slices).
+    final drawnPerTexel = iconSize / sprite.pixelRatio * devicePixelRatio;
+    final rampPixels = 1 + 2 * 1.19 * blur * devicePixelRatio;
+    final slope = (_sdfTexels * drawnPerTexel / rampPixels)
+        .clamp(blur > 0 ? 0.5 : 4.0, 128.0);
     final shift = 0.5 - edge * slope;
     return Paint()
       // Bilinear only: mipmaps blur the field, which erodes the shape.
@@ -3185,6 +4585,56 @@ class _DrawableIcon {
         0, 0, 0, 0, color.b * 255, //
         0, 0, 0, slope, shift * 255, //
       ]);
+  }
+}
+
+/// A sliced icon's grid: [xs] and [ys] are where its slices meet on
+/// screen, [us] and [vs] the same lines in the sprite sheet.
+final class _IconMesh {
+  _IconMesh({
+    required this.xs,
+    required this.ys,
+    required this.us,
+    required this.vs,
+  });
+
+  final List<double> xs;
+  final List<double> ys;
+  final List<double> us;
+  final List<double> vs;
+
+  /// Two triangles per slice, over vertices the slices share.
+  ui.Vertices vertices() {
+    final columns = xs.length;
+    final rows = ys.length;
+    final positions = Float32List(columns * rows * 2);
+    final uvs = Float32List(columns * rows * 2);
+    var i = 0;
+    for (var row = 0; row < rows; row++) {
+      for (var column = 0; column < columns; column++) {
+        positions[i] = xs[column];
+        uvs[i++] = us[column];
+        positions[i] = ys[row];
+        uvs[i++] = vs[row];
+      }
+    }
+    final indices = Uint16List((columns - 1) * (rows - 1) * 6);
+    var k = 0;
+    for (var row = 0; row + 1 < rows; row++) {
+      for (var column = 0; column + 1 < columns; column++) {
+        final topLeft = row * columns + column;
+        final bottomLeft = topLeft + columns;
+        indices
+          ..[k++] = topLeft
+          ..[k++] = topLeft + 1
+          ..[k++] = bottomLeft
+          ..[k++] = topLeft + 1
+          ..[k++] = bottomLeft + 1
+          ..[k++] = bottomLeft;
+      }
+    }
+    return ui.Vertices.raw(ui.VertexMode.triangles, positions,
+        textureCoordinates: uvs, indices: indices);
   }
 }
 
@@ -3207,8 +4657,14 @@ class _RepeatAnchor {
 class _DrawableSymbol {
   final PlacedSymbol symbol;
   final _DrawableIcon? icon;
-  final _LaidOutText? text;
+  final _TextShape? text;
+
+  /// The text's box before [textAngle] turns it about [textAnchor].
   final Rect textRect;
+
+  /// The point text turns about: the symbol's anchor, moved by
+  /// `text-translate`.
+  final Offset textAnchor;
   final double textAngle;
 
   /// evaluated `text-size` / [LabelPainter._shapeSize]: paragraphs are
@@ -3239,19 +4695,33 @@ class _DrawableSymbol {
   /// [LabelPainter._prepareAtlasGlyphs] before drawing.
   List<_SpriteBatch>? atlasSprites;
 
+  /// Where this symbol sorts within its layer when drawn, per
+  /// `symbol-z-order` (see [LabelPainter._zOrderKey]). Assigned by
+  /// [LabelPainter._prepare] like [opacity].
+  double drawKey = 0;
+
   static final _atlasPaint = Paint()..filterQuality = FilterQuality.low;
 
   bool get drawsText => text != null || curvedGlyphs != null;
+
+  /// The glyphs [text] is drawn from, when it was shaped from the style's
+  /// glyph source; null for paragraphs, and for the metrics a placement
+  /// worker places by, which are never drawn.
+  _GlyphRun? get glyphRun => switch (text) {
+        final _LaidOutText laidOut => laidOut.glyphRun,
+        _ => null,
+      };
 
   _DrawableSymbol(
     this.symbol, {
     this.icon,
     this.text,
     this.textRect = Rect.zero,
+    Offset? textAnchor,
     this.textAngle = 0,
     this.textScale = 1,
     this.curvedGlyphs,
-  });
+  }) : textAnchor = textAnchor ?? symbol.screenAnchor;
 
   /// Screen extent of everything [draw] paints, for bounding the fade
   /// layer a cohort draws through. Rotated pieces contribute the circle
@@ -3276,10 +4746,7 @@ class _DrawableSymbol {
             glyph.position, glyph.extent.width, glyph.extent.height));
       }
     } else if (text != null) {
-      add(textAngle == 0
-          ? textRect
-          : sweptCircle(
-              symbol.screenAnchor, text.size.width, text.size.height));
+      add(LabelPainter._rotatedBounds(textRect, textAnchor, textAngle));
     }
     return result ?? Rect.zero;
   }
@@ -3331,7 +4798,7 @@ class _DrawableSymbol {
     }
     // Glyph-drawn text draws only from the atlas; without its cells it
     // sits this frame out.
-    if (text?.glyphRun != null) return;
+    if (glyphRun != null) return;
     final glyphs = curvedGlyphs;
     if (glyphs != null) {
       // All halos first: a glyph's halo must never cut into its
@@ -3352,16 +4819,20 @@ class _DrawableSymbol {
       }
       return;
     }
-    final t = text;
+    final t = text as _LaidOutText?;
     if (t == null) return;
     final fill = t.fill!;
     if (textAngle != 0) {
+      // Turned about the anchor; a box offset from it (point text with
+      // an anchor or offset) keeps that offset in the turned frame.
       canvas.save();
-      canvas.translate(symbol.screenAnchor.dx, symbol.screenAnchor.dy);
+      canvas.translate(textAnchor.dx, textAnchor.dy);
       canvas.rotate(textAngle);
+      final centre = textRect.center - textAnchor;
+      if (centre != Offset.zero) canvas.translate(centre.dx, centre.dy);
       if (textScale != 1) canvas.scale(textScale);
       final topLeft = Offset(-t.size.width / 2, -t.size.height / 2);
-      t.halo?.paint(canvas, topLeft);
+      t.paintHalo(canvas, topLeft);
       fill.paint(canvas, topLeft);
       canvas.restore();
     } else if (textScale != 1) {
@@ -3372,11 +4843,11 @@ class _DrawableSymbol {
       canvas.translate(textRect.center.dx, textRect.center.dy);
       canvas.scale(textScale);
       final topLeft = Offset(-t.size.width / 2, -t.size.height / 2);
-      t.halo?.paint(canvas, topLeft);
+      t.paintHalo(canvas, topLeft);
       fill.paint(canvas, topLeft);
       canvas.restore();
     } else {
-      t.halo?.paint(canvas, textRect.topLeft);
+      t.paintHalo(canvas, textRect.topLeft);
       fill.paint(canvas, textRect.topLeft);
     }
   }
@@ -3400,10 +4871,211 @@ class _DrawableSymbol {
   }
 }
 
-/// Grid-bucketed screen-space collision index.
+/// How a symbol's box may overlap the boxes already placed —
+/// `text-overlap` / `icon-overlap`, or `*-allow-overlap` (always/never)
+/// when those are unset.
+enum _Overlap {
+  /// Collides with every placed box.
+  never,
+
+  /// Collides with nothing.
+  always,
+
+  /// Collides only with boxes placed in [never] mode.
+  cooperative,
+}
+
+/// How [LabelPainter._zOrderKey] orders a layer's symbols when drawn.
+enum _ZOrder { sortKey, screenY, none }
+
+/// A symbol layer's placement properties as one eval zoom resolves them.
+///
+/// The label pass reads these for every symbol on every frame, and in
+/// real styles none of them reads feature data: each is resolved here
+/// once per layer and zoom, so the pass pays a field read for it rather
+/// than an evaluation. A property that does read feature data stays
+/// null here and is evaluated per symbol.
+final class _SymbolRules {
+  _SymbolRules(this.layer);
+
+  final SymbolThemeLayer layer;
+  double _zoom = double.nan;
+
+  _Overlap? _textOverlap;
+  _Overlap? _iconOverlap;
+  bool? _textIgnore;
+  bool? _iconIgnore;
+  bool? _textOptional;
+  bool? _iconOptional;
+  bool? _avoidEdges;
+  String? _iconTextFit;
+  String? _justify;
+  String? _baseJustify;
+  EdgeInsets? _iconPadding;
+  bool? _textTranslated;
+  bool? _iconTranslated;
+  double? _textRotate;
+  bool? _textMapAligned;
+  _ZOrder? _zOrder;
+
+  // The layer the last lookup was for: every helper a symbol goes
+  // through asks for the same one in turn.
+  static _SymbolRules? _last;
+  static final _rules = Expando<_SymbolRules>();
+
+  /// [layer]'s rules at eval zoom [zoom].
+  static _SymbolRules of(SymbolThemeLayer layer, double zoom) {
+    final last = _last;
+    if (last != null && identical(last.layer, layer) && last._zoom == zoom) {
+      return last;
+    }
+    return _last = (_rules[layer] ??= _SymbolRules(layer)).._resolve(zoom);
+  }
+
+  static bool _fixedBool(BoolProp p) => p.isConstant || p.zoomOnly;
+  static bool _fixedString(StringProp? p) =>
+      p == null || p.isConstant || p.zoomOnly;
+  static bool _fixedList(NumListProp p) => p.isConstant || p.zoomOnly;
+  static bool _fixedOverlap(StringProp? overlap, BoolProp allow) =>
+      overlap == null ? _fixedBool(allow) : _fixedString(overlap);
+
+  void _resolve(double zoom) {
+    if (zoom == _zoom) return;
+    _zoom = zoom;
+    final l = layer;
+    final ctx = EvalContext(
+        zoom: zoom,
+        properties: const {},
+        geometryType: 'Point',
+        featureId: null);
+    T? fixed<T extends Object>(bool isFixed, T Function() value) =>
+        isFixed ? value() : null;
+    _textOverlap = fixed(_fixedOverlap(l.textOverlap, l.textAllowOverlap),
+        () => LabelPainter._overlapOf(l.textOverlap, l.textAllowOverlap, ctx));
+    _iconOverlap = fixed(_fixedOverlap(l.iconOverlap, l.iconAllowOverlap),
+        () => LabelPainter._overlapOf(l.iconOverlap, l.iconAllowOverlap, ctx));
+    _textIgnore = fixed(_fixedBool(l.textIgnorePlacement),
+        () => l.textIgnorePlacement.eval(ctx));
+    _iconIgnore = fixed(_fixedBool(l.iconIgnorePlacement),
+        () => l.iconIgnorePlacement.eval(ctx));
+    _textOptional =
+        fixed(_fixedBool(l.textOptional), () => l.textOptional.eval(ctx));
+    _iconOptional =
+        fixed(_fixedBool(l.iconOptional), () => l.iconOptional.eval(ctx));
+    _avoidEdges = fixed(
+        _fixedBool(l.symbolAvoidEdges), () => l.symbolAvoidEdges.eval(ctx));
+    _iconTextFit =
+        fixed(_fixedString(l.iconTextFit), () => l.iconTextFit.eval(ctx));
+    _justify =
+        fixed(_fixedString(l.textJustify), () => l.textJustify.eval(ctx));
+    _baseJustify = fixed(_fixedString(l.textJustify),
+        () => LabelPainter._justify(_justify!, 'center'));
+    _iconPadding = fixed(_fixedList(l.iconPadding),
+        () => LabelPainter._padding(l.iconPadding.eval(ctx)));
+    bool moves(List<double> t) =>
+        (t.isNotEmpty && t[0] != 0) || (t.length > 1 && t[1] != 0);
+    _textTranslated = fixed(
+        _fixedList(l.textTranslate), () => moves(l.textTranslate.eval(ctx)));
+    _iconTranslated = fixed(
+        _fixedList(l.iconTranslate), () => moves(l.iconTranslate.eval(ctx)));
+    final rotateFixed = l.textRotate.isConstant || l.textRotate.zoomOnly;
+    final alignFixed = _fixedString(l.textRotationAlignment);
+    _textRotate = fixed(rotateFixed && alignFixed,
+        () => l.textRotate.eval(ctx) * math.pi / 180);
+    _textMapAligned = fixed(rotateFixed && alignFixed,
+        () => l.textRotationAlignment.eval(ctx) == 'map');
+    final zOrderFixed = _fixedString(l.symbolZOrder) &&
+        _textOverlap != null &&
+        _iconOverlap != null &&
+        _textIgnore != null &&
+        _iconIgnore != null;
+    _zOrder = fixed(zOrderFixed, () {
+      final zOrder = l.symbolZOrder.eval(ctx);
+      if (zOrder != 'viewport-y' && !l.sortKey.isConstant) {
+        return _ZOrder.sortKey;
+      }
+      if (zOrder == 'source') return _ZOrder.none;
+      final overlaps = _textOverlap != _Overlap.never ||
+          _iconOverlap != _Overlap.never ||
+          _textIgnore! ||
+          _iconIgnore!;
+      return overlaps ? _ZOrder.screenY : _ZOrder.none;
+    });
+  }
+
+  _Overlap textOverlap(EvalContext ctx) =>
+      _textOverlap ??
+      LabelPainter._overlapOf(layer.textOverlap, layer.textAllowOverlap, ctx);
+  _Overlap iconOverlap(EvalContext ctx) =>
+      _iconOverlap ??
+      LabelPainter._overlapOf(layer.iconOverlap, layer.iconAllowOverlap, ctx);
+  bool textIgnore(EvalContext ctx) =>
+      _textIgnore ?? layer.textIgnorePlacement.eval(ctx);
+  bool iconIgnore(EvalContext ctx) =>
+      _iconIgnore ?? layer.iconIgnorePlacement.eval(ctx);
+  bool textOptional(EvalContext ctx) =>
+      _textOptional ?? layer.textOptional.eval(ctx);
+  bool iconOptional(EvalContext ctx) =>
+      _iconOptional ?? layer.iconOptional.eval(ctx);
+  bool avoidEdges(EvalContext ctx) =>
+      _avoidEdges ?? layer.symbolAvoidEdges.eval(ctx);
+  String iconTextFit(EvalContext ctx) =>
+      _iconTextFit ?? layer.iconTextFit.eval(ctx);
+  String justify(EvalContext ctx) => _justify ?? layer.textJustify.eval(ctx);
+
+  /// `text-justify` before any anchor resolves `auto`: what a label is
+  /// shaped with.
+  String baseJustify(EvalContext ctx) =>
+      _baseJustify ?? LabelPainter._justify(justify(ctx), 'center');
+  EdgeInsets iconPadding(EvalContext ctx) =>
+      _iconPadding ?? LabelPainter._padding(layer.iconPadding.eval(ctx));
+
+  /// `text-translate` for [placed], as [LabelPainter._translation].
+  Offset textTranslation(EvalContext ctx, PlacedSymbol placed) =>
+      _textTranslated == false
+          ? Offset.zero
+          : LabelPainter._translation(
+              layer.textTranslate, layer.textTranslateAnchor, ctx, placed);
+
+  /// `icon-translate` for [placed], as [LabelPainter._translation].
+  Offset iconTranslation(EvalContext ctx, PlacedSymbol placed) =>
+      _iconTranslated == false
+          ? Offset.zero
+          : LabelPainter._translation(
+              layer.iconTranslate, layer.iconTranslateAnchor, ctx, placed);
+
+  /// The angle point-placed text is drawn at: `text-rotate`, plus the
+  /// map's bearing when `text-rotation-alignment` is `map`.
+  double pointTextAngle(EvalContext ctx, PlacedSymbol placed) {
+    final rotate = _textRotate;
+    final mapAligned = _textMapAligned;
+    if (rotate != null && mapAligned != null) {
+      return mapAligned ? rotate + placed.screenAngle : rotate;
+    }
+    var angle = layer.textRotate.eval(ctx) * math.pi / 180;
+    if (layer.textRotationAlignment.eval(ctx) == 'map') {
+      angle += placed.screenAngle;
+    }
+    return angle;
+  }
+
+  /// Where [placed] sorts among this layer's symbols when drawn; see
+  /// [LabelPainter._zOrderKey].
+  double zOrderKey(EvalContext ctx, PlacedSymbol placed) => switch (_zOrder) {
+        _ZOrder.sortKey => placed.instance.sortKey,
+        _ZOrder.screenY => placed.screenAnchor.dy,
+        _ZOrder.none => 0,
+        null => LabelPainter._zOrderKey(layer, ctx, placed),
+      };
+}
+
+/// Grid-bucketed screen-space collision index. Boxes placed in
+/// [_Overlap.never] mode and the rest are bucketed apart, since a
+/// `cooperative` symbol tests only the former.
 class _CollisionIndex {
   static const double _cellSize = 128;
   final Map<int, List<Rect>> _cells = {};
+  final Map<int, List<Rect>> _overlapCells = {};
   final int _columns;
   final bool _permissive;
 
@@ -3427,50 +5099,70 @@ class _CollisionIndex {
 
   /// Whether this index decides nothing. Symbol preparation reads it to
   /// replay the parts of a placement that space, not geometry, decided
-  /// — which anchor a label took, whether its text was dropped.
+  /// — which anchor a label took, whether its text or icon was dropped.
   bool get permissive => _permissive;
 
   /// Whether [rects] lie within [bounds]. The one test that
-  /// `*-allow-overlap` symbols, which skip [tryPlaceAll], still face.
+  /// `*-allow-overlap` symbols, which skip collisions, still face.
   bool fits(List<Rect> rects) {
     final bounds = this.bounds;
     if (bounds == null) return true;
+    return _within(rects, bounds);
+  }
+
+  static bool _within(List<Rect> rects, Rect area) {
     for (final rect in rects) {
-      if (rect.left < bounds.left ||
-          rect.top < bounds.top ||
-          rect.right > bounds.right ||
-          rect.bottom > bounds.bottom) {
+      if (rect.left < area.left ||
+          rect.top < area.top ||
+          rect.right > area.right ||
+          rect.bottom > area.bottom) {
         return false;
       }
     }
     return true;
   }
 
-  /// Whether [rects] fit, reserving them when they do.
-  bool tryPlaceAll(List<Rect> rects) {
+  /// Whether [rects] could be placed in [overlap] mode: within [bounds]
+  /// and [edges] (`symbol-avoid-edges`), and clear of the boxes that
+  /// mode collides with. Reserves nothing; see [insert].
+  bool free(List<Rect> rects, _Overlap overlap, [Rect? edges]) {
     if (_permissive) return true;
     if (!fits(rects)) return false;
+    if (edges != null && !_within(rects, edges)) return false;
+    if (overlap == _Overlap.always) return true;
     for (final rect in rects) {
-      if (_collides(rect)) return false;
-    }
-    for (final rect in rects) {
-      _insert(rect);
+      if (_collides(_cells, rect)) return false;
+      if (overlap == _Overlap.never && _collides(_overlapCells, rect)) {
+        return false;
+      }
     }
     return true;
+  }
+
+  /// Reserves [rects], placed in [overlap] mode. A symbol that allows
+  /// overlap still reserves its space, as in MapLibre: it may be drawn
+  /// over others, but later symbols that may not overlap avoid it.
+  void insert(List<Rect> rects, _Overlap overlap) {
+    if (_permissive) return;
+    final cells = overlap == _Overlap.never ? _cells : _overlapCells;
+    for (final rect in rects) {
+      _insert(cells, rect);
+    }
   }
 
   // The cell walks are inlined in both callers: a sync* generator here
   // allocated an iterator per collision box per frame in the hottest
   // label loop.
 
-  bool _collides(Rect rect) {
+  bool _collides(Map<int, List<Rect>> cells, Rect rect) {
+    if (cells.isEmpty) return false;
     final minX = ((rect.left + 512) / _cellSize).floor();
     final maxX = ((rect.right + 512) / _cellSize).floor();
     final minY = ((rect.top + 512) / _cellSize).floor();
     final maxY = ((rect.bottom + 512) / _cellSize).floor();
     for (var y = minY; y <= maxY; y++) {
       for (var x = minX; x <= maxX; x++) {
-        final rects = _cells[y * _columns + x];
+        final rects = cells[y * _columns + x];
         if (rects == null) continue;
         for (final other in rects) {
           if (rect.overlaps(other)) return true;
@@ -3480,14 +5172,14 @@ class _CollisionIndex {
     return false;
   }
 
-  void _insert(Rect rect) {
+  void _insert(Map<int, List<Rect>> cells, Rect rect) {
     final minX = ((rect.left + 512) / _cellSize).floor();
     final maxX = ((rect.right + 512) / _cellSize).floor();
     final minY = ((rect.top + 512) / _cellSize).floor();
     final maxY = ((rect.bottom + 512) / _cellSize).floor();
     for (var y = minY; y <= maxY; y++) {
       for (var x = minX; x <= maxX; x++) {
-        (_cells[y * _columns + x] ??= []).add(rect);
+        (cells[y * _columns + x] ??= []).add(rect);
       }
     }
   }
