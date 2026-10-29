@@ -213,6 +213,7 @@ All via `--dart-define`. Zooms and coordinates are integers because
 | `BENCH_RETAIN_ALL` | `false` | query mode: run the layer with `retainAllProperties` |
 | `BENCH_WATCH` | — | stability/manual: regexp over continuity keys whose every rejection is printed as a `WATCH` line |
 | `BENCH_LOG_GONE` | `false` | stability/manual: print a `GONE` line for every on-screen label that stops drawing |
+| `BENCH_HALO_BLUR` | `true` | `false` draws text halos crisp, ignoring `text-halo-blur` (`LabelPainter.debugHaloBlur`), so an A/B against the default puts a number on the blur's raster cost |
 
 The phase matrix (speed × labels on/off × cache budget × cold/warm) is the
 `_phases` list in `lib/main.dart`. The labels-off arm is a control, not filler:

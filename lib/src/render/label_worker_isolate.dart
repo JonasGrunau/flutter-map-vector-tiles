@@ -243,7 +243,7 @@ LabelPassResult _pass(
           id: cohort.ids[i],
           screenAnchor: transform.apply(symbol.anchor),
           screenAngle: symbol.angle + cohort.rotation,
-          transform: symbol.alongLine ? transform : null,
+          transform: transform,
           retained: cohort.retained,
           order: cohort.order + i,
         ));
@@ -262,14 +262,16 @@ LabelPassResult _pass(
   final ids = Int32List(winners.length);
   final copies = Int32List(winners.length);
   final anchors = List<String?>.filled(winners.length, null);
-  final dropped = Uint8List(winners.length);
+  final textDropped = Uint8List(winners.length);
+  final iconDropped = Uint8List(winners.length);
   for (var w = 0; w < winners.length; w++) {
     final winner = winners[w];
     ids[w] = winner.id;
     copies[w] = winner.order;
     final decision = painter.decisionOf(winner);
     anchors[w] = decision.anchor;
-    dropped[w] = decision.textDropped ? 1 : 0;
+    textDropped[w] = decision.textDropped ? 1 : 0;
+    iconDropped[w] = decision.iconDropped ? 1 : 0;
   }
   return (
     id: request.id,
@@ -277,7 +279,8 @@ LabelPassResult _pass(
     copies: copies,
     missingCohorts: missing,
     anchors: anchors,
-    textDropped: dropped,
+    textDropped: textDropped,
+    iconDropped: iconDropped,
     micros: stopwatch.elapsedMicroseconds,
   );
 }

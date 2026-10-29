@@ -121,8 +121,9 @@ typedef LabelPassRequest = ({
 
 /// A pass's winners, by label id, with the copy each was placed from
 /// (its [PlacedSymbol.order] in the request), the variable anchor it
-/// took (null when none applies) and whether its text was dropped for
-/// its icon. [micros] is the worker's time for the pass.
+/// took (null when none applies), and whether its text or its icon was
+/// dropped for the other (`text-optional`, `icon-optional`). [micros] is
+/// the worker's time for the pass.
 @internal
 typedef LabelPassResult = ({
   int id,
@@ -131,6 +132,7 @@ typedef LabelPassResult = ({
   int missingCohorts,
   List<String?> anchors,
   Uint8List textDropped,
+  Uint8List iconDropped,
   int micros,
 });
 

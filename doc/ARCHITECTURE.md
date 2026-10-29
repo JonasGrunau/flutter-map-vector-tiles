@@ -263,12 +263,26 @@ unsnapped `text-size` ramp would hand it a new size at every eval-zoom
 step and re-rasterize every visible glyph and halo stroke on the raster
 thread. The shape-cache key
 therefore contains no font size; `text-opacity` (1/32 steps) and
-`text-halo-width` (1/128-em ratio steps) enter it quantized, so style
+`text-halo-width` and `text-halo-blur` (1/128-em ratio steps) enter it
+quantized, so style
 ramps re-shape a label a bounded number of times ever rather than per
 zoom step. Never put a font size — or an unquantized opacity or halo
 width — back into that key: it re-creates the full-screen re-shape per
 pinch that this design removed. Collision boxes and curved-text cluster
 metrics are the reference-size measurements multiplied by the scale.
+`text-line-height` and `text-justify` are layout inputs and part of the
+key too; a box is as wide as its longest line, as MapLibre's is. The
+leading is distributed evenly (`TextLeadingDistribution.even`): in
+proportion to each font's ascent and descent, a line mixing fonts takes
+its baseline from whichever font gains most, by a share that grows with
+the line height, so an Arabic word next to Latin digits sat 1.5 px
+lower than alone at 1.2 em. MapLibre keeps every line on one pitch
+whatever its fonts.
+`text-justify: auto` follows the anchor a label is placed at: the text
+is shaped centred, and multi-line text is laid out once more per side
+its anchors can ask for, inside `prewarm` and kept with the shaped text
+under the same key. Single-line text looks the same aligned anywhere
+and is never laid out twice.
 
 Where the style's glyphs do not draw a label (below), shaping is
 Flutter's — HarfBuzz through `TextPainter`, with the platform's fonts —
@@ -294,7 +308,9 @@ to record its geometry. Glyph PBFs carry every metric MapLibre lays text
 out with, at a 24 px em: advance, bitmap size and offsets. So
 `text/glyph_shaper.dart` lays the label out in pure Dart, as MapLibre
 does — glyph by glyph by advance plus `text-letter-spacing`, lines
-1.2 em apart and centred on each other, the bitmap placed so a line's
+`text-line-height` apart and aligned by `text-justify` (for `auto`,
+`ShapedGlyphs.justified` shifts each line once the anchor is known,
+without shaping again), the bitmap placed so a line's
 capitals centre on its middle — at a few microseconds per label. Lines
 break at every `\n`, and at `text-max-width` where the text allows it
 (after spaces, hyphens and dashes, slashes, `&`, `+`, parentheses, a
@@ -417,6 +433,60 @@ icons include camera bearing; line-aligned icons add the projected line
 bearing. Rotation is about the symbol anchor, so `icon-anchor` and
 `icon-offset` rotate with the sprite, and the rotated extent is used for both
 collision and bounded fade layers.
+
+A symbol's text and icon are placed by MapLibre's rule (`_place` in
+`label_painter.dart`). Each is tested against the boxes placed so far
+with its own overlap mode — `text-overlap` / `icon-overlap`, else
+`*-allow-overlap` as `always`/`never` — and the collision index keeps
+`never` boxes apart from the rest, because a `cooperative` symbol
+collides only with the former. Then `text-optional` / `icon-optional`
+decide whether one half may show without the other, and whatever shows
+reserves its space unless `*-ignore-placement` says otherwise. A symbol
+allowed to overlap still reserves its space: it may be drawn over
+others, but a later symbol that may not overlap keeps clear of it. A
+half dropped by a pass is remembered with the sitting
+(`SittingPlacement.textDropped` / `iconDropped`), since replay frames
+decide no space and would otherwise draw it again. Copies of one label
+share a sitting (a zoom crossing's two levels, a seam's two tiles), so
+only the first one placed at a sitting in a pass writes it, and a later
+copy with variable anchors may only take the anchor the first took —
+never draw the label again at another. `icon-padding`
+widens the icon's box, `symbol-avoid-edges` confines every box to the
+screen bounds of the display tile the symbol was laid out in (every
+`PlacedSymbol` carries its tile's transform for this), and
+`symbol-z-order` orders a layer's symbols when drawn — by sort key,
+screen y or source order, as MapLibre resolves it.
+
+`icon-text-fit` sizes the icon once the text's box is known, wherever
+the variable anchors put it: the fitted axes span the text plus
+`icon-text-fit-padding`, and a sprite that declares `stretchX` /
+`stretchY` is cut into slices, the stretch zones sharing whatever its
+fixed pixels leave of the span and its `content` box landing on the
+text. The slices are drawn as one textured mesh (`drawVertices`), so
+neighbouring slices share their edges: drawn one by one, each slice's
+antialiased edge showed the background along the seams. Text with a fitted icon is never curved; a shield stays a box.
+`text-rotate` turns point-placed text (and its collision box, as an
+axis-aligned bound) about its anchor, `text-rotation-alignment: map`
+turns it with the map, and `*-translate` moves text and icon apart —
+their boxes with them.
+
+Halo blur is a Gaussian mask filter on the halo's stroke paint, with a
+sigma matching the edge MapLibre's shader fades over ±1.19 × blur px.
+Painted as a paragraph, every blurred halo would cost Impeller an
+offscreen blur pass per label per frame: it reuses a blurred text draw
+across frames only for the very same text object, and a paragraph
+paint makes a new one each time. So a blurred halo is recorded into a
+`Picture` once per shaped text, and replaying that picture hands
+Impeller the same object every frame; it re-blurs only when the drawn
+scale changes. Curved glyphs take their blur into the glyph atlas,
+whose cells grow by three sigma. An SDF icon's halo blur needs no such
+care: it only widens the ramp of the colour matrix that thresholds the
+distance field. Text drawn from the style's glyphs is blurred the same
+way: its halo is a threshold on the glyph's distance field, so a blur
+widens that threshold's ramp by 2 × 1.19 × the blur, as MapLibre's
+shader does, in the halo's atlas cell, which is rasterized once per
+glyph, size, halo width and blur. Only platform-shaped text replays a
+blurred picture.
 
 That shaping is the expensive half — several times a frame's whole
 render budget on a dense city tile, against sub-millisecond extraction —
@@ -653,7 +723,8 @@ label was drawn from. The worker runs the screen pass's own placement
 code — `_prepare`, the priority sort, incumbency, one copy per label
 with the drawn copy tried first, repeat suppression, placement memory —
 and answers with the winning label ids, the copy each won with, and the
-variable anchor and dropped text each chose. The first frame that finds
+variable anchor each chose and whether it dropped its text or its icon
+(`text-optional`, `icon-optional`). The first frame that finds
 the answer adopts it: a replay of the new decision, with the authority
 of a pass (it bumps the pass counter, prunes placement memory and may
 start fade-outs). The frames in between replay the decision in force,
@@ -678,7 +749,11 @@ inside the render pump, and a style with a symbol layer whose
 expressions read the feature's geometry (`within`, `distance`): the
 mirrors carry no geometry. They do carry what placement orders ties by
 (the data tile, the feature's index in its source layer and the part),
-so the worker places in the same order as the frame would. A pass the worker has not answered within a
+so the worker places in the same order as the frame would, and every
+candidate's tile transform, which `symbol-avoid-edges` and the
+map-anchored `*-translate` read. An icon fitted around its text
+(`icon-text-fit`) is fitted to the mirrored text box, from the sprite
+index the worker is installed with. A pass the worker has not answered within a
 second is placed in-frame; a worker that dies, or is sent something
 that cannot cross isolates, hands placement back to the frame for good.
 
@@ -1580,7 +1655,9 @@ or be listed with the reason it does not.
 The sprite sheet is repacked once after decoding (`padSpriteSheet` in
 `style/sprite_packer.dart`): every distinct sprite rectangle is copied
 byte for byte into a new sheet with a 2 px transparent gutter, and the
-index is rewritten to the new positions. Published sheets pack icons
+index is rewritten to the new positions (each sprite keeps its
+`stretchX`, `stretchY` and `content`, which are relative to the image
+itself, for `icon-text-fit`). Published sheets pack icons
 edge to edge, and an icon drawn magnified or at a fractional position
 is sampled bilinearly half a texel past its rectangle, so without the
 gutter it shows a hairline of its neighbour. Two pixels rather than one

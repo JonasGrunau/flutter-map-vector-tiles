@@ -459,8 +459,7 @@ would.
 | Type | Support |
 |---|---|
 | `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, `background-pattern`, dashes and casing, `line-offset`, `line-blur`, `line-miter-limit`, `circle-blur`, the `*-translate` and `*-sort-key` properties; see the notes below the table |
-| `symbol` | full, including curved line text and `text-variable-anchor` / `text-radial-offset`; see [Labels](#-labels) below |
-| `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity` and brightness/contrast/saturation/hue-rotate matching MapLibre's shader math |
+| `symbol` | every layout and paint property but `text-writing-mode` and the pitch alignments (flutter_map has no pitch), including curved line text, variable anchors and `icon-text-fit`; see *Symbol properties* and [Labels](#-labels) below |
 | `hillshade` | terrain shading computed from a `raster-dem` source (`terrarium`, `mapbox` or `custom` encoding), drawn at its layer position with every paint property: all five `hillshade-method`s (`standard`, `basic`, `combined`, `igor`, `multidirectional`, up to four lights), illumination direction, altitude and anchor, exaggeration, shadow/highlight/accent colours and `resampling`. Slopes are read across tile edges from the neighbouring elevation tiles, so the shading has no seams. One difference: tiles are shaded once and turn with the map, so `hillshade-illumination-anchor: viewport` (the default) is drawn as if the map were not rotated; with `map` it matches MapLibre at every bearing |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity`, brightness/contrast/saturation/hue-rotate matching MapLibre's shader math, and `resampling` / `raster-resampling` |
 | `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, patterned ones included, so a building part over its outline does not draw darker; the alpha of `fill-extrusion-color` is ignored, as the spec says |
@@ -486,14 +485,44 @@ is drawn sharp: Impeller, Flutter's renderer on iOS and Android, draws
 those two wrongly when blurred.
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
-per `icon-color`, `icon-halo-color` and `icon-halo-width`; dark MapLibre
-styles ship their icons this way. Ordinary sprites are drawn with the
-colours baked into the sheet. `StyleReader` repacks the sheet with a
+per `icon-color`, `icon-halo-color`, `icon-halo-width` and
+`icon-halo-blur`; dark MapLibre styles ship their icons this way.
+Ordinary sprites are drawn with the colours baked into the sheet. `StyleReader` repacks the sheet with a
 transparent gutter around every icon, as MapLibre does, so a scaled icon
 never picks up the edge of its neighbour in the sheet. `icon-rotate` and
 `icon-rotation-alignment` follow MapLibre's viewport/map/line semantics,
 including camera bearing, icon anchor/offset rotation and rotated collision
 bounds.
+
+**Symbol properties.** Beyond text, icons and their anchors, offsets,
+sizes and colours, the label pass reads:
+
+- `text-halo-blur`, a soft halo edge as MapLibre draws it;
+- `icon-text-fit` and `icon-text-fit-padding`, honouring a sprite's
+  `stretchX`, `stretchY` and `content`, so a road shield stretches
+  where its designer said it may and frames its text;
+- `text-variable-anchor-offset`, and `text-offset` with
+  `text-variable-anchor` (taken as distances away from each anchor, as
+  in MapLibre);
+- `text-justify` (with `auto`) and `text-line-height` for multi-line
+  labels;
+- `text-optional` and `icon-optional`, `icon-padding`, `text-overlap` /
+  `icon-overlap` (`never`, `always`, `cooperative`), the older
+  `*-allow-overlap`, and `*-ignore-placement`;
+- `symbol-sort-key`, `symbol-z-order` and `symbol-avoid-edges`;
+- `text-rotate`, `text-rotation-alignment: map` for point labels,
+  `icon-keep-upright`, and `text-translate` / `icon-translate` with their
+  anchors.
+
+`text-writing-mode` is not supported: CJK text is laid out
+horizontally, and the reader logs the property. `symbol-avoid-edges`
+keeps a symbol inside the 256 px display tile it was laid out in, which
+past a source's maxzoom is smaller than the data tile MapLibre bounds it
+by, so more labels near seams give way. `text-rotate` turns
+point labels only, and text with an icon fitted around it is drawn
+straight even along a line. Without the style's glyphs (see
+[Fonts](#fonts)), `text-font` picks the weight and style of the
+platform's fonts.
 
 **Heatmaps.** A heatmap's density spans tiles — a kernel near
 a seam reaches into the neighbour — so it is drawn in screen space, like
@@ -596,6 +625,13 @@ mode](#choosing-a-label-mode) has what changes then.
   exempt, as in MapLibre. The fit is a placement decision, so it is
   judged when collision is (see *Collision is decided on a timer*
   below), not on every frame.
+- **Overlap as in MapLibre.** A symbol allowed to overlap
+  (`*-allow-overlap`, `*-overlap: always`) may be drawn over others but
+  still reserves its own space, so a later label that may not overlap
+  keeps clear of it; only `*-ignore-placement` gives the space away. A
+  symbol's text and icon are tested separately, each with its own
+  overlap setting, and `text-optional` / `icon-optional` decide whether
+  one may show without the other.
 - **Words stay whole.** `text-max-width` wraps between words; a single
   word wider than it gets a line of its own, as in MapLibre, rather
   than breaking where the width runs out, and the lines around it
@@ -713,8 +749,10 @@ style was designed with. Without it every label uses the system font.
   labels whose glyphs the font lacks.
 - **Laid out like MapLibre.** Advances, `text-letter-spacing`,
   `text-max-width` wrapping into balanced lines (a two-line name gets
-  two similar lines, not a full line and a dangling word), 1.2 em line
-  spacing, halos at MapLibre's distance-field threshold.
+  two similar lines, not a full line and a dangling word),
+  `text-line-height` and `text-justify`, halos at MapLibre's
+  distance-field threshold, and `text-halo-blur` as a wider edge on
+  that threshold, as MapLibre blurs them.
 - **Cheaper to lay out.** The text is laid out in Dart from the glyph
   metrics, not by the platform's text shaper, which on a dense tile
   was the largest single cost on the UI thread: 31–32 ms for one dense

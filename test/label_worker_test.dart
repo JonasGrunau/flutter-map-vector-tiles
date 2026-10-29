@@ -236,7 +236,7 @@ List<PlacedSymbol> _candidates(List<LabelCohortInput> cohorts,
               id: cohorts[c].ids[i],
               screenAnchor: cohorts[c].transform.apply(instance.anchor),
               screenAngle: instance.angle + cohorts[c].transform.rotation,
-              transform: instance.alongLine ? cohorts[c].transform : null,
+              transform: cohorts[c].transform,
               retained: cohorts[c].retained,
               order: cohorts[c].order + i,
             ),
@@ -301,8 +301,8 @@ void main() {
       );
       expect(first.length, greaterThan(20), reason: 'a crowded screen');
       expect(_ids(winners), _ids(first));
-      // The variable anchors each label took, and whether its text was
-      // dropped, agree too.
+      // The variable anchors each label took, and whether its text or
+      // icon was dropped, agree too.
       for (final winner in winners) {
         final decision = worker.decisionOf(winner);
         final sitting = ui.debugPlacement.lookup(winner.id);
@@ -310,6 +310,7 @@ void main() {
           expect(sitting?.anchor, decision.anchor, reason: '${winner.id}');
         }
         expect(sitting?.textDropped ?? false, decision.textDropped);
+        expect(sitting?.iconDropped ?? false, decision.iconDropped);
       }
 
       // Replay, then pan and zoom a little and place again: the first
