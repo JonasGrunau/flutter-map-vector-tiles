@@ -15,6 +15,16 @@ Future<ByteData> fontBytes(String file) async {
   return ByteData.sublistView(response.bodyBytes);
 }
 
+/// [file] from `test/scripts/glyphs/`, served like the fonts.
+Future<ByteData> glyphBytes(String file) async {
+  final url = Uri.base.resolve('/scripts/glyphs/$file');
+  final response = await http.get(url);
+  if (response.statusCode != 200) {
+    throw StateError('$url: HTTP ${response.statusCode}');
+  }
+  return ByteData.sublistView(response.bodyBytes);
+}
+
 /// The browser test environment draws every family in the box-glyph
 /// test font, whatever a test loads. This keeps the rest of that
 /// environment — font fallback included, which would fetch fonts from

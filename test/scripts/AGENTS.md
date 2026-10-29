@@ -21,12 +21,14 @@ the same change, which drawing it changes and why.
 | File | Description |
 |------|-------------|
 | `script_samples.dart` | The text: per script a name, a longer label and the lines it wraps into at 5 em today, and whether it bends along a curve; the mixed-direction, emoji, combining-mark, pre-base-vowel and stacking probes. Pure Dart, read by `fonts/charset.dart` |
-| `script_harness.dart` | Loads the fonts (`loadScriptFonts`, which names them in `LabelPainter.debugFontFamilies`), builds label candidates (`label`), paints them (`paintLabels`, `drawLabel`) and measures the pixels (`LabelImage`: ink boxes, coverage of one drawing by another within a pixel, gap columns, the droop of a curved label). Knows nothing of how the painter draws |
+| `script_harness.dart` | Loads the fonts (`loadScriptFonts`, which names them in `LabelPainter.debugFontFamilies`), builds label candidates (`label`), paints them (`paintLabels`, `drawLabel`, with the style's `glyphs` when given one; `lastGlyphShaped` says how many labels of the last paint came from them) and measures the pixels (`LabelImage`: ink boxes, coverage of one drawing by another within a pixel, gap columns, the droop of a curved label). Knows nothing of how the painter draws |
 | `script_rendering_test.dart` | The structural assertions, on pixels: no `.notdef` box or empty glyph anywhere; wrapping only where the script breaks lines (each expected line found in place); halos around the letters and off them; curve-safe scripts bending glyph by glyph, the others drawn straight; first letter rightmost in right-to-left scripts, digits and Latin words on the right side, each line in its own direction; Arabic joining, lam-alef, vowel marks; pre-base vowel signs drawn before their consonant; conjuncts; marks stacked over or under; ZWJ, flag and skin-tone sequences as one glyph; decomposed text drawn like precomposed, straight and curved. VM and Chrome |
+| `script_glyphs_test.dart` | The suite with the style's glyphs attached (piece 07's path): the glyph-drawn scripts (Latin ×3, Cyrillic, Greek, Armenian, Georgian) draw every grapheme from the glyphs, wrap at 5 em exactly where MapLibre GL JS 4.7.1 wraps them (balanced: Nordic, Polish and Greek take two lines where the platform takes three), keep their halo, bend along a curve, and stay as wide as the platform's drawing within 6 %; every other script, emoji, decomposed marks and mixed directions are drawn pixel for pixel as without glyphs. VM and Chrome |
 | `script_goldens_test.dart` | One golden per script (name with halo, the name on an arc, the wrapped label) plus mixed directions and combining marks, in `goldens/`. No emoji: Noto Emoji's detailed outlines rasterize 16–18 px apart on macOS and Linux, past the comparator's limit; the rendering test covers them. VM only |
 | `tolerant_golden_comparator.dart` | `TolerantGoldenComparator`: compares the text mask and the halo mask of a golden within a device pixel and fails on any connected patch over 12 device pixels — what a missing mark or a moved letter leaves, and rasterizer anti-aliasing never does. `tolerant_golden_comparator_web.dart` is the no-op the browser build compiles instead |
 | `script_fonts_io.dart`, `script_fonts_web.dart` | Font bytes from disk, or from the test server in the browser; and, in the browser, `allowLoadedFonts`, which lifts the test environment's forced box-glyph font |
 | `fonts/` | Noto subset fonts, `OFL.txt`, and `build.sh` + `charset.dart` that rebuild them |
+| `glyphs/` | Glyph PBFs (OpenFreeMap's Noto Sans Regular) subset to the glyph-drawn samples, one file per 256-character range, and `build.sh` + `subset.py` that rebuild them. A sample added to a glyph-drawn script needs a rebuild, or its glyphs are missing and it falls back to the platform — which `script_glyphs_test.dart` reports |
 
 ## For AI Agents
 
@@ -71,6 +73,11 @@ the same change, which drawing it changes and why.
   reaches the network. The goldens are VM-only (web rasterizes text
   differently), and their file still compiles for the browser suite —
   hence the conditional import of the comparator.
+- **Glyph-drawn text breaks lines as MapLibre does, not as the
+  samples' `lines` say.** Those are the platform's greedy breaks;
+  `script_glyphs_test.dart` holds MapLibre's balanced ones for the
+  scripts the glyphs draw, checked against MapLibre GL JS rendering the
+  same text with the same glyphs.
 - **`lines` in the samples are today's breaks, reviewed by hand.** Korean
   breaks between syllables of 세종대로, where MapLibre would break only
   at spaces; the comment there says so. Change a sample's lines only

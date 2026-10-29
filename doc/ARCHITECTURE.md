@@ -31,6 +31,8 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │       slopes (shader, snapshot) ─► shaded per pixel (shader)
      │
      └─ symbols: SymbolLayouter collects label/icon anchors per tile
+             │  text shaped from the style's glyph PBFs (pure Dart) where
+             │  the script allows, else by the platform (Paragraph)
              ├─ LabelPainter: per-frame screen-space pass, global collision
              │  grid across all tiles, upright text under rotation
              └─ or, LabelMode.tile: LabelPainter.paintTile places them once
@@ -251,9 +253,9 @@ width — back into that key: it re-creates the full-screen re-shape per
 pinch that this design removed. Collision boxes and curved-text cluster
 metrics are the reference-size measurements multiplied by the scale.
 
-Shaping itself is Flutter's — HarfBuzz through `TextPainter`, with the
-platform's fonts — so joining, reordering and stacking come right in
-every script, and the label code adds only what MapLibre does that a
+Where the style's glyphs do not draw a label (below), shaping is
+Flutter's — HarfBuzz through `TextPainter`, with the platform's fonts —
+so joining, reordering and stacking come right in every script, and the label code adds only what MapLibre does that a
 `TextPainter` does not: words kept whole at `text-max-width` (Chinese
 and Japanese still breaking between characters, which Skia's intrinsic
 widths hide), and a direction per line taken from its first letter,
@@ -264,6 +266,89 @@ Only scripts whose glyphs keep their shape alone are curved glyph by
 glyph; the rest are drawn straight along the line. `test/scripts/`
 draws all of it in 23 scripts with bundled fonts and asserts on the
 pixels.
+
+**Text from the style's glyphs.** Given the style's `glyphs`
+(`VectorTileLayer.glyphs`, a `GlyphSource`), a label whose text needs
+no complex shaping is not handed to the platform at all. Platform
+shaping — a `TextPainter` for the fill and one for the halo, per label —
+was the largest UI-thread cost of a dense tile: 35–41 ms for the 222
+labels of one Munich z14 tile on a Nothing Phone (1), against 14–28 ms
+to record its geometry. Glyph PBFs carry every metric MapLibre lays text
+out with, at a 24 px em: advance, bitmap size and offsets. So
+`text/glyph_shaper.dart` lays the label out in pure Dart, as MapLibre
+does — glyph by glyph by advance plus `text-letter-spacing`, lines
+1.2 em apart and centred on each other, the bitmap placed so a line's
+capitals centre on its middle — at a few microseconds per label. Lines
+break at every `\n`, and at `text-max-width` where the text allows it
+(after spaces, hyphens and dashes, slashes, `&`, `+`, parentheses, a
+middle dot, soft hyphens, zero-width spaces), balanced the way MapLibre
+balances them: the breaks are chosen so every line comes out close to
+the text's whole width over the fewest lines the limit allows, a short
+last line preferred to a long one and a parenthesis left at a line's
+edge avoided, rather than greedily filled. As in MapLibre a line is
+judged by its letters without its spaces, and the `\n`s are forced
+breaks inside one balanced run rather than separate paragraphs. The
+script suite's glyph run (`test/scripts/script_glyphs_test.dart`)
+checks the result against MapLibre GL JS on the same text and glyphs. The shaped
+text is a `Float32List` of pen positions and the glyphs they draw —
+around a hundred bytes per label where two `TextPainter`s held about
+20 KB, which the text cache multiplies by up to 8000 entries.
+
+Which text takes this path is decided per label by
+`text/glyph_script.dart`, conservatively — a code point is accepted
+only when it is known to need nothing from a shaper: Latin
+(precomposed, as names in tiles are), Greek, Cyrillic, Armenian,
+Georgian, digits, punctuation and the common symbols. One character
+outside that set sends the whole label to the platform: right-to-left
+scripts and bidi controls, every script with conjuncts, reordering or
+stacking marks (Indic, Sinhala, Thai, Lao, Tibetan, Myanmar, Khmer,
+Mongolian), combining marks, emoji and joiners, anything outside the
+Basic Multilingual Plane, and CJK, kana and Hangul. CJK is a choice, not
+a limitation: MapLibre itself draws ideographs from a local font by
+default rather than fetch them, because a Han range of 256 code points
+is 150–190 KB and a screen of place names touches dozens. A label
+whose glyph the font lacks, or whose range failed to load, also goes to
+the platform, so a server missing a range costs fonts, never text.
+
+Glyphs are drawn through the same glyph atlas as curved text (see
+below), but from distance fields rather than paragraphs. A range is
+decoded once, its distance fields packed onto one texture
+(`decodeImageFromPixels`, asynchronous, about 1 ms of UI time per range
+on a phone), and the atlas cell of a glyph at a device size is drawn
+from it with a colour matrix that thresholds the field after bilinear
+sampling — the technique SDF icons already use — at MapLibre's edge
+(192/255), with MapLibre's 1.68-device-pixel edge ramp and its halo
+offset (`text-halo-width` moves the cut outward, 1/8 of the field per
+glyph pixel). The cells are white coverage; each frame draws a label's
+halos and fills in one `drawRawAtlas` call with per-sprite colours
+(`BlendMode.modulate`), so one cell serves every colour, and the
+upright text lands on the device pixel grid so its cells are drawn 1:1
+rather than resampled. A label resolves its cells once per device size
+and atlas generation (`GlyphAtlas.generation` changes when a page is
+evicted), not once per glyph per frame.
+
+A tile's labels wait for the glyph ranges they need: the render pump's
+symbol phase asks the label painter which ranges its candidates want
+(`LabelPainter.glyphsPending`) before shaping any, and a job whose
+ranges are still loading leaves the queue until they have loaded or
+failed, then resumes where it stopped — unless its tile was disposed,
+reloaded or re-rendered meanwhile, when it is dropped like any
+superseded job. Shaping such labels by the platform in the meantime
+would show them in a system font and switch them to the style's a
+moment later. The wait is capped at 5 s: a range normally arrives in a
+fraction of a second or fails at once offline, but a request hanging
+on a bad connection would otherwise keep the tile's labels off the map
+for as long as it hangs. Past the cap they are shaped by the platform,
+and when the range does arrive one repaint switches them to the style's
+font (in `LabelMode.tile` the baked labels stay as they are). `StyleReader` asks for the first range (Basic Latin and
+Latin-1) of every constant `text-font` stack while the style loads, so
+on a first map the wait is usually over before the first tile is
+decoded; ranges go through the style cache, stale-while-revalidate,
+like the rest of the bundle, so they are there offline wherever the
+map has been. Text the label pass shapes while its ranges are still
+loading (a paint-time cache miss, which the pump normally prevents) is
+shaped by the platform, remembered as such, and shaped from the glyphs
+on its first lookup after they have arrived.
 
 Symbol layout applies the same decode-time bounds culling before
 evaluating any expressions, and along-line anchors keep their full-line
@@ -528,8 +613,10 @@ everything cost 2.7 ms per frame on a phone during fast sweeps.
 
 Curved text draws from a glyph atlas (`glyph_atlas.dart`). Each
 grapheme is rasterized once per style and snapped device size onto a
-1024² page, and a curved label then draws in one `drawRawAtlas` call for
-its halos and one for its fills. Drawn as paragraphs, every glyph cost a
+1024² page, and a curved label then draws in one `drawRawAtlas` call
+for its halos and fills — one per page when they straddle two, halos
+first. Text from the style's glyphs (above) uses the same pages for
+every label, curved or straight. Drawn as paragraphs, every glyph cost a
 save, translate, rotate, scale, paint and restore, twice, which was most
 of the label draw time on the UI thread and one text entity per glyph
 on the raster thread. New glyphs are batched into one snapshot per page
@@ -537,8 +624,11 @@ per frame. When all pages are full, the least recently used page that
 the current frame has not drawn from is emptied and reused. Atlas pages
 are `toImageSync` rasters, so the layer stops new glyphs from being
 rasterized while the app is away and clears the atlas in its resume
-recovery. A label with a glyph missing from the atlas draws glyph by
-glyph as before.
+recovery. A paragraph label with a glyph missing from the atlas draws
+glyph by glyph as before; a label drawn from the style's glyphs has no
+paragraphs to fall back on and sits that frame out — which only
+happens while the app is away, or when every page holds a glyph the
+same frame draws.
 
 The per-frame label pass looks a great deal up — every curved glyph in
 the glyph cache and the atlas, every candidate's key in the fade
@@ -831,7 +921,7 @@ chunked event-loop execution.
 | --- | --- | --- |
 | memory: `PreparedTile` | data tile, per source (`provider.cacheKey`) and property keep-lists | entry count + bytes |
 | memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
-| memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprite *content*, labels, label mode) | GPU texture bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
+| memory: finished display tile (raster `ui.Image` + symbols) | display tile, per render signature (theme id, providers, dpr, sprite and glyph *content*, labels, label mode) | GPU texture bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
 | disk: raw tile bytes | hash of `provider.cacheKey` + z/x/y | TTL + total size sweep |
 
 All caches are plain deterministic LRU implementations — no external
@@ -846,7 +936,9 @@ without touching the pipeline. The signature identifies the sprite sheet
 by content (`SpriteAtlas.signature`, its URL when `StyleReader` loaded
 it), never by object identity: re-reading a style builds a new atlas
 every time, so an identity key would miss on every open and strand the
-previous signature's textures. Signatures are retained past their
+previous signature's textures. The glyphs enter it the same way
+(`GlyphSource.signature`, the glyph URL template), since tiles with
+their labels drawn in depend on them. Signatures are retained past their
 layer for exactly that warm-open case, so the registry releases the
 least recently used once their combined cost exceeds the budget —
 always keeping the two most recent, so two layers over different styles
@@ -1083,8 +1175,8 @@ declares as `attribution` is collected into `Style.attributions`,
 deduplicated across sources; since that value is HTML by convention it
 is parsed into both flattened text and text-plus-link spans, because
 Flutter has no DOM to hand it to. Relative URLs resolve against the
-document that declared them — sprite and source URLs against the style
-URL, tile templates against the TileJSON URL when they came from one
+document that declared them — sprite, glyph and source URLs against the
+style URL, tile templates against the TileJSON URL when they came from one
 (ArcGIS declares `"url": "../../"` and `tile/{z}/{y}/{x}.pbf`) — and
 the `{z}`/`{x}`/`{y}` braces survive resolution un-percent-encoded.
 
