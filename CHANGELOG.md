@@ -69,6 +69,25 @@
   twice took the second output instead of the first.
 - 📦 `intl` is now a direct dependency, for `number-format`. Every app
   already has it through `latlong2`.
+- ✨ **Hillshade**: `hillshade` layers draw now, shading the terrain from
+  a style's `raster-dem` source (Terrarium, Mapbox Terrain-RGB or a
+  `custom` encoding) at the layer's position, with every paint property
+  MapLibre has: all five `hillshade-method`s (`multidirectional` with up
+  to four lights), illumination direction, altitude and anchor,
+  exaggeration, shadow, highlight and accent colours, and `resampling`.
+  Before, the layer was skipped with a log line. Slopes are read across
+  tile edges from the neighbouring elevation tiles, so the shading has
+  no seams; those neighbours are fetched too. `StyleReader` puts
+  `raster-dem` sources into `style.rasterSources`, which you already
+  pass to the layer; built by hand, a `RasterTileSource` takes the new
+  `encoding` (`DemEncoding.terrarium`, `.mapbox`, or your own factors).
+  Next to MapLibre GL JS at the same camera the shading differs by 0.2–5
+  grey levels on average, natively and on the web. Tiles are shaded
+  once and turn with the map, so `hillshade-illumination-anchor:
+  viewport`, the default, is drawn as if the map were not rotated.
+  On a mid-range Android phone the shading adds about 0.2 ms of UI
+  time per tile and frame times stay where they were; the decoded
+  elevation tiles add about 35 MB of memory at z13.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same
