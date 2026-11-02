@@ -3308,12 +3308,14 @@ class _VectorMapPainter extends CustomPainter {
     }
     // While a zoom level change is in flight, keep the previous level's
     // labels wherever the new level has no label data yet — otherwise
-    // every label blinks out for a few frames on zoom. Current-level
-    // symbols win collisions against them where layer, incumbency and
-    // sort key tie (`LabelPainter._byPlacementPriority`). Once the new
-    // level covers a retained tile, its labels stop claiming space and
-    // serve only as fade-out fallbacks. In steady state nothing is
-    // retained and the memoized key set need not be built.
+    // every label blinks out for a few frames on zoom. They compete
+    // with the current level's symbols in MapLibre's order
+    // (`LabelPainter._byPlacementPriority`): where layer, incumbency
+    // and sort key tie, the deeper data tile wins, so on a zoom-out the
+    // outgoing level's label does. Once the new level covers a retained
+    // tile, its labels stop claiming space and serve only as fade-out
+    // fallbacks. In steady state nothing is retained and the memoized
+    // key set need not be built.
     if (state._retained.isNotEmpty) {
       final needed =
           state._retainedSymbolKeys ??= state._retainedKeysWithSymbols();

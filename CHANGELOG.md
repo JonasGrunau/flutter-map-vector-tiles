@@ -249,7 +249,10 @@
   on the screen used to win, so a different label could show than in
   MapLibre: at Munich's Marienplatz, the shield of staircase MP30 where
   MapLibre shows MP31's. Labels are now placed in MapLibre's order,
-  tile by tile and, within a tile, feature by feature.
+  tile by tile and, within a tile, feature by feature. During a zoom
+  crossing the level on its way out takes part in that order too, as
+  in MapLibre: on a zoom-out its label can now win a tie with the
+  arriving level's, where the arriving level always won before.
 - 🐛 During a fast zoom, a label the last collision pass had placed
   could stop drawing until the next pass once its tile was replaced
   under it (a republish, the next zoom level arriving), because the

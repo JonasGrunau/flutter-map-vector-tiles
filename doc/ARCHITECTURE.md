@@ -819,13 +819,16 @@ the same generation and creates no new debt, allowing the ticker to stop
 on an unchanged map.
 
 **Placement passes prefer incumbents.** Candidate priority is topmost
-style layer, then incumbency, then `symbol-sort-key`, then the current
-level ahead of a retained one, then MapLibre's own order — data tiles
-deepest first, then by x and y, and in each tile the features in the
-order the tile lists them, each one's anchors from the start of its
-line — and last insertion order. Nothing in it reads the camera, so a
-pan or a rotation never reorders two labels, and a pair that collides
-resolves as in MapLibre. An incumbent is a candidate whose label is
+style layer, then incumbency, then `symbol-sort-key`, then MapLibre's
+own order — data tiles deepest first, then by x and y, and in each
+tile the features in the order the tile lists them, each one's anchors
+from the start of its line — and last insertion order. The level a
+zoom crossing retains has no rank of its own: its tiles sort among the
+current level's by zoom, as MapLibre's do, so on a zoom-out the
+outgoing level's label wins a tie and on a zoom-in the arriving one's.
+Nothing in it reads the camera, so a pan or a rotation never reorders
+two labels, and a pair that collides resolves as in MapLibre. An
+incumbent is a candidate whose label is
 steadily visible right now: one of the last pass's winners, by label id,
 which carries incumbency across the instance replacement every
 republish and level swap performs, with or without fades. A same-layer arrival therefore never evicts a

@@ -1010,14 +1010,16 @@ class LabelPainter {
   /// Placement priority: topmost style layers first (they win space),
   /// then incumbents — labels on screen right now, which a same-layer
   /// newcomer must not evict (see [PlacedSymbol.incumbent]) — then by
-  /// symbol-sort-key, then current-level tiles ahead of retained ones,
-  /// then MapLibre's order: data tiles by zoom (deepest first), x and y,
-  /// and within a tile the features in source order, each one's parts
-  /// in order and its anchors along a part from the start (see
-  /// [SymbolInstance.sourceTile]). None of these terms reads the
-  /// camera, so a pan or a rotation never reorders two labels. The last
-  /// term, insertion order, keeps the non-stable sort deterministic. A
-  /// total order: `order` is unique per frame.
+  /// symbol-sort-key, then MapLibre's order: data tiles by zoom
+  /// (deepest first), x and y, and within a tile the features in source
+  /// order, each one's parts in order and its anchors along a part from
+  /// the start (see [SymbolInstance.sourceTile]). A retained level's
+  /// tiles sort among the current level's by that same order, as in
+  /// MapLibre, so on a zoom-out the outgoing (deeper) level's label wins
+  /// a tie. None of these terms reads the camera, so a pan or a rotation
+  /// never reorders two labels. The last term, insertion order, keeps
+  /// the non-stable sort deterministic. A total order: `order` is unique
+  /// per frame.
   static int _byPlacementPriority(PlacedSymbol a, PlacedSymbol b) {
     final ai = a.instance;
     final bi = b.instance;
@@ -1026,7 +1028,6 @@ class LabelPainter {
     if (a.incumbent != b.incumbent) return a.incumbent ? -1 : 1;
     final bySortKey = ai.sortKey.compareTo(bi.sortKey);
     if (bySortKey != 0) return bySortKey;
-    if (a.retained != b.retained) return a.retained ? 1 : -1;
     final at = ai.sourceTile;
     final bt = bi.sourceTile;
     if (!identical(at, bt)) {
