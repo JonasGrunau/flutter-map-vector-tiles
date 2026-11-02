@@ -118,6 +118,13 @@ typedef DrawnLabelRecord = ({
 /// `LabelMode.tile` runs the same placement and drawing once per tile
 /// instead, into the tile's raster — see [paintTile].
 class LabelPainter {
+  /// [glyphCapacity] stands in for [glyphCacheEntries], for tests that
+  /// need the glyph cache to evict.
+  LabelPainter({@visibleForTesting int glyphCapacity = glyphCacheEntries})
+      : _glyphCapacity = glyphCapacity;
+
+  final int _glyphCapacity;
+
   /// Cache capacities. One dense-city screen of distinct labels is the
   /// floor (below it every frame evicts entries the same frame still
   /// needs), but the text cache must hold a zoom *round trip*: the
@@ -269,8 +276,11 @@ class LabelPainter {
       maxEntries: textCacheEntries,
       onEvict: (_, text) => _retired.add(text.dispose));
   late final _glyphCache = LruCache<String, _GlyphText>(
-      maxEntries: glyphCacheEntries,
-      onEvict: (_, glyph) => _retired.add(glyph.dispose));
+      maxEntries: _glyphCapacity,
+      onEvict: (_, glyph) {
+        glyph.evicted = true;
+        _retired.add(glyph.dispose);
+      });
 
   /// Counts placement passes: [paint] frames that decide placement
   /// afresh, and [paintTile] calls. Every text and glyph a lookup
@@ -1091,7 +1101,7 @@ class LabelPainter {
         // The per-grapheme work is the expensive half for road labels.
         if (instance.alongLine && instance.curveSafe && instance.path != null) {
           for (final cluster in text.clusters) {
-            _glyphPainters(cluster.grapheme, text);
+            _glyphPainters(cluster, text);
           }
         }
       }
@@ -1532,7 +1542,7 @@ class LabelPainter {
             (placed.incumbent ? 1.25 : 1.0);
 
     final placements =
-        <({String grapheme, Offset pos, double angle, double width})>[];
+        <({_Cluster cluster, Offset pos, double angle, double width})>[];
     var previousAngle = double.nan;
     var maxDeviation = 0.0;
     double? firstAngle;
@@ -1570,7 +1580,7 @@ class LabelPainter {
         pos += Offset(-math.sin(angle), math.cos(angle)) * perp;
       }
       placements.add((
-        grapheme: cluster.grapheme,
+        cluster: cluster,
         pos: pos,
         angle: angle,
         width: cluster.width * textScale,
@@ -1628,7 +1638,7 @@ class LabelPainter {
     final glyphs = [
       for (final p in placements)
         _CurvedGlyph(
-          painters: _glyphPainters(p.grapheme, text),
+          painters: _glyphPainters(p.cluster, text),
           position: p.pos,
           angle: p.angle,
         ),
@@ -1904,7 +1914,7 @@ class LabelPainter {
           final painter = halo ? painters.halo : painters.fill;
           if (painter == null) continue;
           final pad = painters.pad;
-          final key = (painters.key, halo, sizeKey);
+          final key = painters.atlasKey(halo, sizeKey);
           final cell = _glyphAtlas.lookup(key) ??
               (rasterizeGlyphs
                   ? _glyphAtlas.reserve(
@@ -1986,21 +1996,36 @@ class LabelPainter {
     ];
   }
 
-  /// Painters for a single glyph cluster, cached across labels — the
-  /// same characters repeat constantly in map text.
-  _GlyphText _glyphPainters(String grapheme, _LaidOutText text) {
-    final key = '${text.styleKey}#$grapheme';
+  /// Painters for a single glyph cluster of [text], cached across
+  /// labels — the same characters repeat constantly in map text.
+  ///
+  /// The cluster remembers the entry it resolved to, so once a label
+  /// has been drawn its glyphs are looked up by the very key string the
+  /// cache holds, whose hash is already computed and whose comparison is
+  /// an identity check — instead of building `styleKey#grapheme` anew
+  /// for every glyph of every curved label on every frame and every
+  /// [prewarm]. Within one placement pass it skips the cache altogether
+  /// after the first lookup, so the LRU order is by the pass a glyph was
+  /// last used in rather than by the frame: every replayed frame
+  /// otherwise moves each glyph on screen to the back of the cache's map
+  /// again, a removal and an insertion that also make the map rehash.
+  /// The cache stays the owner: a remembered entry is used only while it
+  /// has not been evicted (and so disposed).
+  _GlyphText _glyphPainters(_Cluster cluster, _LaidOutText text) {
+    final known = cluster.glyph;
+    if (known != null && known.pass == _pass && !known.evicted) return known;
+    final key = known?.key ?? '${text.styleKey}#${cluster.grapheme}';
     final cached = _glyphCache.get(key);
-    if (cached != null) return cached..pass = _pass;
+    if (cached != null) return (cluster.glyph = cached)..pass = _pass;
 
     final fill = TextPainter(
-      text: TextSpan(text: grapheme, style: text.fillStyle),
+      text: TextSpan(text: cluster.grapheme, style: text.fillStyle),
       textDirection: TextDirection.ltr,
     )..layout();
     TextPainter? halo;
     if (text.haloStyle != null) {
       halo = TextPainter(
-        text: TextSpan(text: grapheme, style: text.haloStyle),
+        text: TextSpan(text: cluster.grapheme, style: text.haloStyle),
         textDirection: TextDirection.ltr,
       )..layout();
     }
@@ -2011,7 +2036,7 @@ class LabelPainter {
         _GlyphText(key: key, fill: fill, halo: halo, pad: 2 + stroke / 2)
           ..pass = _pass;
     _glyphCache.put(key, glyph);
-    return glyph;
+    return cluster.glyph = glyph;
   }
 
   static TextStyle _textStyle(
@@ -2200,7 +2225,11 @@ class _Cluster {
   final double center;
   final double width;
 
-  const _Cluster(this.grapheme, this.center, this.width);
+  /// The glyph-cache entry this cluster last resolved to — a lookup
+  /// shortcut only, see [LabelPainter._glyphPainters]; the cache owns it.
+  _GlyphText? glyph;
+
+  _Cluster(this.grapheme, this.center, this.width);
 }
 
 class _GlyphText {
@@ -2217,6 +2246,10 @@ class _GlyphText {
   /// [LabelPainter.trimCaches].
   int pass = 0;
 
+  /// Whether the glyph cache has let go of this glyph, which disposes
+  /// it before the next frame: a cluster remembering it must look again.
+  bool evicted = false;
+
   _GlyphText({
     required this.key,
     required this.fill,
@@ -2224,10 +2257,48 @@ class _GlyphText {
     required this.pad,
   });
 
+  _AtlasKey? _fillKey;
+  _AtlasKey? _haloKey;
+
+  /// This glyph's [GlyphAtlas] key for its [halo] or fill at device size
+  /// [sizeKey]. Kept for the last size asked for: every frame looks each
+  /// curved glyph up twice, and a key built per lookup would be an
+  /// allocation and a hash computation each time.
+  _AtlasKey atlasKey(bool halo, int sizeKey) {
+    final known = halo ? _haloKey : _fillKey;
+    if (known != null && known.size == sizeKey) return known;
+    final made = _AtlasKey(key, halo, sizeKey);
+    return halo ? _haloKey = made : _fillKey = made;
+  }
+
   void dispose() {
     fill.dispose();
     halo?.dispose();
   }
+}
+
+/// A curved glyph's cell in the [GlyphAtlas]: style and grapheme (the
+/// glyph-cache key), halo or fill, and device size. Compared field by
+/// field, hashed once — see [_GlyphText.atlasKey].
+final class _AtlasKey {
+  _AtlasKey(this.glyph, this.halo, this.size)
+      : hashCode = Object.hash(glyph, halo, size);
+
+  final String glyph;
+  final bool halo;
+  final int size;
+
+  @override
+  final int hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is _AtlasKey &&
+          other.hashCode == hashCode &&
+          other.size == size &&
+          other.halo == halo &&
+          other.glyph == glyph;
 }
 
 /// Curved-label glyphs that share one atlas page, as `drawRawAtlas`

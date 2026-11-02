@@ -104,11 +104,11 @@ class SymbolInstance {
   late final bool curveSafe = _curveSafe(text);
 
   /// Cross-zoom fade identity — see `labelContinuityKey` in
-  /// `label_continuity.dart` for why it is this position-free record.
+  /// `label_continuity.dart` for why it is this position-free triple.
   /// Memoized here because the label pass needs it per candidate per
-  /// frame, and a record allocation per lookup would churn the young
+  /// frame, and an allocation per lookup would churn the young
   /// generation on every painted frame.
-  late final Object continuityKey = (layerIndex, text, iconName);
+  late final Object continuityKey = ContinuityKey(layerIndex, text, iconName);
 
   static bool _curveSafe(String text) {
     for (final r in text.runes) {
@@ -138,6 +138,38 @@ class SymbolInstance {
     required this.geometryType,
     required this.featureId,
   });
+}
+
+/// [SymbolInstance.continuityKey]: the `(layer, text, icon)` triple,
+/// compared field by field as the record it replaced was, with its hash
+/// computed once. The label pass hashes it several times per candidate
+/// per frame — the fade tracker, the placement memory, the fade-out
+/// fallbacks — and a record works its hash out from the fields again on
+/// every lookup.
+final class ContinuityKey {
+  ContinuityKey(this.layerIndex, this.text, this.iconName)
+      : hashCode = Object.hash(layerIndex, text, iconName);
+
+  final int layerIndex;
+  final String text;
+  final String? iconName;
+
+  @override
+  final int hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ContinuityKey &&
+          other.hashCode == hashCode &&
+          other.layerIndex == layerIndex &&
+          other.text == text &&
+          other.iconName == iconName;
+
+  /// Printed as the record was, which `bench/`'s `BENCH_WATCH` patterns
+  /// and logs match against.
+  @override
+  String toString() => '($layerIndex, $text, $iconName)';
 }
 
 /// The evaluated, quantized text style of a [SymbolInstance], memoized

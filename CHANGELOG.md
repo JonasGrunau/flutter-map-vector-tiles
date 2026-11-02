@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- ⚡ The label pass spends less of the UI thread on bookkeeping. On
+  every frame that drew a curved label it built a `style#character`
+  string per glyph just to find that glyph's cached painters, and it
+  rehashed each label's identity key several times over; on an Android
+  phone zooming through the bench's sweeps that was up to 9 % of the UI
+  thread's samples. Shaped text now keeps its glyphs and those keys
+  carry their hash, so the label pass takes 4–10 % less UI-thread time
+  there, and frames that replay the last placement 19–31 % less.
+  Labels look the same.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same

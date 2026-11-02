@@ -437,6 +437,20 @@ rasterized while the app is away and clears the atlas in its resume
 recovery. A label with a glyph missing from the atlas draws glyph by
 glyph as before.
 
+The per-frame label pass looks a great deal up — every curved glyph in
+the glyph cache and the atlas, every candidate's key in the fade
+tracker and the placement memory — so those lookups are kept free of
+string building and repeated hashing. A shaped text's grapheme clusters
+remember their glyph-cache entry: within a placement pass a glyph is
+taken from its cluster directly, across passes it is looked up by the
+key string the cache already holds, never by a `styleKey#grapheme`
+string built per glyph per frame (6.8 % of the UI thread's samples in
+an Oct 2026 phone profile of the 150 ms sweep). The glyph cache's LRU
+order is therefore by placement pass rather than by frame; an evicted
+glyph is flagged, and a cluster holding one looks it up again. The
+continuity key and the atlas key are small classes that compare their
+fields like the records they replaced but compute their hash once.
+
 A replay must not overturn the pass through the back door either.
 Curved text is rejected when the line bends past `text-max-angle` under
 it or when the text no longer fits along its line, and both depend on
