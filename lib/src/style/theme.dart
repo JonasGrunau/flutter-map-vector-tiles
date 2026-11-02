@@ -11,9 +11,10 @@ class Theme {
   final List<ThemeLayer> layers;
 
   /// The values `["global-state", name]` expressions read in this theme:
-  /// the style's `state` defaults with the overrides it was made with
-  /// (see [withGlobalState]). Empty for a style that declares none and
-  /// for hand-built themes.
+  /// every default the style's `state` declares, read or not, with the
+  /// overrides it was made with — which [withGlobalState] keeps only
+  /// for the keys its expressions read. Empty for a style that declares
+  /// none and for hand-built themes.
   final Map<String, Object?> globalState;
 
   /// The theme's siblings under other global states, when its style
@@ -36,7 +37,10 @@ class Theme {
   /// This style under another global state: [state] overrides the
   /// style's `state` defaults — keys it leaves out, or maps to null,
   /// keep their default — and every `global-state` expression reads the
-  /// result.
+  /// result. A key no expression reads is ignored, so [state] can be a
+  /// bag of app state wider than the style needs: changing such a key
+  /// returns the same theme and redraws nothing. A key the style reads
+  /// but does not declare in its `state` still takes effect.
   ///
   /// The state is compiled in, so a theme is never re-evaluated when it
   /// changes: a different state is a different theme, with its own id

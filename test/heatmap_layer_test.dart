@@ -71,6 +71,7 @@ Widget heatApp(
   MapController controller,
   VectorTileProvider provider, {
   LatLng center = const LatLng(0, 0),
+  Theme? theme,
 }) =>
     MaterialApp(
       home: RepaintBoundary(
@@ -80,7 +81,7 @@ Widget heatApp(
           options: MapOptions(initialCenter: center, initialZoom: 4),
           children: [
             VectorTileLayer(
-              theme: heatTheme(),
+              theme: theme ?? heatTheme(),
               tileProviders: TileProviders({'s': provider}),
               tileOffset: TileOffset.none,
               tileFadeDuration: Duration.zero,
@@ -174,5 +175,47 @@ void main() {
     expect(white(px, 256 + 12, 256 + 64), isTrue);
 
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a map reopened over a re-read style draws its cached heatmap',
+      (tester) async {
+    // Regression: the painter matched a tile's points to the theme's
+    // layers by identity. Reading the style again gives the same theme
+    // id — so the reopened map is served from the result cache — but new
+    // layer objects, which the cached points were not laid out under:
+    // the heatmap never came back.
+    tester.view.physicalSize = const Size(512, 512);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final provider = OneTileProvider(const TileKey(4, 8, 8),
+        pointTile([for (var i = 0; i < 4; i++) (512, 512)]));
+
+    bool white(Uint8List px, int x, int y) {
+      final i = (y * 512 + x) * 4;
+      return px[i] > 200 && px[i + 1] > 200 && px[i + 2] > 200;
+    }
+
+    final first = heatTheme();
+    await tester.pumpWidget(heatApp(MapController(), provider, theme: first));
+    expect(
+        await pumpUntil(tester,
+            () async => white(await snapshot(tester), 256 + 32, 256 + 32)),
+        isTrue,
+        reason: 'the heatmap never appeared');
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+
+    final second = heatTheme();
+    expect(second.id, first.id);
+    expect(identical(second.layers[1], first.layers[1]), isFalse);
+    await tester.pumpWidget(heatApp(MapController(), provider, theme: second));
+    final reopened = await pumpUntil(
+        tester, () async => white(await snapshot(tester), 256 + 32, 256 + 32),
+        timeout: const Duration(seconds: 10));
+
+    await tester.pumpWidget(const SizedBox());
+    expect(reopened, isTrue, reason: 'the reopened map drew no heatmap');
+    expect(provider.reloads, 0, reason: 'served from the cache');
   });
 }

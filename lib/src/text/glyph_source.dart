@@ -207,13 +207,18 @@ class GlyphRange {
     // Shelf packing, tallest first; a 1 px gap keeps bilinear sampling
     // of one glyph from reading its neighbour.
     const gap = 1;
-    final area = drawn.fold<int>(
-        0, (sum, g) => sum + (g.bitmapWidth + gap) * (g.bitmapHeight + gap));
-    final width =
-        math.max(64, math.min(2048, _nextPowerOfTwo(math.sqrt(area))));
+    var area = 0, widest = 0;
+    for (final g in drawn) {
+      area += (g.bitmapWidth + gap) * (g.bitmapHeight + gap);
+      widest = math.max(widest, g.bitmapWidth);
+    }
+    // Never narrower than a glyph: one wider than its row would spill
+    // into the next, and past the page's end on the last.
+    final width = math.max(
+        math.max(64, widest), math.min(2048, _nextPowerOfTwo(math.sqrt(area))));
     var x = 0, y = 0, rowHeight = 0;
     for (final glyph in drawn) {
-      if (x + glyph.bitmapWidth > width) {
+      if (x > 0 && x + glyph.bitmapWidth > width) {
         x = 0;
         y += rowHeight + gap;
         rowHeight = 0;

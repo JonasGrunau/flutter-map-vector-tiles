@@ -44,8 +44,11 @@ import 'vector_tile_layer.dart';
 /// through `["feature-state", key]` in a paint property — for example
 /// `"fill-color": ["case", ["boolean", ["feature-state", "selected"],
 /// false], "#e53935", "#d6d0c4"]`. Changing it re-renders just the
-/// display tiles that draw the feature from such a layer; labels
-/// re-evaluate on the next frame.
+/// display tiles that draw the feature from such a layer, the outgoing
+/// zoom level's included while it still shows; labels re-evaluate on
+/// the next frame, and one whose opacity the change takes to or from
+/// zero is placed or dropped by the next collision pass, at most one
+/// `labelFadeDuration` later.
 class VectorTileLayerController {
   final _states = FeatureStates();
   FeatureQueryHost? _host;

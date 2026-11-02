@@ -64,8 +64,12 @@ class ExpressionParser {
   /// Whether anything parsed so far reads `global-state` — the theme
   /// reader keeps the style document only for themes where a different
   /// state can change anything.
-  bool get readsGlobalState => _readsGlobalState;
-  bool _readsGlobalState = false;
+  bool get readsGlobalState => globalStateNames.isNotEmpty;
+
+  /// The names every `["global-state", name]` parsed so far reads. The
+  /// theme reader keys a style's siblings on these alone, so a state
+  /// override no expression reads changes no theme.
+  final Set<String> globalStateNames = {};
 
   /// Whether anything parsed so far needs the feature's geometry
   /// (`within`, `distance`), which the renderer then builds per feature
@@ -89,7 +93,9 @@ class ExpressionParser {
   /// [interpolated] is false for a property the spec does not
   /// interpolate (`line-dasharray`, the sort keys): a legacy stop
   /// function that names no `type` steps through its stops there
-  /// (`interval`) instead of ramping between them, as MapLibre does.
+  /// (`interval`) instead of ramping between them, and a
+  /// zoom-and-property function steps through its zoom stops, as
+  /// MapLibre does.
   ({Expr expr, bool zoomOnly, bool readsZoom}) parseForProperty(Object? json,
       {bool Function(Object? value)? accepts,
       Set<String>? enumValues,
@@ -103,9 +109,10 @@ class ExpressionParser {
             !interpolated && json['type'] == null && json['stops'] != null
                 ? {...json.cast<String, Object?>(), 'type': 'interval'}
                 : json.cast<String, Object?>(),
-            json['default'] != null && enumValues != null
+            accepts: json['default'] != null && enumValues != null
                 ? enumValues.contains
-                : accepts)
+                : accepts,
+            interpolated: interpolated)
         : parse(json);
     final zoomOnly = !_readsFeature;
     final readsZoom = _readsZoom;
@@ -326,7 +333,7 @@ class ExpressionParser {
         if (name is! String) {
           return _unsupported('global-state needs one property name');
         }
-        _readsGlobalState = true;
+        globalStateNames.add(name);
         final value = _globalState[name];
         return (_) => value;
       case 'let':
@@ -1378,10 +1385,14 @@ class ExpressionParser {
       };
 
   /// A legacy zoom-and-property function, whose stops key on
-  /// `{"zoom": z, "value": v}`: one property function per zoom, the
-  /// zooms ramped with the function's base — or stepped through, for
-  /// `interval` and `categorical` functions.
-  Expr _parseCompositeFunction(Map<String, Object?> json, List<Object?> stops) {
+  /// `{"zoom": z, "value": v}`: one property function per zoom, of the
+  /// function's `type`, the zooms ramped with the function's base
+  /// whatever that type is — or stepped through, for a property the
+  /// spec does not interpolate ([interpolated] false). That is what
+  /// MapLibre does: its `type` picks only the property dimension, and a
+  /// `categorical` line width widens smoothly between its zoom stops.
+  Expr _parseCompositeFunction(Map<String, Object?> json, List<Object?> stops,
+      {required bool interpolated}) {
     final byZoom = <double, List<Object?>>{};
     for (final stop in stops) {
       if (stop is! List || stop.length < 2 || stop[0] is! Map) continue;
@@ -1399,10 +1410,9 @@ class ExpressionParser {
       for (final z in zooms)
         _parseLegacyFunction({...json, 'stops': byZoom[z]}),
     ];
-    final type = json['type'] as String? ?? 'exponential';
     final base = toNumber(json['base']) ?? 1.0;
     final space = _legacyColorSpace(json);
-    final stepped = type != 'exponential';
+    final stepped = !interpolated;
     final invDenom =
         stepped || base == 1.0 ? null : _inverseDenominators(zooms, base);
     return (ctx) {
@@ -1427,9 +1437,10 @@ class ExpressionParser {
   // Legacy (pre-expression) syntax.
 
   /// Legacy property functions: `{"stops": [...], "base": b, "property": p}`.
-  /// [accepts] is the property's — see [parseForProperty].
+  /// [accepts] and [interpolated] are the property's — see
+  /// [parseForProperty].
   Expr _parseLegacyFunction(Map<String, Object?> json,
-      [bool Function(Object?)? accepts]) {
+      {bool Function(Object?)? accepts, bool interpolated = true}) {
     final stopsJson = json['stops'];
     if (stopsJson is! List || stopsJson.isEmpty) {
       final property = json['property'] as String?;
@@ -1464,7 +1475,8 @@ class ExpressionParser {
     }
     final first = stopsJson.first;
     if (first is List && first.isNotEmpty && first.first is Map) {
-      return _parseCompositeFunction(json, stopsJson);
+      return _parseCompositeFunction(json, stopsJson,
+          interpolated: interpolated);
     }
     final base = toNumber(json['base']) ?? 1.0;
     final space = _legacyColorSpace(json);
@@ -1477,13 +1489,20 @@ class ExpressionParser {
     final defaultValue = json['default'];
     final type = json['type'] as String? ?? 'exponential';
 
+    final categorical = type == 'categorical';
     final stopInputs = <Object?>[];
     final stops = <double>[];
     final outputs = <Object?>[];
     for (final stop in stopsJson) {
       if (stop is List && stop.length >= 2) {
+        final input = toNumber(stop[0]) ?? 0;
+        // A stop the style lists twice keeps its first output and is
+        // then one stop, as in maplibre-native (whose stops are a map
+        // filled by `emplace`): the ramp runs from it to the next one.
+        // Categorical stops dedupe by key below.
+        if (!categorical && stops.isNotEmpty && stops.last == input) continue;
         stopInputs.add(stop[0]);
-        stops.add(toNumber(stop[0]) ?? 0);
+        stops.add(input);
         outputs.add(stop[1]);
       }
     }
@@ -1494,7 +1513,7 @@ class ExpressionParser {
 
     // The function type is fixed at parse time — specialize instead of
     // re-branching on the type string per evaluation.
-    if (type == 'categorical') {
+    if (categorical) {
       // First matching stop wins, like the linear scan it replaces;
       // keys are normalized so `1` and `1.0` stay interchangeable.
       final byKey = <Object?, Object?>{};
@@ -1526,11 +1545,7 @@ class ExpressionParser {
       while (hi < stops.length && stops[hi] <= v) {
         hi++;
       }
-      var lo = hi - 1;
-      // On a stop the style lists twice, the first of them holds.
-      while (lo > 0 && stops[lo - 1] == stops[lo]) {
-        lo--;
-      }
+      final lo = hi - 1;
       if (isInterval) return outputs[lo];
       return _blendOrHold(outputs[lo], outputs[lo + 1],
           _intervalFactor(v, stops, lo, base, invDenom).clamp(0.0, 1.0), space);

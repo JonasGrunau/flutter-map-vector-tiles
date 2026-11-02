@@ -366,7 +366,11 @@ symbol phase asks the label painter which ranges its candidates want
 ranges are still loading leaves the queue until they have loaded or
 failed, then resumes where it stopped — unless its tile was disposed,
 reloaded or re-rendered meanwhile, when it is dropped like any
-superseded job. Shaping such labels by the platform in the meantime
+superseded job. A parked job is superseded exactly like a queued one:
+a raster accepted for its tile drops it at once, and a parked final
+job turns a provisional raster away. Otherwise a provisional job parked
+on a range would resume after the final one and publish the ancestor's
+labels over the tile's own. Shaping such labels by the platform in the meantime
 would show them in a system font and switch them to the style's a
 moment later. The wait is capped at 5 s: a range normally arrives in a
 fraction of a second or fails at once offline, but a request hanging
@@ -745,9 +749,15 @@ the difference is a few percent.
 Web keeps the pass in-frame (no isolates for this workload), and so do
 fades turned off — they place every frame, which a worker could only
 answer late — `LabelMode.tile`, whose `paintTile` places per tile
-inside the render pump, and a style with a symbol layer whose
+inside the render pump, a style with a symbol layer whose
 expressions read the feature's geometry (`within`, `distance`): the
-mirrors carry no geometry. They do carry what placement orders ties by
+mirrors carry no geometry, and, while a `VectorTileLayerController` is
+attached, one whose symbol layer reads `feature-state`: the worker sees
+no state, and a label's opacity, which may read it, decides whether
+the label claims space at all. A sibling theme under another global
+state is installed on the worker like a new sprite sheet, since the
+constants it places by (text size, padding, overlap) may have changed
+with it. The mirrors do carry what placement orders ties by
 (the data tile, the feature's index in its source layer and the part),
 so the worker places in the same order as the frame would, and every
 candidate's tile transform, which `symbol-avoid-edges` and the
@@ -911,7 +921,13 @@ by the platform's image codec off the UI thread, shared as ref-counted
 (`render/hillshade_renderer.dart`). It is MapLibre's two steps, both
 on the GPU, through two fragment shaders the package ships
 (`shaders/`, declared under `flutter: shaders:` in `pubspec.yaml` and
-loaded once per process by `HillshadePrograms`):
+loaded once per process by `HillshadePrograms`, which the layer starts
+when it builds its stores). A display tile fetches its DEM tile and the
+neighbours, and waits for the shaders, only at a zoom where a hillshade
+layer over that source draws — the rasterizer's own `coversZoom` test —
+so a hillshade with a `maxzoom` fetches nothing above it, and a
+neighbour that cannot be fetched there holds no result back from the
+cache:
 
 1. **Prepare**, per DEM tile: a copy of its elevations with a
    two-texel border is drawn and snapshotted — the tile in the middle,
@@ -1002,7 +1018,9 @@ zoom band fades smoothly.
 The pass is split by what can leave the root isolate, which is
 everything per point. The points are laid out once per display tile
 (`HeatmapLayouter`, run where the tile's image publishes, kept with the
-finished tile in the result cache) as `Float32List`s, so the UI thread's
+finished tile in the result cache, and matched to the theme's layers
+by layer id: a reopened map's re-read style has the same theme id but
+new layer objects) as `Float32List`s, so the UI thread's
 share of a pass is a list of tiles: each one's offset and scale on the
 screen, its point and weight arrays, and — for a retained tile — a mask
 of the squares the arriving level already covers. Only weights and
@@ -1155,15 +1173,27 @@ rasterizer draws: the same layers at the tile's integer style zoom, the
 same filters through the same once-per-tile match lists, line widths
 (with `line-gap-width`, the outer edge of the casing) and circle radii
 evaluated at that zoom in the tile's logical pixels — which is what the
-tile image then scales between levels — and polygons filled by the same
-non-zero rule, so a hole is not a hit. The query is mapped through the
+tile image then scales between levels — polygons filled by the same
+non-zero rule, so a hole is not a hit, and geometry moved by the same
+`*-translate` and `line-offset`. The query is mapped through the
 inverse of the painter's translate · rotate into world pixels, into each
 display tile's logical pixels, clipped to the tile, and then into the
-data tile's extent units, rather than every candidate feature into
-pixels; features are rejected on their decode-time bounds before any
-expression runs, and within a feature, edges whose bounds miss the query
-area (widened by the half width, for lines) are skipped before any
-crossing test. That second cull is what keeps big features cheap:
+data tile's extent units through the draw transform shifted by the
+layer's translate (the rasterizer's own evaluation of it), rather than
+every candidate feature into pixels. A line offset is the exception: a
+sideways shift in pixels at every vertex is no single transform of the
+query, so a line whose `line-offset` is non-zero has its runs clipped,
+translated and offset exactly as the rasterizer draws them, and is
+tested in pixels — a descendant's included, which is clipped to its
+square before it moves and so may be drawn, and hit, outside it.
+Features are rejected on their decode-time bounds
+before any expression runs — against the query area widened by the
+reach of a stroke, circle or offset (a data-driven offset has no bound
+of its own), and never outside the tile's cull
+window, since the rasterizer draws nothing there however far a stroke
+or offset would carry it — and within a feature, edges whose bounds
+miss the query area (widened by the half width, for lines) are skipped
+before any crossing test. That second cull is what keeps big features cheap:
 OpenFreeMap's z14 tiles merge whole blocks of buildings into one feature
 of up to ~1,000 rings, whose bounds pass the first test for nearly any
 query on the tile. A polygon needs one non-zero winding pass after its
@@ -1224,20 +1254,34 @@ draw a feature differently, so a change on a source layer none of them
 draws does nothing at all. Otherwise the display tiles that draw the
 feature are found through an index of each decoded source layer by id
 (built on first use, held weakly like the match lists) and the
-feature's bounds against each tile's window plus the cull buffer — at
-overzoom most display tiles cut from the data tile are not touched.
+feature's bounds against each tile's window plus the cull buffer,
+widened by the largest `*-translate` among the layers that read the
+source layer's state, since the rasterizer culls on translated bounds
+(`line-offset` widens nothing: it moves a line only after that test) —
+at overzoom most display tiles cut from the data tile are not touched.
 Those are rendered again from the data already in memory, ahead of all
 queued work and without a fade, since the change is the point; a tile
 showing an image whose data cannot be checked is rendered again too,
-which fetches it. A symbol layout cannot read state, so in the default
+which fetches it. So are the outgoing zoom level's finished tiles that
+draw the feature while it is still retained — in the default label
+mode, geometry only, and only those whose data is at hand: one still
+loading is about to go, and a fetch or a symbol phase is not worth it
+on the way out. A symbol layout cannot read state, so in the default
 label mode only the geometry is redone: the tile keeps its published
 symbols, and with them the placement, instead of handing the label pass
 a republish — provided the tile's sources are the ones those labels
 were laid out from (a source that failed then and arrives now brings
-labels of its own). Labels
+labels of its own). The provisional render such a redraw starts when
+the tile's data has left the decoded-tile cache never replaces a final
+tile's content: an image, or labels of its own where the geometry drew
+nothing. Labels
 whose paint reads state need no redraw of anything — their text style
 memo carries the state version it was evaluated at, so the next frame
-re-evaluates them.
+re-evaluates them. Whether a label shows at all is a placement
+decision, though — its opacity may read the state — so a change also
+marks the placement dirty, and the next collision pass, at most one
+fade interval later, places a label the state just showed and drops
+one it hid.
 
 The finished-tile cache is shared by every layer over the style, and
 state belongs to one controller, so the two are kept apart: a tile drawn
@@ -1309,7 +1353,9 @@ arithmetic every 100 ms at most while the map zooms, and sharing the
 tile pool would queue it behind tile preparation exactly when a zoom
 crossing needs both. One pass is in flight at a time; a disposed layer
 completes it with null, never an error. If the isolate cannot be
-spawned the passes run on the event loop, as they do on web.
+spawned, or dies before reporting its port, the passes run on the
+event loop, as they do on web; one that dies later is respawned for
+the next pass.
 
 Label placement passes run on one more isolate per layer, apart from the
 pool so that a pass never queues behind tile decoding: it holds a copy
@@ -1624,8 +1670,13 @@ When any layer reads global state, `ThemeReader` keeps the style
 document in a family that compiles siblings on demand and keeps the
 eight most recent, so the same state is the same instance, a `build`
 method asking again changes nothing, and the default state keeps the
-style's plain id while others append `|state=<json>`. Siblings read the
-same feature properties from the same sources, so `VectorTileLayer`
+style's plain id while others append `|state=<json>`. The family is
+keyed on the names the style's `global-state` expressions read, which
+the parser collects: an override of any other key is dropped before
+the state is keyed, so an app passing more of its state than the style
+needs mints no new theme and redraws nothing, while a key the style
+reads without declaring it in `state` still takes effect. Siblings read
+the same feature properties from the same sources, so `VectorTileLayer`
 does not rebuild its stores for one: it re-renders the live tiles from
 the decoded data, as for a sprites change, the old imagery holding
 until each replacement lands. Recompiling Liberty takes 0.4–0.8 ms
@@ -1669,7 +1720,13 @@ property takes it, by `ThemeReader.acceptsOf`, the property type's
 check; text and image names take any value. A legacy function that
 names no `type` ramps between its stops, except on a property the spec
 does not interpolate (`line-dasharray`, the sort keys), where it steps,
-as MapLibre's do. The checks live inside the
+as MapLibre's do. A zoom-and-property function's `type` picks only its
+property dimension: its zoom stops ramp, with the function's base,
+wherever the property interpolates — a `categorical` line width widens
+smoothly — and step where it does not. A stop listed twice is dropped
+when the function is parsed, its first output kept as maplibre-native
+keeps it, so the ramp runs on from that output to the next stop and no
+evaluation looks for duplicates. The checks live inside the
 closures that already exist, never in an extra closure layer or a field
 on `EvalContext`, and where the parser can see an operand's type they
 compile away: `[">=", ["get", "rank"], 5]` is one type test and one

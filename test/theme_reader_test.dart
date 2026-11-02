@@ -458,6 +458,64 @@ void main() {
       expect(opacity(a), 0.5);
     });
 
+    test('a key no expression reads changes no theme', () {
+      final theme = const ThemeReader().read({
+        ...stateStyle(),
+        'state': {
+          'highlight': {'default': 'park'},
+          'opacity': {'default': 1},
+          'unused': {'default': 0},
+        },
+      });
+      expect(theme.withGlobalState({'userId': 1}), same(theme),
+          reason: 'undeclared and unread');
+      expect(theme.withGlobalState({'unused': 5}), same(theme),
+          reason: 'declared but unread');
+      final forest =
+          theme.withGlobalState({'highlight': 'forest', 'userId': 1});
+      expect(theme.withGlobalState({'highlight': 'forest', 'userId': 2}),
+          same(forest));
+      expect(forest.id, theme.withGlobalState({'highlight': 'forest'}).id);
+      expect(forest.globalState,
+          {'highlight': 'forest', 'opacity': 1, 'unused': 0});
+      expect(theme.id, ThemeReader.idOf(stateStyle()));
+      // Nor do they crowd the kept siblings out.
+      for (var i = 0; i < 9; i++) {
+        theme.withGlobalState({'highlight': 'park', 'userId': i});
+      }
+      expect(theme.withGlobalState({'highlight': 'forest'}), same(forest));
+    });
+
+    test('a key only a dropped layer reads changes no theme', () {
+      final base = stateStyle();
+      final theme = const ThemeReader().read({
+        ...base,
+        'layers': [
+          ...base['layers']! as List,
+          // Not drawn, so the state it reads draws nothing either.
+          {
+            'id': 'sky',
+            'type': 'sky',
+            'filter': [
+              '==',
+              ['global-state', 'mode'],
+              'night'
+            ],
+          },
+        ],
+      });
+      expect(theme.withGlobalState({'mode': 'night'}), same(theme));
+    });
+
+    test('a key the style reads without declaring it still takes effect', () {
+      final theme = const ThemeReader().read(stateStyle()..remove('state'));
+      expect(shows(theme, 'forest'), isFalse);
+      final forest = theme.withGlobalState({'highlight': 'forest'});
+      expect(shows(forest, 'forest'), isTrue);
+      expect(forest.isSiblingOf(theme), isTrue);
+      expect(forest.id, isNot(theme.id));
+    });
+
     test('a style that reads no global state is its own sibling for all', () {
       final theme = const ThemeReader().read(style);
       expect(theme.withGlobalState({'anything': 1}), same(theme));
@@ -712,6 +770,49 @@ void main() {
     // Where the spec interpolates, or the style names the type, it ramps.
     expect(width.width.eval(ctx), 2);
     expect(width.dashArray!.eval(ctx), [2, 3, 4]);
+  });
+
+  test('zoom-and-property functions ramp the zoom where the spec interpolates',
+      () {
+    final byClass = {
+      'type': 'categorical',
+      'property': 'class',
+      'base': 1.2,
+      'stops': [
+        [
+          {'zoom': 10, 'value': 'motorway'},
+          1
+        ],
+        [
+          {'zoom': 16, 'value': 'motorway'},
+          8
+        ],
+      ],
+    };
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'roads',
+          'type': 'line',
+          'source': 's',
+          'source-layer': 'road',
+          'layout': {'line-sort-key': byClass},
+          'paint': {'line-width': byClass},
+        },
+      ],
+    });
+    final roads = theme.layers.single as LineThemeLayer;
+    EvalContext at(double zoom) =>
+        EvalContext(zoom: zoom, properties: const {'class': 'motorway'});
+    // A categorical type picks the class; the zoom still widens the
+    // line smoothly, with the function's base, as in MapLibre.
+    expect(roads.width.eval(at(10)), 1);
+    expect(roads.width.eval(at(13)), closeTo(3.566, 1e-3));
+    expect(roads.width.eval(at(15.99)), closeTo(7.981, 1e-3));
+    expect(roads.width.eval(at(16)), 8);
+    // A sort key is not interpolated: it steps at each zoom stop.
+    expect(roads.sortKey!.eval(at(15.99)), 1);
+    expect(roads.sortKey!.eval(at(16)), 8);
   });
 
   test('acceptsOf gives each spec property type its check', () {

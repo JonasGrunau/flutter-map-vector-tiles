@@ -8,6 +8,7 @@ import 'package:flutter_map_vector_tiles/src/render/display_tile_data.dart';
 import 'package:flutter_map_vector_tiles/src/render/feature_query.dart';
 import 'package:flutter_map_vector_tiles/src/render/hit_test.dart';
 import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart';
+import 'package:flutter_map_vector_tiles/src/render/tile_rasterizer.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _extent = 4096;
@@ -90,7 +91,65 @@ HitArea _at(double x, double y) => HitArea([Offset(x, y)]);
 HitArea _rect(Rect r) =>
     HitArea([r.topLeft, r.topRight, r.bottomRight, r.bottomLeft]);
 
+/// The alpha [TileRasterizer] draws [theme] with into [data]'s display
+/// tile, per logical pixel (a device pixel ratio of 1).
+Future<int Function(int x, int y)> _alphas(Theme theme, DisplayTileData data,
+    {double styleZoom = 14}) async {
+  final recorder = PictureRecorder();
+  TileRasterizer.paint(
+      canvas: Canvas(recorder), theme: theme, data: data, styleZoom: styleZoom);
+  final picture = recorder.endRecording();
+  final image = picture.toImageSync(256, 256);
+  picture.dispose();
+  final bytes = (await image.toByteData())!;
+  image.dispose();
+  return (int x, int y) => bytes.getUint8((y * 256 + x) * 4 + 3);
+}
+
+/// Expects [data] to be queried where [theme] draws it: each pixel in
+/// [drawn] is painted and a query at its centre finds [hit]; each one
+/// in [blank] is left clear and a query there finds nothing.
+Future<void> _queriedWhereDrawn(
+  Theme theme,
+  DisplayTileData data, {
+  required String hit,
+  required List<(int, int)> drawn,
+  required List<(int, int)> blank,
+  double styleZoom = 14,
+}) async {
+  final alpha = await _alphas(theme, data, styleZoom: styleZoom);
+  List<String> query(int x, int y) => [
+        for (final h in FeatureQuery.hitTile(
+          theme: theme,
+          data: data,
+          styleZoom: styleZoom,
+          area: _at(x + 0.5, y + 0.5),
+        ))
+          '${h.layer.id}:${h.feature.id}',
+      ];
+  for (final (x, y) in drawn) {
+    expect(alpha(x, y), greaterThan(200), reason: 'drawn at ($x, $y)');
+    expect(query(x, y), [hit], reason: 'queried at ($x, $y)');
+  }
+  for (final (x, y) in blank) {
+    expect(alpha(x, y), lessThan(10), reason: 'clear at ($x, $y)');
+    expect(query(x, y), isEmpty, reason: 'queried at ($x, $y)');
+  }
+}
+
+/// [_theme] with one layer [id] of [type] on source `s`, layer `l`.
+Theme _oneLayer(String id, String type, Map<String, Object?> paint) => _theme([
+      {
+        'id': id,
+        'type': type,
+        'source': 's',
+        'source-layer': 'l',
+        'paint': paint,
+      },
+    ]);
+
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   const key = TileKey(14, 8700, 5600);
 
   group('HitArea', () {
@@ -502,6 +561,328 @@ void main() {
       expect(draws(0, 0, ['x']), isTrue);
       expect(draws(0, 0, [8]), isFalse);
       expect(FeatureQuery.drawsAny(key, tile, 'missing', [7]), isFalse);
+    });
+  });
+
+  group('translate and offset', () {
+    DisplayTileData one(PreparedFeature feature, {TileKey? display}) =>
+        DisplayTileData(displayKey: display ?? key, sources: {
+          's': _tile(key, {
+            'l': [feature]
+          })
+        });
+    final road = _feature(
+        PreparedGeomType.line,
+        [
+          [20 * _px, 100 * _px, 200 * _px, 100 * _px]
+        ],
+        id: 2);
+
+    test('fill-, line- and circle-translate move the query with the geometry',
+        () async {
+      final square = _feature(PreparedGeomType.polygon,
+          [_square(40 * _px, 40 * _px, 80 * _px, 80 * _px)],
+          id: 1);
+      await _queriedWhereDrawn(
+        _oneLayer('fill', 'fill', {
+          'fill-translate': [100, 100]
+        }),
+        one(square),
+        hit: 'fill:1',
+        drawn: [(160, 160), (141, 141)],
+        blank: [(60, 60), (185, 160)],
+      );
+      await _queriedWhereDrawn(
+        _oneLayer('building', 'fill-extrusion', {
+          'fill-extrusion-translate': [0, -30]
+        }),
+        one(square),
+        hit: 'building:1',
+        drawn: [(60, 20)],
+        blank: [(60, 70)],
+      );
+      await _queriedWhereDrawn(
+        _oneLayer('road', 'line', {
+          'line-width': 4,
+          'line-translate': [0, 40],
+        }),
+        one(road),
+        hit: 'road:2',
+        drawn: [(100, 140)],
+        blank: [(100, 100), (100, 145)],
+      );
+      await _queriedWhereDrawn(
+        _oneLayer('poi', 'circle', {
+          'circle-radius': 6,
+          'circle-translate': [50, 0],
+        }),
+        one(_feature(
+            PreparedGeomType.point,
+            [
+              [60 * _px, 60 * _px]
+            ],
+            id: 3)),
+        hit: 'poi:3',
+        drawn: [(110, 60)],
+        blank: [(60, 60), (118, 60)],
+      );
+    });
+
+    test('line-offset is hit where the offset line is drawn', () async {
+      // Drawn eastwards: its right is down the tile.
+      await _queriedWhereDrawn(
+        _oneLayer('road', 'line', {'line-width': 4, 'line-offset': 30}),
+        one(road),
+        hit: 'road:2',
+        drawn: [(100, 130)],
+        blank: [(100, 100), (100, 70)],
+      );
+      await _queriedWhereDrawn(
+        _oneLayer('road', 'line', {'line-width': 4, 'line-offset': -30}),
+        one(road),
+        hit: 'road:2',
+        drawn: [(100, 69)],
+        blank: [(100, 100), (100, 130)],
+      );
+      // Data-driven, and translated as well.
+      await _queriedWhereDrawn(
+        _oneLayer('road', 'line', {
+          'line-width': 4,
+          'line-offset': ['get', 'o'],
+          'line-translate': [10, 10],
+        }),
+        one(_feature(
+            PreparedGeomType.line,
+            [
+              [20 * _px, 100 * _px, 200 * _px, 100 * _px]
+            ],
+            properties: {'o': 30},
+            id: 2)),
+        hit: 'road:2',
+        drawn: [(100, 140)],
+        blank: [(100, 130), (100, 110)],
+      );
+      // Data-driven past the cull buffer: the rasterizer culls the line
+      // on its own bounds, then moves it the whole 100 px.
+      await _queriedWhereDrawn(
+        _oneLayer('road', 'line', {
+          'line-width': 4,
+          'line-offset': ['get', 'o'],
+        }),
+        one(_feature(
+            PreparedGeomType.line,
+            [
+              [20 * _px, 100 * _px, 200 * _px, 100 * _px]
+            ],
+            properties: {'o': 100},
+            id: 2)),
+        hit: 'road:2',
+        drawn: [(100, 200)],
+        blank: [(100, 100), (100, 170)],
+      );
+      // A polygon's outline, inset, corners included.
+      await _queriedWhereDrawn(
+        _oneLayer('outline', 'line', {'line-width': 6, 'line-offset': 10}),
+        one(_feature(PreparedGeomType.polygon,
+            [_square(64 * _px, 64 * _px, 192 * _px, 192 * _px)],
+            id: 4)),
+        hit: 'outline:4',
+        drawn: [(74, 128), (182, 128), (128, 74), (74, 74)],
+        blank: [(64, 128), (128, 128)],
+      );
+    });
+
+    test('an offset line at deep overzoom is clipped and offset as drawn',
+        () async {
+      // Two levels in, the rasterizer clips to the cull window before it
+      // offsets. Data y 200 is display y 50 in the top-left z16 tile.
+      await _queriedWhereDrawn(
+        _oneLayer('road', 'line', {'line-width': 4, 'line-offset': 20}),
+        one(
+            _feature(
+                PreparedGeomType.line,
+                [
+                  [0, 200, 4096, 200]
+                ],
+                id: 2),
+            display: TileKey(16, key.x * 4, key.y * 4)),
+        hit: 'road:2',
+        drawn: [(100, 70), (250, 70)],
+        blank: [(100, 50), (100, 90)],
+        styleZoom: 16,
+      );
+    });
+
+    test('an offset line outside the cull window is neither drawn nor hit',
+        () async {
+      // 100 px above the tile, past the 64 px buffer, offset 150 px down
+      // into it: culled on its own bounds before the offset applies.
+      await _queriedWhereDrawn(
+        _oneLayer('road', 'line', {'line-width': 4, 'line-offset': 150}),
+        one(_feature(
+            PreparedGeomType.line,
+            [
+              [20 * _px, -100 * _px, 200 * _px, -100 * _px]
+            ],
+            id: 2)),
+        hit: 'road:2',
+        drawn: const [],
+        blank: [(100, 50)],
+      );
+    });
+
+    test('a descendant clips translated and offset geometry to its square',
+        () async {
+      // A z15 tile standing in for the top-left quarter of a z14 display
+      // tile, its geometry spilling past its edge (display x 128) into
+      // the buffer.
+      final child = TileKey(15, key.x * 2, key.y * 2);
+      DisplayTileData standIn(PreparedFeature feature) => DisplayTileData(
+            displayKey: key,
+            sources: const {},
+            descendantSources: {
+              's': [
+                _tile(child, {
+                  'l': [feature]
+                })
+              ]
+            },
+          );
+      // Clipped to the child's extent first, then moved 20 px right.
+      await _queriedWhereDrawn(
+        _oneLayer('fill', 'fill', {
+          'fill-translate': [20, 0]
+        }),
+        standIn(_feature(PreparedGeomType.polygon, [_square(0, 0, 4600, 4600)],
+            id: 1)),
+        hit: 'fill:1',
+        drawn: [(140, 64), (30, 64)],
+        blank: [(150, 64), (10, 64)],
+      );
+      // Clipped, then offset 10 px down: display y 64 → 74.
+      await _queriedWhereDrawn(
+        _oneLayer('road', 'line', {'line-width': 4, 'line-offset': 10}),
+        standIn(_feature(
+            PreparedGeomType.line,
+            [
+              [0, 2048, 4600, 2048]
+            ],
+            id: 2)),
+        hit: 'road:2',
+        drawn: [(100, 74)],
+        blank: [(135, 74), (100, 64)],
+      );
+      // Clipped to the child's square, then offset out of it: display
+      // y 120 → 140, below the square's edge at 128, where it is drawn.
+      await _queriedWhereDrawn(
+        _oneLayer('road', 'line', {'line-width': 4, 'line-offset': 20}),
+        standIn(_feature(
+            PreparedGeomType.line,
+            [
+              [0, 3840, 4096, 3840]
+            ],
+            id: 2)),
+        hit: 'road:2',
+        drawn: [(60, 140)],
+        blank: [(60, 120), (160, 140)],
+      );
+    });
+
+    test('drawsAny reaches as far as a state-reading layer translates',
+        () async {
+      final theme = _oneLayer('f', 'fill', {
+        'fill-color': [
+          'case',
+          [
+            'boolean',
+            ['feature-state', 'hover'],
+            false
+          ],
+          '#ff0000',
+          '#0000ff',
+        ],
+        'fill-translate': [300, 0],
+      });
+      // In the data tile's left half; at z15 drawn 300 px right of it —
+      // well past the 64 px cull buffer, into the right-hand child.
+      final tile = _tile(key, {
+        'l': [
+          _feature(PreparedGeomType.polygon,
+              [_square(40 * _px, 40 * _px, 44 * _px, 44 * _px)],
+              id: 6),
+        ],
+      });
+      final right = TileKey(15, key.x * 2 + 1, key.y * 2);
+      final alpha = await _alphas(
+          theme, DisplayTileData(displayKey: right, sources: {'s': tile}),
+          styleZoom: 15);
+      expect(alpha(128, 84), greaterThan(200));
+      expect(_hits(theme, tile, _at(128, 84), display: right, styleZoom: 15),
+          ['f:6']);
+      expect(FeatureQuery.drawsAny(right, tile, 'l', [6]), isFalse,
+          reason: 'the cull buffer alone does not reach');
+      final slack = FeatureQuery.stateSlackPx(theme, 's', 'l', 15);
+      expect(slack, 300);
+      expect(
+          FeatureQuery.drawsAny(right, tile, 'l', [6], slackPx: slack), isTrue);
+    });
+
+    test('stateSlackPx counts only translated layers reading the state', () {
+      const byState = [
+        'case',
+        [
+          'boolean',
+          ['feature-state', 'hover'],
+          false
+        ],
+        '#ff0000',
+        '#0000ff',
+      ];
+      Map<String, Object?> layer(String id, String type, String sourceLayer,
+              Map<String, Object?> paint,
+              {double? minzoom}) =>
+          {
+            'id': id,
+            'type': type,
+            'source': 's',
+            'source-layer': sourceLayer,
+            if (minzoom != null) 'minzoom': minzoom,
+            'paint': paint,
+          };
+      final theme = _theme([
+        layer('a', 'line', 'l', {
+          'line-color': byState,
+          'line-translate': [10, -120],
+        }),
+        // Further, but reads no state.
+        layer('b', 'fill', 'l', {
+          'fill-translate': [500, 0]
+        }),
+        // Reads state, of another source layer.
+        layer('c', 'circle', 'other', {
+          'circle-color': byState,
+          'circle-translate': [400, 0],
+        }),
+        // Reads state, drawn from z16 on.
+        layer(
+            'd',
+            'fill',
+            'l',
+            {
+              'fill-color': byState,
+              'fill-translate': [0, 200],
+            },
+            minzoom: 16),
+        // An offset moves a line only after the cull test.
+        layer('e', 'line', 'l', {
+          'line-color': byState,
+          'line-offset': 300,
+        }),
+      ]);
+      expect(FeatureQuery.stateSlackPx(theme, 's', 'l', 14), 120);
+      expect(FeatureQuery.stateSlackPx(theme, 's', 'l', 16), 200);
+      expect(FeatureQuery.stateSlackPx(theme, 's', 'other', 14), 400);
+      expect(FeatureQuery.stateSlackPx(theme, 'x', 'l', 14), 0);
     });
   });
 }

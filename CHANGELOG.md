@@ -7,6 +7,9 @@
   `Theme.withGlobalState({...})` gives the theme for other values. The
   state is compiled into the theme, so drawing costs nothing extra, and
   the same state returns the same theme, so the call is safe in `build`.
+  Keys no expression in the style reads are ignored, so an app can pass
+  more of its state than the style needs without a redraw; a key the
+  style reads without declaring it in `state` still takes effect.
   When `VectorTileLayer` gets the same style under another state, it
   redraws from the tiles it already decoded and keeps the old imagery
   until the new one is ready. `Theme.globalState` holds the values in
@@ -164,8 +167,10 @@
   dense city on an Android phone, the frames over 16.7 ms fell from
   7–10 % to about 2 %. Placement shows one frame later than before,
   which in a very fast zoom draws fewer labels per frame; web, label
-  fades turned off, `LabelMode.tile` and styles whose label expressions
-  use `within` or `distance` still place in-frame.
+  fades turned off, `LabelMode.tile`, styles whose label expressions
+  use `within` or `distance`, and styles whose label opacity reads
+  `feature-state` while a `VectorTileLayerController` is attached still
+  place in-frame.
 - ⚡ With `glyphs`, laying out a tile's labels takes a small fraction
   of the UI-thread time it did: the 222 label candidates of a dense
   Munich tile took 31–32 ms of platform text shaping on a Nothing
@@ -248,9 +253,14 @@
   or between the label's words. Images are now left out.
 - 🐛 Legacy zoom-and-property functions (stops keyed
   `{"zoom": …, "value": …}`) were not understood and drew their
-  property's default. Legacy functions over numeric strings
-  (`[[0, "0"], [1, "1"]]`) blended them as numbers, and a stop listed
-  twice took the second output instead of the first.
+  property's default. They now ramp between their zoom stops wherever
+  the property interpolates, whatever their `type`, as MapLibre does,
+  so a `categorical` road width widens smoothly with the zoom; on
+  `line-dasharray` and the sort keys they step. Legacy functions over
+  numeric strings (`[[0, "0"], [1, "1"]]`) blended them as numbers, and
+  a stop listed twice took the second output instead of the first; it
+  now keeps the first and ramps on from it to the next stop, as
+  maplibre-native does.
 - 🐛 A ramp between lists of three or four numbers — dash arrays,
   `icon-padding` — was blended as if they were colours, so the property
   fell back to its default between stops: a legacy zoom function on

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -22,6 +23,9 @@ import 'fixtures/mvt_builder.dart';
 /// The tile under the screen centre and its right-hand neighbour.
 const _centre = TileKey(14, 8726, 5686);
 const _right = TileKey(14, 8727, 5686);
+
+/// The parent of both.
+const _parent = TileKey(13, 4363, 2843);
 
 /// Tile-extent units per logical pixel at the data zoom.
 const _px = 16;
@@ -106,7 +110,36 @@ Uint8List _rightTile() => (MvtTileBuilder().layer('land').feature(
             properties: {'kind': 'patch'}).done())
         .build();
 
-Theme _theme({bool stateLabels = false}) => const ThemeReader().read({
+/// Their parent: land of another kind all over, and a label of its own,
+/// 'Ancestor', in the centre tile's quadrant.
+Uint8List _parentTile() => (MvtTileBuilder()
+        .layer('land')
+        .feature(
+            type: 3,
+            geometry: _box(-8, -8, 264, 264),
+            id: 9,
+            properties: {'kind': 'other'})
+        .done()
+        .layer('poi')
+        .feature(
+            type: 1,
+            geometry: _point(32, 32),
+            id: 7,
+            properties: {'name': 'Ancestor'})
+        .done())
+    .build();
+
+/// A tile of nothing but the park (id 1), from (x0, y0) to (x1, y1).
+Uint8List _parkTile(int x0, int y0, int x1, int y1) =>
+    (MvtTileBuilder().layer('land').feature(
+            type: 3,
+            geometry: _box(x0, y0, x1, y1),
+            id: 1,
+            properties: {'kind': 'grass'}).done())
+        .build();
+
+Theme _theme({bool stateLabels = false, bool stateOpacity = false}) =>
+    const ThemeReader().read({
       'layers': [
         {
           'id': 'bg',
@@ -171,7 +204,54 @@ Theme _theme({bool stateLabels = false}) => const ThemeReader().read({
                     '#000000',
                   ]
                 : '#000000',
+            if (stateOpacity)
+              // Hidden until selected.
+              'text-opacity': [
+                'case',
+                [
+                  'boolean',
+                  ['feature-state', 'selected'],
+                  false
+                ],
+                1,
+                0,
+              ],
           },
+        },
+      ],
+    });
+
+/// An overlay: no background, and the land drawn only while selected —
+/// unselected, a tile draws nothing but its labels.
+Theme _overlayTheme() => const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'land',
+          'type': 'fill',
+          'source': 's',
+          'source-layer': 'land',
+          'paint': {
+            'fill-antialias': false,
+            'fill-color': '#ff0000',
+            'fill-opacity': [
+              'case',
+              [
+                'boolean',
+                ['feature-state', 'selected'],
+                false
+              ],
+              1,
+              0,
+            ],
+          },
+        },
+        {
+          'id': 'label',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'poi',
+          'layout': {'text-field': '{name}', 'text-size': 12},
+          'paint': {'text-color': '#000000'},
         },
       ],
     });
@@ -310,6 +390,55 @@ Future<void> _quiet(WidgetTester tester) async {
 
 List<String> _names(List<RenderedFeature> features) =>
     [for (final f in features) '${f.layerId}:${f.id}'];
+
+/// The names on the labels around the screen's centre.
+List<String> _labelNames(VectorTileLayerController controller) => [
+      for (final f in controller
+          .queryRenderedFeaturesInRect(const Rect.fromLTWH(100, 100, 600, 400)))
+        if (f.layerId == 'label') '${f.properties['name']}',
+    ];
+
+/// Serves [ready] at once and holds every other z15 tile until
+/// [release]; nothing else exists.
+class _HeldZ15Provider extends VectorTileProvider {
+  _HeldZ15Provider(this.ready, this.cacheKey);
+
+  final Map<TileKey, Uint8List> ready;
+  @override
+  final String cacheKey;
+  final _gate = Completer<void>();
+
+  void release() {
+    if (!_gate.isCompleted) _gate.complete();
+  }
+
+  @override
+  int get maximumZoom => 15;
+  @override
+  int get minimumZoom => 0;
+  @override
+  bool get cacheBytesToDisk => false;
+
+  @override
+  Future<TileResponse> load(TileKey tile,
+      {CancellationToken? cancellation}) async {
+    final bytes = ready[tile];
+    if (bytes != null) return TileResponseData(bytes);
+    if (tile.z == 15) await _gate.future;
+    return const TileResponseNotFound();
+  }
+}
+
+/// The z15 children of [_centre], each covered by the park.
+final _parkedChildren = {
+  for (final (dx, dy) in const [(0, 0), (1, 0), (0, 1), (1, 1)])
+    TileKey(15, _centre.x * 2 + dx, _centre.y * 2 + dy):
+        _parkTile(-16, -16, 272, 272),
+};
+
+/// Where [_centre]'s logical pixel (100, 100), on its park, lands with
+/// the map zoomed in to 15 around the same centre.
+const _parkAtZ15 = Offset(344, 244);
 
 void main() {
   tearDown(VectorTileLayer.clearMemoryCache);
@@ -728,6 +857,317 @@ void main() {
     expect(await pumpUntil(tester, () => _colorAt(tester, _mid, _red)), isTrue);
     await _quiet(tester);
     expect(await _colorAt(tester, _mid, _red), isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'a label whose opacity reads feature state shows once the state '
+      'does, with no camera move', (tester) async {
+    // Regression: whether a label shows is a placement decision, and
+    // nothing asked for a new placement pass until the camera moved.
+    final controller = VectorTileLayerController();
+    await _pumpMap(tester,
+        controller: controller, theme: _theme(stateOpacity: true));
+    await _settle(tester, controller, label: false);
+    await _quiet(tester);
+    bool shown() => controller
+        .queryRenderedFeatures(_onScreen(200, 200))
+        .any((f) => f.layerId == 'label');
+    expect(shown(), isFalse, reason: 'hidden until selected');
+
+    controller.setFeatureState(
+        source: 's', sourceLayer: 'poi', id: 3, state: {'selected': true});
+    expect(
+        await pumpUntil(tester, () async => shown(),
+            timeout: const Duration(seconds: 2)),
+        isTrue,
+        reason: 'shown by the state alone');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'an overlay tile drawing only labels keeps them through a state '
+      'change after its data was let go', (tester) async {
+    // Regression: with no image, a final tile let a provisional render
+    // from its parent in on the state change, and was left showing the
+    // parent's labels instead of its own.
+    _sizeView(tester);
+    final controller = VectorTileLayerController();
+    final theme = _overlayTheme();
+    final providers = TileProviders({
+      's': MemoryVectorTileProvider(
+        tiles: {
+          _centre: _centreTile(),
+          _right: _rightTile(),
+          _parent: _parentTile(),
+        },
+        cacheKey: 'rendered-features-overlay',
+      ),
+    });
+    VectorTileLayer layer([VectorTileLayerController? controller]) =>
+        VectorTileLayer(
+          controller: controller,
+          theme: theme,
+          tileProviders: providers,
+          tileOffset: TileOffset.none,
+          tileFadeDuration: Duration.zero,
+          concurrency: 1,
+          diskCacheMaximumSizeInBytes: 0,
+        );
+    // A second, small map over the parent, to bring its decoded tile
+    // into memory on cue.
+    final parentShown = ValueNotifier(false);
+    addTearDown(parentShown.dispose);
+    await tester.pumpWidget(MaterialApp(
+      home: Stack(children: [
+        RepaintBoundary(
+          key: boundaryKey,
+          child: FlutterMap(
+            options:
+                MapOptions(initialCenter: _centreOf(_centre), initialZoom: 14),
+            children: [layer(controller)],
+          ),
+        ),
+        Align(
+          alignment: Alignment.bottomRight,
+          child: ValueListenableBuilder<bool>(
+            valueListenable: parentShown,
+            builder: (context, show, _) => show
+                ? SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: FlutterMap(
+                      options: MapOptions(
+                          initialCenter: _centreOf(_parent), initialZoom: 13),
+                      children: [layer()],
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
+        ),
+      ]),
+    ));
+    expect(
+        await pumpUntil(
+            tester, () async => _labelNames(controller).contains('Cafe')),
+        isTrue);
+    await _quiet(tester);
+    // The tile's decoded data goes; its parent's comes in.
+    VectorTileLayer.clearMemoryCache();
+    parentShown.value = true;
+    await _quiet(tester);
+
+    controller.setFeatureState(
+        source: 's', sourceLayer: 'land', id: 1, state: {'selected': true});
+    expect(await pumpUntil(tester, () => _colorAt(tester, _mid, _red)), isTrue);
+    await _quiet(tester);
+    expect(_labelNames(controller), contains('Cafe'));
+    expect(_labelNames(controller), isNot(contains('Ancestor')));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'feature state reaches the outgoing zoom level while the new one '
+      'loads', (tester) async {
+    // Regression: only the current level's tiles were drawn again, so
+    // the retained one kept showing the old state where the new level
+    // had nothing yet.
+    final provider = _HeldZ15Provider({
+      _centre: _parkTile(16, 16, 272, 240),
+      _right: _parkTile(-16, 16, 100, 240),
+    }, 'rendered-features-held-select');
+    final controller = VectorTileLayerController();
+    final mapController = MapController();
+    await _pumpMap(tester,
+        controller: controller,
+        mapController: mapController,
+        providers: TileProviders({'s': provider}));
+    expect(await pumpUntil(tester, () => _colorAt(tester, _mid, _red)), isTrue);
+    // Finished — symbol phase included: a tile still owing one is left
+    // to the level replacing it.
+    await _quiet(tester);
+    // The decoded tiles go, so the new level has no parent to draw from
+    // in the meantime: the z14 tiles stay on screen.
+    VectorTileLayer.clearMemoryCache();
+    mapController.move(_centreOf(_centre), 15);
+    expect(
+        await pumpUntil(
+            tester,
+            () async =>
+                VectorTileLayer.debugRetainedTileCount > 0 &&
+                await _colorAt(tester, _parkAtZ15, _red),
+            timeout: const Duration(seconds: 10)),
+        isTrue);
+
+    controller.setFeatureState(
+        source: 's', sourceLayer: 'land', id: 1, state: {'selected': true});
+    expect(
+        await pumpUntil(tester, () => _colorAt(tester, _parkAtZ15, _green),
+            timeout: const Duration(seconds: 3)),
+        isTrue,
+        reason: 'the retained park drawn with the state');
+    provider.release();
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'a cleared highlight goes from the outgoing zoom level beneath a '
+      'transparent new one', (tester) async {
+    // Regression: the retained level kept the highlight, showing through
+    // the new level's tiles, which drew nothing there once it cleared.
+    final provider = _HeldZ15Provider({
+      _centre: _parkTile(16, 16, 272, 240),
+      _right: _parkTile(-16, 16, 100, 240),
+      ..._parkedChildren,
+    }, 'rendered-features-held-deselect');
+    final controller = VectorTileLayerController();
+    final mapController = MapController();
+    await _pumpMap(tester,
+        controller: controller,
+        mapController: mapController,
+        theme: _overlayTheme(),
+        providers: TileProviders({'s': provider}));
+    controller.setFeatureState(
+        source: 's', sourceLayer: 'land', id: 1, state: {'selected': true});
+    expect(await pumpUntil(tester, () => _colorAt(tester, _mid, _red)), isTrue);
+    await _quiet(tester);
+    // At z15 the park's children are in at once, the rest of the grid is
+    // held back, so the z14 level stays beneath. Below the z14 park's
+    // edge, only a child draws.
+    const childOnly = Offset(344, 540);
+    mapController.move(_centreOf(_centre), 15);
+    expect(
+        await pumpUntil(
+            tester,
+            () async =>
+                VectorTileLayer.debugRetainedTileCount > 0 &&
+                await _colorAt(tester, _parkAtZ15, _red) &&
+                await _colorAt(tester, childOnly, _red),
+            timeout: const Duration(seconds: 10)),
+        isTrue);
+
+    controller.removeFeatureState(source: 's', sourceLayer: 'land', id: 1);
+    expect(
+        await pumpUntil(
+            tester, () async => !await _colorAt(tester, childOnly, _red)),
+        isTrue);
+    expect(
+        await pumpUntil(
+            tester, () async => !await _colorAt(tester, _parkAtZ15, _red),
+            timeout: const Duration(seconds: 3)),
+        isTrue,
+        reason: 'the retained park drawn without the highlight');
+    provider.release();
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'a state redraw of the outgoing zoom level brings back none of the '
+      'labels the crossing let go', (tester) async {
+    // Regression: clearing the state served the retained tile its
+    // stateless result from the finished-tile cache, labels and all —
+    // the full list, not the one the crossing cut to what was drawn.
+    // A label the outgoing level had been suppressing then appeared.
+    final tile = (MvtTileBuilder()
+            .layer('land')
+            .feature(type: 3, geometry: _box(-8, -8, 264, 264), id: 1)
+            .done()
+            .layer('poi')
+            .feature(type: 1, geometry: _point(128, 128), id: 3, properties: {
+              'name': 'Winner',
+            })
+            .done()
+            .layer('street')
+            .feature(type: 1, geometry: _point(128, 128), id: 4, properties: {
+              'name': 'Loser',
+            })
+            .done())
+        .build();
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'land',
+          'type': 'fill',
+          'source': 's',
+          'source-layer': 'land',
+          'paint': {
+            'fill-color': [
+              'case',
+              [
+                'boolean',
+                ['feature-state', 'selected'],
+                false
+              ],
+              '#00ff00',
+              '#ff0000'
+            ],
+          },
+        },
+        {
+          'id': 'street',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'street',
+          'layout': {'text-field': '{name}', 'text-size': 14},
+        },
+        // Placed first, as the topmost symbol layer, and gone at z15:
+        // the crossing frees its space.
+        {
+          'id': 'poi',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'poi',
+          'maxzoom': 15,
+          'layout': {'text-field': '{name}', 'text-size': 14},
+        },
+      ],
+    });
+    final provider = _HeldZ15Provider({_centre: tile}, 'rendered-features-pin');
+    final controller = VectorTileLayerController();
+    final mapController = MapController();
+    await _pumpMap(tester,
+        controller: controller,
+        mapController: mapController,
+        theme: theme,
+        providers: TileProviders({'s': provider}));
+    List<String> labels() => [
+          for (final f in controller
+              .queryRenderedFeaturesInRect(const Rect.fromLTWH(0, 0, 800, 600)))
+            if (f.layerId == 'poi' || f.layerId == 'street')
+              '${f.properties['name']}',
+        ];
+    expect(await pumpUntil(tester, () async => labels().contains('Winner')),
+        isTrue);
+    await _quiet(tester);
+    expect(labels(), ['Winner']);
+
+    // The decoded tiles go, the finished results stay: the new level has
+    // no parent to stand in with, and the z14 tile's stateless result is
+    // still cached.
+    TileStore.clearMemoryCaches();
+    mapController.move(_centreOf(_centre), 15);
+    expect(
+        await pumpUntil(
+            tester, () async => VectorTileLayer.debugRetainedTileCount > 0,
+            timeout: const Duration(seconds: 10)),
+        isTrue);
+    await _quiet(tester);
+    expect(labels(), isEmpty, reason: 'the crossing cut the loser');
+
+    controller.setFeatureState(
+        source: 's', sourceLayer: 'land', id: 1, state: {'selected': true});
+    expect(
+        await pumpUntil(tester, () => _colorAt(tester, _mid, _green),
+            timeout: const Duration(seconds: 3)),
+        isTrue);
+    controller.removeFeatureState(source: 's', sourceLayer: 'land', id: 1);
+    expect(
+        await pumpUntil(tester, () => _colorAt(tester, _mid, _red),
+            timeout: const Duration(seconds: 3)),
+        isTrue);
+    await _quiet(tester);
+    expect(labels(), isEmpty, reason: 'nothing the crossing let go returns');
+    provider.release();
     await tester.pumpWidget(const SizedBox());
   });
 

@@ -702,6 +702,74 @@ void main() {
       await tester.pump();
     });
   });
+
+  // No shaders needed: nothing is shaded. So it runs in Chrome too.
+  testWidgets('a hillshade hidden at the zoom on screen fetches no DEM tiles',
+      (tester) async {
+    // Regression: DEM tiles and their neighbours were fetched for every
+    // display tile, whether a hillshade drew at its zoom or not — and
+    // one that failed held the tile back from the cache and retried.
+    tester.view.physicalSize = const Size(512, 512);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    VectorTileLayer.clearMemoryCache();
+
+    // Imagery that draws, to show the display tiles were prepared, and a
+    // hillshade up to z12 alone, over a map at z14.
+    final imagery = _DemProvider((key, x, y) => 1000, cacheKey: 'test-imagery');
+    final dem = _DemProvider((key, x, y) => 1000);
+    await tester.pumpWidget(MaterialApp(
+      home: FlutterMap(
+        options: const MapOptions(
+          initialCenter: LatLng(46.0, 7.75),
+          initialZoom: 14,
+        ),
+        children: [
+          VectorTileLayer(
+            theme: const ThemeReader().read({
+              'layers': [
+                {'id': 'imagery', 'type': 'raster', 'source': 'imagery'},
+                {
+                  'id': 'h',
+                  'type': 'hillshade',
+                  'source': 'dem',
+                  'maxzoom': 12,
+                },
+              ],
+            }),
+            tileProviders: const TileProviders({}),
+            rasterSources: {
+              'imagery': RasterTileSource(provider: imagery, tileSize: 256),
+              'dem': RasterTileSource(
+                provider: dem,
+                tileSize: 256,
+                encoding: DemEncoding.terrarium,
+              ),
+            },
+            tileOffset: TileOffset.none,
+            tileFadeDuration: Duration.zero,
+            diskCacheMaximumSizeInBytes: 0,
+          ),
+        ],
+      ),
+    ));
+
+    // Pumped until the imagery has stopped arriving.
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    while (DateTime.now().isBefore(deadline) &&
+        (imagery.loads == 0 ||
+            DateTime.now().difference(imagery.lastLoad) <
+                const Duration(seconds: 1))) {
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 5)));
+    }
+    expect(imagery.served, isNotEmpty);
+    expect(dem.served, isEmpty);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+  });
 }
 
 /// `flutter test --platform chrome` serves the test no assets at all,
@@ -737,10 +805,10 @@ class _DemProvider extends VectorTileProvider {
   var loads = 0;
   var lastLoad = DateTime.now();
 
-  _DemProvider(this.elevation);
+  _DemProvider(this.elevation, {this.cacheKey = 'test-dem'});
 
   @override
-  String get cacheKey => 'test-dem';
+  final String cacheKey;
 
   @override
   int get maximumZoom => 20;
