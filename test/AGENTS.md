@@ -5,7 +5,8 @@
 
 ## Purpose
 
-The package's test suite — flat, no mocking framework, no golden files. Pure
+The package's test suite — flat apart from `fixtures/` and `scripts/`, no
+mocking framework, and golden files only in `scripts/`. Pure
 logic is unit tested directly; anything involving `ui.Image` ownership, tile
 lifecycle or painting is covered by widget tests that pump a real
 `FlutterMap`. Tests import package internals via
@@ -23,6 +24,8 @@ lifecycle or painting is covered by widget tests that pump a real
 | `tile_store_test.dart` | Memory/disk cache keying, miss paths, disposal, stale-while-revalidate (expired entries served instantly, `onRefreshed` on changed content only, corrupt expired entries refetched, `revalidateIfStale` for results served without the stores) |
 | `curved_text_test.dart` | Text along lines and the sharp-bend fallback; the upright guard on a hairpin (dropped on a pass, drawn straight on a replay, kept without `text-keep-upright`, no false rejection near vertical); every along-line symbol fitting on its line, shields and straight-drawn scripts included (dropped on a pass, kept on a replay); `trimCaches` keeping the on-screen label's glyphs; a cluster's remembered glyph never drawn once the glyph cache has evicted it, whether by a trim or within its pass |
 | `label_wrap_test.dart` | `text-max-width` wrapping, read off the collision box: a word wider than the width stays on one line, words still wrap between them; `LabelPainter.breakAroundWideRuns` giving a wide word a line of its own while the words around it wrap at the width, and keeping explicit line breaks |
+| `curved_text_test.dart` | Text along lines and the sharp-bend fallback; the upright guard on a hairpin (dropped on a pass, drawn straight on a replay, kept without `text-keep-upright`, no false rejection near vertical); every along-line symbol fitting on its line, shields and straight-drawn scripts included (dropped on a pass, kept on a replay); `trimCaches` keeping the on-screen label's glyphs |
+| `label_wrap_test.dart` | `text-max-width` wrapping, read off the collision box: a word wider than the width stays on one line, words still wrap between them; `LabelPainter.breakAroundWideRuns` giving a wide word a line of its own while the words around it wrap at the width, keeping explicit line breaks, and moving a cluster of several code units that opens a line to that line whole |
 | `label_painter_prewarm_test.dart` | The resumable `LabelPainter.prewarm` contract: the whole batch with no budget, the resume cursor and guaranteed progress per slice, nothing shaped twice across slices, text-less symbols advancing the cursor; and the text cache holding a z15→z17→z15 round trip without re-shaping |
 | `label_painter_dispose_test.dart` | Text-cache eviction deferring `TextPainter` disposal past the live frame; `trimCaches` keeping the text on screen, what the pump shaped after the last placement pass and the on-screen losers a replayed frame skipped, and releasing the rest |
 | `icon_rotation_test.dart` | `icon-rotate`/`icon-rotation-alignment`, anchor/offset pivot semantics, and rotated collision bounds |
@@ -67,6 +70,7 @@ lifecycle or painting is covered by widget tests that pump a real
 | Directory | Purpose |
 |-----------|---------|
 | `fixtures/` | Test data builders (see `fixtures/AGENTS.md`) |
+| `scripts/` | Labels in 23 scripts drawn through the real label painter with bundled Noto subset fonts: structural pixel tests (VM and Chrome) and goldens (VM, tolerant of rasterizer differences). Excluded from the package by `.pubignore` (see `scripts/AGENTS.md`) |
 
 ## For AI Agents
 

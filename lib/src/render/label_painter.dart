@@ -266,6 +266,14 @@ class LabelPainter {
   @visibleForTesting
   int get debugTextCacheLength => _textCache.length;
 
+  /// Font families every label is shaped with, in fallback order, ahead
+  /// of the platform's own fallback. Null in an app, where the system
+  /// fonts cover each script. `flutter test` has none and does no font
+  /// fallback, so a test drawing anything but its own box-glyph test font
+  /// loads real fonts and names them here (see `test/scripts/`).
+  @visibleForTesting
+  static List<String>? debugFontFamilies;
+
   /// The scale text drawn at [scale] actually uses on a
   /// [devicePixelRatio] screen.
   @visibleForTesting
@@ -1762,7 +1770,9 @@ class LabelPainter {
         : math.max(_shapeSize * memo.maxWidthEm, _shapeSize * 2);
     final style = _textStyle(
         memo.fonts, _shapeSize, memo.letterSpacingEm, Color(memo.fillArgb));
-    var text = instance.text;
+    final paragraphs = instance.text.split('\n');
+    final rtl = paragraphs.map(_readsRightToLeft).toList();
+    var text = _isolateRightToLeft(paragraphs, rtl);
     // Laid out unconstrained first: that is the one layout after which
     // the min intrinsic width is the paragraph's widest unbreakable run.
     // After a constrained layout that broke a word, Skia reports a
@@ -1780,7 +1790,19 @@ class LabelPainter {
     // (LUDWIGSVORST / ADT), so such text gets its breaks spelled out.
     if (fill.maxIntrinsicWidth > maxWidth) {
       if (fill.minIntrinsicWidth > maxWidth) {
-        text = breakAroundWideRuns(text, style, maxWidth);
+        // Broken paragraph by paragraph, so that every line keeps the
+        // direction of the paragraph it came from.
+        final lines = <String>[];
+        final linesRtl = <bool>[];
+        for (var i = 0; i < paragraphs.length; i++) {
+          final broken = breakAroundWideRuns(paragraphs[i], style, maxWidth);
+          for (final line in broken.split('\n')) {
+            if (line.isEmpty) continue;
+            lines.add(line);
+            linesRtl.add(rtl[i]);
+          }
+        }
+        text = _isolateRightToLeft(lines, linesRtl);
         // Every break is explicit now; a width could only add more.
         maxWidth = double.infinity;
         fill.text = TextSpan(text: text, style: style);
@@ -1842,15 +1864,21 @@ class LabelPainter {
         text: TextSpan(text: run, style: style),
         textDirection: TextDirection.ltr,
       )..layout(maxWidth: width);
-      // Each character goes to the line its box sits on. Engines differ
+      // Each grapheme goes to the line its box sits on. Engines differ
       // on which line `getLineBoundary` gives the offset of a soft
       // break; a box's top does not, measured to the line's full height.
+      // Whole graphemes, not code units: a code unit inside a cluster
+      // (শা, an emoji, a letter with a combining mark) has no box of its
+      // own, so one that opened a line stayed on the line before.
       final line = StringBuffer();
       double? top;
-      for (var i = 0; i < run.length; i++) {
+      var start = 0;
+      for (final grapheme in run.characters) {
         final boxes = painter.getBoxesForSelection(
-            TextSelection(baseOffset: i, extentOffset: i + 1),
+            TextSelection(
+                baseOffset: start, extentOffset: start + grapheme.length),
             boxHeightStyle: ui.BoxHeightStyle.max);
+        start += grapheme.length;
         if (boxes.isNotEmpty) {
           if (top != null && boxes.first.top > top + 0.5) {
             lines.add(line.toString().trim());
@@ -1858,7 +1886,7 @@ class LabelPainter {
           }
           top = boxes.first.top;
         }
-        line.write(run[i]);
+        line.write(grapheme);
       }
       lines.add(line.toString().trim());
       painter.dispose();
@@ -1879,7 +1907,12 @@ class LabelPainter {
         )..layout();
         final widest = probe.minIntrinsicWidth;
         probe.dispose();
-        if (widest <= maxWidth) {
+        // Chinese and Japanese break between any two ideographs or kana,
+        // in MapLibre as in Flutter's line breaker. Skia reports a run
+        // of them with no space in it as a single unbreakable run as
+        // wide as the whole label, though, which kept every Chinese
+        // label on one line; so they are told apart by script.
+        if (widest <= maxWidth || _breaksBetweenIdeographs(word)) {
           words.add(word);
           continue;
         }
@@ -1889,6 +1922,114 @@ class LabelPainter {
       flushWords();
     }
     return lines.where((line) => line.isNotEmpty).join('\n');
+  }
+
+  /// Whether [word] holds a character MapLibre may break a line next
+  /// to, though no space is there: the Han ideographs, kana, Bopomofo
+  /// and Yi, with their punctuation and fullwidth forms. Not Hangul,
+  /// which is written with spaces between words.
+  static bool _breaksBetweenIdeographs(String word) {
+    for (final rune in word.runes) {
+      if ((rune >= 0x2e80 && rune <= 0x312f) || // radicals, punctuation, kana
+          (rune >= 0x3190 && rune <= 0x9fff) || // kanbun to unified ideographs
+          (rune >= 0xa000 && rune <= 0xa4cf) || // Yi
+          (rune >= 0xf900 && rune <= 0xfaff) || // compatibility ideographs
+          (rune >= 0xfe10 && rune <= 0xfe1f) || // vertical forms
+          (rune >= 0xfe30 && rune <= 0xfe4f) || // compatibility forms
+          (rune >= 0xff00 && rune <= 0xff9f) || // fullwidth, halfwidth kana
+          (rune >= 0x16fe0 && rune <= 0x18d7f) || // Tangut, Khitan
+          (rune >= 0x1aff0 && rune <= 0x1b2ff) || // kana supplements, Nüshu
+          (rune >= 0x1f200 && rune <= 0x1f2ff) || // enclosed ideographs
+          (rune >= 0x20000 && rune <= 0x3ffff)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// [lines] joined into one text, each line of a right-to-left
+  /// paragraph (see [_readsRightToLeft]) that needs it wrapped in a
+  /// right-to-left isolate. Labels are laid out left to right, which put
+  /// the Latin words and edge punctuation of an Arabic or Hebrew
+  /// paragraph on the wrong side: "شارع King Fahd" drew the Arabic
+  /// first, on the left. A line break ends every isolate, so each line
+  /// gets its own; a paragraph that wraps at `text-max-width` stays in
+  /// one.
+  static String _isolateRightToLeft(List<String> lines, List<bool> rtl) {
+    if (!rtl.contains(true)) return lines.join('\n');
+    return [
+      for (var i = 0; i < lines.length; i++)
+        rtl[i] && _needsIsolate(lines[i])
+            ? '\u2067${lines[i]}\u2069'
+            : lines[i],
+    ].join('\n');
+  }
+
+  static final _letter = RegExp(r'\p{L}', unicode: true);
+  static final _letterOrMark = RegExp(r'[\p{L}\p{M}]', unicode: true);
+
+  /// Whether the right-to-left [line] would lay out differently in a
+  /// left-to-right paragraph: whether it holds a left-to-right letter or
+  /// direction control, or starts or ends with something other than a
+  /// letter or mark. A line of right-to-left letters, marks, digits and
+  /// the spaces and punctuation between them resolves the same in either
+  /// direction, and most Arabic and Hebrew labels are such lines. They
+  /// stay as they are: an isolate is two more characters for a font to
+  /// map, and a line drawn from two fonts takes the taller ascent and
+  /// descent of each.
+  static bool _needsIsolate(String line) {
+    final runes = line.runes;
+    if (runes.isEmpty) return false;
+    if (!_letterOrMark.hasMatch(String.fromCharCode(runes.first)) ||
+        !_letterOrMark.hasMatch(String.fromCharCode(runes.last))) {
+      return true;
+    }
+    for (final rune in runes) {
+      if (rune < 0x80) {
+        if ((rune >= 0x41 && rune <= 0x5a) || (rune >= 0x61 && rune <= 0x7a)) {
+          return true;
+        }
+        continue;
+      }
+      if (_isRightToLeft(rune)) continue;
+      if (rune == 0x200e || // left-to-right mark
+          (rune >= 0x202a && rune <= 0x202e) || // embeddings, overrides
+          (rune >= 0x2066 && rune <= 0x2069) || // isolates
+          _letter.hasMatch(String.fromCharCode(rune))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Whether [rune] is in a block of a right-to-left script.
+  static bool _isRightToLeft(int rune) =>
+      (rune >= 0x0590 && rune <= 0x08ff) || // Hebrew to Arabic Ext.
+      (rune >= 0xfb1d && rune <= 0xfdff) || // presentation forms
+      (rune >= 0xfe70 && rune <= 0xfeff) ||
+      (rune >= 0x10800 && rune <= 0x10fff) || // historic RTL scripts
+      (rune >= 0x1e800 && rune <= 0x1efff); // Adlam, Mende Kikakui
+
+  /// Whether [paragraph] reads right to left: whether its first strong
+  /// character, a letter or a direction mark, is right-to-left. That is
+  /// how the Unicode bidi algorithm and MapLibre set the direction of a
+  /// paragraph nothing else sets it for.
+  static bool _readsRightToLeft(String paragraph) {
+    for (final rune in paragraph.runes) {
+      // Most labels start with an ASCII letter: no pattern needed.
+      if (rune < 0x80) {
+        if ((rune >= 0x41 && rune <= 0x5a) || (rune >= 0x61 && rune <= 0x7a)) {
+          return false;
+        }
+        continue;
+      }
+      if (rune == 0x200e) return false; // left-to-right mark
+      if (rune == 0x200f || rune == 0x061c) return true; // RLM, Arabic mark
+      if (_letter.hasMatch(String.fromCharCode(rune))) {
+        return _isRightToLeft(rune);
+      }
+    }
+    return false;
   }
 
   /// Resolves the atlas cells of every curved label in [toDraw],
@@ -2060,7 +2201,10 @@ class LabelPainter {
     } else if (joined.contains('thin')) {
       weight = FontWeight.w200;
     }
+    final families = debugFontFamilies;
     return TextStyle(
+      fontFamily: families?.first,
+      fontFamilyFallback: families,
       fontSize: fontSize,
       fontWeight: weight,
       fontStyle:

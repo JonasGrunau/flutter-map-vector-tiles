@@ -25,3 +25,5 @@ CLAUDE.md
 # --- development-only harness (tracked in git, no business in the tarball) ---
 bench/
 compare/
+# the script suite: ~1 MB of Noto subset fonts and goldens
+test/scripts/

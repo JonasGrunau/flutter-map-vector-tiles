@@ -390,7 +390,18 @@ mode](#choosing-a-label-mode) has what changes then.
 - **Words stay whole.** `text-max-width` wraps between words; a single
   word wider than it gets a line of its own, as in MapLibre, rather
   than breaking where the width runs out, and the lines around it
-  still break at `text-max-width`.
+  still break at `text-max-width`. Chinese and Japanese wrap between
+  any two characters, as in MapLibre; Thai, Lao, Khmer, Myanmar and
+  Tibetan, written without spaces, stay on one line, as they do there.
+  One difference: Korean may also break between two syllables of a
+  word, where MapLibre breaks it only at spaces.
+- **Each line reads in its own direction.** Every line of the text
+  field takes its direction from its first letter, as in MapLibre, and
+  the lines `text-max-width` wraps it into keep that direction: an
+  Arabic or Hebrew name reads from the right with any Latin word or
+  number in it on the correct side, a Latin name holding a Hebrew word
+  reads from the left, and Liberty's Latin name over the local one
+  gets each line right.
 - **Repeated road names stay spaced.** A street arrives as many features
   (one per OSM way, sometimes one per road-class style layer), each spaced
   on its own. For `symbol-placement: line`, a visible label therefore
