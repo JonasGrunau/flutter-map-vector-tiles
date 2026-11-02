@@ -125,8 +125,35 @@ List<String> _drawn(List<PlacedSymbol> symbols) {
     placementGeneration: 0,
   );
   recorder.endRecording().dispose();
+  final texts = [for (final symbol in drawn) symbol.instance.text];
+  // The placement worker must place in the same order: the same
+  // candidates, mirrored with the text metrics the pass above shaped,
+  // win the same space.
+  final instances = [for (final symbol in symbols) symbol.instance];
+  final worker = LabelPainter.worker();
+  final mirrored = worker.adoptMirror(painter.mirrorOf(instances), _theme);
+  final winners = worker.placeForWorker(
+    screenSize: const Size(600, 300),
+    styleZoom: 14,
+    symbols: [
+      for (var i = 0; i < symbols.length; i++)
+        PlacedSymbol(
+          instance: mirrored[i]!,
+          id: symbols[i].id,
+          screenAnchor: symbols[i].screenAnchor,
+          screenAngle: symbols[i].screenAngle,
+          transform: symbols[i].transform,
+          ghostOnly: symbols[i].ghostOnly,
+          retained: symbols[i].retained,
+          order: symbols[i].order,
+        ),
+    ],
+    incumbents: const [],
+  );
+  expect({for (final winner in winners) winner.instance.text}, texts.toSet(),
+      reason: 'the placement worker places in the same order');
   painter.dispose();
-  return [for (final symbol in drawn) symbol.instance.text];
+  return texts;
 }
 
 void main() {

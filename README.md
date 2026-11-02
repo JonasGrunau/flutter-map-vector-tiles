@@ -26,7 +26,7 @@ layers; this package only draws the map.
 | 🔍 **Crisp labels** | Text and icons drawn per frame in screen space: upright under rotation, sharp at fractional zoom, and **one global collision pass**, so nothing is duplicated or clipped at a tile seam. Or, with `labelMode: LabelMode.tile`, drawn into the tiles once, for no per-frame label cost at all — see [Choosing a label mode](#choosing-a-label-mode) |
 | 🌫️ **No white flashes** | New tiles fade in over retained ancestor imagery. Fast zoom-ins render from already-decoded parent tiles, zoom-outs compose the decoded children until the new level arrives |
 | 🎚️ **Correct MapLibre zoom semantics** | The default `TileOffset.maplibre` renders 512px-convention styles *exactly* as their authors designed them |
-| 🧵 **Isolate pipeline** | Tiles decode, trim and match the style's layer filters on a worker-isolate pool (a yielding event-loop queue on web), viewport-centre first. Cancellation is a state, **never an exception** in your crash reporting |
+| 🧵 **Isolate pipeline** | Tiles decode, trim and match the style's layer filters on a worker-isolate pool (a yielding event-loop queue on web), viewport-centre first, and label collision is decided on an isolate of its own. Cancellation is a state, **never an exception** in your crash reporting |
 | 💾 **Deterministic caching** | LRU memory caches with byte budgets, plus a size-capped disk cache with no index files to corrupt. Every `ui.Image` is disposed on eviction |
 | ✈️ **Works offline** | The style bundle and recently viewed tiles are cached on disk (native), so places you visited keep rendering with no network |
 | 🌐 **All six platforms** | Android, iOS, macOS, Linux, Windows and web. See [Web support](#-web-support) for the browser differences |
@@ -251,15 +251,14 @@ native:
   Tiles and the style bundle rely on the in-memory caches plus the
   browser's HTTP cache instead.
 - **Decoding runs on the event loop.** A yielding queue replaces the
-  worker-isolate pool, and `concurrency` is ignored. A heatmap layer's
-  density is computed there too, after the frame that asked for it.
-- **CORS.** The browser fetches style.json, TileJSON, sprites, glyphs and
-  tiles directly, so every host involved must send
   worker-isolate pool, and `concurrency` is ignored. Layer filters are
   matched against a tile's features when it is first drawn, not while it
-  is decoded.
-- **CORS.** The browser fetches style.json, TileJSON, sprites and tiles
-  directly, so every host involved must send
+  is decoded, and a heatmap layer's density is computed on the event loop
+  too, after the frame that asked for it.
+- **Label collision runs in the frame.** The placement pass that runs on
+  an isolate of its own elsewhere costs the frame it is due in.
+- **CORS.** The browser fetches style.json, TileJSON, sprites, glyphs and
+  tiles directly, so every host involved must send
   `Access-Control-Allow-Origin`. MapTiler, OpenFreeMap and Stadia do;
   self-hosted tile servers need it configured. PMTiles hosts additionally
   need range requests to pass CORS, meaning `Range` in
@@ -728,7 +727,10 @@ mode](#choosing-a-label-mode) has what changes then.
   too sharply under it or the label outgrow its stretch of road; it then
   fades out instead of vanishing. An unchanged
   repaint creates no new placement work, so the animation ticker settles
-  when the last real change has been placed.
+  when the last real change has been placed. Except on web (and for
+  styles whose label expressions use `within` or `distance`), the
+  decision itself is taken on a separate isolate, from the text the map
+  has already shaped, and shown from the frame after it was asked for.
 
 #### Fonts
 
@@ -771,11 +773,11 @@ style was designed with. Without it every label uses the system font.
 
 The screen-space pass is what makes labels behave as above, and it is
 also the one part of a moving map that costs UI-thread time on every
-frame: every placed label laid out and drawn again, and, every
-`labelFadeDuration` (300 ms at most), a collision pass over every
-candidate. On a label-dense screen and a mid-range phone that cost
-decides whether panning, rotating and pinching hold the display's frame
-rate.
+frame: every placed label laid out and drawn again. The collision pass
+over every candidate, every `labelFadeDuration` (300 ms at most), runs on
+an isolate of its own — except on web, where it runs in the frame. On a
+label-dense screen and a mid-range phone that cost decides whether
+panning, rotating and pinching hold the display's frame rate.
 
 `labelMode: LabelMode.tile` removes it. Labels and icons are placed and
 drawn once per tile, when the tile is rendered, into the same image as
@@ -786,7 +788,7 @@ they inherit the limits of any pre-rendered tile:
 
 | | `LabelMode.screen` (default) | `LabelMode.tile` |
 |---|---|---|
-| Per-frame label work | placed labels laid out and drawn every frame, a collision pass every `labelFadeDuration` (at most 300 ms) | none |
+| Per-frame label work | placed labels laid out and drawn every frame, a collision pass every `labelFadeDuration` (at most 300 ms) on a separate isolate (in-frame on web) | none |
 | Collision | one pass across the whole screen | within each tile |
 | At tile seams | seamless | a label that would cross a tile edge is dropped, so labels thin out along tile seams; a road name repeated along a road is thinned out only within a tile, so it can show on both sides of a seam |
 | Under rotation | text stays upright | text rotates with the map |
@@ -846,7 +848,8 @@ style.json ─► StyleReader ─► compiled Theme (expressions → closures)
 camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
    bytes ◄─ disk cache ◄─ network        ─► isolate: decode + trim + filter
    PreparedTile ─► rasterize once ─► GPU image ─► textured quad per frame
-   symbols ─────► per-frame screen-space label pass (global collision)
+   symbols ─────► per-frame screen-space label pass (global collision,
+                  decided on its own isolate)
            └────► or, LabelMode.tile: drawn into that GPU image, once
    heatmap points ─► worker: density + colour ramp ─► one screen image
    finished tiles (image + symbols) ─► shared LRU ─► instant re-crossings

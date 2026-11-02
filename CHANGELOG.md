@@ -141,6 +141,15 @@
   Arabic street name with a Latin number) sits where it would in one
   font, and Latin text comes out about half a pixel lower, nearer where
   MapLibre centres it.
+- ⚡ **Label placement off the UI thread**: on platforms with isolates
+  the label collision pass runs in an isolate of its own, from a copy of
+  the theme and the metrics of the text the UI already shaped, and the
+  frame that needs a new decision no longer makes it. Zooming over a
+  dense city on an Android phone, the frames over 16.7 ms fell from
+  7–10 % to about 2 %. Placement shows one frame later than before,
+  which in a very fast zoom draws fewer labels per frame; web, label
+  fades turned off, `LabelMode.tile` and styles whose label expressions
+  use `within` or `distance` still place in-frame.
 - ⚡ With `glyphs`, laying out a tile's labels takes a small fraction
   of the UI-thread time it did: the 222 label candidates of a dense
   Munich tile took 31–32 ms of platform text shaping on a Nothing
