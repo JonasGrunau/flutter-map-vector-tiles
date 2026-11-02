@@ -487,6 +487,23 @@ void main() {
       expect(logged.single, contains('text-writing-mode'));
     });
 
+    test('a literal list of the wrong length falls back, with a warning', () {
+      final logged = <String>[];
+      final layer = _layer({
+        'text-field': 'x',
+        'text-offset': [1, 2, 3],
+        'icon-text-fit-padding': [1, 2],
+      }, paint: {
+        'text-translate': [4, 5],
+      }, logger: Logger.custom(onLog: logged.add));
+      const ctx = EvalContext(zoom: 12);
+      expect(layer.textOffset.eval(ctx), [0, 0]);
+      expect(layer.iconTextFitPadding.eval(ctx), [0, 0, 0, 0]);
+      expect(layer.textTranslate.eval(ctx), [4, 5]);
+      expect(logged, hasLength(2));
+      expect(logged.first, contains('[1, 2, 3]'));
+    });
+
     test('sprite index parses stretch zones and the content box', () {
       final sprites = SpriteAtlas.parseIndex({
         'shield': {

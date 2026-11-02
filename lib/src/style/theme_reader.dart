@@ -605,6 +605,11 @@ class ThemeReader {
       {int? length}) {
     if (json == null) return NumListProp.constant(fallback);
     if (json is List && json.isNotEmpty && json.every((e) => e is num)) {
+      if (length != null && json.length != length) {
+        // As an expression's value of the wrong length does.
+        parser.warnings.add('$json is not a list of $length numbers');
+        return NumListProp.constant(fallback);
+      }
       return NumListProp.constant(
           [for (final e in json) (e as num).toDouble()]);
     }
