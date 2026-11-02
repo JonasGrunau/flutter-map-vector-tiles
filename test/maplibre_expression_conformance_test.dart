@@ -153,10 +153,6 @@ const _divergences = <String, String>{
   'elevation/basic': 'no raster-dem source or color-relief layer is drawn, '
       'so `elevation` is always null',
   'heatmap-density/basic': 'heatmap layers are not drawn yet',
-  'feature-state/basic': 'feature state is not supported yet: '
-      '`feature-state` is always null',
-  'feature-state/expression-arg': 'feature state is not supported yet: '
-      '`feature-state` is always null',
   'format/data-driven-font': _formatOverrides,
   'format/data-driven-vertical-align': _formatOverrides,
   'image/coalesce': 'image availability is not known when expressions '
@@ -236,6 +232,7 @@ String? _run(Map<String, Object?> fixture) {
       },
       geometry: _geometry(
           geometry, (globals['canonicalID'] as Map?)?.cast<String, Object?>()),
+      featureState: (feature['featureState'] as Map?)?.cast<String, Object?>(),
     );
     final actual = _asProperty(parsed.expr(ctx), spec, type);
     final want = _expected(outputs[i], type);

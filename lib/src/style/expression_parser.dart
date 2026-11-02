@@ -47,6 +47,13 @@ class ExpressionParser {
   bool get readsZoom => _readsZoom;
   bool _readsZoom = false;
 
+  /// Whether anything parsed so far reads `["feature-state", …]`. Sticky,
+  /// like [readsZoom]: the theme reader samples it once a layer's
+  /// properties are parsed, and only the display tiles of a layer that
+  /// reads state are rendered again when a feature's state changes.
+  bool get readsFeatureState => _readsFeatureState;
+  bool _readsFeatureState = false;
+
   /// Whether anything parsed so far reads `global-state` — the theme
   /// reader keeps the style document only for themes where a different
   /// state can change anything.
@@ -647,9 +654,18 @@ class ExpressionParser {
       case 'ln2':
         return (_) => math.ln2;
 
-      // --- feature state / heatmap — not applicable here ---
+      // --- feature state ---
       case 'feature-state':
-        return (_) => null;
+        // Feature data like any property: a property reading it is never
+        // memoized against the zoom.
+        _readsFeature = true;
+        _readsFeatureState = true;
+        final key = a.length > 1 ? a[1] : null;
+        if (key is String) return (ctx) => _featureStateOf(ctx)?[key];
+        final keyExpr = parse(key);
+        return (ctx) => _featureStateOf(ctx)?[toStringValue(keyExpr(ctx))];
+
+      // --- heatmap / line metrics — not applicable here ---
       case 'heatmap-density':
       case 'line-progress':
       case 'accumulated':
@@ -664,8 +680,13 @@ class ExpressionParser {
     }
   }
 
+  /// The state `feature-state` reads: the feature's, carried by a
+  /// [FeatureEvalContext]; none in any other context.
+  static Map<String, Object?>? _featureStateOf(EvalContext ctx) =>
+      ctx is FeatureEvalContext ? ctx.featureState : null;
+
   /// `within` and `distance`: a GeoJSON literal compiled once, tested
-  /// against the feature's geometry ([GeometryEvalContext]). The answer
+  /// against the feature's geometry ([FeatureEvalContext]). The answer
   /// depends on nothing but the feature, so it is kept per feature —
   /// against its coordinate list, weakly — and a paint property reading
   /// it costs the geometry test once per feature, not once per display
@@ -684,14 +705,14 @@ class ExpressionParser {
     final memo = Expando<Object>(op);
     if (op == 'within') {
       return (ctx) {
-        if (ctx is! GeometryEvalContext) return false;
-        final geometry = ctx.geometry;
+        final geometry = ctx is FeatureEvalContext ? ctx.geometry : null;
+        if (geometry == null) return false;
         return memo[geometry.parts] ??= featureWithin(geometry, shapes);
       };
     }
     return (ctx) {
-      if (ctx is! GeometryEvalContext) return null;
-      final geometry = ctx.geometry;
+      final geometry = ctx is FeatureEvalContext ? ctx.geometry : null;
+      if (geometry == null) return null;
       final cached = memo[geometry.parts];
       if (cached != null) return cached is double ? cached : null;
       final d = featureDistance(geometry, shapes);

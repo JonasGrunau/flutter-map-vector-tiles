@@ -211,6 +211,7 @@ class StyleReader {
 
       final sources = styleJson['sources'];
       final providers = <String, VectorTileProvider>{};
+      final promoteIds = <String, PromoteId>{};
       final rasterSources = <String, RasterTileSource>{};
       // Keyed by visible text so repeats across sources collapse even
       // when their markup differs; a LinkedHashMap keeps document order.
@@ -233,7 +234,11 @@ class StyleReader {
             final _Source? built;
             if (type == 'vector') {
               built = await _createProvider(loader, id, map, styleUrl);
-              if (built != null) providers[id] = built.provider;
+              if (built != null) {
+                providers[id] = built.provider;
+                final promoteId = PromoteId.parse(map['promoteId']);
+                if (promoteId != null) promoteIds[id] = promoteId;
+              }
             } else {
               // MapLibre source default maxzoom is 22; rasters routinely
               // go deeper than the vector default of 14.
@@ -289,7 +294,7 @@ class StyleReader {
 
       return Style(
         theme: theme,
-        providers: TileProviders(providers),
+        providers: TileProviders(providers, promoteIds: promoteIds),
         rasterSources: rasterSources,
         sprites: sprites,
         glyphs: glyphs,

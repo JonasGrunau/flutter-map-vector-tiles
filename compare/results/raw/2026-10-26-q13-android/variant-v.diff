@@ -1,0 +1,97 @@
+diff --git a/lib/src/style/expression.dart b/lib/src/style/expression.dart
+index f2f1d92..9d92f83 100644
+--- a/lib/src/style/expression.dart
++++ b/lib/src/style/expression.dart
+@@ -40,39 +40,14 @@ class EvalContext {
+   static const empty = EvalContext(zoom: 0);
+ }
+ 
+-/// An [EvalContext] that also carries the feature's state, as set
+-/// through `VectorTileLayerController.setFeatureState`, for the
+-/// `feature-state` expression; in any other context it reads null. Only
+-/// a feature that has state gets one, through [featureContext]: a
+-/// context is allocated per feature evaluated, and a field more on every
+-/// one made filter matching on a fresh tile measurably slower on a phone.
++/// The `vars` key a feature's state rides under — no `let` can bind it.
+ @internal
+-final class FeatureStateEvalContext extends EvalContext {
+-  final Map<String, Object?> featureState;
+-
+-  const FeatureStateEvalContext({
+-    required super.zoom,
+-    super.properties,
+-    super.geometryType,
+-    super.featureId,
+-    super.vars,
+-    required this.featureState,
+-  });
+-
+-  @override
+-  EvalContext withVars(Map<String, Object?> newVars) => FeatureStateEvalContext(
+-        zoom: zoom,
+-        properties: properties,
+-        geometryType: geometryType,
+-        featureId: featureId,
+-        vars: {...?vars, ...newVars},
+-        featureState: featureState,
+-      );
+-}
++const featureStateVar = '\u0000feature-state';
+ 
+-/// The context to evaluate one feature in: a [FeatureStateEvalContext]
+-/// when [featureState] is given, a plain [EvalContext] otherwise.
++/// The context to evaluate one feature in, its state (if any) bound
++/// under [featureStateVar].
+ @internal
++@pragma('vm:prefer-inline')
+ EvalContext featureContext({
+   required double zoom,
+   Map<String, Object?> properties = const {},
+@@ -80,20 +55,13 @@ EvalContext featureContext({
+   Object? featureId,
+   Map<String, Object?>? featureState,
+ }) =>
+-    featureState == null
+-        ? EvalContext(
+-            zoom: zoom,
+-            properties: properties,
+-            geometryType: geometryType,
+-            featureId: featureId,
+-          )
+-        : FeatureStateEvalContext(
+-            zoom: zoom,
+-            properties: properties,
+-            geometryType: geometryType,
+-            featureId: featureId,
+-            featureState: featureState,
+-          );
++    EvalContext(
++      zoom: zoom,
++      properties: properties,
++      geometryType: geometryType,
++      featureId: featureId,
++      vars: featureState == null ? null : {featureStateVar: featureState},
++    );
+ 
+ /// A compiled style expression.
+ typedef Expr = Object? Function(EvalContext ctx);
+diff --git a/lib/src/style/expression_parser.dart b/lib/src/style/expression_parser.dart
+index d32dc08..33e9aec 100644
+--- a/lib/src/style/expression_parser.dart
++++ b/lib/src/style/expression_parser.dart
+@@ -590,12 +590,11 @@ class ExpressionParser {
+         final key = a.length > 1 ? a[1] : null;
+         if (key is String) {
+           return (ctx) =>
+-              ctx is FeatureStateEvalContext ? ctx.featureState[key] : null;
++              (ctx.vars?[featureStateVar] as Map<String, Object?>?)?[key];
+         }
+         final keyExpr = parse(key);
+-        return (ctx) => ctx is FeatureStateEvalContext
+-            ? ctx.featureState[toStringValue(keyExpr(ctx))]
+-            : null;
++        return (ctx) => (ctx.vars?[featureStateVar]
++            as Map<String, Object?>?)?[toStringValue(keyExpr(ctx))];
+ 
+       // --- heatmap / line metrics — not applicable here ---
+       case 'heatmap-density':

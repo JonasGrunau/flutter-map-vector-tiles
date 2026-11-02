@@ -1,0 +1,102 @@
+# BENCH_MODE=query, Nothing Phone (1), Liberty, Munich z16 — four runs per build (q-<retainAllProperties>-<n>).
+# Lines filtered to QUERY / STATE / DECODE / MEMORY and each run's state-change frame summary.
+
+## 70d0318 (before the edge cull), 2026-10-26 23:14
+BENCH[q-false-1] QUERY point n=240 p50=3.87 p90=4.76 p99=5.62 max=31.54 ms hits/query=2.5
+BENCH[q-false-1] QUERY rect48 n=240 p50=19.54 p90=37.75 p99=69.49 max=79.97 ms hits/query=39.6
+BENCH[q-false-1] STATE building n=20 relayouts=0
+BENCH[q-false-1] STATE building set   ms n=20 p50=249.00 p90=403.00 p99=536.00 max=536.00 · frames n=20 p50=8.00 p90=13.00 p99=17.00 max=17.00 · tiles n=20 p50=8.00 p90=8.00 p99=8.00 max=8.00 · raster-ms n=20 p50=114.63 p90=172.43 p99=232.40 max=232.40
+BENCH[q-false-1] STATE building clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-false-1] STATE road n=20 relayouts=0
+BENCH[q-false-1] STATE road set   ms n=20 p50=249.00 p90=451.00 p99=786.00 max=786.00 · frames n=20 p50=8.00 p90=14.00 p99=24.00 max=24.00 · tiles n=20 p50=4.00 p90=8.00 p99=14.00 max=14.00 · raster-ms n=20 p50=116.86 p90=194.27 p99=336.29 max=336.29
+BENCH[q-false-1] STATE road clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-false-1] DECODE tiles=9 z14 styled 16.25 MiB n=9 p50=12.49 p90=20.73 p99=21.39 max=21.39 ms · all 20.59 MiB n=9 p50=8.78 p90=14.24 p99=14.33 max=14.33 ms · ×1.27
+BENCH[q-false-1] MEMORY retainAllProperties=false rss=258 MiB
+BENCH[q-true-1] QUERY point n=240 p50=3.77 p90=4.72 p99=5.46 max=17.38 ms hits/query=2.5
+BENCH[q-true-1] QUERY rect48 n=240 p50=19.39 p90=36.91 p99=69.76 max=79.51 ms hits/query=39.6
+BENCH[q-true-1] STATE building n=20 relayouts=0
+BENCH[q-true-1] STATE building set   ms n=20 p50=272.00 p90=422.00 p99=438.00 max=438.00 · frames n=20 p50=8.00 p90=12.00 p99=14.00 max=14.00 · tiles n=20 p50=8.00 p90=8.00 p99=8.00 max=8.00 · raster-ms n=20 p50=108.03 p90=181.16 p99=189.68 max=189.68
+BENCH[q-true-1] STATE building clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-true-1] STATE road n=20 relayouts=0
+BENCH[q-true-1] STATE road set   ms n=20 p50=299.00 p90=418.00 p99=551.00 max=551.00 · frames n=20 p50=9.00 p90=12.00 p99=16.00 max=16.00 · tiles n=20 p50=4.00 p90=8.00 p99=14.00 max=14.00 · raster-ms n=20 p50=133.90 p90=189.39 p99=222.28 max=222.28
+BENCH[q-true-1] STATE road clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-true-1] DECODE tiles=9 z14 styled 16.25 MiB n=9 p50=12.43 p90=20.54 p99=20.88 max=20.88 ms · all 20.59 MiB n=9 p50=9.46 p90=13.32 p99=14.47 max=14.47 ms · ×1.27
+BENCH[q-true-1] MEMORY retainAllProperties=true rss=255 MiB
+BENCH[q-true-2] QUERY point n=240 p50=3.84 p90=4.80 p99=5.46 max=23.90 ms hits/query=2.5
+BENCH[q-true-2] QUERY rect48 n=240 p50=18.80 p90=36.88 p99=68.20 max=78.84 ms hits/query=39.6
+BENCH[q-true-2] STATE building n=20 relayouts=0
+BENCH[q-true-2] STATE building set   ms n=20 p50=275.00 p90=420.00 p99=600.00 max=600.00 · frames n=20 p50=9.00 p90=13.00 p99=18.00 max=18.00 · tiles n=20 p50=8.00 p90=8.00 p99=8.00 max=8.00 · raster-ms n=20 p50=112.55 p90=178.92 p99=254.60 max=254.60
+BENCH[q-true-2] STATE building clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-true-2] STATE road n=20 relayouts=0
+BENCH[q-true-2] STATE road set   ms n=20 p50=316.00 p90=409.00 p99=566.00 max=566.00 · frames n=20 p50=9.00 p90=12.00 p99=17.00 max=17.00 · tiles n=20 p50=4.00 p90=8.00 p99=14.00 max=14.00 · raster-ms n=20 p50=139.03 p90=168.49 p99=218.40 max=218.40
+BENCH[q-true-2] STATE road clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-true-2] DECODE tiles=9 z14 styled 16.25 MiB n=9 p50=12.78 p90=16.82 p99=17.00 max=17.00 ms · all 20.59 MiB n=9 p50=10.33 p90=13.34 p99=14.50 max=14.50 ms · ×1.27
+BENCH[q-true-2] MEMORY retainAllProperties=true rss=257 MiB
+BENCH[q-false-2] QUERY point n=240 p50=3.94 p90=4.74 p99=5.61 max=17.90 ms hits/query=2.5
+BENCH[q-false-2] QUERY rect48 n=240 p50=19.36 p90=37.09 p99=71.13 max=79.64 ms hits/query=39.6
+BENCH[q-false-2] STATE building n=20 relayouts=0
+BENCH[q-false-2] STATE building set   ms n=20 p50=238.00 p90=370.00 p99=386.00 max=386.00 · frames n=20 p50=7.00 p90=12.00 p99=12.00 max=12.00 · tiles n=20 p50=8.00 p90=8.00 p99=8.00 max=8.00 · raster-ms n=20 p50=98.82 p90=162.42 p99=167.71 max=167.71
+BENCH[q-false-2] STATE building clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-false-2] STATE road n=20 relayouts=0
+BENCH[q-false-2] STATE road set   ms n=20 p50=319.00 p90=404.00 p99=534.00 max=534.00 · frames n=20 p50=9.00 p90=13.00 p99=17.00 max=17.00 · tiles n=20 p50=4.00 p90=8.00 p99=14.00 max=14.00 · raster-ms n=20 p50=136.75 p90=169.79 p99=213.85 max=213.85
+BENCH[q-false-2] STATE road clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-false-2] DECODE tiles=9 z14 styled 16.25 MiB n=9 p50=13.13 p90=16.13 p99=19.80 max=19.80 ms · all 20.59 MiB n=9 p50=9.63 p90=13.85 p99=14.55 max=14.55 ms · ×1.27
+BENCH[q-false-2] MEMORY retainAllProperties=false rss=251 MiB
+
+## 0abf086 (the final hit test; the PR only adds the inlined featureContext after it), 2026-10-27 08:46
+BENCH[q-false-1] QUERY point n=240 p50=1.13 p90=1.49 p99=2.19 max=20.25 ms hits/query=2.5
+BENCH[q-false-1] QUERY rect48 n=240 p50=2.03 p90=3.45 p99=6.59 max=12.55 ms hits/query=39.6
+BENCH[q-false-1] STATE building n=20 relayouts=0
+BENCH[q-false-1] STATE building set   ms n=20 p50=215.00 p90=348.00 p99=438.00 max=438.00 · frames n=20 p50=7.00 p90=11.00 p99=13.00 max=13.00 · tiles n=20 p50=8.00 p90=8.00 p99=8.00 max=8.00 · raster-ms n=20 p50=93.90 p90=143.08 p99=180.53 max=180.53
+BENCH[q-false-1] STATE building clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-false-1] STATE road n=20 relayouts=0
+BENCH[q-false-1] STATE road set   ms n=20 p50=303.00 p90=485.00 p99=675.00 max=675.00 · frames n=20 p50=10.00 p90=15.00 p99=19.00 max=19.00 · tiles n=20 p50=4.00 p90=8.00 p99=14.00 max=14.00 · raster-ms n=20 p50=137.03 p90=209.28 p99=288.61 max=288.61
+BENCH[q-false-1] STATE road clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-false-1] DECODE tiles=9 z14 styled 16.25 MiB n=9 p50=14.37 p90=16.11 p99=16.14 max=16.14 ms · all 20.59 MiB n=9 p50=9.55 p90=13.70 p99=14.62 max=14.62 ms · ×1.27
+BENCH[q-false-1] MEMORY retainAllProperties=false rss=245 MiB
+BENCH[q-false-1] --- query state changes --- window=43.3s fps=53.4 layouts=0 rasterizes=225 interrupted=false
+BENCH[q-false-1]   BUILD  n=2127 p50=0.85 p90=18.29 p99=48.21 max=57.42 >8.3=513 (24.1%) >16.7=254 (11.9%)
+BENCH[q-false-1]   RASTER n=2127 p50=5.81 p90=7.08 p99=15.44 max=24.93 >8.3=42 (2.0%) >16.7=10 (0.5%)
+BENCH[q-false-1]   WORK   rasterize=4737.2ms layout=0.0ms labels=4588.3ms
+BENCH[q-false-2] QUERY point n=240 p50=1.11 p90=1.47 p99=1.90 max=18.54 ms hits/query=2.5
+BENCH[q-false-2] QUERY rect48 n=240 p50=1.94 p90=3.60 p99=6.36 max=15.43 ms hits/query=39.6
+BENCH[q-false-2] STATE building n=20 relayouts=0
+BENCH[q-false-2] STATE building set   ms n=20 p50=217.00 p90=385.00 p99=473.00 max=473.00 · frames n=20 p50=7.00 p90=12.00 p99=14.00 max=14.00 · tiles n=20 p50=8.00 p90=8.00 p99=8.00 max=8.00 · raster-ms n=20 p50=96.74 p90=174.58 p99=200.55 max=200.55
+BENCH[q-false-2] STATE building clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-false-2] STATE road n=20 relayouts=0
+BENCH[q-false-2] STATE road set   ms n=20 p50=269.00 p90=454.00 p99=602.00 max=602.00 · frames n=20 p50=8.00 p90=14.00 p99=17.00 max=17.00 · tiles n=20 p50=4.00 p90=8.00 p99=14.00 max=14.00 · raster-ms n=20 p50=120.23 p90=191.66 p99=246.01 max=246.01
+BENCH[q-false-2] STATE road clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-false-2] DECODE tiles=9 z14 styled 16.25 MiB n=9 p50=13.29 p90=15.77 p99=17.86 max=17.86 ms · all 20.59 MiB n=9 p50=8.72 p90=13.48 p99=14.63 max=14.63 ms · ×1.27
+BENCH[q-false-2] MEMORY retainAllProperties=false rss=243 MiB
+BENCH[q-false-2] --- query state changes --- window=43.3s fps=53.5 layouts=0 rasterizes=225 interrupted=false
+BENCH[q-false-2]   BUILD  n=2134 p50=0.84 p90=18.03 p99=47.64 max=55.50 >8.3=510 (23.9%) >16.7=257 (12.0%)
+BENCH[q-false-2]   RASTER n=2134 p50=6.00 p90=7.22 p99=16.96 max=27.22 >8.3=95 (4.5%) >16.7=27 (1.3%)
+BENCH[q-false-2]   WORK   rasterize=4673.1ms layout=0.0ms labels=4580.2ms
+BENCH[q-true-1] QUERY point n=240 p50=1.14 p90=1.48 p99=3.88 max=17.37 ms hits/query=2.5
+BENCH[q-true-1] QUERY rect48 n=240 p50=2.00 p90=3.58 p99=6.74 max=9.94 ms hits/query=39.6
+BENCH[q-true-1] STATE building n=20 relayouts=0
+BENCH[q-true-1] STATE building set   ms n=20 p50=250.00 p90=368.00 p99=486.00 max=486.00 · frames n=20 p50=8.00 p90=12.00 p99=15.00 max=15.00 · tiles n=20 p50=8.00 p90=8.00 p99=8.00 max=8.00 · raster-ms n=20 p50=107.93 p90=167.03 p99=213.92 max=213.92
+BENCH[q-true-1] STATE building clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-true-1] STATE road n=20 relayouts=0
+BENCH[q-true-1] STATE road set   ms n=20 p50=303.00 p90=407.00 p99=534.00 max=534.00 · frames n=20 p50=9.00 p90=13.00 p99=16.00 max=16.00 · tiles n=20 p50=4.00 p90=8.00 p99=14.00 max=14.00 · raster-ms n=20 p50=129.24 p90=185.77 p99=223.30 max=223.30
+BENCH[q-true-1] STATE road clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-true-1] DECODE tiles=9 z14 styled 16.25 MiB n=9 p50=13.22 p90=19.95 p99=21.08 max=21.08 ms · all 20.59 MiB n=9 p50=8.86 p90=13.33 p99=15.22 max=15.22 ms · ×1.27
+BENCH[q-true-1] MEMORY retainAllProperties=true rss=245 MiB
+BENCH[q-true-1] --- query state changes --- window=43.4s fps=53.2 layouts=0 rasterizes=225 interrupted=false
+BENCH[q-true-1]   BUILD  n=2121 p50=0.85 p90=18.14 p99=48.32 max=54.63 >8.3=514 (24.2%) >16.7=268 (12.6%)
+BENCH[q-true-1]   RASTER n=2121 p50=5.77 p90=7.05 p99=15.51 max=21.78 >8.3=43 (2.0%) >16.7=13 (0.6%)
+BENCH[q-true-1]   WORK   rasterize=4777.3ms layout=0.0ms labels=4619.7ms
+BENCH[q-true-2] QUERY point n=240 p50=1.15 p90=1.53 p99=2.21 max=18.92 ms hits/query=2.5
+BENCH[q-true-2] QUERY rect48 n=240 p50=1.99 p90=3.57 p99=6.62 max=12.68 ms hits/query=39.6
+BENCH[q-true-2] STATE building n=20 relayouts=0
+BENCH[q-true-2] STATE building set   ms n=20 p50=233.00 p90=401.00 p99=536.00 max=536.00 · frames n=20 p50=8.00 p90=12.00 p99=15.00 max=15.00 · tiles n=20 p50=8.00 p90=8.00 p99=8.00 max=8.00 · raster-ms n=20 p50=106.09 p90=180.49 p99=229.72 max=229.72
+BENCH[q-true-2] STATE building clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-true-2] STATE road n=20 relayouts=0
+BENCH[q-true-2] STATE road set   ms n=20 p50=250.00 p90=488.00 p99=617.00 max=617.00 · frames n=20 p50=8.00 p90=15.00 p99=18.00 max=18.00 · tiles n=20 p50=4.00 p90=8.00 p99=14.00 max=14.00 · raster-ms n=20 p50=118.77 p90=208.09 p99=254.27 max=254.27
+BENCH[q-true-2] STATE road clear ms n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · frames n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00 · tiles n=20 p50=0.00 p90=0.00 p99=0.00 max=0.00
+BENCH[q-true-2] DECODE tiles=9 z14 styled 16.25 MiB n=9 p50=14.20 p90=16.23 p99=19.90 max=19.90 ms · all 20.59 MiB n=9 p50=9.22 p90=13.62 p99=14.48 max=14.48 ms · ×1.27
+BENCH[q-true-2] MEMORY retainAllProperties=true rss=247 MiB
+BENCH[q-true-2] --- query state changes --- window=43.2s fps=53.6 layouts=0 rasterizes=225 interrupted=false
+BENCH[q-true-2]   BUILD  n=2134 p50=0.81 p90=18.52 p99=47.87 max=57.24 >8.3=510 (23.9%) >16.7=261 (12.2%)
+BENCH[q-true-2]   RASTER n=2134 p50=6.09 p90=7.25 p99=17.00 max=27.20 >8.3=91 (4.3%) >16.7=29 (1.4%)
+BENCH[q-true-2]   WORK   rasterize=4814.1ms layout=0.0ms labels=4437.7ms

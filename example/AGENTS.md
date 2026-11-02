@@ -14,7 +14,7 @@ only visible by driving a real map.
 
 | File | Description |
 |------|-------------|
-| `lib/main.dart` | The whole example: `ExampleApp`, a `FlutterMap` with a `VectorTileLayer`, style URL, API key and optional label language supplied via `--dart-define` (`MAPTILER_KEY`, `STYLE_URL`, `LANGUAGE`), defaulting to MapTiler streets-v2 in the style's own label text. Attribution comes from `style.attributions` — never hardcode a provider name here, the style URL is user-supplied |
+| `lib/main.dart` | The whole example: `ExampleApp`, a `FlutterMap` with a `VectorTileLayer`, style URL, API key and optional label language supplied via `--dart-define` (`MAPTILER_KEY`, `STYLE_URL`, `LANGUAGE`), defaulting to MapTiler streets-v2 in the style's own label text. Attribution comes from `style.attributions` — never hardcode a provider name here, the style URL is user-supplied. Tapping the map queries it through a `VectorTileLayerController` (a snackbar names the topmost hit) and selects a tapped building through feature state, painted by one fill layer the example appends to the style's theme over its `building` source layer — hosted styles do not read feature state, so this is the pattern to show |
 | `pubspec.yaml` | Depends on the parent package by path |
 
 ## For AI Agents

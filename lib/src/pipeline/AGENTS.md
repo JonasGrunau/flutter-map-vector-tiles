@@ -14,7 +14,7 @@ work itself must be a pure function so it can run anywhere.
 
 | File | Description |
 |------|-------------|
-| `tile_processor.dart` | `PrepareInput` (bytes + tile key + the per-layer properties the theme actually references) and `prepareTileSync(PrepareInput)` — the pure decode + trim step that runs on the worker. Sniffs the gzip magic and inflates first: PMTiles blobs arrive compressed on native platforms so the CPU cost lands here, off the UI isolate |
+| `tile_processor.dart` | `PrepareInput` (bytes + tile key + the per-layer properties the theme actually references) and `prepareTileSync(PrepareInput)` — the pure decode + trim step that runs on the worker. Sniffs the gzip magic and inflates first: PMTiles blobs arrive compressed on native platforms so the CPU cost lands here, off the UI isolate. `PrepareInput.promoteIds` (source layer → property, the source's `promoteId`) replaces each feature's id with that property's value at decode — numbers and strings as they are, booleans as 1/0, anything else as no id; the property must be in the keep-list too, which the layer arranges |
 | `prepare_gunzip_io.dart` / `prepare_gunzip_web.dart` | Conditional import behind that sniff: synchronous `dart:io` gzip on native; a pass-through on web, where providers inflate at fetch (no worker isolate, and `DecompressionStream` is async) |
 | `prepared_tile.dart` | The transferable result model: `PreparedTile` (keyed, with a `byteSize` estimate for cache accounting) → `PreparedSourceLayer` (extent + features) → `PreparedFeature` (geometry runs plus decode-time `minX/minY/maxX/maxY` bounds that the renderer culls against; infinite defaults mean "unknown, never cull"), plus `PreparedGeomType` (point/line/polygon, in `$type` terms) |
 

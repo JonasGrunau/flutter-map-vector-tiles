@@ -10,7 +10,7 @@ import 'css_color.dart';
 /// decoded from — what `within` and `distance` read. The renderer builds
 /// one only for layers whose expressions use them
 /// (`ThemeLayer.readsGeometry`) and hands it over in a
-/// [GeometryEvalContext]; in any other context those operators answer
+/// [FeatureEvalContext]; in any other context those operators answer
 /// as for a feature without geometry.
 @internal
 final class FeatureGeometry {
@@ -69,59 +69,77 @@ class EvalContext {
   static const empty = EvalContext(zoom: 0);
 }
 
-/// An [EvalContext] that also carries the feature's geometry, for
-/// `within` and `distance`. Only layers that read geometry
-/// (`ThemeLayer.readsGeometry`) get one, through [featureContext]: a
-/// context is allocated per feature evaluated, and a field more on every
-/// one made filter matching on a fresh tile measurably slower on a phone.
+/// An [EvalContext] that also carries what only some layers read about a
+/// feature: its geometry, for `within` and `distance`, and its state, as
+/// set through `VectorTileLayerController.setFeatureState`, for
+/// `feature-state`. In a plain [EvalContext] those operators answer as for
+/// a feature without geometry or state. Only a feature that needs one gets
+/// it, through [featureContext]: a context is allocated per feature
+/// evaluated, and a field more on every one made filter matching on a
+/// fresh tile measurably slower on a phone.
 @internal
-final class GeometryEvalContext extends EvalContext {
-  final FeatureGeometry geometry;
+final class FeatureEvalContext extends EvalContext {
+  /// The feature's geometry, for a layer that reads it
+  /// (`ThemeLayer.readsGeometry`); null otherwise.
+  final FeatureGeometry? geometry;
 
-  const GeometryEvalContext({
+  /// The feature's state, for a layer that reads it
+  /// (`ThemeLayer.readsFeatureState`) when the feature has some; null
+  /// otherwise.
+  final Map<String, Object?>? featureState;
+
+  const FeatureEvalContext({
     required super.zoom,
     super.properties,
     super.geometryType,
     super.featureId,
     super.vars,
-    required this.geometry,
+    this.geometry,
+    this.featureState,
   });
 
   @override
-  EvalContext withVars(Map<String, Object?> newVars) => GeometryEvalContext(
+  EvalContext withVars(Map<String, Object?> newVars) => FeatureEvalContext(
         zoom: zoom,
         properties: properties,
         geometryType: geometryType,
         featureId: featureId,
         vars: {...?vars, ...newVars},
         geometry: geometry,
+        featureState: featureState,
       );
 }
 
-/// The context to evaluate one feature in: a [GeometryEvalContext] when
-/// the layer reads geometry and [geometry] is given, a plain
-/// [EvalContext] otherwise.
+/// The context to evaluate one feature in: a [FeatureEvalContext] when
+/// [geometry] or [featureState] is given, a plain [EvalContext] otherwise.
+///
+/// Inlined, so a call site compiles to the constructor it replaced plus
+/// the null checks: left to the inliner, it cost the screen pass enough
+/// UI time on a fresh zoom level to drop frames on the Android phone.
 @internal
+@pragma('vm:prefer-inline')
 EvalContext featureContext({
   required double zoom,
   required Map<String, Object?> properties,
   required String geometryType,
   required Object? featureId,
   FeatureGeometry? geometry,
+  Map<String, Object?>? featureState,
 }) =>
-    geometry == null
+    geometry == null && featureState == null
         ? EvalContext(
             zoom: zoom,
             properties: properties,
             geometryType: geometryType,
             featureId: featureId,
           )
-        : GeometryEvalContext(
+        : FeatureEvalContext(
             zoom: zoom,
             properties: properties,
             geometryType: geometryType,
             featureId: featureId,
             geometry: geometry,
+            featureState: featureState,
           );
 
 /// A compiled style expression.

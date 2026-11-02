@@ -1,0 +1,12 @@
+diff --git a/lib/src/style/expression.dart b/lib/src/style/expression.dart
+index f2f1d92..953470d 100644
+--- a/lib/src/style/expression.dart
++++ b/lib/src/style/expression.dart
+@@ -73,6 +73,7 @@ final class FeatureStateEvalContext extends EvalContext {
+ /// The context to evaluate one feature in: a [FeatureStateEvalContext]
+ /// when [featureState] is given, a plain [EvalContext] otherwise.
+ @internal
++@pragma('vm:prefer-inline')
+ EvalContext featureContext({
+   required double zoom,
+   Map<String, Object?> properties = const {},

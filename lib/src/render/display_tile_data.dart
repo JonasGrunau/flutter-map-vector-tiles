@@ -1,6 +1,7 @@
 import '../core/tile_key.dart';
 import '../grid/raster_tile_store.dart';
 import '../pipeline/prepared_tile.dart';
+import '../style/feature_state.dart';
 import '../tile_providers.dart';
 
 /// The prepared data backing one *display* tile, per style source.
@@ -31,6 +32,10 @@ class DisplayTileData {
   /// as [descendantSources]. Borrowed like [rasters].
   final Map<String, List<RasterTile>> descendantRasters;
 
+  /// The feature state layers reading `feature-state` are drawn with;
+  /// null draws every feature stateless.
+  final FeatureStates? featureStates;
+
   /// `raster-dem` source id → the decoded tiles bordering those in
   /// [rasters] / [descendantRasters], whichever were at hand. A
   /// hillshade reads a tile's slope from the elevations around each
@@ -48,6 +53,7 @@ class DisplayTileData {
     this.rasters = const {},
     this.descendantSources = const {},
     this.descendantRasters = const {},
+    this.featureStates,
     this.neighbourRasters = const {},
     this.demEncodings = const {},
   });

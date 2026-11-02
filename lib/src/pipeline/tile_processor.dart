@@ -17,12 +17,18 @@ class PrepareInput {
   /// retain all. Source-layers absent from this map are dropped entirely.
   final Map<String, Set<String>?> layerProperties;
 
+  /// Per source-layer name: the property whose value replaces the
+  /// feature id (the source's `promoteId`). The property must also be
+  /// kept by [layerProperties].
+  final Map<String, String> promoteIds;
+
   const PrepareInput({
     required this.z,
     required this.x,
     required this.y,
     required this.bytes,
     required this.layerProperties,
+    this.promoteIds = const {},
   });
 }
 
@@ -39,6 +45,7 @@ PreparedTile prepareTileSync(PrepareInput input) {
   for (final layer in mvt.layers) {
     if (!input.layerProperties.containsKey(layer.name)) continue;
     final keepKeys = input.layerProperties[layer.name];
+    final promoteId = input.promoteIds[layer.name];
 
     final features = <PreparedFeature>[];
     for (final feature in layer.features) {
@@ -63,7 +70,9 @@ PreparedTile prepareTileSync(PrepareInput input) {
       byteSize += properties.length * 48 + 32; // +32: the four bound doubles
 
       features.add(PreparedFeature(
-        id: feature.id == 0 ? null : feature.id,
+        id: promoteId != null
+            ? _promotedId(properties[promoteId])
+            : (feature.id == 0 ? null : feature.id),
         type: type,
         parts: feature.parts,
         properties: properties,
@@ -87,3 +96,12 @@ PreparedTile prepareTileSync(PrepareInput input) {
     byteSize: byteSize,
   );
 }
+
+/// A `promoteId` property's value as a feature id: numbers and strings
+/// as they are, booleans as 1 or 0 (as MapLibre does), anything else —
+/// or an absent property — as no id.
+Object? _promotedId(Object? value) => switch (value) {
+      num() || String() => value,
+      bool() => value ? 1 : 0,
+      _ => null,
+    };
