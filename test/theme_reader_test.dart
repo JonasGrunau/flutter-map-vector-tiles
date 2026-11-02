@@ -509,4 +509,224 @@ void main() {
     });
     expect(theme.layers.map((l) => l.readsGeometry), [true, false]);
   });
+
+  test('a property takes values of its own type', () {
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'labels',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'place',
+          'layout': {
+            // A single font written without brackets is a one-font stack.
+            'text-font': 'Noto Sans Regular',
+            'text-size': ['get', 'size'],
+            'text-offset': ['get', 'offset'],
+            'text-anchor': {
+              'type': 'identity',
+              'property': 'anchor',
+              'default': 'top',
+            },
+            'text-justify': {
+              'type': 'identity',
+              'property': 'justify',
+              'default': 'left',
+            },
+            'icon-text-fit-padding': ['get', 'fit'],
+          },
+          'paint': {
+            'text-translate': ['get', 'offset'],
+          },
+        },
+      ],
+    });
+    final labels = theme.layers.single as SymbolThemeLayer;
+    EvalContext feature(Map<String, Object?> properties) =>
+        EvalContext(zoom: 10, properties: properties);
+    expect(labels.textFont.eval(feature({})), ['Noto Sans Regular']);
+    expect(labels.textSize.eval(feature({'size': 20})), 20);
+    expect(labels.textSize.eval(feature({'size': '20'})), 16);
+    expect(
+        labels.textOffset.eval(feature({
+          'offset': [1, 2]
+        })),
+        [1, 2]);
+    expect(
+        labels.textOffset.eval(feature({
+          'offset': [1, 2, 3]
+        })),
+        [0, 0]);
+    expect(labels.textAnchor.eval(feature({'anchor': 'left'})), 'left');
+    expect(labels.textAnchor.eval(feature({'anchor': 'middle'})), 'top');
+    expect(labels.textJustify.eval(feature({'justify': 'right'})), 'right');
+    expect(labels.textJustify.eval(feature({'justify': 'middle'})), 'left');
+    expect(
+        labels.textTranslate.eval(feature({
+          'offset': [1, 2, 3]
+        })),
+        [0, 0]);
+    expect(
+        labels.iconTextFitPadding.eval(feature({
+          'fit': [1, 2, 3, 4]
+        })),
+        [1, 2, 3, 4]);
+    expect(
+        labels.iconTextFitPadding.eval(feature({
+          'fit': [1, 2]
+        })),
+        [0, 0, 0, 0]);
+  });
+
+  test('text and image names take any value from an identity function', () {
+    Map<String, Object?> identity(String property) =>
+        {'type': 'identity', 'property': property};
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'labels',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'peak',
+          'layout': {
+            'text-field': identity('ele'),
+            'icon-image': identity('icon'),
+          },
+        },
+        {
+          'id': 'fill',
+          'type': 'fill',
+          'source': 's',
+          'source-layer': 'landuse',
+          'paint': {'fill-pattern': identity('pattern')},
+        },
+      ],
+    });
+    final labels = theme.layers.first as SymbolThemeLayer;
+    final fill = theme.layers.last as FillThemeLayer;
+    const ctx = EvalContext(
+        zoom: 10, properties: {'ele': 1234, 'icon': 7, 'pattern': 3});
+    expect(labels.textField.eval(ctx), '1234');
+    expect(labels.iconImage!.eval(ctx), '7');
+    expect(fill.pattern!.eval(ctx), '3');
+  });
+
+  test('a legacy text-font function may name a one-font stack bare', () {
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'labels',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'place',
+          'layout': {
+            'text-font': {
+              'stops': [
+                [0, 'Noto Sans Regular'],
+                [
+                  10,
+                  ['Noto Sans Bold']
+                ],
+              ],
+            },
+          },
+        },
+      ],
+    });
+    final labels = theme.layers.single as SymbolThemeLayer;
+    expect(labels.textFont.eval(const EvalContext(zoom: 5, properties: {})),
+        ['Noto Sans Regular']);
+    expect(labels.textFont.eval(const EvalContext(zoom: 12, properties: {})),
+        ['Noto Sans Bold']);
+  });
+
+  test('dash arrays and sort keys step through typeless legacy stops', () {
+    final stops = {
+      'stops': [
+        [0, 1],
+        [10, 3],
+      ],
+    };
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'line',
+          'type': 'line',
+          'source': 's',
+          'source-layer': 'road',
+          'layout': {'line-sort-key': stops},
+          'paint': {
+            'line-dasharray': {
+              'stops': [
+                [
+                  0,
+                  [1, 2, 3]
+                ],
+                [
+                  10,
+                  [3, 4, 5]
+                ],
+              ],
+            },
+          },
+        },
+        {
+          'id': 'labels',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'place',
+          'layout': {'symbol-sort-key': stops},
+        },
+        {
+          'id': 'width',
+          'type': 'line',
+          'source': 's',
+          'source-layer': 'road',
+          'paint': {
+            'line-width': stops,
+            'line-dasharray': {
+              'type': 'exponential',
+              'stops': [
+                [
+                  0,
+                  [1, 2, 3]
+                ],
+                [
+                  10,
+                  [3, 4, 5]
+                ],
+              ],
+            },
+          },
+        },
+      ],
+    });
+    final line = theme.layers[0] as LineThemeLayer;
+    final labels = theme.layers[1] as SymbolThemeLayer;
+    final width = theme.layers[2] as LineThemeLayer;
+    const ctx = EvalContext(zoom: 5, properties: {});
+    // A three-number dash array is a dash array, never a colour.
+    expect(line.dashArray!.eval(ctx), [1, 2, 3]);
+    expect(line.sortKey!.eval(ctx), 1);
+    expect(labels.sortKey.eval(ctx), 1);
+    // Where the spec interpolates, or the style names the type, it ramps.
+    expect(width.width.eval(ctx), 2);
+    expect(width.dashArray!.eval(ctx), [2, 3, 4]);
+  });
+
+  test('acceptsOf gives each spec property type its check', () {
+    expect(ThemeReader.acceptsOf('number')!(5), isTrue);
+    expect(ThemeReader.acceptsOf('number')!('5'), isFalse);
+    expect(ThemeReader.acceptsOf('formatted')!(5), isTrue);
+    expect(ThemeReader.acceptsOf('resolvedImage')!(5), isTrue);
+    expect(ThemeReader.acceptsOf('string')!(5), isFalse);
+    expect(ThemeReader.acceptsOf('padding')!([1, 2, 3]), isTrue);
+    expect(ThemeReader.acceptsOf('array', value: 'number', length: 2)!([1, 2]),
+        isTrue);
+    expect(
+        ThemeReader.acceptsOf('array', value: 'number', length: 2)!([1, 2, 3]),
+        isFalse);
+    expect(ThemeReader.acceptsOf('array', value: 'enum')!(['top']), isTrue);
+    expect(ThemeReader.acceptsOf('numberArray'), isNull);
+  });
 }

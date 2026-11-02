@@ -15,6 +15,13 @@ import 'number_format.dart';
 /// [warnings] instead of throwing. This keeps real-world styles
 /// (MapTiler, ArcGIS, Protomaps, ...) rendering even when they use
 /// exotic operators.
+///
+/// Evaluation is as strict as MapLibre's: an operand of a type the
+/// operator does not take — a numeric string compared with a number, a
+/// non-boolean `case` condition — makes the expression evaluate to
+/// [evalError], which every operator passes on and which ends as the
+/// property's fallback, or false for a filter. Where the operands'
+/// types are known at parse time the check is compiled away.
 class ExpressionParser {
   /// [globalState] holds the values `global-state` reads: the style's
   /// `state` defaults with any overrides applied (see
@@ -71,12 +78,35 @@ class ExpressionParser {
   /// whether it reads the zoom at all. The typed property wrappers
   /// memoize zoom-only results against the zoom — see
   /// `DoubleProp.zoomOnly`.
-  ({Expr expr, bool zoomOnly, bool readsZoom}) parseForProperty(Object? json) {
+  ///
+  /// [accepts] tells the values the property takes, and [enumValues]
+  /// the values of an enum property. A legacy identity function hands
+  /// on only those, and its `default` (or null) for any other feature
+  /// value, as MapLibre does — which holds an enum property to its
+  /// values only when the function has a default, and otherwise takes
+  /// any string.
+  ///
+  /// [interpolated] is false for a property the spec does not
+  /// interpolate (`line-dasharray`, the sort keys): a legacy stop
+  /// function that names no `type` steps through its stops there
+  /// (`interval`) instead of ramping between them, as MapLibre does.
+  ({Expr expr, bool zoomOnly, bool readsZoom}) parseForProperty(Object? json,
+      {bool Function(Object? value)? accepts,
+      Set<String>? enumValues,
+      bool interpolated = true}) {
     final savedFeature = _readsFeature;
     final savedZoom = _readsZoom;
     _readsFeature = false;
     _readsZoom = false;
-    final expr = parse(json);
+    final expr = json is Map
+        ? _parseLegacyFunction(
+            !interpolated && json['type'] == null && json['stops'] != null
+                ? {...json.cast<String, Object?>(), 'type': 'interval'}
+                : json.cast<String, Object?>(),
+            json['default'] != null && enumValues != null
+                ? enumValues.contains
+                : accepts)
+        : parse(json);
     final zoomOnly = !_readsFeature;
     final readsZoom = _readsZoom;
     _readsFeature = savedFeature || _readsFeature;
@@ -210,7 +240,9 @@ class ExpressionParser {
     if (json is! List || json.isEmpty) return (_) => true;
     if (_isExpressionFilter(json)) {
       final e = parse(json);
-      return (ctx) => toBoolean(e(ctx));
+      // A filter is a boolean: anything else, an error included, keeps
+      // the feature out.
+      return (ctx) => identical(e(ctx), true);
     }
     return _parseLegacyFilter(json);
   }
@@ -242,32 +274,40 @@ class ExpressionParser {
           final name = parse(a[1]);
           final obj = parse(a[2]);
           return (ctx) {
+            final k = name(ctx);
             final o = obj(ctx);
-            return o is Map ? o[toStringValue(name(ctx))] : null;
+            return k is String && o is Map ? o[k] : evalError;
           };
         }
         _refProp(a.length > 1 ? a[1] : null);
         final key = a.length > 1 ? a[1] : null;
         // A literal key — the overwhelmingly common shape, and the
         // hottest leaf in the engine — reads the map directly instead
-        // of paying an inner closure plus string coercion per call.
+        // of paying an inner closure plus a type test per call.
         if (key is String) return (ctx) => ctx.properties[key];
         final keyExpr = parse(key);
-        return (ctx) => ctx.properties[toStringValue(keyExpr(ctx))];
+        return (ctx) {
+          final k = keyExpr(ctx);
+          return k is String ? ctx.properties[k] : evalError;
+        };
       case 'has':
         if (a.length > 2) {
           final name = parse(a[1]);
           final obj = parse(a[2]);
           return (ctx) {
+            final k = name(ctx);
             final o = obj(ctx);
-            return o is Map && o.containsKey(toStringValue(name(ctx)));
+            return k is String && o is Map ? o.containsKey(k) : evalError;
           };
         }
         _refProp(a.length > 1 ? a[1] : null);
         final key = a.length > 1 ? a[1] : null;
         if (key is String) return (ctx) => ctx.properties.containsKey(key);
         final keyExpr = parse(key);
-        return (ctx) => ctx.properties.containsKey(toStringValue(keyExpr(ctx)));
+        return (ctx) {
+          final k = keyExpr(ctx);
+          return k is String ? ctx.properties.containsKey(k) : evalError;
+        };
       case 'properties':
         referencesAllProperties = true;
         _readsFeature = true;
@@ -296,9 +336,14 @@ class ExpressionParser {
         return (ctx) => ctx.vars?[name];
 
       // --- decisions ---
+      // Their operands are booleans: anything else is an error, not
+      // truthy or falsy.
       case '!':
         final e = parse(a.length > 1 ? a[1] : null);
-        return (ctx) => !toBoolean(e(ctx));
+        return (ctx) {
+          final v = e(ctx);
+          return v is bool ? !v : evalError;
+        };
       case '==':
       case '!=':
       case '<':
@@ -306,19 +351,24 @@ class ExpressionParser {
       case '>':
       case '>=':
         return _parseComparison(op, a);
+      // Indexed loops over fixed-length lists: a for-in pays an
+      // iterator per evaluation, and these run per feature in nearly
+      // every filter.
       case 'all':
-        final es = a.skip(1).map(parse).toList();
+        final es = a.skip(1).map(parse).toList(growable: false);
         return (ctx) {
-          for (final e in es) {
-            if (!toBoolean(e(ctx))) return false;
+          for (var i = 0; i < es.length; i++) {
+            final v = es[i](ctx);
+            if (!identical(v, true)) return identical(v, false) ? v : evalError;
           }
           return true;
         };
       case 'any':
-        final es = a.skip(1).map(parse).toList();
+        final es = a.skip(1).map(parse).toList(growable: false);
         return (ctx) {
-          for (final e in es) {
-            if (toBoolean(e(ctx))) return true;
+          for (var i = 0; i < es.length; i++) {
+            final v = es[i](ctx);
+            if (!identical(v, false)) return identical(v, true) ? v : evalError;
           }
           return false;
         };
@@ -327,10 +377,10 @@ class ExpressionParser {
       case 'match':
         return _parseMatch(a);
       case 'coalesce':
-        final es = a.skip(1).map(parse).toList();
+        final es = a.skip(1).map(parse).toList(growable: false);
         return (ctx) {
-          for (final e in es) {
-            final v = e(ctx);
+          for (var i = 0; i < es.length; i++) {
+            final v = es[i](ctx);
             if (v != null) return v;
           }
           return null;
@@ -352,25 +402,35 @@ class ExpressionParser {
         final needle = parse(a.length > 1 ? a[1] : null);
         final haystackJson = a.length > 2 ? a[2] : null;
         // A literal haystack (the common shape) becomes an O(1) lookup
-        // over parse-time-normalized values.
+        // over parse-time-normalized values; the needle's type is only
+        // tested on a miss.
         final literal = _literalList(haystackJson);
         if (literal != null) {
           final values = {for (final e in literal) _matchKey(e)};
-          return (ctx) => values.contains(_matchKey(needle(ctx)));
+          return (ctx) {
+            final n = needle(ctx);
+            if (values.contains(_matchKey(n))) return true;
+            return _isNeedle(n) ? false : evalError;
+          };
         }
         final haystack = parse(haystackJson);
         return (ctx) {
           final n = needle(ctx);
+          if (identical(n, evalError)) return evalError;
           final h = haystack(ctx);
+          // In this order, as MapLibre tests them: a falsy haystack
+          // (null, empty string, 0, false) holds nothing, before either
+          // type is checked.
+          if (!toBoolean(h)) return false;
+          if (!_isNeedle(n)) return evalError;
           if (h is List) {
             for (var i = 0; i < h.length; i++) {
               if (_looseEquals(h[i], n)) return true;
             }
             return false;
           }
-          // An empty string holds nothing, not even itself.
-          if (h is String) return h.isNotEmpty && h.contains(_needleText(n));
-          return false;
+          if (h is String) return h.contains(_needleText(n));
+          return evalError;
         };
       case 'index-of':
         final needle = parse(a.length > 1 ? a[1] : null);
@@ -379,9 +439,14 @@ class ExpressionParser {
         return (ctx) {
           final n = needle(ctx);
           final h = haystack(ctx);
-          if (h is! List && h is! String) return null;
+          if (!_isNeedle(n) || (h is! List && h is! String)) return evalError;
           final length = h is List ? h.length : (h as String).length;
-          var start = from == null ? 0 : (toNumber(from(ctx))?.toInt() ?? 0);
+          var start = 0;
+          if (from != null) {
+            final f = asNumber(from(ctx));
+            if (f == null) return evalError;
+            start = f.toInt();
+          }
           if (start < 0) start = h is List ? math.max(length + start, 0) : 0;
           if (h is List) {
             for (var i = start; i < h.length; i++) {
@@ -398,10 +463,14 @@ class ExpressionParser {
         final index = parse(a.length > 1 ? a[1] : null);
         final list = parse(a.length > 2 ? a[2] : null);
         return (ctx) {
+          final i = index(ctx);
           final l = list(ctx);
-          final i = toNumber(index(ctx))?.toInt();
-          if (l is List && i != null && i >= 0 && i < l.length) return l[i];
-          return null;
+          // An index out of bounds, or with a fraction (NaN fails that
+          // test too), is an error, not a miss.
+          if (i is! num || l is! List || i < 0 || i >= l.length || i % 1 != 0) {
+            return evalError;
+          }
+          return l[i.toInt()];
         };
       case 'slice':
         final target = parse(a.length > 1 ? a[1] : null);
@@ -409,9 +478,9 @@ class ExpressionParser {
         final end = a.length > 3 ? parse(a[3]) : null;
         return (ctx) {
           final t = target(ctx);
-          final s = toNumber(start(ctx));
-          if (s == null) return null;
-          final e = end == null ? null : toNumber(end(ctx));
+          final s = asNumber(start(ctx));
+          final e = end == null ? null : asNumber(end(ctx));
+          if (s == null || (end != null && e == null)) return evalError;
           if (t is String) {
             // By character (code point), so a slice never splits a
             // surrogate pair.
@@ -423,7 +492,7 @@ class ExpressionParser {
             final (from, to) = _sliceRange(t.length, s, e);
             return t.sublist(from, to);
           }
-          return null;
+          return evalError;
         };
       case 'length':
         final e = parse(a.length > 1 ? a[1] : null);
@@ -431,64 +500,59 @@ class ExpressionParser {
           final v = e(ctx);
           if (v is String) return v.runes.length;
           if (v is List) return v.length;
-          return null;
+          return evalError;
         };
 
       // --- types ---
       case 'to-string':
         final e = parse(a.length > 1 ? a[1] : null);
-        return (ctx) => toStringValue(e(ctx));
-      case 'to-number':
-        final es = a.skip(1).map(parse).toList();
         return (ctx) {
-          for (final e in es) {
-            final v = e(ctx);
-            // Null converts, to 0; an input nothing converts is an
-            // error — null here, so the property keeps its default.
+          final v = e(ctx);
+          return identical(v, evalError) ? v : toStringValue(v);
+        };
+      case 'to-number':
+        final es = a.skip(1).map(parse).toList(growable: false);
+        return (ctx) {
+          for (var i = 0; i < es.length; i++) {
+            final v = es[i](ctx);
+            if (identical(v, evalError)) return v;
+            // Null converts, to 0; an input nothing converts falls
+            // through to the next.
             if (v == null) return 0.0;
             final n = toNumber(v);
             if (n != null) return n;
           }
-          return null;
+          return evalError;
         };
       case 'to-boolean':
         final e = parse(a.length > 1 ? a[1] : null);
-        return (ctx) => toBoolean(e(ctx));
-      case 'to-color':
-        final es = a.skip(1).map(parse).toList();
         return (ctx) {
-          for (final e in es) {
-            final c = toColor(e(ctx));
+          final v = e(ctx);
+          return identical(v, evalError) ? v : toBoolean(v);
+        };
+      case 'to-color':
+        final es = a.skip(1).map(parse).toList(growable: false);
+        return (ctx) {
+          for (var i = 0; i < es.length; i++) {
+            final v = es[i](ctx);
+            if (identical(v, evalError)) return v;
+            final c = toColor(v);
             if (c != null) return c;
           }
-          return null;
+          return evalError;
         };
       case 'typeof':
         final e = parse(a.length > 1 ? a[1] : null);
-        return (ctx) => _typeName(e(ctx));
+        return (ctx) {
+          final v = e(ctx);
+          return identical(v, evalError) ? v : _typeName(v);
+        };
       case 'string':
       case 'number':
       case 'boolean':
       case 'object':
       case 'array':
-        // Assertion operators: return the first argument that matches the
-        // asserted type; fall through to the next otherwise. The type
-        // predicate is bound at parse time.
-        final es = a.skip(1).map(parse).toList();
-        final matches = switch (op) {
-          'string' => (Object? v) => v is String,
-          'number' => (Object? v) => v is num,
-          'boolean' => (Object? v) => v is bool,
-          'array' => (Object? v) => v is List,
-          _ => (Object? v) => v is Map,
-        };
-        return (ctx) {
-          for (final e in es) {
-            final v = e(ctx);
-            if (matches(v)) return v;
-          }
-          return null;
-        };
+        return _parseAssertion(op, a);
       case 'semiliteral':
         // A JSON array whose elements may be expressions.
         if (a.length != 2) {
@@ -497,11 +561,22 @@ class ExpressionParser {
         final value = a[1];
         if (value is! List) return (_) => value;
         if (!value.any((e) => e is List)) return (_) => value;
-        final es = value.map(parse).toList();
-        return (ctx) => [for (final e in es) e(ctx)];
+        final es = value.map(parse).toList(growable: false);
+        return (ctx) {
+          final out = List<Object?>.filled(es.length, null);
+          for (var i = 0; i < es.length; i++) {
+            final v = es[i](ctx);
+            if (identical(v, evalError)) return v;
+            out[i] = v;
+          }
+          return out;
+        };
       case 'image':
         final e = parse(a.length > 1 ? a[1] : null);
-        return (ctx) => toStringValue(e(ctx));
+        return (ctx) {
+          final v = e(ctx);
+          return v is String ? v : evalError;
+        };
       case 'format':
         // Rich text formatting: flatten to plain concatenated text.
         // Inline images cannot be drawn into a label; leaving them out
@@ -521,24 +596,30 @@ class ExpressionParser {
         final input = parse(a.length > 1 ? a[1] : null);
         final separator = parse(a.length > 2 ? a[2] : null);
         return (ctx) {
-          final v = input(ctx);
-          if (v is! List) return null;
-          return v.map(toStringValue).join(toStringValue(separator(ctx)));
+          final v = asStringList(input(ctx));
+          final s = separator(ctx);
+          return v != null && s is String ? v.join(s) : evalError;
         };
       case 'split':
         final input = parse(a.length > 1 ? a[1] : null);
         final separator = parse(a.length > 2 ? a[2] : null);
         return (ctx) {
           final v = input(ctx);
-          if (v is! String) return null;
-          return v.split(toStringValue(separator(ctx)));
+          final s = separator(ctx);
+          return v is String && s is String ? v.split(s) : evalError;
         };
       case 'upcase':
         final e = parse(a.length > 1 ? a[1] : null);
-        return (ctx) => toStringValue(e(ctx)).toUpperCase();
+        return (ctx) {
+          final v = e(ctx);
+          return v is String ? v.toUpperCase() : evalError;
+        };
       case 'downcase':
         final e = parse(a.length > 1 ? a[1] : null);
-        return (ctx) => toStringValue(e(ctx)).toLowerCase();
+        return (ctx) {
+          final v = e(ctx);
+          return v is String ? v.toLowerCase() : evalError;
+        };
       case 'is-supported-script':
         return (_) => true;
       case 'resolved-locale':
@@ -552,36 +633,50 @@ class ExpressionParser {
       // --- color ---
       case 'rgb':
       case 'rgba':
-        // toColor owns the channel semantics (clamp, round, alpha
-        // default) — this case only gathers the evaluated channels.
+        // toColor owns the channel semantics (round, alpha default);
+        // this case gathers the evaluated channels and rejects any out
+        // of range, as MapLibre does, instead of clamping them.
         // All-literal channels (the typical shape, e.g. as interpolate
         // outputs) fold to a Color at parse time.
         if (a.length >= 4 && a.skip(1).every((e) => e is num)) {
           final c = toColor(a.sublist(1));
+          if (c == null) {
+            return _unsupported('$op channels out of range: ${a.sublist(1)}');
+          }
           return (_) => c;
         }
-        final es = a.skip(1).map(parse).toList();
-        return (ctx) => toColor([for (final e in es) e(ctx)]);
+        final es = a.skip(1).map(parse).toList(growable: false);
+        return (ctx) {
+          final channels = List<Object?>.filled(es.length, null);
+          for (var i = 0; i < es.length; i++) {
+            channels[i] = es[i](ctx);
+          }
+          return toColor(channels) ?? evalError;
+        };
       case 'to-rgba':
         final e = parse(a.length > 1 ? a[1] : null);
         return (ctx) {
           final c = toColor(e(ctx));
-          if (c == null) return null;
+          if (c == null) return evalError;
           return [c.r * 255, c.g * 255, c.b * 255, c.a];
         };
 
       // --- math ---
+      // Operands are numbers; a numeric string is not one. Infinity and
+      // NaN are numbers here, as in MapLibre: they come out of math
+      // (`["/", 1, 0]`) and go into it; only a property reading one
+      // falls back.
       case '+':
       case '*':
         // The operator is bound at parse time — the old form re-tested
         // the op string per operand per evaluation.
-        final es = a.skip(1).map(parse).toList();
+        final es = a.skip(1).map(parse).toList(growable: false);
         if (op == '+') {
           return (ctx) {
             var acc = 0.0;
-            for (final e in es) {
-              final n = toNumber(e(ctx));
-              if (n == null) return null;
+            for (var i = 0; i < es.length; i++) {
+              final n = _operand(es[i](ctx));
+              if (n == null) return evalError;
               acc += n;
             }
             return acc;
@@ -589,9 +684,9 @@ class ExpressionParser {
         }
         return (ctx) {
           var acc = 1.0;
-          for (final e in es) {
-            final n = toNumber(e(ctx));
-            if (n == null) return null;
+          for (var i = 0; i < es.length; i++) {
+            final n = _operand(es[i](ctx));
+            if (n == null) return evalError;
             acc *= n;
           }
           return acc;
@@ -600,15 +695,17 @@ class ExpressionParser {
         if (a.length == 2) {
           final e = parse(a[1]);
           return (ctx) {
-            final n = toNumber(e(ctx));
-            return n == null ? null : -n;
+            final n = _operand(e(ctx));
+            return n == null ? evalError : -n;
           };
         }
         return _binaryMath(a, (x, y) => x - y);
       case '/':
-        return _binaryMath(a, (x, y) => y == 0 ? double.nan : x / y);
+        return _binaryMath(a, (x, y) => x / y);
       case '%':
-        return _binaryMath(a, (x, y) => x % y);
+        // JavaScript's remainder, which keeps the dividend's sign
+        // (`-5 % 3` is -2); Dart's `%` is never negative.
+        return _binaryMath(a, (x, y) => x.remainder(y));
       case '^':
         return _binaryMath(a, math.pow.call);
       case 'abs':
@@ -641,14 +738,17 @@ class ExpressionParser {
         return _unaryMath(a, math.atan);
       case 'min':
       case 'max':
-        final es = a.skip(1).map(parse).toList();
+        // Of nothing, the identity of each: min is Infinity, max
+        // -Infinity, as JavaScript's Math.min / Math.max give.
+        final es = a.skip(1).map(parse).toList(growable: false);
         final pick = op == 'min' ? math.min<double> : math.max<double>;
+        final empty = op == 'min' ? double.infinity : double.negativeInfinity;
         return (ctx) {
-          double? acc;
-          for (final e in es) {
-            final n = toNumber(e(ctx));
-            if (n == null) return null;
-            acc = acc == null ? n : pick(acc, n);
+          var acc = empty;
+          for (var i = 0; i < es.length; i++) {
+            final n = _operand(es[i](ctx));
+            if (n == null) return evalError;
+            acc = pick(acc, n);
           }
           return acc;
         };
@@ -667,8 +767,14 @@ class ExpressionParser {
         _readsFeatureState = true;
         final key = a.length > 1 ? a[1] : null;
         if (key is String) return (ctx) => _featureStateOf(ctx)?[key];
+        // A computed key is a string, as for `get` and `has`: anything
+        // else is an error, not its string form.
         final keyExpr = parse(key);
-        return (ctx) => _featureStateOf(ctx)?[toStringValue(keyExpr(ctx))];
+        return (ctx) {
+          final k = keyExpr(ctx);
+          if (k is! String) return evalError;
+          return _featureStateOf(ctx)?[k];
+        };
 
       case 'heatmap-density':
         // An input besides the zoom, like feature data: a ramp over it
@@ -732,6 +838,55 @@ class ExpressionParser {
     };
   }
 
+  /// The assertions `string`, `number`, `boolean`, `object` and `array`:
+  /// the first argument of the asserted type, tried in order, or an
+  /// error when none is. `array` may name its item type and length
+  /// first — `["array", "number", 2, value]`, where an empty list passes
+  /// any item type. The type test is bound at parse time.
+  Expr _parseAssertion(String op, List<Object?> a) {
+    var first = 1;
+    bool Function(Object?) matches;
+    if (op == 'array') {
+      bool Function(Object?)? item;
+      int? length;
+      if (a.length > 2) {
+        item = switch (a[1]) {
+          'string' => (v) => v is String,
+          'number' => (v) => v is num,
+          'boolean' => (v) => v is bool,
+          _ => null,
+        };
+        if (item != null) first = 2;
+      }
+      if (item != null && a.length > 3) {
+        final n = a[2];
+        if (n == null || (n is num && n >= 0 && n % 1 == 0)) {
+          length = (n as num?)?.toInt();
+          first = 3;
+        }
+      }
+      matches = (v) =>
+          v is List &&
+          (length == null || v.length == length) &&
+          (item == null || v.every(item));
+    } else {
+      matches = switch (op) {
+        'string' => (v) => v is String,
+        'number' => (v) => v is num,
+        'boolean' => (v) => v is bool,
+        _ => (v) => v is Map,
+      };
+    }
+    final es = a.skip(first).map(parse).toList(growable: false);
+    return (ctx) {
+      for (var i = 0; i < es.length; i++) {
+        final v = es[i](ctx);
+        if (identical(v, evalError) || matches(v)) return v;
+      }
+      return evalError;
+    };
+  }
+
   /// `number-format`. Every option may be an expression; the usual
   /// literal ones compile to constants, and `formatNumber` keeps the
   /// formats it builds, so a style formatting every feature the same way
@@ -746,23 +901,39 @@ class ExpressionParser {
           'each other');
     }
     final input = parse(a[1]);
-    Expr option(String key) => parse(options[key]);
+    // An option left out (or null) is no option. One given is typed —
+    // `locale`, `currency` and `unit` strings, the digits finite
+    // numbers — and a value of another type, null or an error, is an
+    // error, as MapLibre's assertions on them make it.
+    Expr? option(String key) =>
+        options[key] == null ? null : parse(options[key]);
     final locale = option('locale');
     final currency = option('currency');
     final unit = option('unit');
     final minDigits = option('min-fraction-digits');
     final maxDigits = option('max-fraction-digits');
-    String? text(Object? v) => v == null ? null : toStringValue(v);
     return (ctx) {
-      final n = toNumber(input(ctx));
-      if (n == null) return null;
+      final n = asNumber(input(ctx));
+      if (n == null) return evalError;
+      final l = locale?.call(ctx);
+      final c = currency?.call(ctx);
+      final u = unit?.call(ctx);
+      final lo = minDigits == null ? null : asNumber(minDigits(ctx));
+      final hi = maxDigits == null ? null : asNumber(maxDigits(ctx));
+      if ((locale != null && l is! String) ||
+          (currency != null && c is! String) ||
+          (unit != null && u is! String) ||
+          (minDigits != null && lo == null) ||
+          (maxDigits != null && hi == null)) {
+        return evalError;
+      }
       return formatNumber(
         n,
-        locale: text(locale(ctx)),
-        currency: text(currency(ctx)),
-        unit: text(unit(ctx)),
-        minFractionDigits: toNumber(minDigits(ctx))?.toInt(),
-        maxFractionDigits: toNumber(maxDigits(ctx))?.toInt(),
+        locale: l as String?,
+        currency: c as String?,
+        unit: u as String?,
+        minFractionDigits: lo?.toInt(),
+        maxFractionDigits: hi?.toInt(),
       );
     };
   }
@@ -814,11 +985,13 @@ class ExpressionParser {
       final s = parts.map(toStringValue).join();
       return (_) => s;
     }
-    final es = parts.map(parse).toList();
+    final es = parts.map(parse).toList(growable: false);
     return (ctx) {
       final sb = StringBuffer();
-      for (final e in es) {
-        sb.write(toStringValue(e(ctx)));
+      for (var i = 0; i < es.length; i++) {
+        final v = es[i](ctx);
+        if (identical(v, evalError)) return v;
+        sb.write(toStringValue(v));
       }
       return sb.toString();
     };
@@ -836,13 +1009,15 @@ class ExpressionParser {
     return null;
   }
 
+  /// A math operand: any number, Infinity and NaN included (see the
+  /// math operators) — unlike [asNumber], which a property reads with.
+  static double? _operand(Object? v) => v is num ? v.toDouble() : null;
+
   Expr _unaryMath(List<Object?> a, double Function(double) f) {
     final e = parse(a.length > 1 ? a[1] : null);
     return (ctx) {
-      final n = toNumber(e(ctx));
-      if (n == null) return null;
-      final r = f(n);
-      return r.isFinite ? r : null;
+      final n = _operand(e(ctx));
+      return n == null ? evalError : f(n);
     };
   }
 
@@ -850,11 +1025,10 @@ class ExpressionParser {
     final x = parse(a.length > 1 ? a[1] : null);
     final y = parse(a.length > 2 ? a[2] : null);
     return (ctx) {
-      final nx = toNumber(x(ctx));
-      final ny = toNumber(y(ctx));
-      if (nx == null || ny == null) return null;
-      final r = f(nx, ny).toDouble();
-      return r.isFinite ? r : null;
+      final nx = _operand(x(ctx));
+      final ny = _operand(y(ctx));
+      if (nx == null || ny == null) return evalError;
+      return f(nx, ny).toDouble();
     };
   }
 
@@ -880,36 +1054,109 @@ class ExpressionParser {
   }
 
   Expr _parseComparison(String op, List<Object?> a) {
-    final x = parse(a.length > 1 ? a[1] : null);
-    final y = parse(a.length > 2 ? a[2] : null);
+    final xJson = a.length > 1 ? a[1] : null;
+    final yJson = a.length > 2 ? a[2] : null;
+    final x = parse(xJson);
+    final y = parse(yJson);
     // Operator dispatch resolved at parse time, not per evaluation.
-    return switch (op) {
-      '==' => (ctx) => _looseEquals(x(ctx), y(ctx)),
-      '!=' => (ctx) => !_looseEquals(x(ctx), y(ctx)),
-      _ => (ctx) => _compare(op, x(ctx), y(ctx)),
+    if (op == '==' || op == '!=') {
+      final negate = op == '!=';
+      // `==` compares any two values, so only an error operand fails
+      // it — and literals and plain feature reads, the operands of
+      // nearly every filter, never are one.
+      if (_cannotFail(xJson) && _cannotFail(yJson)) {
+        return negate
+            ? (ctx) => !_looseEquals(x(ctx), y(ctx))
+            : (ctx) => _looseEquals(x(ctx), y(ctx));
+      }
+      return (ctx) {
+        final l = x(ctx);
+        final r = y(ctx);
+        if (identical(l, evalError) || identical(r, evalError)) {
+          return evalError;
+        }
+        return _looseEquals(l, r) != negate;
+      };
+    }
+    final order = _orderOps.indexOf(op);
+    // A literal number types the other operand, as in MapLibre's
+    // parser: `[">=", ["get", "rank"], 5]`, the usual shape, is one type
+    // test and one comparison.
+    if (yJson is num) return _orderWithNumber(order, x, yJson, evalError);
+    return (ctx) => _order(order, x(ctx), y(ctx), evalError);
+  }
+
+  static const _orderOps = ['<', '<=', '>', '>='];
+
+  /// The ordering comparison [order] (an index into [_orderOps]) of two
+  /// numbers or two strings, strings by code unit; [mismatch] for any
+  /// other pair — [evalError] in an expression, false in a legacy
+  /// filter, where MapLibre requires operands of one type too.
+  static Object _order(int order, Object? a, Object? b, Object mismatch) {
+    if (a is num && b is num) {
+      // As doubles: the VM compares an int with a double through a
+      // runtime call, several times the cost of the whole comparison.
+      final x = a.toDouble(), y = b.toDouble();
+      return switch (order) {
+        0 => x < y,
+        1 => x <= y,
+        2 => x > y,
+        _ => x >= y,
+      };
+    }
+    if (a is String && b is String) {
+      final c = a.compareTo(b);
+      return switch (order) {
+        0 => c < 0,
+        1 => c <= 0,
+        2 => c > 0,
+        _ => c >= 0,
+      };
+    }
+    return mismatch;
+  }
+
+  /// [_order] against the literal number [n], specialized per operator
+  /// at parse time. Compared as doubles, as in [_order]: tile values are
+  /// mostly ints.
+  static Expr _orderWithNumber(int order, Expr x, num n, Object mismatch) {
+    final b = n.toDouble();
+    return switch (order) {
+      0 => (ctx) {
+          final v = x(ctx);
+          return v is num ? v.toDouble() < b : mismatch;
+        },
+      1 => (ctx) {
+          final v = x(ctx);
+          return v is num ? v.toDouble() <= b : mismatch;
+        },
+      2 => (ctx) {
+          final v = x(ctx);
+          return v is num ? v.toDouble() > b : mismatch;
+        },
+      _ => (ctx) {
+          final v = x(ctx);
+          return v is num ? v.toDouble() >= b : mismatch;
+        },
     };
   }
 
-  /// Ordering comparison shared by expression and legacy filters:
-  /// string pairs compare lexicographically (the spec'd behaviour for
-  /// same-type operands); anything else goes through [toNumber] —
-  /// tolerant of numeric strings against numbers, which real styles
-  /// rely on. Incomparable operands are false.
-  static bool _compare(String op, Object? a, Object? b) {
-    final int? cmp;
-    if (a is String && b is String) {
-      cmp = a.compareTo(b);
-    } else {
-      final na = toNumber(a);
-      final nb = toNumber(b);
-      cmp = (na == null || nb == null) ? null : na.compareTo(nb);
-    }
-    if (cmp == null) return false;
-    return switch (op) {
-      '<' => cmp < 0,
-      '<=' => cmp <= 0,
-      '>' => cmp > 0,
-      _ => cmp >= 0,
+  /// Whether [json] compiles to an expression that never evaluates to
+  /// [evalError]: a literal, or a plain read of the feature, the zoom
+  /// or the global state.
+  static bool _cannotFail(Object? json) {
+    if (json is! List) return json is! Map;
+    if (json.isEmpty) return false;
+    return switch (json[0]) {
+      'literal' ||
+      'zoom' ||
+      'id' ||
+      'geometry-type' ||
+      'properties' ||
+      'global-state' =>
+        true,
+      'get' || 'has' => json.length == 2 && json[1] is String,
+      _ => false,
     };
   }
 
@@ -924,7 +1171,9 @@ class ExpressionParser {
     final fallback = parse(i < a.length ? a[i] : null);
     return (ctx) {
       for (var j = 0; j < conditions.length; j++) {
-        if (toBoolean(conditions[j](ctx))) return outputs[j](ctx);
+        final c = conditions[j](ctx);
+        if (identical(c, true)) return outputs[j](ctx);
+        if (!identical(c, false)) return evalError;
       }
       return fallback(ctx);
     };
@@ -950,15 +1199,20 @@ class ExpressionParser {
     return (ctx) {
       final v = _matchKey(input(ctx));
       final out = labels[v];
-      return out != null ? out(ctx) : fallback(ctx);
+      if (out != null) return out(ctx);
+      // An input of another type than the labels' is a miss; an error
+      // stays one.
+      return identical(v, evalError) ? v : fallback(ctx);
     };
   }
 
-  /// Normalizes match labels so `1` and `1.0` compare equal.
+  /// Normalizes match labels so `1` and `1.0` compare equal. Infinity
+  /// and NaN stay doubles: `round()` throws on them, and a tile can
+  /// carry either as a property value.
   static Object? _matchKey(Object? v) {
     if (v is num) {
       final d = v.toDouble();
-      return d == d.roundToDouble() ? d.round() : d;
+      return d.isFinite && d == d.roundToDouble() ? d.round() : d;
     }
     return v;
   }
@@ -972,9 +1226,13 @@ class ExpressionParser {
       stops.add(toNumber(a[i]) ?? 0);
       outputs.add(parse(a[i + 1]));
     }
+    // Without stops the input is never read, so never checked either.
+    if (stops.isEmpty) return outputs[0];
     return (ctx) {
-      final v = toNumber(input(ctx));
-      if (v == null) return outputs[0](ctx);
+      final x = input(ctx);
+      if (x is! num) return evalError;
+      // A double against the double stops — see [_order].
+      final v = x.toDouble();
       var idx = 0;
       for (var i = 0; i < stops.length; i++) {
         if (v >= stops[i]) {
@@ -1025,9 +1283,12 @@ class ExpressionParser {
     // the inverse denominators are precomputed and evaluation pays a
     // single pow on the input instead of two.
     final invDenom = base == 1.0 ? null : _inverseDenominators(stops, base);
+    // With one stop the input is never read, so never checked either.
+    if (stops.length == 1) return outputs.first;
     return (ctx) {
-      final v = toNumber(input(ctx));
-      if (v == null || stops.isEmpty) return null;
+      final x = input(ctx);
+      if (x is! num) return evalError;
+      final v = x.toDouble();
       if (v <= stops.first) return outputs.first(ctx);
       if (v >= stops.last) return outputs.last(ctx);
       var hi = 1;
@@ -1037,7 +1298,9 @@ class ExpressionParser {
       final lo = hi - 1;
       final t =
           easing(_intervalFactor(v, stops, lo, base, invDenom).clamp(0.0, 1.0));
-      return _interpolateValues(outputs[lo](ctx), outputs[hi](ctx), t, space);
+      // Outputs that cannot be blended — an error among them — are an
+      // error here, where a legacy function holds the lower one.
+      return _blend(outputs[lo](ctx), outputs[hi](ctx), t, space) ?? evalError;
     };
   }
 
@@ -1067,29 +1330,45 @@ class ExpressionParser {
     return (math.pow(base, v - stops[lo]).toDouble() - 1) * inv;
   }
 
-  static Object? _interpolateValues(
-      Object? a, Object? b, double t, ColorSpace space) {
+  /// [a] and [b] blended at [t]: numbers, colours, or lists of them of
+  /// one length. Null when they cannot be blended.
+  static Object? _blend(Object? a, Object? b, double t, ColorSpace space) {
     // Numbers, not numeric strings: a string-valued property ramped by
     // a legacy function ("0" → "1") holds each stop like any other
     // string, as it does in MapLibre.
     if (a is num && b is num) return a + (b - a) * t;
-    final ca = toColor(a);
-    final cb = toColor(b);
-    if (ca != null && cb != null) return lerpColor(ca, cb, t, space);
-    if (a is List && b is List && a.length == b.length) {
-      final out = <Object?>[];
+    // Lists before colours: `toColor` reads three or four numbers as a
+    // colour, which turned a ramp between padding values or dash arrays
+    // into one the property could not read.
+    if (a is List || b is List) {
+      if (a is! List || b is! List || a.length != b.length) return null;
+      final out = List<Object?>.filled(a.length, null);
       for (var i = 0; i < a.length; i++) {
-        out.add(_interpolateValues(a[i], b[i], t, space));
+        final x = a[i], y = b[i];
+        // The anchors of a `text-variable-anchor-offset` collection stay;
+        // MapLibre fails on a pair that differs.
+        final v = x is String && y is String
+            ? (x == y ? x : null)
+            : _blend(x, y, t, space);
+        if (v == null) return null;
+        out[i] = v;
       }
       return out;
     }
-    // Not interpolatable (strings, booleans, mismatched arrays): hold the
-    // lower stop's value until the next stop, as MapLibre does — it
-    // converts a legacy function over such a property to `interval`.
-    // Snapping at the midpoint switched a zoom-staged `text-field` half
-    // a level early.
-    return a;
+    final ca = toColor(a);
+    final cb = toColor(b);
+    if (ca != null && cb != null) return lerpColor(ca, cb, t, space);
+    return null;
   }
+
+  /// A legacy function's [_blend]. Outputs it cannot blend (strings,
+  /// booleans, mismatched arrays) hold the lower stop's value until the
+  /// next stop, as MapLibre does — it converts a legacy function over
+  /// such a property to `interval`. Snapping at the midpoint switched a
+  /// zoom-staged `text-field` half a level early.
+  static Object? _blendOrHold(
+          Object? a, Object? b, double t, ColorSpace space) =>
+      _blend(a, b, t, space) ?? a;
 
   static ColorSpace _legacyColorSpace(Map<String, Object?> json) =>
       switch (json['colorSpace']) {
@@ -1139,7 +1418,7 @@ class ExpressionParser {
       final lower = perZoom[lo](ctx);
       final upper = perZoom[hi](ctx);
       if (lower == null || upper == null) return null;
-      return _interpolateValues(lower, upper,
+      return _blendOrHold(lower, upper,
           _intervalFactor(z, zooms, lo, base, invDenom).clamp(0.0, 1.0), space);
     };
   }
@@ -1148,20 +1427,29 @@ class ExpressionParser {
   // Legacy (pre-expression) syntax.
 
   /// Legacy property functions: `{"stops": [...], "base": b, "property": p}`.
-  Expr _parseLegacyFunction(Map<String, Object?> json) {
+  /// [accepts] is the property's — see [parseForProperty].
+  Expr _parseLegacyFunction(Map<String, Object?> json,
+      [bool Function(Object?)? accepts]) {
     final stopsJson = json['stops'];
     if (stopsJson is! List || stopsJson.isEmpty) {
       final property = json['property'] as String?;
       if (json['type'] == 'identity') {
         // Identity function: the feature property's raw value (the
-        // zoom when no property is named).
+        // zoom when no property is named) when the property takes it,
+        // else the function's default.
         if (property == null) {
           _readsZoom = true;
           return (ctx) => ctx.zoom;
         }
         _refProp(property);
         final defaultValue = json['default'];
-        return (ctx) => ctx.properties[property] ?? defaultValue;
+        if (accepts == null) {
+          return (ctx) => ctx.properties[property] ?? defaultValue;
+        }
+        return (ctx) {
+          final v = ctx.properties[property];
+          return v != null && accepts(v) ? v : defaultValue;
+        };
       }
       if (json.containsKey('type') ||
           json.containsKey('property') ||
@@ -1223,8 +1511,10 @@ class ExpressionParser {
     final invDenom =
         isInterval || base == 1.0 ? null : _inverseDenominators(stops, base);
     return (ctx) {
-      final v = toNumber(inputOf(ctx));
-      if (v == null) return defaultValue;
+      // A number, not a numeric string; anything else gets the default.
+      final x = inputOf(ctx);
+      if (x is! num) return defaultValue;
+      final v = x.toDouble();
       if (v <= stops.first) return outputs.first;
       if (v >= stops.last) return outputs.last;
       var hi = 1;
@@ -1242,7 +1532,7 @@ class ExpressionParser {
         lo--;
       }
       if (isInterval) return outputs[lo];
-      return _interpolateValues(outputs[lo], outputs[lo + 1],
+      return _blendOrHold(outputs[lo], outputs[lo + 1],
           _intervalFactor(v, stops, lo, base, invDenom).clamp(0.0, 1.0), space);
     };
   }
@@ -1285,15 +1575,17 @@ class ExpressionParser {
   Expr _parseLegacyFilter(List<Object?> filter) {
     final op = filter[0];
     switch (op) {
-      // Plain loops, not every/any: the iterator callbacks captured ctx
-      // and allocated a closure per evaluation of the hottest closures
-      // in the engine (every layer × every feature of its source-layer).
+      // Indexed loops over fixed-length lists, as for the expression
+      // `all` / `any`: these are the hottest closures in the engine
+      // (every layer × every feature of its source-layer), and a for-in
+      // pays an iterator per evaluation. A nested filter is a boolean
+      // (see [parseFilter]), so `true` is all there is to test for.
       case 'all':
         final es =
             filter.skip(1).map((f) => parseFilter(f)).toList(growable: false);
         return (ctx) {
-          for (final e in es) {
-            if (!toBoolean(e(ctx))) return false;
+          for (var i = 0; i < es.length; i++) {
+            if (!identical(es[i](ctx), true)) return false;
           }
           return true;
         };
@@ -1301,8 +1593,8 @@ class ExpressionParser {
         final es =
             filter.skip(1).map((f) => parseFilter(f)).toList(growable: false);
         return (ctx) {
-          for (final e in es) {
-            if (toBoolean(e(ctx))) return true;
+          for (var i = 0; i < es.length; i++) {
+            if (identical(es[i](ctx), true)) return true;
           }
           return false;
         };
@@ -1310,8 +1602,8 @@ class ExpressionParser {
         final es =
             filter.skip(1).map((f) => parseFilter(f)).toList(growable: false);
         return (ctx) {
-          for (final e in es) {
-            if (toBoolean(e(ctx))) return false;
+          for (var i = 0; i < es.length; i++) {
+            if (identical(es[i](ctx), true)) return false;
           }
           return true;
         };
@@ -1343,11 +1635,21 @@ class ExpressionParser {
         final value = filter.length > 2 ? filter[2] : null;
         _refLegacyKey(key);
         // Operator dispatch resolved at parse time, not per evaluation.
-        return switch (op) {
-          '==' => (ctx) => _looseEquals(_legacyValue(ctx, key), value),
-          '!=' => (ctx) => !_looseEquals(_legacyValue(ctx, key), value),
-          _ => (ctx) => _compare(op as String, _legacyValue(ctx, key), value),
-        };
+        if (op == '==') {
+          return (ctx) => _looseEquals(_legacyValue(ctx, key), value);
+        }
+        if (op == '!=') {
+          return (ctx) => !_looseEquals(_legacyValue(ctx, key), value);
+        }
+        // Ordering needs operands of one type here too: a numeric string
+        // is not compared with a number, and a mismatch is false, not an
+        // error.
+        final order = _orderOps.indexOf(op as String);
+        if (value is num && key != r'$type' && key != r'$id') {
+          return _orderWithNumber(
+              order, (ctx) => ctx.properties[key], value, false);
+        }
+        return (ctx) => _order(order, _legacyValue(ctx, key), value, false);
       case 'in':
       case '!in':
         final key = _legacyKey(filter);
@@ -1381,6 +1683,11 @@ class ExpressionParser {
         r'$id' => ctx.featureId,
         _ => ctx.properties[key],
       };
+
+  /// What `in` and `index-of` take as a needle; an object, an array or
+  /// an error is not one.
+  static bool _isNeedle(Object? v) =>
+      v == null || v is String || v is num || v is bool;
 
   static bool _looseEquals(Object? a, Object? b) {
     if (a == null || b == null) return a == b;

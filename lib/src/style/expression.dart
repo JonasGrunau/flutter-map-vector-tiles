@@ -153,6 +153,58 @@ EvalContext featureContext({
 /// A compiled style expression.
 typedef Expr = Object? Function(EvalContext ctx);
 
+/// What an expression evaluates to where MapLibre raises a runtime
+/// error: an operand of the wrong type, an array index out of bounds, a
+/// colour channel out of range. A value, not an exception, so a feature
+/// with odd data costs no throw. Every operator hands it on — `coalesce`
+/// too, since it is not null — and the typed property wrappers turn it
+/// into the property's fallback, and a filter into false, as MapLibre
+/// does with its errors.
+///
+/// Null is not an error: expressions produce it and test for it
+/// (`coalesce`, `==`, `in`, `to-string` all take it).
+@internal
+const Object evalError = _EvalError();
+
+final class _EvalError {
+  const _EvalError();
+
+  @override
+  String toString() => 'evalError';
+}
+
+// ---------------------------------------------------------------------------
+// Assertions (MapLibre's `number`, `array<…>`: a value of another type
+// fails, numeric strings included).
+
+/// [v] when it is a finite number, else null. Unlike [toNumber], a
+/// numeric string or a boolean is not a number.
+double? asNumber(Object? v) => v is num && v.isFinite ? v.toDouble() : null;
+
+/// [v] when it is a list of numbers — of [length] items, when given —
+/// else null.
+List<double>? asNumberList(Object? v, [int? length]) {
+  if (v is! List || (length != null && v.length != length)) return null;
+  final out = <double>[];
+  for (final e in v) {
+    final n = asNumber(e);
+    if (n == null) return null;
+    out.add(n);
+  }
+  return out;
+}
+
+/// [v] when it is a list of strings, else null.
+List<String>? asStringList(Object? v) {
+  if (v is! List) return null;
+  final out = <String>[];
+  for (final e in v) {
+    if (e is! String) return null;
+    out.add(e);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Coercions (MapLibre "to-*" semantics, lenient).
 
@@ -209,20 +261,27 @@ String _json(Object? v) => switch (v) {
       _ => jsonEncode(toStringValue(v)),
     };
 
+/// [v] as a colour: a colour, a CSS colour string, or `[r, g, b]` /
+/// `[r, g, b, a]` — numbers, red, green and blue 0–255 and alpha 0–1,
+/// as MapLibre's `to-color` and `rgba` take them. Out of range, of
+/// another length or with a channel that is not a number (a numeric
+/// string included), a list is no colour: MapLibre fails on it rather
+/// than clamping.
 Color? toColor(Object? v) {
   if (v is Color) return v;
   if (v is String) return parseCssColor(v);
-  if (v is List && v.length >= 3) {
-    final r = toNumber(v[0]);
-    final g = toNumber(v[1]);
-    final b = toNumber(v[2]);
-    final a = v.length > 3 ? (toNumber(v[3]) ?? 1.0) : 1.0;
-    if (r == null || g == null || b == null) return null;
+  if (v is List && (v.length == 3 || v.length == 4)) {
+    for (var i = 0; i < v.length; i++) {
+      final c = v[i];
+      // Written so that NaN fails too.
+      if (c is! num || !(c >= 0 && c <= (i == 3 ? 1 : 255))) return null;
+    }
+    final a = v.length == 4 ? (v[3] as num).toDouble() : 1.0;
     return Color.fromARGB(
-      (a.clamp(0.0, 1.0) * 255).round(),
-      r.round().clamp(0, 255),
-      g.round().clamp(0, 255),
-      b.round().clamp(0, 255),
+      (a * 255).round(),
+      (v[0] as num).round(),
+      (v[1] as num).round(),
+      (v[2] as num).round(),
     );
   }
   return null;
@@ -236,13 +295,21 @@ Expr constExpr(Object? value) => (_) => value;
 /// A typed wrapper around a compiled [Expr] with a fallback value.
 ///
 /// When [zoomOnly] is set — the theme reader proved at compile time
-/// that the expression reads no feature data — the *coerced* result is
+/// that the expression reads no feature data — the result as the
+/// property reads it (checked, or converted, per the rules below) is
 /// memoized against `ctx.zoom`. A tile pass and a label frame each run
 /// at one fixed zoom, so thousands of identical ramp evaluations (and
-/// their `toNumber`/`toColor` coercions) collapse into one.
+/// their checks and conversions) collapse into one.
 ///
 /// [isConstant] promises that the expression always yields [fallback]
 /// (only [DoubleProp.constant] constructs that shape).
+///
+/// The wrappers read a value the way MapLibre checks a property's type:
+/// a number, boolean or list property takes only a value of its type
+/// ([asNumber], [asNumberList], [asStringList]) and falls back on
+/// anything else, numeric strings included; colour and string
+/// properties convert ([toColor], [toStringValue]). [evalError] always
+/// falls back.
 class DoubleProp {
   final Expr _expr;
   final double fallback;
@@ -262,9 +329,9 @@ class DoubleProp {
     if (zoomOnly) {
       if (ctx.zoom == _memoZoom) return _memoValue;
       _memoZoom = ctx.zoom;
-      return _memoValue = toNumber(_expr(ctx)) ?? fallback;
+      return _memoValue = asNumber(_expr(ctx)) ?? fallback;
     }
-    return toNumber(_expr(ctx)) ?? fallback;
+    return asNumber(_expr(ctx)) ?? fallback;
   }
 }
 
@@ -326,7 +393,7 @@ class StringProp {
 
   String _eval(EvalContext ctx) {
     final v = _expr(ctx);
-    return v == null ? fallback : toStringValue(v);
+    return v == null || identical(v, evalError) ? fallback : toStringValue(v);
   }
 }
 
@@ -354,10 +421,10 @@ class BoolProp {
       if (ctx.zoom == _memoZoom) return _memoValue;
       _memoZoom = ctx.zoom;
       final v = _expr(ctx);
-      return _memoValue = v == null ? fallback : toBoolean(v);
+      return _memoValue = v is bool ? v : fallback;
     }
     final v = _expr(ctx);
-    return v == null ? fallback : toBoolean(v);
+    return v is bool ? v : fallback;
   }
 }
 
@@ -367,15 +434,19 @@ class BoolProp {
 /// evaluated per feature and per label per frame, so literal values get
 /// a pre-converted list via [NumListProp.constant] instead of being
 /// rebuilt and re-coerced on every call.
+///
+/// [length], when given, is the one length the property takes
+/// (`text-offset`'s two items); a list of another length falls back.
 class NumListProp {
   final Expr _expr;
   final List<double> fallback;
   final List<double>? _constant;
   final bool zoomOnly;
+  final int? length;
   double _memoZoom = double.nan;
   List<double>? _memoValue;
 
-  NumListProp(this._expr, this.fallback, {this.zoomOnly = false})
+  NumListProp(this._expr, this.fallback, {this.zoomOnly = false, this.length})
       : _constant = null;
 
   bool get isConstant => _constant != null;
@@ -384,7 +455,8 @@ class NumListProp {
       : _expr = constExpr(value),
         fallback = value,
         _constant = List.unmodifiable(value),
-        zoomOnly = false;
+        zoomOnly = false,
+        length = null;
 
   List<double> eval(EvalContext ctx) {
     final constant = _constant;
@@ -397,19 +469,8 @@ class NumListProp {
     return _eval(ctx);
   }
 
-  List<double> _eval(EvalContext ctx) {
-    final v = _expr(ctx);
-    if (v is List) {
-      final out = <double>[];
-      for (final e in v) {
-        final n = toNumber(e);
-        if (n == null) return fallback;
-        out.add(n);
-      }
-      return out;
-    }
-    return fallback;
-  }
+  List<double> _eval(EvalContext ctx) =>
+      asNumberList(_expr(ctx), length) ?? fallback;
 }
 
 /// String list property (e.g. text-font). Literal values get a
@@ -442,12 +503,7 @@ class StringListProp {
     return _eval(ctx);
   }
 
-  List<String> _eval(EvalContext ctx) {
-    final v = _expr(ctx);
-    if (v is List) return v.map(toStringValue).toList();
-    if (v is String) return [v];
-    return fallback;
-  }
+  List<String> _eval(EvalContext ctx) => asStringList(_expr(ctx)) ?? fallback;
 }
 
 /// One entry of a `text-variable-anchor-offset` collection: an anchor

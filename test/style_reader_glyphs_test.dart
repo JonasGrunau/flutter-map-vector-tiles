@@ -123,6 +123,32 @@ void main() {
     style.dispose();
   });
 
+  test('a one-font stack written without brackets is asked for too', () async {
+    final requests = <String>[];
+    final bare = _style();
+    final layers = [...(bare['layers'] as List)];
+    layers[0] = {
+      ...(layers[0] as Map),
+      'layout': {'text-field': '{name}', 'text-font': 'Noto Sans Bold'},
+    };
+    // An expression of strings only is still no stack.
+    layers[1] = {
+      ...(layers[1] as Map),
+      'layout': {
+        'text-field': '{name}',
+        'text-font': ['get', 'font'],
+      },
+    };
+    bare['layers'] = layers;
+    final style = await reader(_serving(requests, style: bare)).read();
+    expect(await glyphRequests(requests), [
+      'https://fonts.example.com/Noto%20Sans%20Bold/0-255.pbf?key=test-key',
+    ]);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(requests.where((u) => u.contains('fonts.')), hasLength(1));
+    style.dispose();
+  });
+
   test('a style without glyphs gets none', () async {
     final style =
         await reader(_serving([], style: _style(glyphs: null))).read();

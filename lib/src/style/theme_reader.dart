@@ -107,7 +107,8 @@ class ThemeReader {
           opacity: _double(parser, paint['background-opacity'], 1),
           pattern: paint['background-pattern'] == null
               ? null
-              : _string(parser, paint['background-pattern'], ''),
+              : _string(parser, paint['background-pattern'], '',
+                  accepts: _isAny),
         );
       case 'fill':
       case 'fill-extrusion':
@@ -131,13 +132,11 @@ class ThemeReader {
           antialias: paint['fill-antialias'] != false,
           pattern: paint['$prefix-pattern'] == null
               ? null
-              : _string(parser, paint['$prefix-pattern'], ''),
+              : _string(parser, paint['$prefix-pattern'], '', accepts: _isAny),
           extrusion: extrusion,
           translate: _optionalNumList(parser, paint['$prefix-translate']),
           // An extrusion has no sort key.
-          sortKey: extrusion
-              ? null
-              : _optionalDouble(parser, layout['fill-sort-key']),
+          sortKey: extrusion ? null : _sortKey(parser, layout['fill-sort-key']),
         );
       case 'line':
         layer = LineThemeLayer(
@@ -153,19 +152,20 @@ class ThemeReader {
           gapWidth: _double(parser, paint['line-gap-width'], 0),
           dashArray: paint['line-dasharray'] == null
               ? null
-              : _numList(parser, paint['line-dasharray'], const []),
-          cap: _string(parser, layout['line-cap'], 'butt'),
-          join: _string(parser, layout['line-join'], 'miter'),
+              : _numList(parser, paint['line-dasharray'], const [],
+                  interpolated: false),
+          cap: _enum(parser, layout['line-cap'], 'butt', _lineCaps),
+          join: _enum(parser, layout['line-join'], 'miter', _lineJoins),
           pattern: paint['line-pattern'] == null
               ? null
-              : _string(parser, paint['line-pattern'], ''),
+              : _string(parser, paint['line-pattern'], '', accepts: _isAny),
           translate: _optionalNumList(parser, paint['line-translate']),
           offset: _optionalDouble(parser, paint['line-offset']),
           blur: _optionalDouble(parser, paint['line-blur']),
           miterLimit: layout['line-miter-limit'] == null
               ? null
               : _double(parser, layout['line-miter-limit'], 2),
-          sortKey: _optionalDouble(parser, layout['line-sort-key']),
+          sortKey: _sortKey(parser, layout['line-sort-key']),
         );
       case 'circle':
         layer = CircleThemeLayer(
@@ -184,7 +184,7 @@ class ThemeReader {
           strokeOpacity: _double(parser, paint['circle-stroke-opacity'], 1),
           blur: _optionalDouble(parser, paint['circle-blur']),
           translate: _optionalNumList(parser, paint['circle-translate']),
-          sortKey: _optionalDouble(parser, layout['circle-sort-key']),
+          sortKey: _sortKey(parser, layout['circle-sort-key']),
         );
       case 'symbol':
         layer = SymbolThemeLayer(
@@ -194,8 +194,10 @@ class ThemeReader {
           minzoom: minzoom,
           maxzoom: maxzoom,
           filter: filter,
-          placement: _string(parser, layout['symbol-placement'], 'point'),
-          sortKey: _double(parser, layout['symbol-sort-key'], 0),
+          placement:
+              _enum(parser, layout['symbol-placement'], 'point', _placements),
+          sortKey: _double(parser, layout['symbol-sort-key'], 0,
+              interpolated: false),
           spacing: _double(parser, layout['symbol-spacing'], 250),
           textField: _tokenString(parser, layout['text-field'], ''),
           textSize: _double(parser, layout['text-size'], 16),
@@ -203,30 +205,33 @@ class ThemeReader {
               parser, layout['text-font'], const ['Open Sans Regular']),
           textMaxWidth: _double(parser, layout['text-max-width'], 10),
           textLetterSpacing: _double(parser, layout['text-letter-spacing'], 0),
-          textTransform: _string(parser, layout['text-transform'], 'none'),
-          textAnchor: _string(parser, layout['text-anchor'], 'center'),
+          textTransform:
+              _enum(parser, layout['text-transform'], 'none', _transforms),
+          textAnchor: _enum(parser, layout['text-anchor'], 'center', _anchors),
           textVariableAnchor: layout['text-variable-anchor'] == null
               ? null
               : _stringList(parser, layout['text-variable-anchor'], const []),
           textRadialOffset: _double(parser, layout['text-radial-offset'], 0),
-          textOffset: _numList(parser, layout['text-offset'], const [0, 0]),
+          textOffset:
+              _numList(parser, layout['text-offset'], const [0, 0], length: 2),
           textPadding: _double(parser, layout['text-padding'], 2),
           textAllowOverlap: _bool(parser, layout['text-allow-overlap'], false),
           textOptional: _bool(parser, layout['text-optional'], false),
           textMaxAngle: _double(parser, layout['text-max-angle'], 45),
           textKeepUpright: _bool(parser, layout['text-keep-upright'], true),
-          textRotationAlignment:
-              _string(parser, layout['text-rotation-alignment'], 'auto'),
+          textRotationAlignment: _enum(parser,
+              layout['text-rotation-alignment'], 'auto', _textAlignments),
           iconImage: layout['icon-image'] == null
               ? null
               : _tokenString(parser, layout['icon-image'], ''),
           iconSize: _double(parser, layout['icon-size'], 1),
-          iconAnchor: _string(parser, layout['icon-anchor'], 'center'),
-          iconOffset: _numList(parser, layout['icon-offset'], const [0, 0]),
+          iconAnchor: _enum(parser, layout['icon-anchor'], 'center', _anchors),
+          iconOffset:
+              _numList(parser, layout['icon-offset'], const [0, 0], length: 2),
           iconAllowOverlap: _bool(parser, layout['icon-allow-overlap'], false),
           iconRotate: _double(parser, layout['icon-rotate'], 0),
-          iconRotationAlignment:
-              _string(parser, layout['icon-rotation-alignment'], 'auto'),
+          iconRotationAlignment: _enum(parser,
+              layout['icon-rotation-alignment'], 'auto', _iconAlignments),
           textColor:
               _color(parser, paint['text-color'], const Color(0xff000000)),
           textHaloColor:
@@ -239,7 +244,8 @@ class ThemeReader {
           iconHaloColor:
               _color(parser, paint['icon-halo-color'], const Color(0x00000000)),
           iconHaloWidth: _double(parser, paint['icon-halo-width'], 0),
-          textJustify: _string(parser, layout['text-justify'], 'center'),
+          textJustify:
+              _enum(parser, layout['text-justify'], 'center', _justifications),
           textLineHeight: _double(parser, layout['text-line-height'], 1.2),
           textRotate: _double(parser, layout['text-rotate'], 0),
           textVariableAnchorOffset: layout['text-variable-anchor-offset'] ==
@@ -252,27 +258,30 @@ class ThemeReader {
               _bool(parser, layout['icon-ignore-placement'], false),
           textOverlap: layout['text-overlap'] == null
               ? null
-              : _string(parser, layout['text-overlap'], 'never'),
+              : _enum(parser, layout['text-overlap'], 'never', _overlaps),
           iconOverlap: layout['icon-overlap'] == null
               ? null
-              : _string(parser, layout['icon-overlap'], 'never'),
+              : _enum(parser, layout['icon-overlap'], 'never', _overlaps),
           iconOptional: _bool(parser, layout['icon-optional'], false),
           iconPadding: _padding(parser, layout['icon-padding'], const [2]),
-          iconTextFit: _string(parser, layout['icon-text-fit'], 'none'),
+          iconTextFit:
+              _enum(parser, layout['icon-text-fit'], 'none', _textFits),
           iconTextFitPadding: _numList(
-              parser, layout['icon-text-fit-padding'], const [0, 0, 0, 0]),
+              parser, layout['icon-text-fit-padding'], const [0, 0, 0, 0],
+              length: 4),
           iconKeepUpright: _bool(parser, layout['icon-keep-upright'], false),
-          symbolZOrder: _string(parser, layout['symbol-z-order'], 'auto'),
+          symbolZOrder:
+              _enum(parser, layout['symbol-z-order'], 'auto', _zOrders),
           symbolAvoidEdges: _bool(parser, layout['symbol-avoid-edges'], false),
           textHaloBlur: _double(parser, paint['text-halo-blur'], 0),
-          textTranslate:
-              _numList(parser, paint['text-translate'], const [0, 0]),
-          textTranslateAnchor:
-              _string(parser, paint['text-translate-anchor'], 'map'),
-          iconTranslate:
-              _numList(parser, paint['icon-translate'], const [0, 0]),
-          iconTranslateAnchor:
-              _string(parser, paint['icon-translate-anchor'], 'map'),
+          textTranslate: _numList(parser, paint['text-translate'], const [0, 0],
+              length: 2),
+          textTranslateAnchor: _enum(
+              parser, paint['text-translate-anchor'], 'map', _viewAnchors),
+          iconTranslate: _numList(parser, paint['icon-translate'], const [0, 0],
+              length: 2),
+          iconTranslateAnchor: _enum(
+              parser, paint['icon-translate-anchor'], 'map', _viewAnchors),
           iconHaloBlur: _double(parser, paint['icon-halo-blur'], 0),
         );
         if (layout['text-writing-mode'] != null) {
@@ -299,10 +308,11 @@ class ThemeReader {
           resampling:
               paint['resampling'] == null && paint['raster-resampling'] == null
                   ? null
-                  : _string(
+                  : _enum(
                       parser,
                       paint['resampling'] ?? paint['raster-resampling'],
-                      'linear'),
+                      'linear',
+                      _resamplings),
         );
       case 'hillshade':
         final directions =
@@ -329,17 +339,19 @@ class ThemeReader {
           minzoom: minzoom,
           maxzoom: maxzoom,
           filter: filter,
-          method: _string(parser, paint['hillshade-method'], 'standard'),
+          method: _enum(
+              parser, paint['hillshade-method'], 'standard', _hillshadeMethods),
           directions: directions,
           altitudes: altitudes,
-          anchor: _string(
-              parser, paint['hillshade-illumination-anchor'], 'viewport'),
+          anchor: _enum(parser, paint['hillshade-illumination-anchor'],
+              'viewport', _viewAnchors),
           exaggeration: _double(parser, paint['hillshade-exaggeration'], 0.5),
           shadowColors: shadows,
           highlightColors: highlights,
           accentColor: _color(
               parser, paint['hillshade-accent-color'], const Color(0xff000000)),
-          resampling: _string(parser, paint['resampling'], 'linear'),
+          resampling:
+              _enum(parser, paint['resampling'], 'linear', _resamplings),
         );
       case 'heatmap':
         final weight = _doubleReadingZoom(parser, paint['heatmap-weight'], 1);
@@ -387,11 +399,82 @@ class ThemeReader {
   static Map<String, Object?> _map(Object? v) =>
       v is Map ? v.cast<String, Object?>() : const {};
 
+  /// What a legacy identity function hands on to a property of the
+  /// style spec's [type] — the `accepts` the readers below pass
+  /// `ExpressionParser.parseForProperty` — with, for an `array`
+  /// property, the type of its items ([value]) and their number when
+  /// fixed ([length]). Null for a type no reader here checks.
+  ///
+  /// The conformance test parses MapLibre's fixtures through this, so
+  /// the test and the reader cannot disagree on it.
+  @internal
+  static bool Function(Object?)? acceptsOf(String? type,
+          {String? value, int? length}) =>
+      switch (type) {
+        'number' => _isNumber,
+        'color' => _isColor,
+        'string' || 'enum' => _isString,
+        'formatted' || 'resolvedImage' => _isAny,
+        'boolean' => _isBool,
+        'padding' => _isPadding,
+        'array' when value == 'number' => (v) =>
+            asNumberList(v, length) != null,
+        'array' => _isStringList,
+        _ => null,
+      };
+
+  static bool _isNumber(Object? v) => v is num;
+  static bool _isColor(Object? v) => toColor(v) != null;
+  static bool _isString(Object? v) => v is String;
+  static bool _isBool(Object? v) => v is bool;
+  static bool _isStringList(Object? v) => asStringList(v) != null;
+  static bool _isPadding(Object? v) =>
+      asNumber(v) != null || asNumberList(v) != null;
+  // Text (`formatted`) and image names (`resolvedImage`): MapLibre
+  // makes one out of any value, so a number reads as its digits.
+  static bool _isAny(Object? v) => true;
+
+  // The values of the enum properties read here.
+  static const _lineCaps = {'butt', 'round', 'square'};
+  static const _lineJoins = {'bevel', 'round', 'miter'};
+  static const _placements = {'point', 'line', 'line-center'};
+  static const _transforms = {'none', 'uppercase', 'lowercase'};
+  static const _anchors = {
+    'center',
+    'left',
+    'right',
+    'top',
+    'bottom',
+    'top-left',
+    'top-right',
+    'bottom-left',
+    'bottom-right',
+  };
+  static const _textAlignments = {'map', 'viewport', 'viewport-glyph', 'auto'};
+  static const _iconAlignments = {'map', 'viewport', 'auto'};
+  static const _justifications = {'auto', 'left', 'center', 'right'};
+  static const _overlaps = {'never', 'always', 'cooperative'};
+  static const _textFits = {'none', 'width', 'height', 'both'};
+  static const _zOrders = {'auto', 'viewport-y', 'source'};
+  static const _viewAnchors = {'map', 'viewport'};
+  static const _hillshadeMethods = {
+    'standard',
+    'basic',
+    'combined',
+    'igor',
+    'multidirectional',
+  };
+  static const _resamplings = {'linear', 'nearest'};
+
+  /// [interpolated] as `ExpressionParser.parseForProperty` takes it:
+  /// false for the sort keys.
   static DoubleProp _double(
-      ExpressionParser parser, Object? json, double fallback) {
+      ExpressionParser parser, Object? json, double fallback,
+      {bool interpolated = true}) {
     if (json == null) return DoubleProp.constant(fallback);
     if (json is num) return DoubleProp.constant(json.toDouble());
-    final p = parser.parseForProperty(json);
+    final p = parser.parseForProperty(json,
+        accepts: _isNumber, interpolated: interpolated);
     return DoubleProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
@@ -401,7 +484,7 @@ class ThemeReader {
     if (json == null || json is num) {
       return (prop: _double(parser, json, fallback), readsZoom: false);
     }
-    final p = parser.parseForProperty(json);
+    final p = parser.parseForProperty(json, accepts: _isNumber);
     return (
       prop: DoubleProp(p.expr, fallback, zoomOnly: p.zoomOnly),
       readsZoom: p.readsZoom,
@@ -433,9 +516,14 @@ class ThemeReader {
   static DoubleProp? _optionalDouble(ExpressionParser parser, Object? json) =>
       json == null ? null : _double(parser, json, 0);
 
+  /// A sort key — [_optionalDouble], but not interpolated: a legacy
+  /// function that names no type steps through its stops.
+  static DoubleProp? _sortKey(ExpressionParser parser, Object? json) =>
+      json == null ? null : _double(parser, json, 0, interpolated: false);
+
   /// [_optionalDouble] for the `[x, y]` translate properties.
   static NumListProp? _optionalNumList(ExpressionParser parser, Object? json) =>
-      json == null ? null : _numList(parser, json, const [0, 0]);
+      json == null ? null : _numList(parser, json, const [0, 0], length: 2);
 
   static ColorProp _color(
       ExpressionParser parser, Object? json, Color fallback) {
@@ -444,7 +532,7 @@ class ThemeReader {
       final parsed = toColor(json);
       if (parsed != null) return ColorProp.constant(parsed);
     }
-    final p = parser.parseForProperty(json);
+    final p = parser.parseForProperty(json, accepts: _isColor);
     return ColorProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
@@ -471,8 +559,11 @@ class ThemeReader {
     return [_color(parser, json, fallback)];
   }
 
+  /// [accepts] is [_isString] for a `string` or `enum` property, and
+  /// [_isAny] for the text and image names (see [acceptsOf]).
   static StringProp _string(
-      ExpressionParser parser, Object? json, String fallback) {
+      ExpressionParser parser, Object? json, String fallback,
+      {Set<String>? enumValues, bool Function(Object?) accepts = _isString}) {
     if (json == null) return StringProp.constant(fallback);
     if (json is String && !json.contains('{')) {
       return StringProp.constant(json);
@@ -481,9 +572,15 @@ class ThemeReader {
       // Legacy token syntax: "{name} ({ref})".
       return StringProp(_tokenExpr(parser, json), fallback);
     }
-    final p = parser.parseForProperty(json);
+    final p =
+        parser.parseForProperty(json, accepts: accepts, enumValues: enumValues);
     return StringProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
+
+  /// An enum layout property, one of [values].
+  static StringProp _enum(ExpressionParser parser, Object? json,
+          String fallback, Set<String> values) =>
+      _string(parser, json, fallback, enumValues: values);
 
   /// `text-field` / `icon-image` — the two properties whose spec
   /// declares `tokens`. Beyond a bare template string, MapLibre also
@@ -494,7 +591,7 @@ class ThemeReader {
   static StringProp _tokenString(
       ExpressionParser parser, Object? json, String fallback) {
     final stops = json is Map ? json['stops'] : null;
-    if (stops is! List) return _string(parser, json, fallback);
+    if (stops is! List) return _string(parser, json, fallback, accepts: _isAny);
     final templates = <String, Expr>{};
     for (final stop in stops) {
       if (stop is List &&
@@ -509,7 +606,7 @@ class ThemeReader {
     if (defaultValue is String && defaultValue.contains('{')) {
       templates[defaultValue] ??= _tokenExpr(parser, defaultValue);
     }
-    final p = parser.parseForProperty(json);
+    final p = parser.parseForProperty(json, accepts: _isAny);
     if (templates.isEmpty) {
       return StringProp(p.expr, fallback, zoomOnly: p.zoomOnly);
     }
@@ -523,31 +620,64 @@ class ThemeReader {
 
   /// String-array layout properties (font stacks, anchor lists): a bare
   /// array of strings whose head is not an expression operator is a
-  /// literal value, not an expression.
+  /// literal value, not an expression, and so is a single string — a
+  /// one-font stack written without its brackets. So is a single string
+  /// among a legacy function's stop outputs and its `default`.
   static StringListProp _stringList(
       ExpressionParser parser, Object? json, List<String> fallback) {
     if (json == null) return StringListProp(constExpr(null), fallback);
+    if (json is String) return StringListProp.constant([json]);
     if (json is List &&
         json.isNotEmpty &&
         json.every((e) => e is String) &&
         !ExpressionParser.operators.contains(json.first)) {
       return StringListProp.constant(json.cast<String>());
     }
-    final p = parser.parseForProperty(json);
+    if (json is Map) json = _bracketStringOutputs(json);
+    final p = parser.parseForProperty(json, accepts: _isStringList);
     return StringListProp(p.expr, fallback, zoomOnly: p.zoomOnly);
+  }
+
+  /// [json], a legacy function, with each bare-string stop output and
+  /// `default` in brackets: `"Noto Sans Bold"` → `["Noto Sans Bold"]`.
+  static Map<Object?, Object?> _bracketStringOutputs(
+      Map<Object?, Object?> json) {
+    Object? bracket(Object? v) => v is String ? [v] : v;
+    final stops = json['stops'];
+    return {
+      ...json,
+      if (stops is List)
+        'stops': [
+          for (final stop in stops)
+            stop is List && stop.length >= 2
+                ? [stop[0], bracket(stop[1]), ...stop.skip(2)]
+                : stop,
+        ],
+      if (json.containsKey('default')) 'default': bracket(json['default']),
+    };
   }
 
   /// Numeric-array properties (text-offset, icon-offset, dash arrays):
   /// a bare array of numbers is a literal value, pre-converted once.
+  /// [length] is the one length the property takes, if it has one;
+  /// [interpolated] is false for `line-dasharray` (see [_double]).
   static NumListProp _numList(
-      ExpressionParser parser, Object? json, List<double> fallback) {
+      ExpressionParser parser, Object? json, List<double> fallback,
+      {int? length, bool interpolated = true}) {
     if (json == null) return NumListProp.constant(fallback);
     if (json is List && json.isNotEmpty && json.every((e) => e is num)) {
+      if (length != null && json.length != length) {
+        // As an expression's value of the wrong length does.
+        parser.warnings.add('$json is not a list of $length numbers');
+        return NumListProp.constant(fallback);
+      }
       return NumListProp.constant(
           [for (final e in json) (e as num).toDouble()]);
     }
-    final p = parser.parseForProperty(json);
-    return NumListProp(p.expr, fallback, zoomOnly: p.zoomOnly);
+    final p = parser.parseForProperty(json,
+        accepts: (v) => asNumberList(v, length) != null,
+        interpolated: interpolated);
+    return NumListProp(p.expr, fallback, zoomOnly: p.zoomOnly, length: length);
   }
 
   /// `padding` properties: one to four numbers, and a bare number for
@@ -558,7 +688,7 @@ class ThemeReader {
     if (json == null || json is List && json.every((e) => e is num)) {
       return _numList(parser, json, fallback);
     }
-    final p = parser.parseForProperty(json);
+    final p = parser.parseForProperty(json, accepts: _isPadding);
     final expr = p.expr;
     return NumListProp((ctx) {
       final v = expr(ctx);
@@ -584,7 +714,7 @@ class ThemeReader {
   static BoolProp _bool(ExpressionParser parser, Object? json, bool fallback) {
     if (json == null) return BoolProp.constant(fallback);
     if (json is bool) return BoolProp.constant(json);
-    final p = parser.parseForProperty(json);
+    final p = parser.parseForProperty(json, accepts: _isBool);
     return BoolProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
