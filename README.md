@@ -354,14 +354,57 @@ never picks up the edge of its neighbour in the sheet. `icon-rotate` and
 including camera bearing, icon anchor/offset rotation and rotated collision
 bounds.
 
-**Expressions.** The practical MapLibre set: `get`/`has`, comparisons,
-`all`/`any`/`case`/`match`/`coalesce`, `step`/`interpolate` (linear,
-exponential, cubic-bezier), math, string and color operators, `let`/`var`,
-legacy filters, legacy `{stops}` functions (with `{token}` templates in
-their `text-field` / `icon-image` outputs) and `{token}` templates.
+**Expressions.** Every operator of the current MapLibre style spec
+compiles, as do legacy filters, legacy `{stops}` functions (zoom,
+property and zoom-and-property ones, with `{token}` templates in their
+`text-field` / `icon-image` outputs) and `{token}` templates. The engine
+is checked against all 583 expression fixtures of `maplibre-style-spec`:
+the 425 that MapLibre evaluates give MapLibre's results, apart from 103
+listed one by one, with the reason, in
+`test/maplibre_expression_conformance_test.dart`. Most of those are
+deliberate: where MapLibre fails on an operand of the wrong type, this
+engine converts it and carries on. A few operators answer with a fixed
+value because what they read does not exist here:
+
+| Operator | Here |
+|---|---|
+| `within`, `distance` | the feature's geometry against the GeoJSON given; `distance` in metres, as MapLibre measures it |
+| `global-state` | see [Global state](#global-state) below |
+| `number-format` | digits, separators and currency per locale (through `intl`); `unit` symbols are the English short ones (`m`, `km/h`, `°C`) in every locale |
+| `feature-state` | always null: there is no feature state yet |
+| `elevation` | always null: no `raster-dem` source or `color-relief` layer is drawn |
+| `heatmap-density`, `line-progress`, `accumulated` | always 0 |
+| `collator` | ignored: strings compare by code unit, whatever the locale, case or diacritic options |
+| `is-supported-script` | always true: every script is shaped by the platform |
+| `image` | the image name, whether or not the sprite sheet has it |
+| `format` | the text only: style overrides and inline images are left out |
 
 Unsupported layer types, paint properties and expressions are skipped per
 layer with a warning, so one weird layer never kills the whole style.
+
+#### Global state
+
+A style's `global-state` expressions read values the app sets, with
+defaults from the style's root `state`. `Theme.withGlobalState` gives
+the theme for other values. Keys you leave out, or set to null, keep
+their default:
+
+```dart
+VectorTileLayer(
+  theme: style.theme.withGlobalState({'showTrails': showTrails}),
+  tileProviders: style.providers,
+)
+```
+
+The values are compiled into the theme, so changing them never slows
+down drawing: each state is its own theme, and the same state returns
+the same instance, which makes the call safe in `build`. When the layer
+gets a theme that differs only in its state, it redraws its tiles from
+the data it already has, the old imagery staying until the new one is
+ready. Nothing is fetched or decoded again. Each change still redraws
+every visible tile, so drive it from a toggle or a picker, not from a
+slider that changes on every frame. `theme.globalState` holds the
+values in effect. A style that reads no global state returns itself.
 
 ### 🏷️ Labels
 

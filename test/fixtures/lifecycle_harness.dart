@@ -121,6 +121,7 @@ Widget app(
   // async delays move the wall clock.
   Duration tileFadeDuration = Duration.zero,
   double initialZoom = 14,
+  Theme? theme,
 }) =>
     MaterialApp(
       home: RepaintBoundary(
@@ -133,7 +134,7 @@ Widget app(
           ),
           children: [
             VectorTileLayer(
-              theme: landTheme(),
+              theme: theme ?? landTheme(),
               tileProviders: TileProviders({'s': provider}),
               // Style zoom == display zoom keeps the test arithmetic plain.
               tileOffset: TileOffset.none,

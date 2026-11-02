@@ -395,4 +395,118 @@ void main() {
           isFalse);
     });
   });
+
+  group('global state', () {
+    Map<String, Object?> stateStyle() => {
+          'version': 8,
+          'name': 'stateful',
+          'state': {
+            'highlight': {'default': 'park'},
+            'opacity': {'default': 1},
+          },
+          'layers': [
+            {
+              'id': 'landuse',
+              'type': 'fill',
+              'source': 's',
+              'source-layer': 'landuse',
+              'filter': [
+                '==',
+                ['get', 'class'],
+                ['global-state', 'highlight']
+              ],
+              'paint': {
+                'fill-opacity': ['global-state', 'opacity'],
+              },
+            },
+          ],
+        };
+    bool shows(Theme theme, String cls) => theme.layers.single
+        .matches(EvalContext(zoom: 0, properties: {'class': cls}));
+    double opacity(Theme theme) =>
+        (theme.layers.single as FillThemeLayer).opacity.eval(EvalContext.empty);
+
+    test("the style's state defaults are what expressions read", () {
+      final theme = const ThemeReader().read(stateStyle());
+      expect(theme.globalState, {'highlight': 'park', 'opacity': 1});
+      expect(shows(theme, 'park'), isTrue);
+      expect(shows(theme, 'forest'), isFalse);
+      expect(theme.layers.single.filterReadsZoom, isFalse,
+          reason: 'state is compiled in: the filter stays cacheable');
+    });
+
+    test('withGlobalState compiles a sibling with the overrides', () {
+      final theme = const ThemeReader().read(stateStyle());
+      final forest = theme.withGlobalState({'highlight': 'forest'});
+      expect(shows(forest, 'forest'), isTrue);
+      expect(shows(forest, 'park'), isFalse);
+      expect(opacity(forest), 1, reason: 'unnamed keys keep their default');
+      expect(forest.globalState, {'highlight': 'forest', 'opacity': 1});
+      expect(forest.isSiblingOf(theme), isTrue);
+      expect(forest.id, isNot(theme.id));
+      expect(forest.id, startsWith(theme.id));
+    });
+
+    test('the same state is the same theme, so build methods are free', () {
+      final theme = const ThemeReader().read(stateStyle());
+      final a = theme.withGlobalState({'opacity': 0.5});
+      expect(theme.withGlobalState({'opacity': 0.5}), same(a));
+      expect(a.withGlobalState({'opacity': 0.5}), same(a));
+      expect(theme.withGlobalState(const {}), same(theme));
+      expect(a.withGlobalState({'opacity': null}), same(theme),
+          reason: 'null returns a key to its default');
+      expect(opacity(a), 0.5);
+    });
+
+    test('a style that reads no global state is its own sibling for all', () {
+      final theme = const ThemeReader().read(style);
+      expect(theme.withGlobalState({'anything': 1}), same(theme));
+      expect(theme.isSiblingOf(theme), isFalse);
+      expect(theme.globalState, isEmpty);
+    });
+
+    test('different styles are never siblings', () {
+      final a = const ThemeReader().read(stateStyle());
+      final b = const ThemeReader().read(stateStyle());
+      expect(a.isSiblingOf(b), isFalse);
+    });
+  });
+
+  test('readsGeometry marks layers whose expressions use within/distance', () {
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'near',
+          'type': 'circle',
+          'source': 's',
+          'source-layer': 'poi',
+          'paint': {
+            'circle-opacity': [
+              'case',
+              [
+                '<',
+                [
+                  'distance',
+                  {
+                    'type': 'Point',
+                    'coordinates': [11.5, 48.1]
+                  }
+                ],
+                1000
+              ],
+              1,
+              0.3
+            ],
+          },
+        },
+        {
+          'id': 'plain',
+          'type': 'circle',
+          'source': 's',
+          'source-layer': 'poi',
+        },
+      ],
+    });
+    expect(theme.layers.map((l) => l.readsGeometry), [true, false]);
+  });
 }

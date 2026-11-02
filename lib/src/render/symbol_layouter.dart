@@ -89,6 +89,10 @@ class SymbolInstance {
   final String geometryType;
   final Object? featureId;
 
+  /// The feature's geometry, for paint properties that read it
+  /// (`within`, `distance`); null unless [layer] does.
+  final FeatureGeometry? geometry;
+
   /// Label-pass memo (see `LabelPainter._layoutText`): the evaluated,
   /// quantized text style and the cache-key strings built from it.
   /// Trusted as-is while the eval zoom is unchanged; on a zoom step it
@@ -137,6 +141,7 @@ class SymbolInstance {
     required this.properties,
     required this.geometryType,
     required this.featureId,
+    this.geometry,
   });
 }
 
@@ -330,7 +335,7 @@ class SymbolLayouter {
 
       // Zoom-free filters are resolved once per prepared tile, as in
       // the rasterizer.
-      final matched = MatchedFeatures.of(layer, sourceLayer);
+      final matched = MatchedFeatures.of(layer, sourceLayer, tile: tile.key);
       for (final feature in matched ?? sourceLayer.features) {
         if (feature.maxX < cullMinX ||
             feature.minX > cullMaxX ||
@@ -338,11 +343,15 @@ class SymbolLayouter {
             feature.minY > cullMaxY) {
           continue;
         }
-        final ctx = EvalContext(
+        final geometry = layer.readsGeometry
+            ? featureGeometry(tile.key, sourceLayer, feature)
+            : null;
+        final ctx = featureContext(
           zoom: styleZoom,
           properties: feature.properties,
           geometryType: feature.geometryType,
           featureId: feature.id,
+          geometry: geometry,
         );
         if (matched == null && !layer.matches(ctx)) continue;
 
@@ -384,6 +393,7 @@ class SymbolLayouter {
             properties: feature.properties,
             geometryType: feature.geometryType,
             featureId: feature.id,
+            geometry: geometry,
           ));
         }
 

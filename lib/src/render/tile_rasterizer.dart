@@ -377,7 +377,8 @@ class TileRasterizer {
 
     // A zoom-free filter was resolved once for the whole prepared tile;
     // only a zoom-reading one is still tested here, per display tile.
-    final matched = MatchedFeatures.of(layer, sourceLayer);
+    final matched = MatchedFeatures.of(layer, sourceLayer, tile: tile.key);
+    final readsGeometry = layer.readsGeometry;
     for (final feature in matched ?? sourceLayer.features) {
       if (typeFilter != null && feature.type != typeFilter) continue;
       if (cull &&
@@ -387,11 +388,14 @@ class TileRasterizer {
               feature.minY > cullMaxY)) {
         continue;
       }
-      final ctx = EvalContext(
+      final ctx = featureContext(
         zoom: styleZoom,
         properties: feature.properties,
         geometryType: feature.geometryType,
         featureId: feature.id,
+        geometry: readsGeometry
+            ? featureGeometry(tile.key, sourceLayer, feature)
+            : null,
       );
       if (matched == null && !layer.matches(ctx)) continue;
       // Fully-contained geometry takes the exact unclipped path.

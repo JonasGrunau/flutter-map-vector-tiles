@@ -10,7 +10,60 @@ class Theme {
   final String id;
   final List<ThemeLayer> layers;
 
-  const Theme({required this.id, required this.layers});
+  /// The values `["global-state", name]` expressions read in this theme:
+  /// the style's `state` defaults with the overrides it was made with
+  /// (see [withGlobalState]). Empty for a style that declares none and
+  /// for hand-built themes.
+  final Map<String, Object?> globalState;
+
+  /// The theme's siblings under other global states, when its style
+  /// reads any; null otherwise.
+  final GlobalStateFamily? _family;
+
+  const Theme({required this.id, required this.layers})
+      : globalState = const {},
+        _family = null;
+
+  /// A theme read by `ThemeReader` from a style that reads global state.
+  @internal
+  const Theme.withFamily({
+    required this.id,
+    required this.layers,
+    required this.globalState,
+    required GlobalStateFamily family,
+  }) : _family = family;
+
+  /// This style under another global state: [state] overrides the
+  /// style's `state` defaults — keys it leaves out, or maps to null,
+  /// keep their default — and every `global-state` expression reads the
+  /// result.
+  ///
+  /// The state is compiled in, so a theme is never re-evaluated when it
+  /// changes: a different state is a different theme, with its own id
+  /// (the default state keeps this style's plain id). Asking for a state
+  /// again returns the same instance — recent ones are kept — so it is
+  /// safe to call in `build`:
+  ///
+  /// ```dart
+  /// VectorTileLayer(
+  ///   theme: style.theme.withGlobalState({'showTrails': showTrails}),
+  ///   ...
+  /// )
+  /// ```
+  ///
+  /// `VectorTileLayer` redraws its tiles from the data it already holds
+  /// when the new theme is a sibling of the old one, without reloading
+  /// anything. A style that reads no global state returns itself: no
+  /// state can change how it draws.
+  Theme withGlobalState(Map<String, Object?> state) =>
+      _family?.themeFor(state) ?? this;
+
+  /// Whether [other] is this style under another global state, so the
+  /// two differ in nothing but what their expressions compute: the same
+  /// layers and sources, reading the same feature properties.
+  @internal
+  bool isSiblingOf(Theme other) =>
+      _family != null && identical(_family, other._family);
 
   /// Evaluates the background color at [zoom] (first background layer).
   Color? backgroundColor(double zoom) {
@@ -42,6 +95,15 @@ class Theme {
   }
 }
 
+/// The themes one style compiles to under different global states —
+/// see [Theme.withGlobalState]. Implemented by the theme reader, which
+/// owns the style document they are compiled from.
+@internal
+abstract interface class GlobalStateFamily {
+  /// The theme for [overrides] over the style's `state` defaults.
+  Theme themeFor(Map<String, Object?> overrides);
+}
+
 /// Base class for compiled style layers.
 sealed class ThemeLayer {
   final String id;
@@ -67,6 +129,13 @@ sealed class ThemeLayer {
   /// filter selects at zoom 0.
   @internal
   bool filterReadsZoom = true;
+
+  /// Whether any of the layer's expressions needs the feature's geometry
+  /// (`within`, `distance`), which the renderer then builds for every
+  /// feature it evaluates them for. Assigned by the theme reader; false
+  /// for hand-built layers, which cannot hold such expressions.
+  @internal
+  bool readsGeometry = false;
 
   ThemeLayer({
     required this.id,

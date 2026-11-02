@@ -1,3 +1,4 @@
+import '../core/tile_key.dart';
 import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
@@ -24,26 +25,32 @@ import '../style/theme.dart';
 abstract final class MatchedFeatures {
   static final _cache = Expando<Expando<List<PreparedFeature>>>();
 
-  /// The features of [sourceLayer] that [layer]'s filter matches, in
-  /// source order; null when the filter reads the zoom and has to be
-  /// evaluated per display tile.
+  /// The features of [sourceLayer] — of data tile [tile] — that
+  /// [layer]'s filter matches, in source order; null when the filter
+  /// reads the zoom and has to be evaluated per display tile.
   static List<PreparedFeature>? of(
-      ThemeLayer layer, PreparedSourceLayer sourceLayer) {
+      ThemeLayer layer, PreparedSourceLayer sourceLayer,
+      {required TileKey tile}) {
     if (layer.filterReadsZoom) return null;
     final byLayer = _cache[sourceLayer] ??= Expando();
-    return byLayer[layer] ??= _match(layer, sourceLayer.features);
+    return byLayer[layer] ??= _match(layer, sourceLayer, tile);
   }
 
   static List<PreparedFeature> _match(
-      ThemeLayer layer, List<PreparedFeature> features) {
+      ThemeLayer layer, PreparedSourceLayer sourceLayer, TileKey tile) {
+    final features = sourceLayer.features;
+    final readsGeometry = layer.readsGeometry;
     final matched = <PreparedFeature>[
       for (final feature in features)
         // The zoom is never read: the filter is zoom-free.
-        if (layer.matches(EvalContext(
+        if (layer.matches(featureContext(
           zoom: 0,
           properties: feature.properties,
           geometryType: feature.geometryType,
           featureId: feature.id,
+          geometry: readsGeometry
+              ? featureGeometry(tile, sourceLayer, feature)
+              : null,
         )))
           feature,
     ];
@@ -52,3 +59,17 @@ abstract final class MatchedFeatures {
     return matched.length == features.length ? features : matched;
   }
 }
+
+/// [feature]'s geometry as `within` and `distance` read it: its
+/// coordinates in [sourceLayer] of data tile [tile]. Build it only for a
+/// layer that reads it ([ThemeLayer.readsGeometry]).
+FeatureGeometry featureGeometry(TileKey tile, PreparedSourceLayer sourceLayer,
+        PreparedFeature feature) =>
+    FeatureGeometry(
+      z: tile.z,
+      x: tile.x,
+      y: tile.y,
+      extent: sourceLayer.extent,
+      type: feature.geometryType,
+      parts: feature.parts,
+    );

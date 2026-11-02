@@ -26,6 +26,49 @@
   several code units (a Bengali or Devanagari syllable, an emoji, a
   letter with a combining accent), that character stayed at the end of
   the line above — "হযরত শা" over "হজালাল".
+- ✨ **Global state**: styles can use `global-state` expressions, with
+  defaults from the style's root `state`, and
+  `Theme.withGlobalState({...})` gives the theme for other values. The
+  state is compiled into the theme, so drawing costs nothing extra, and
+  the same state returns the same theme, so the call is safe in `build`.
+  When `VectorTileLayer` gets the same style under another state, it
+  redraws from the tiles it already decoded and keeps the old imagery
+  until the new one is ready. `Theme.globalState` holds the values in
+  effect.
+- 🎨 Every expression operator of the current MapLibre style spec now
+  compiles. `within` and `distance` test the feature's geometry against
+  a GeoJSON argument, `distance` in metres. Also new: `number-format`
+  (locale digits and currencies through `intl`, English unit symbols),
+  `join`, `split` and `semiliteral`. `elevation` is null, since no
+  terrain is drawn. Before, a layer using any of these got the
+  property's default and logged a warning. Checked against the 583
+  expression fixtures of `maplibre-style-spec`, 322 of the 425 that
+  MapLibre evaluates now give its result, up from 203. The rest are
+  listed with reasons in the test suite.
+- 🐛 `interpolate-hcl` and `interpolate-lab` blended in RGB, so every
+  colour between two stops differed from MapLibre's. They now blend in
+  their own colour space.
+- 🐛 `cubic-bezier` easing was off by up to 0.7% of the ramp (0.2% for
+  the common `ease` curves), because Flutter's `Cubic` only
+  approximates the curve. It is now solved to 1e-6.
+- 🐛 `to-number` gave 0 for a value it could not convert, so the
+  property drew 0 instead of its default; it now falls back as MapLibre
+  does, and still turns null into 0.
+- 🐛 String operators counted UTF-16 code units, so `length`, `slice` and
+  `index-of` split emoji and other characters outside the Basic
+  Multilingual Plane. `slice` gave an empty result for negative indices,
+  `index-of` ignored its start index, `in` found a null needle in any
+  string, and `to-string` wrote arrays and objects in Dart's notation
+  instead of JSON. `typeof` now names an array's item type.
+- 🐛 `format` drew the names of its inline images as text, in front of
+  or between the label's words. Images are now left out.
+- 🐛 Legacy zoom-and-property functions (stops keyed
+  `{"zoom": …, "value": …}`) were not understood and drew their
+  property's default. Legacy functions over numeric strings
+  (`[[0, "0"], [1, "1"]]`) blended them as numbers, and a stop listed
+  twice took the second output instead of the first.
+- 📦 `intl` is now a direct dependency, for `number-format`. Every app
+  already has it through `latlong2`.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same
