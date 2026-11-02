@@ -142,6 +142,18 @@ sealed class ThemeLayer {
   @internal
   bool readsFeatureState = false;
 
+  /// The `FilterIds` id of a zoom-free [filter], under which a worker
+  /// isolate resolves it while preparing a tile, so the UI isolate only
+  /// looks the matches up. Assigned by the theme reader; null — resolve
+  /// on the UI isolate — for a hand-built layer and for a filter that
+  /// reads the zoom, `global-state` (compiled in as constants, so one
+  /// JSON means different filters under different states) or the
+  /// feature's geometry (which the worker does not build). Not for use
+  /// outside this package: an id naming a different filter would draw
+  /// that filter's features.
+  @internal
+  int? filterId;
+
   /// Whether any of the layer's expressions needs the feature's geometry
   /// (`within`, `distance`), which the renderer then builds for every
   /// feature it evaluates them for. Assigned by the theme reader; false

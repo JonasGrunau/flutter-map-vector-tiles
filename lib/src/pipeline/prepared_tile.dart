@@ -12,9 +12,10 @@ import '../core/tile_key.dart';
 /// A `PreparedTile` is independent of zoom: paint expressions are
 /// evaluated per display tile when rasterizing, so one prepared tile
 /// serves every zoom level it is displayed at. Layer filters that never
-/// read the zoom are resolved once per source layer on first use and
-/// cached against it (see `MatchedFeatures`); the rest are evaluated
-/// per display tile too.
+/// read the zoom are resolved once per source layer — on the worker,
+/// into [PreparedSourceLayer.matches], or else on first use on the UI
+/// isolate (see `MatchedFeatures`); the rest are evaluated per display
+/// tile too.
 class PreparedTile {
   final TileKey key;
 
@@ -41,7 +42,19 @@ class PreparedSourceLayer {
   final int extent;
   final List<PreparedFeature> features;
 
-  const PreparedSourceLayer({required this.extent, required this.features});
+  /// Zoom-free layer filters resolved on the worker, by `FilterIds` id:
+  /// the indices into [features] each one selects, ascending, or null
+  /// when it selects every feature. A filter without an entry was not
+  /// resolved here — the web executor resolves none, and a worker only
+  /// those of layers drawn in this tile's own zoom band — and is
+  /// resolved on the UI isolate instead.
+  final Map<int, Int32List?> matches;
+
+  const PreparedSourceLayer({
+    required this.extent,
+    required this.features,
+    this.matches = const {},
+  });
 }
 
 /// Geometry type in `$type` terms.

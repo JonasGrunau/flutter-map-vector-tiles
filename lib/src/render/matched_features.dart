@@ -14,14 +14,22 @@ import '../style/theme.dart';
 /// tiles: up to 64 of them in the z15.5–17.5 band where this was
 /// measured, more beyond it. A filter that never reads the zoom
 /// ([ThemeLayer.filterReadsZoom]) gives the same answer on every one of
-/// them, so its matches are computed on first use and attached to the
-/// source layer: the entry lives exactly as long as the prepared tile,
-/// and keys are layer identities, so a different theme's layers simply
+/// them, so its matches are resolved once and attached to the source
+/// layer: the entry lives exactly as long as the prepared tile, and
+/// keys are layer identities, so a different theme's layers simply
 /// miss. Both levels are weak: a theme that is swapped out — a light
 /// and a dark style taking turns, say — is not kept alive by the
 /// decoded tiles it was drawn from, nor are its match lists. They are
 /// lists of references into the tile, not counted in
 /// `VectorTileLayer.memoryCacheMaxBytes`.
+///
+/// Native workers resolve these filters while preparing the tile
+/// ([PreparedSourceLayer.matches], keyed by [ThemeLayer.filterId]), so
+/// first use only gathers the features at the indices they found; the
+/// filter is evaluated here only where no worker did — on web, for a
+/// hand-built layer, for a filter that reads `global-state` or the
+/// feature's geometry (see [ThemeLayer.filterId]), or for a layer drawn
+/// outside the tile's own zoom band.
 abstract final class MatchedFeatures {
   static final _cache = Expando<Expando<List<PreparedFeature>>>();
 
@@ -33,7 +41,20 @@ abstract final class MatchedFeatures {
       {required TileKey tile}) {
     if (layer.filterReadsZoom) return null;
     final byLayer = _cache[sourceLayer] ??= Expando();
-    return byLayer[layer] ??= _match(layer, sourceLayer, tile);
+    return byLayer[layer] ??=
+        _resolved(layer, sourceLayer) ?? _match(layer, sourceLayer, tile);
+  }
+
+  /// The worker's matches for [layer], or null when it resolved none.
+  static List<PreparedFeature>? _resolved(
+      ThemeLayer layer, PreparedSourceLayer sourceLayer) {
+    final id = layer.filterId;
+    if (id == null || !sourceLayer.matches.containsKey(id)) return null;
+    final features = sourceLayer.features;
+    final indices = sourceLayer.matches[id];
+    if (indices == null) return features; // every feature
+    return List.generate(indices.length, (i) => features[indices[i]],
+        growable: false);
   }
 
   static List<PreparedFeature> _match(

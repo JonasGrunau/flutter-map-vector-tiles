@@ -17,7 +17,8 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      ├─ TileStore (memory LRU of PreparedTile)
      │      └─ miss: bytes ◄─ DiskCache ◄─ VectorTileProvider (network…)
      │                 (providers backed by local storage skip DiskCache)
-     │              └─ IsolatePool: decode MVT, trim to what the theme reads
+     │              └─ IsolatePool: decode MVT, trim to what the theme reads,
+     │                             resolve the zoom-free layer filters
      │                             └─ PreparedTile (compact, transferable)
      │
      ├─ RasterTileStore (raster + raster-dem sources): bytes ─► image codec
@@ -174,18 +175,29 @@ expression parser records whether a filter can read the zoom
 (`["zoom"]` anywhere in it, or a zoom-keyed legacy function inside
 it). One that cannot selects the same features at every zoom, so the
 rasterizer and the symbol layouter take its matches from a list
-computed on first use and attached to the `PreparedSourceLayer`
-(`render/matched_features.dart`): it lives exactly as long as the
-prepared tile, and a swapped theme's layers simply miss. Both levels of
-that cache are weak — an `Expando` per source layer, holding an
-`Expando` per style layer — so a theme that has been swapped out, a
-light and a dark style taking turns say, is not kept alive by the
-decoded tiles it was drawn from, and neither are its match lists. Only
-zoom-reading filters are still evaluated per display tile; the type
-filter and the bounds cull above still run per display tile, over the
-matches. That cut rasterization time per tile by a third to almost
-half on a phone in the z15.5–17.5 band, where one z14 data tile serves
-up to 64 display tiles.
+attached to the `PreparedSourceLayer` (`render/matched_features.dart`):
+it lives exactly as long as the prepared tile, and a swapped theme's
+layers simply miss. Both levels of that cache are weak — an `Expando`
+per source layer, holding an `Expando` per style layer — so a theme
+that has been swapped out, a light and a dark style taking turns say,
+is not kept alive by the decoded tiles it was drawn from, and neither
+are its match lists. Only zoom-reading filters are still evaluated per
+display tile; the type filter and the bounds cull above still run per
+display tile, over the matches. That cut rasterization time per tile by
+a third to almost half on a phone in the z15.5–17.5 band, where one z14
+data tile serves up to 64 display tiles.
+
+The scan itself — every feature against every zoom-free filter, once
+per data tile — happens on the worker isolate that decodes the tile
+(see Concurrency), so on native platforms the UI isolate's first use
+of a tile only gathers the features at the indices the worker found.
+Where no worker resolved a filter, the UI isolate scans on first use:
+on web, for a hand-built layer, for a filter that is not plain JSON,
+for one that reads `global-state` (compiled into the filter as
+constants, so one JSON is a different filter under every state) or the
+feature's geometry (`within`, `distance`; the worker builds none), and
+for a layer that draws the tile only as a stand-in for another zoom (a
+provisional ancestor or descendant).
 
 The geometry paint properties beyond colour, width and opacity follow
 the same two rules: work that is the same for every display tile of a
@@ -1120,6 +1132,24 @@ queue (tiles closest to the camera centre first) and
 isolate transfer is cheap, and only the feature properties referenced by
 the theme are retained.
 
+The workers also resolve the theme's zoom-free layer filters while they
+prepare a tile, into per-filter `Int32List`s of feature indices
+(`PreparedSourceLayer.matches`). A filter is a closure and cannot cross
+an isolate boundary, so it travels as its JSON: the theme reader interns
+the canonical JSON of every zoom-free filter that reads neither
+`global-state` nor the feature geometry into a process-wide id
+(`style/filter_ids.dart`), a job names the ids its tile needs, and the
+executor sends a worker the JSON of each id once, with the first job
+that needs it; the worker compiles it with the theme reader's parser and
+keeps it. Ids are keyed by filter content, not by theme, so the light
+and dark variant of one style share them, a tile prepared for one theme
+serves another over the same source for every filter they share, and a
+changed filter can never be read through a stale id. A tile resolves
+only the filters of layers that draw in its own zoom band
+(`pipeline/tile_filters.dart`'s `TileFilterPlan`: zoom z, or everything
+past the source's deepest level and before its shallowest). The match
+lists count towards the tile's `byteSize`.
+
 Requests are coalesced per key at every level (`SingleFlight`); a
 coalesced load polls a token joined over *all* its waiters, so one
 cancelled waiter never aborts work others still await. Transient
@@ -1129,7 +1159,9 @@ replaced, and if isolates cannot be spawned at all the pool falls back
 to the event loop permanently.
 
 On web (no isolate support for this workload) the pool degrades to
-chunked event-loop execution.
+chunked event-loop execution, and resolves no filters: on the event
+loop the scan costs the UI thread the same either way, so it stays
+lazy there and only runs for the layers a tile actually draws.
 
 A style with a heatmap layer gets one more isolate, spawned on the
 first density pass and kept for the layer's lifetime
@@ -1393,7 +1425,8 @@ the zoom in the typed wrappers, so a tile pass or a label frame
 evaluates each once instead of per feature. It also records whether a
 layer's filter reads the zoom (`ThemeLayer.filterReadsZoom`); a filter
 that does not is resolved once per prepared tile instead of per display
-tile (see Rendering model). Parsed CSS colours are
+tile, on the worker isolate where there is one (see Rendering model and
+Concurrency). Parsed CSS colours are
 memoized process-wide for the same reason. Sources are resolved through TileJSON when `url` is present,
 including `{key}` substitution. Whatever a source (or its TileJSON)
 declares as `attribution` is collected into `Style.attributions`,

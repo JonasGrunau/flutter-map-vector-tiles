@@ -6,6 +6,7 @@ import 'package:meta/meta.dart';
 import '../logger.dart';
 import 'expression.dart';
 import 'expression_parser.dart';
+import 'filter_ids.dart';
 import 'theme.dart';
 
 /// Compiles a MapLibre/Mapbox GL style JSON document into a [Theme].
@@ -81,8 +82,13 @@ class ThemeReader {
 
     final paint = _map(json['paint']);
     final filter = parser.parseFilter(json['filter']);
-    // Sampled before anything else is parsed: the flag is sticky.
+    // Sampled before anything else is parsed: the flags are sticky.
     final filterReadsZoom = parser.readsZoom;
+    // A worker compiles the filter from its JSON alone, with no global
+    // state and no feature geometry: only a filter reading neither
+    // resolves there (see ThemeLayer.filterId).
+    final filterOnWorker =
+        !filterReadsZoom && !parser.readsGlobalState && !parser.readsGeometry;
     final minzoom = toNumber(json['minzoom']) ?? ThemeLayer.defaultMinzoom;
     final maxzoom = toNumber(json['maxzoom']) ?? ThemeLayer.defaultMaxzoom;
     final source = json['source'] as String?;
@@ -325,6 +331,9 @@ class ThemeReader {
     }
     layer.filterReadsZoom = filterReadsZoom;
     layer.readsFeatureState = parser.readsFeatureState;
+    if (filterOnWorker && layer.sourceLayer != null) {
+      layer.filterId = FilterIds.intern(json['filter']);
+    }
     layer.readsGeometry = parser.readsGeometry;
     if (layer is! BackgroundThemeLayer) {
       layer.referencedProperties =
