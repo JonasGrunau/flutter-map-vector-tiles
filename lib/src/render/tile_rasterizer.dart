@@ -262,7 +262,11 @@ class TileRasterizer {
       final layer = layers[i];
       // Skipped before the budget check, so that a slice never ends on —
       // and the next one never starts with — a layer that draws nothing.
-      if (layer is SymbolThemeLayer || !layer.coversZoom(styleZoom)) continue;
+      if (layer is SymbolThemeLayer ||
+          layer is HeatmapThemeLayer ||
+          !layer.coversZoom(styleZoom)) {
+        continue;
+      }
       if (drewLayer && (outOfBudget?.call() ?? false)) {
         return (painted: painted, next: i);
       }
@@ -288,6 +292,8 @@ class TileRasterizer {
           painted |= _paintCircle(canvas, layer, data, styleZoom, pixelScale);
         case SymbolThemeLayer():
           break; // skipped above: the label pass, in screen or tile space
+        case HeatmapThemeLayer():
+          break; // skipped above: drawn in screen space over the tiles
       }
       debugLayerMicros[layer.id] = (debugLayerMicros[layer.id] ?? 0) +
           layerStopwatch.elapsedMicroseconds;

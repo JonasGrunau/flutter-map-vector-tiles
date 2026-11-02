@@ -30,6 +30,20 @@
   On a mid-range Android phone the shading adds about 0.2 ms of UI
   time per tile and frame times stay where they were; the decoded
   elevation tiles add about 35 MB of memory at z13.
+- ✨ **Heatmaps**: `heatmap` layers draw, where they were skipped with
+  a log line before. The density is MapLibre's — every point of the
+  source layer adds a Gaussian kernel of `heatmap-radius`, scaled by
+  `heatmap-weight` and `heatmap-intensity`, and `heatmap-color` is read
+  at the sum through `["heatmap-density"]` (until now a constant 0) —
+  with data-driven weights and radii, and `heatmap-opacity`. Like
+  MapLibre's it is summed in screen space across tile seams. It is
+  recomputed on a worker isolate (on the event loop on web) when the
+  zoom or the tiles change, at most every 100 ms, and follows the camera
+  in between. A heatmap draws over every geometry layer and under the
+  labels, wherever the style puts it, and counts point features only.
+  `HeatmapThemeLayer` joins the sealed `ThemeLayer` hierarchy, so a
+  `switch` over `ThemeLayer` that names every subtype needs a case for
+  it.
 - ✨ **Rendered-feature queries**: a `VectorTileLayerController` passed
   to `VectorTileLayer.controller` answers what the layer draws at a
   point or in a rectangle of the map widget (`queryRenderedFeatures`,

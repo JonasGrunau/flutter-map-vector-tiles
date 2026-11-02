@@ -3,6 +3,9 @@
 //
 //   node tool/reference_shots.mjs <lab url> <shots dir>
 //
+// STYLE=<name> renders another style than Liberty, as the app's STYLE
+// define does (the lab serves `liberty-heatmap` too).
+//
 // Keep the poses in sync with `shotPoses` in lib/src/scenarios.dart.
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
@@ -29,7 +32,7 @@ try {
     });
     const tab = await context.newPage();
     const params = new URLSearchParams({
-      style: `${lab}/r/maplibre/ofm/styles/liberty`,
+      style: `${lab}/r/maplibre/ofm/styles/${process.env.STYLE ?? 'liberty'}`,
       lat: pose.lat,
       lon: pose.lon,
       zoom: pose.zoom,

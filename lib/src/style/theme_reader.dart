@@ -294,6 +294,24 @@ class ThemeReader {
           resampling: _string(parser, paint['resampling'], 'linear'),
         );
       case 'heatmap':
+        final weight = _doubleReadingZoom(parser, paint['heatmap-weight'], 1);
+        final radius = _doubleReadingZoom(parser, paint['heatmap-radius'], 30);
+        layer = HeatmapThemeLayer(
+          id: id,
+          source: source,
+          sourceLayer: sourceLayer,
+          minzoom: minzoom,
+          maxzoom: maxzoom,
+          filter: filter,
+          radius: radius.prop,
+          weight: weight.prop,
+          intensity: _double(parser, paint['heatmap-intensity'], 1),
+          color: _color(parser, paint['heatmap-color'] ?? _defaultHeatmapColor,
+              const Color(0x00000000)),
+          opacity: _double(parser, paint['heatmap-opacity'], 1),
+        )
+          ..weightReadsZoom = weight.readsZoom
+          ..radiusReadsZoom = radius.readsZoom;
       case 'sky':
         logger.log('layer "$id": type "$type" not supported, skipped');
         return null;
@@ -325,6 +343,39 @@ class ThemeReader {
     final p = parser.parseForProperty(json);
     return DoubleProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
+
+  /// [_double], also reporting whether the property reads the zoom.
+  static ({DoubleProp prop, bool readsZoom}) _doubleReadingZoom(
+      ExpressionParser parser, Object? json, double fallback) {
+    if (json == null || json is num) {
+      return (prop: _double(parser, json, fallback), readsZoom: false);
+    }
+    final p = parser.parseForProperty(json);
+    return (
+      prop: DoubleProp(p.expr, fallback, zoomOnly: p.zoomOnly),
+      readsZoom: p.readsZoom,
+    );
+  }
+
+  /// The spec's default `heatmap-color`: transparent blue through
+  /// royal blue, cyan, lime and yellow to red.
+  static const _defaultHeatmapColor = [
+    'interpolate',
+    ['linear'],
+    ['heatmap-density'],
+    0,
+    'rgba(0, 0, 255, 0)',
+    0.1,
+    'royalblue',
+    0.3,
+    'cyan',
+    0.5,
+    'lime',
+    0.7,
+    'yellow',
+    1,
+    'red',
+  ];
 
   /// A number property that is null when the style leaves it unset, for
   /// properties whose default the renderer handles by doing nothing.
