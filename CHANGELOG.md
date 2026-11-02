@@ -260,6 +260,8 @@
 - 🐛 A feature property of Infinity made `match`, `in` and legacy
   categorical functions and `in` filters throw, which could leave the
   whole tile blank.
+- 🐛 `%` with a negative dividend gave a positive result: `["%", -5, 3]`
+  was 1, where MapLibre gives -2. It is now JavaScript's remainder.
 - 🐛 Sharp corners of miter-joined lines — `miter` is the spec's
   default join — drew long spikes. Lines were stroked with Skia's miter
   limit of 4 instead of the spec's `line-miter-limit` default of 2, so

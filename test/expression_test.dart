@@ -1235,6 +1235,27 @@ void main() {
   });
 
   group('review fixes', () {
+    test('% is JavaScript\'s remainder, signed like the dividend', () {
+      expect(eval(['%', -5, 3]), -2);
+      expect(eval(['%', 5, -3]), 2);
+      expect(eval(['%', 5.5, 2]), 1.5);
+      expect(eval(['%', 5, 0]), isNaN);
+      expect(
+          eval([
+            '%',
+            5,
+            ['/', 1, 0]
+          ]),
+          5);
+      expect(
+          eval([
+            '%',
+            ['/', 1, 0],
+            3
+          ]),
+          isNaN);
+    });
+
     test('math gives and takes Infinity and NaN, as JavaScript does', () {
       expect(eval(['/', 1, 0]), double.infinity);
       expect(eval(['/', 0, 0]), isNaN);

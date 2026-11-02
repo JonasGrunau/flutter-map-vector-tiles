@@ -703,7 +703,9 @@ class ExpressionParser {
       case '/':
         return _binaryMath(a, (x, y) => x / y);
       case '%':
-        return _binaryMath(a, (x, y) => x % y);
+        // JavaScript's remainder, which keeps the dividend's sign
+        // (`-5 % 3` is -2); Dart's `%` is never negative.
+        return _binaryMath(a, (x, y) => x.remainder(y));
       case '^':
         return _binaryMath(a, math.pow.call);
       case 'abs':

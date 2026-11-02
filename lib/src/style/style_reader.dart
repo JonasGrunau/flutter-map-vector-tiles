@@ -17,6 +17,7 @@ import '../provider/vector_tile_provider.dart';
 import '../text/glyph_source.dart';
 import '../tile_providers.dart';
 import 'attribution.dart';
+import 'expression_parser.dart';
 import 'label_language.dart';
 import 'sprite_atlas.dart';
 import 'sprite_packer.dart';
@@ -354,9 +355,12 @@ class StyleReader {
         if (layer is! Map) continue;
         final layout = layer['layout'];
         final fonts = layout is Map ? layout['text-font'] : null;
+        // A list of strings is a stack unless it is an expression
+        // (`["get", "font"]`), as the theme reader tells them apart.
         if (fonts is List &&
             fonts.isNotEmpty &&
-            fonts.every((f) => f is String)) {
+            fonts.every((f) => f is String) &&
+            !ExpressionParser.operators.contains(fonts.first)) {
           stacks.add(fonts.join(','));
         } else if (fonts is String && fonts.isNotEmpty) {
           // A one-font stack written without its brackets, which the
