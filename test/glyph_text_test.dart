@@ -1,5 +1,7 @@
+import 'dart:math' show Rectangle;
 import 'dart:typed_data';
 
+import 'package:flutter_map_vector_tiles/src/logger.dart';
 import 'package:flutter_map_vector_tiles/src/text/glyph_pbf.dart';
 import 'package:flutter_map_vector_tiles/src/text/glyph_script.dart';
 import 'package:flutter_map_vector_tiles/src/text/glyph_shaper.dart';
@@ -10,7 +12,8 @@ import 'fixtures/glyph_pbf_builder.dart';
 
 /// The pure-Dart half of the glyph text path: decoding glyph PBFs,
 /// deciding which text they can draw, and laying it out the way
-/// MapLibre does.
+/// MapLibre does — plus how a loaded range packs its glyphs onto its
+/// page.
 void main() {
   group('decodeGlyphPbf', () {
     test('reads every glyph field, negative offsets included', () {
@@ -292,6 +295,72 @@ void main() {
               256),
           'https://x/fonts/Noto%20Sans%20Regular,Arial%20Unicode%20MS%20Regular'
           '/256-511.pbf?key=k');
+    });
+  });
+
+  group('GlyphSource packing', () {
+    /// The range [glyphs] make, loaded through a source, and what it
+    /// warned on the way.
+    Future<(GlyphRange?, List<String>)> load(List<TestGlyph> glyphs) async {
+      final warnings = <String>[];
+      final source = GlyphSource(
+        load: (stack, start) async => GlyphPbfBuilder()
+            .stack(stack, '$start-${start + 255}', glyphs)
+            .build(),
+        signature: 'packing',
+        logger: Logger.custom(onWarn: warnings.add),
+      );
+      addTearDown(source.dispose);
+      await source.ensure([('S', 0)]);
+      return (source.rangeOf('S', 0), warnings);
+    }
+
+    /// Every drawn glyph of [range] inside its page, none overlapping.
+    void expectPacked(GlyphRange range) {
+      final rects = [
+        for (final g in range.glyphs.values)
+          if (g.hasBitmap)
+            Rectangle(g.pageX, g.pageY, g.bitmapWidth, g.bitmapHeight),
+      ];
+      for (final r in rects) {
+        expect(r.left, greaterThanOrEqualTo(0));
+        expect(r.top, greaterThanOrEqualTo(0));
+        expect(r.left + r.width, lessThanOrEqualTo(range.page.width));
+        expect(r.top + r.height, lessThanOrEqualTo(range.page.height));
+      }
+      for (var i = 0; i < rects.length; i++) {
+        for (var j = i + 1; j < rects.length; j++) {
+          expect(rects[i].intersects(rects[j]), isFalse);
+        }
+      }
+    }
+
+    test('a glyph wider than its area asks for widens the page', () async {
+      // Regression: the page was as wide as the glyphs' area asked for,
+      // at least 64 px, whatever the widest bitmap; an 80 px one ran
+      // past the page and failed the range for the source's life.
+      final (range, warnings) =
+          await load([TestGlyph(0x2014, width: 74, height: 4, advance: 74)]);
+      expect(warnings, isEmpty);
+      expect(range, isNotNull);
+      final glyph = range!.glyphs[0x2014]!;
+      expect(glyph.bitmapWidth, 80);
+      expect((glyph.pageX, glyph.pageY), (0, 0));
+      expectPacked(range);
+    });
+
+    test('a wide glyph among narrow ones overlaps none of them', () async {
+      // Tallest first, so the wide one opens the first shelf: before, it
+      // spilled into the next pixel row and drew over its neighbours.
+      final (range, warnings) = await load([
+        TestGlyph(0x41),
+        TestGlyph(0x42),
+        TestGlyph(0x43),
+        TestGlyph(0x2014, width: 70, height: 20, advance: 70),
+        TestGlyph(0x2015, width: 90, height: 2, advance: 90),
+      ]);
+      expect(warnings, isEmpty);
+      expectPacked(range!);
     });
   });
 }

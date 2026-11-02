@@ -312,6 +312,61 @@ class TileRasterizer {
     return (scale: t.scale, dx: t.offsetX, dy: t.offsetY);
   }
 
+  /// [feature]'s runs as a line layer with `line-offset` [offset]
+  /// (logical px) draws them into display tile [display] from data tile
+  /// [data]: clipped as [_eachFeatureIn] clips them, mapped through the
+  /// display transform shifted by [translate], then offset by
+  /// [_offsetRun] — in the display tile's logical pixels, each with
+  /// whether it is a closed ring. For rendered-feature queries, which
+  /// hit-test an offset line where it is drawn.
+  static List<({Float32List run, bool closed})> offsetLineRuns(
+    TileKey display,
+    TileKey data,
+    int extent,
+    PreparedFeature feature, {
+    required Offset translate,
+    required double offset,
+  }) {
+    final t =
+        _TileTransform.forDisplay(display, data, extent).translated(translate);
+    final shift = display.z - data.z;
+    final size = extent.toDouble();
+    // The clip [_eachFeatureIn] draws through: a descendant's own extent,
+    // or the cull window at deep overzoom.
+    var clip = shift < 0
+        ? ClipRect(0, 0, size, size)
+        : !debugDisableCulling && shift >= _clipMinShift
+            ? ClipRect(
+                (-cullBufferPx - t.offsetX) / t.scale,
+                (-cullBufferPx - t.offsetY) / t.scale,
+                (logicalTileSize + cullBufferPx - t.offsetX) / t.scale,
+                (logicalTileSize + cullBufferPx - t.offsetY) / t.scale)
+            : null;
+    if (clip != null &&
+        clip.containsBounds(
+            feature.minX, feature.minY, feature.maxX, feature.maxY)) {
+      clip = null;
+    }
+    final close = feature.type == PreparedGeomType.polygon;
+    final runs = <({Float32List run, bool closed})>[];
+    for (final part in feature.parts) {
+      if (clip == null) {
+        runs.add(
+            (run: _offsetRun(part, t, offset, close: close), closed: close));
+        continue;
+      }
+      final clipped = clipPolyline(part, clip, close: close);
+      for (var r = 0; r < clipped.runs.length; r++) {
+        final closed = clipped.closed[r];
+        runs.add((
+          run: _offsetRun(clipped.runs[r], t, offset, close: closed),
+          closed: closed,
+        ));
+      }
+    }
+    return runs;
+  }
+
   static bool _paintBackground(
     Canvas canvas,
     BackgroundThemeLayer layer,
@@ -344,8 +399,9 @@ class TileRasterizer {
   }
 
   /// The `[x, y]` pixel offset a `*-translate` property evaluates to at
-  /// [zoom], or [Offset.zero] when it is unset or malformed.
-  static Offset _translate(NumListProp? prop, double zoom) {
+  /// [zoom], or [Offset.zero] when it is unset or malformed. Rendered-
+  /// feature queries shift their query by the same offset.
+  static Offset translateOf(NumListProp? prop, double zoom) {
     if (prop == null) return Offset.zero;
     final value = prop.eval(EvalContext(zoom: zoom));
     return value.length == 2 ? Offset(value[0], value[1]) : Offset.zero;
@@ -546,7 +602,7 @@ class TileRasterizer {
     var painted = false;
     final zoomCtx = EvalContext(zoom: styleZoom);
     final patternProp = layer.pattern;
-    final translate = _translate(layer.translate, styleZoom);
+    final translate = translateOf(layer.translate, styleZoom);
     // MapLibre's outline is its antialiasing pass, one device pixel wide
     // at any zoom, and `fill-antialias: false` turns it off.
     final outline = layer.antialias ? layer.outlineColor : null;
@@ -646,7 +702,7 @@ class TileRasterizer {
     final opacity = layer.opacity.eval(zoomCtx).clamp(0.0, 1.0);
     if (opacity == 0) return false;
     final patternProp = layer.pattern;
-    final translate = _translate(layer.translate, styleZoom);
+    final translate = translateOf(layer.translate, styleZoom);
     // Asked of the colour itself, as for fills: `["id"]` and
     // `["geometry-type"]` read the feature without naming a property.
     final oneColour =
@@ -711,7 +767,7 @@ class TileRasterizer {
   ) {
     var painted = false;
     final patternProp = layer.pattern;
-    final translate = _translate(layer.translate, styleZoom);
+    final translate = translateOf(layer.translate, styleZoom);
 
     // A stroke style none of whose properties reads the feature is
     // constant across the whole tile, so resolve it once instead of
@@ -1369,7 +1425,7 @@ class TileRasterizer {
           }
         }
       }
-    }, translate: _translate(layer.translate, styleZoom));
+    }, translate: translateOf(layer.translate, styleZoom));
     return painted;
   }
 

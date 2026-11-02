@@ -65,7 +65,11 @@ class HeatmapPainter {
   static int debugPassMicros = 0;
 
   final _images = <HeatmapThemeLayer, _HeatmapImage>{};
-  final _ramps = <HeatmapThemeLayer, Uint32List>{};
+
+  /// [_rampOf] per layer, held weakly: a theme under another global
+  /// state swaps in without a [reset], and past the states its family
+  /// keeps, each swap brings new layer objects a strong map would keep.
+  var _ramps = Expando<Uint32List>();
   HeatmapWorker? _worker;
 
   /// What the last pass was run for.
@@ -303,7 +307,10 @@ class HeatmapPainter {
     for (final tile in tiles) {
       HeatmapPoints? points;
       for (final p in tile.heatmap) {
-        if (identical(p.layer, layer)) points = p;
+        // By id as well as identity: a tile from the result cache was
+        // laid out under another read of the style — the same theme id,
+        // so the same content — whose layer objects are not these.
+        if (identical(p.layer, layer) || p.layer.id == layer.id) points = p;
       }
       if (points == null || points.length == 0) continue;
       final weights = points.weightsAt(styleZoom);
@@ -335,7 +342,7 @@ class HeatmapPainter {
       shown.image.dispose();
     }
     _images.clear();
-    _ramps.clear();
+    _ramps = Expando();
     _passInputs = null;
     _passCover = null;
     _due?.cancel();

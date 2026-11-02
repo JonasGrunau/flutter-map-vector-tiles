@@ -143,9 +143,12 @@ typedef LabelPassResult = ({
 @internal
 abstract class LabelPlacementWorker {
   /// Starts a worker, or returns null where none can run — and always
-  /// null while [debugDisabled] is set.
-  static LabelPlacementWorker? create() =>
-      debugDisabled ? null : impl.createLabelWorker();
+  /// null while [debugDisabled] is set, unless [debugCreate] stands in.
+  static LabelPlacementWorker? create() {
+    final stand = debugCreate;
+    if (stand != null) return stand();
+    return debugDisabled ? null : impl.createLabelWorker();
+  }
 
   /// Keeps placement in-frame. The test suite sets it (see
   /// `test/flutter_test_config.dart`): widget tests run on a fake clock
@@ -153,6 +156,11 @@ abstract class LabelPlacementWorker {
   /// placement has to be decided within it to be asserted on.
   @visibleForTesting
   static var debugDisabled = false;
+
+  /// Makes [create] return this instead, for tests of when a layer
+  /// starts, re-themes or drops its worker.
+  @visibleForTesting
+  static LabelPlacementWorker Function()? debugCreate;
 
   /// Bench counters (UI isolate): symbol lists mirrored, their estimated
   /// bytes and the UI microseconds spent packing and sending them; the

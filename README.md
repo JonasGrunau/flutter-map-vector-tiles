@@ -437,7 +437,11 @@ your own (the example app appends one over the style's buildings).
 A change re-renders only the display tiles that draw the feature from a
 layer that reads state, ahead of other queued work and without a fade;
 labels keep their placement, and screen-space labels whose paint reads
-state follow on the next frame. On the same phone and screen, selecting
+state follow on the next frame — one the state shows or hides through
+its opacity is placed or dropped by the next collision pass, within one
+`labelFadeDuration`. Labels whose opacity reads state place on the UI
+thread rather than the placement isolate while a controller is
+attached, since the isolate sees no state. On the same phone and screen, selecting
 a building redraws the display tiles that draw it (all 8 on screen
 there, since the merged features described below span them) in about a
 quarter of a second: 215–250 ms median over 7–8 frames, most of them
@@ -611,8 +615,12 @@ gets a theme that differs only in its state, it redraws its tiles from
 the data it already has, the old imagery staying until the new one is
 ready. Nothing is fetched or decoded again. Each change still redraws
 every visible tile, so drive it from a toggle or a picker, not from a
-slider that changes on every frame. `theme.globalState` holds the
-values in effect. A style that reads no global state returns itself.
+slider that changes on every frame. Keys no expression in the style
+reads are ignored, so passing more of your app's state than the style
+needs returns the same theme and redraws nothing; a key the style reads
+without declaring it in `state` still takes effect. `theme.globalState`
+holds the values in effect. A style that reads no global state returns
+itself.
 
 ### 🏷️ Labels
 
@@ -741,7 +749,8 @@ mode](#choosing-a-label-mode) has what changes then.
   fades out instead of vanishing. An unchanged
   repaint creates no new placement work, so the animation ticker settles
   when the last real change has been placed. Except on web (and for
-  styles whose label expressions use `within` or `distance`), the
+  styles whose label expressions use `within` or `distance`, or read
+  `feature-state` while a controller is attached), the
   decision itself is taken on a separate isolate, from the text the map
   has already shaped, and shown from the frame after it was asked for.
 

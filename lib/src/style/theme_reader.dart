@@ -27,10 +27,11 @@ class ThemeReader {
     final themeId = id ?? idOf(style);
     final defaults = _stateDefaults(style['state']);
     final compiled = _compile(style, defaults, logger);
-    if (!compiled.readsGlobalState) {
+    if (compiled.globalStateNames.isEmpty) {
       return Theme(id: themeId, layers: compiled.layers);
     }
-    return _GlobalStates(style, themeId, defaults).adopt(compiled.layers);
+    return _GlobalStates(style, themeId, defaults, compiled.globalStateNames)
+        .adopt(compiled.layers);
   }
 
   /// The id [read] gives [style] when the caller names none.
@@ -49,13 +50,16 @@ class ThemeReader {
     };
   }
 
-  static ({List<ThemeLayer> layers, bool readsGlobalState}) _compile(
+  /// The layers of [style] under [globalState], and the `global-state`
+  /// names they read — the same under every state, since the names are
+  /// in the style's JSON.
+  static ({List<ThemeLayer> layers, Set<String> globalStateNames}) _compile(
       Map<String, Object?> style,
       Map<String, Object?> globalState,
       Logger logger) {
     final layersJson = style['layers'];
     final layers = <ThemeLayer>[];
-    var readsGlobalState = false;
+    final globalStateNames = <String>{};
     if (layersJson is List) {
       for (final layerJson in layersJson) {
         if (layerJson is! Map) continue;
@@ -63,14 +67,14 @@ class ThemeReader {
         try {
           final parser = ExpressionParser(globalState: globalState);
           final layer = _readLayer(json, parser, logger);
-          readsGlobalState |= parser.readsGlobalState;
+          globalStateNames.addAll(parser.globalStateNames);
           if (layer != null) layers.add(layer);
         } catch (e) {
           logger.warn('skipping layer "${json['id']}": $e');
         }
       }
     }
-    return (layers: layers, readsGlobalState: readsGlobalState);
+    return (layers: layers, globalStateNames: globalStateNames);
   }
 
   static ThemeLayer? _readLayer(
@@ -764,13 +768,19 @@ class ThemeReader {
 /// millisecond for a full basemap on a phone — and every visible tile
 /// is then drawn again, so recent ones are kept: asking
 /// for a state again, as a `build` method does on every rebuild,
-/// returns the same instance and so does not redraw anything.
+/// returns the same instance and so does not redraw anything. Neither
+/// does an override no expression reads: a sibling is keyed on the
+/// names [_reads] alone.
 final class _GlobalStates implements GlobalStateFamily {
-  _GlobalStates(this._style, this._baseId, this._defaults);
+  _GlobalStates(this._style, this._baseId, this._defaults, this._reads);
 
   final Map<String, Object?> _style;
   final String _baseId;
   final Map<String, Object?> _defaults;
+
+  /// The names the style's `global-state` expressions read, declared in
+  /// its `state` or not.
+  final Set<String> _reads;
 
   /// By canonical state, least recently used first.
   final _themes = <String, Theme>{};
@@ -791,8 +801,10 @@ final class _GlobalStates implements GlobalStateFamily {
   @override
   Theme themeFor(Map<String, Object?> overrides) {
     final state = {..._defaults};
+    // A key nothing reads would change nothing but the id, and so draw
+    // every tile again for nothing: an app may pass its whole state.
     overrides.forEach((name, value) {
-      if (value != null) state[name] = value;
+      if (value != null && _reads.contains(name)) state[name] = value;
     });
     final key = _key(state);
     final cached = _themes.remove(key);

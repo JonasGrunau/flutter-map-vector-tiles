@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' show Color;
 
@@ -800,6 +801,15 @@ void main() {
           closeTo(0.8024033877399112, 1e-6));
     });
 
+    Object? evalProperty(Object? json,
+            {required bool interpolated,
+            double zoom = 10,
+            Map<String, Object?>? props}) =>
+        ExpressionParser()
+            .parseForProperty(json,
+                accepts: (v) => v is num, interpolated: interpolated)
+            .expr(EvalContext(zoom: zoom, properties: props ?? const {}));
+
     test('legacy zoom-and-property functions ramp both', () {
       final f = {
         'property': 'p',
@@ -823,7 +833,56 @@ void main() {
         ],
       };
       expect(eval(f, zoom: 0.5, props: {'p': 0.5}), 1.5);
-      expect(eval({...f, 'type': 'interval'}, zoom: 0.5, props: {'p': 0.5}), 0);
+      // `type` picks the property dimension only: the zooms still ramp,
+      // here between the interval steps 0 (z0) and 2 (z1), as MapLibre
+      // does for a property it interpolates.
+      final interval = {...f, 'type': 'interval'};
+      expect(eval(interval, zoom: 0.5, props: {'p': 0.5}), 1);
+      expect(
+          evalProperty(interval,
+              interpolated: true, zoom: 0.5, props: {'p': 0.5}),
+          1);
+      // A property the spec does not interpolate steps through its
+      // zooms, whatever the type — an exponential one still ramps over
+      // the property at z0.
+      expect(
+          evalProperty(interval,
+              interpolated: false, zoom: 0.5, props: {'p': 0.5}),
+          0);
+      expect(
+          evalProperty({...f, 'type': 'exponential'},
+              interpolated: false, zoom: 0.5, props: {'p': 0.5}),
+          0.5);
+    });
+
+    test('a categorical zoom-and-property line width ramps between zooms', () {
+      final width = {
+        'type': 'categorical',
+        'property': 'class',
+        'base': 1.2,
+        'stops': [
+          [
+            {'zoom': 10, 'value': 'motorway'},
+            1
+          ],
+          [
+            {'zoom': 16, 'value': 'motorway'},
+            8
+          ],
+        ],
+      };
+      num at(double zoom) => evalProperty(width,
+          interpolated: true, zoom: zoom, props: {'class': 'motorway'}) as num;
+      expect(at(10), 1);
+      // The function's base on the zoom, as gl-js does:
+      // 1 + 7 · (1.2³ − 1) / (1.2⁶ − 1).
+      expect(at(13), closeTo(3.566, 1e-3));
+      expect(at(15.99), closeTo(7.981, 1e-3));
+      expect(at(16), 8);
+      expect(
+          evalProperty(width,
+              interpolated: true, zoom: 13, props: {'class': 'path'}),
+          isNull);
     });
 
     test('legacy functions hold numeric strings and the first duplicate stop',
@@ -839,15 +898,52 @@ void main() {
             'p': 0.5
           }),
           '0');
+      final duplicate = {
+        'stops': [
+          [0, 10],
+          [1, 20],
+          [1, 25],
+          [2, 30]
+        ]
+      };
+      expect(eval(duplicate, zoom: 1), 20);
+      // Past it, the first duplicate ramps on to the next stop, as in
+      // maplibre-native, instead of holding until that stop.
+      expect(eval(duplicate, zoom: 1.5), 25);
+      expect(eval({...duplicate, 'base': 2}, zoom: 1.5),
+          closeTo(20 + 10 * (math.sqrt(2) - 1), 1e-9));
+      expect(eval({...duplicate, 'type': 'interval'}, zoom: 1.5), 20);
+      expect(eval({...duplicate, 'property': 'p'}, props: {'p': 1.5}), 25);
+      // And within one zoom of a zoom-and-property function.
       expect(
-          eval({
-            'stops': [
-              [0, 10],
-              [1, 20],
-              [1, 25],
-              [2, 30]
-            ]
-          }, zoom: 1),
+          eval(
+              {
+                'property': 'p',
+                'stops': [
+                  [
+                    {'zoom': 0, 'value': 0},
+                    0
+                  ],
+                  [
+                    {'zoom': 0, 'value': 1},
+                    10
+                  ],
+                  [
+                    {'zoom': 0, 'value': 1},
+                    20
+                  ],
+                  [
+                    {'zoom': 0, 'value': 2},
+                    30
+                  ],
+                  [
+                    {'zoom': 1, 'value': 0},
+                    0
+                  ],
+                ]
+              },
+              zoom: 0,
+              props: {'p': 1.5}),
           20);
     });
   });

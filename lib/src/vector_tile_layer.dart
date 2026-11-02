@@ -344,6 +344,17 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// encodings: a hillshade layer reads its tiles' neighbours too, and
   /// waits for its shaders.
   final _demEncodings = <String, DemEncoding>{};
+
+  /// The hillshade layers over each of [_demEncodings]' sources — a DEM
+  /// tile is fetched, with its neighbours and the shaders, only for a
+  /// display tile at a zoom where one of them draws.
+  final _hillshadeLayers = <String, List<HillshadeThemeLayer>>{};
+
+  /// Whether a hillshade layer over DEM source [id] draws at
+  /// [styleZoom] — the rasterizer's own zoom test.
+  bool _demDrawsAt(String id, double styleZoom) =>
+      _hillshadeLayers[id]?.any((layer) => layer.coversZoom(styleZoom)) ??
+      false;
   final _tiles = <TileKey, _DisplayTile>{};
 
   /// Tiles of other zoom levels kept until the current level is ready.
@@ -742,6 +753,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
     _rasterStores.clear();
     _demEncodings.clear();
+    _hillshadeLayers.clear();
+    for (final layer in widget.theme.layers) {
+      if (layer is HillshadeThemeLayer && layer.source != null) {
+        (_hillshadeLayers[layer.source!] ??= []).add(layer);
+      }
+    }
 
     // Per source: source-layer -> union of referenced property names.
     final propsBySource = <String, Map<String, Set<String>?>>{};
@@ -858,13 +875,18 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// A theme with a symbol layer whose expressions read the feature's
   /// geometry (`within`, `distance`) places in-frame instead: the
   /// worker's mirrors carry no geometry, so it would evaluate those
-  /// layers differently from the frame that draws them.
+  /// layers differently from the frame that draws them. So does one
+  /// whose symbol layer reads `feature-state` while a controller is
+  /// attached: the worker sees no state, and a label's opacity — which
+  /// may read it — decides whether the label claims space at all.
   void _installLabelWorker() {
     if (!_labelWorkerTried) return;
     _labelPainter.dropPendingPass();
-    final readsGeometry = widget.theme.layers
-        .any((layer) => layer is SymbolThemeLayer && layer.readsGeometry);
-    if (readsGeometry) {
+    final hasStates = widget.controller != null;
+    final inFrame = widget.theme.layers.any((layer) =>
+        layer is SymbolThemeLayer &&
+        (layer.readsGeometry || (hasStates && layer.readsFeatureState)));
+    if (inFrame) {
       _labelPainter.worker?.dispose();
       _labelPainter.worker = null;
       return;
@@ -909,6 +931,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller?.detach(this);
       _attach(widget.controller);
+      // Whether labels place on the worker depends on feature state
+      // being possible at all.
+      if ((oldWidget.controller == null) != (widget.controller == null)) {
+        _installLabelWorker();
+      }
       // The tiles were drawn with the old controller's feature state —
       // and, drawing labels into them without a controller, recorded no
       // label shapes for the new one to query.
@@ -985,11 +1012,16 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // The same style under another global state reads the same
     // features from the same sources: the decoded tiles stay, and only
     // what is drawn from them is redone — like a sprites change, the old
-    // imagery and labels holding until their replacements land.
+    // imagery and labels holding until their replacements land, and the
+    // placement worker taking the new theme, whose constants (text size,
+    // padding, overlap) it places by.
     final themeChanged = oldWidget.theme != widget.theme;
     final siblingTheme =
         themeChanged && widget.theme.isSiblingOf(oldWidget.theme);
-    if (siblingTheme) refresh = true;
+    if (siblingTheme) {
+      refresh = true;
+      _installLabelWorker();
+    }
     if ((themeChanged && !siblingTheme) ||
         oldWidget.tileProviders != widget.tileProviders ||
         oldWidget.rasterSources != widget.rasterSources ||
@@ -1440,6 +1472,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// the tile object) for as many frames as the queue is deep.
   void _disposeTile(_DisplayTile tile) {
     _renderQueue.remove(tile);
+    _parkedJobs.remove(tile)?.dispose();
     _labelIds.release(tile.key, tile.labelIds);
     tile.dispose();
   }
@@ -1575,8 +1608,19 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       sources,
       pending,
     );
+    // A DEM source is read by hillshade layers alone: at a zoom where
+    // none of them draws, its tiles are not needed, and one that failed
+    // would only hold the result back from the cache and retry.
+    final styleZoom = _styleZoomOf(tile.key.z.toDouble());
+    final rasterStores = _demEncodings.isEmpty
+        ? _rasterStores
+        : {
+            for (final MapEntry(key: id, value: store) in _rasterStores.entries)
+              if (!_demEncodings.containsKey(id) || _demDrawsAt(id, styleZoom))
+                id: store,
+          };
     collect(
-      _rasterStores,
+      rasterStores,
       (s) => s.dataKeyFor(tile.key, offset),
       (s, k) => s.peek(k),
       (s, k) => s.obtain(k, cancellation: tile.cancellation),
@@ -1591,6 +1635,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     final neighbours = <String, List<RasterTile>>{};
     final pendingNeighbours = <String, Map<TileKey, Future<RasterTile?>>>{};
     for (final id in _demEncodings.keys) {
+      if (!_demDrawsAt(id, styleZoom)) continue;
       final store = _rasterStores[id]!;
       final dataKey = store.dataKeyFor(tile.key, offset);
       if (dataKey == null) continue;
@@ -1685,7 +1730,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         if (raster != null) (neighbours[id] ??= []).add(raster);
       }
     }
-    if (_demEncodings.isNotEmpty && HillshadePrograms.loaded == null) {
+    if (HillshadePrograms.loaded == null &&
+        _demEncodings.keys.any((id) => _demDrawsAt(id, styleZoom))) {
       // The rasterizer draws a hillshade only once its shaders are in,
       // and a result rendered without it would be cached as final.
       await HillshadePrograms.load(widget.logger);
@@ -1851,16 +1897,28 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // be disposed and its state flipped back to loading — which a
       // retry recovering nothing then never leaves, because an
       // unchanged source set skips the final re-enqueue.
+      // A final tile's own labels count as content even without an
+      // image — an overlay's geometry may draw nothing where its labels
+      // do — and a final symbols job parked on its glyphs is on its way
+      // like a queued one.
       final queuedRaster = _renderQueue.pendingRaster(tile);
       final queuedSymbols = _renderQueue.pendingSymbols(tile);
+      final parked = _parkedJobs[tile];
       if ((queuedRaster != null && !queuedRaster.provisional) ||
           (queuedSymbols != null && !queuedSymbols.provisional) ||
-          (!tile.isProvisional && tile.image != null)) {
+          (parked != null && !parked.provisional) ||
+          (!tile.isProvisional &&
+              (tile.image != null ||
+                  (tile.symbols.isNotEmpty && !tile.symbolsProvisional)))) {
         job.dispose();
         return;
       }
     }
     _renderQueue.enqueueRaster(tile, priority, job);
+    // As in the queue, an accepted raster supersedes the tile's symbols
+    // job — a parked one too, or it would resume after this raster's own
+    // labels and publish what they replaced over them.
+    _parkedJobs.remove(tile)?.dispose();
     // The accepted raster decides anew whether symbols will follow
     // (any pending symbol job for this tile was just superseded).
     tile.symbolsPending = !keepSymbols && _symbolsFollow(tile, sources);
@@ -2229,8 +2287,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     return _SymbolsOutcome.done;
   }
 
-  /// Symbols jobs waiting for glyph ranges, out of the queue meanwhile.
-  final _parkedJobs = <_RenderJob>{};
+  /// Symbols jobs waiting for glyph ranges, out of the queue meanwhile —
+  /// at most one per tile, since a raster accepted for the tile drops
+  /// its parked job just as it drops a queued one.
+  final _parkedJobs = <_DisplayTile, _RenderJob>{};
 
   /// How long a tile's labels wait for their glyph ranges at most. A
   /// range normally arrives in a fraction of a second, or fails at once
@@ -2243,10 +2303,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// Takes [job] out of the pump until [wait] — its glyph ranges
   /// loading — completes or [_glyphWaitLimit] passes, then queues it
   /// again where it left off; unless its tile has moved on in the
-  /// meantime (disposed, reloaded, re-rendered), in which case it is
-  /// dropped like any superseded job.
+  /// meantime (disposed, reloaded, re-rendered — a raster accepted for
+  /// the tile drops the parked job at once), in which case it is dropped
+  /// like any superseded job.
   void _parkForGlyphs(_DisplayTile tile, _RenderJob job, Future<void> wait) {
-    _parkedJobs.add(job);
+    final previous = _parkedJobs[tile];
+    if (previous != null && !identical(previous, job)) previous.dispose();
+    _parkedJobs[tile] = job;
     var gaveUp = false;
     // Ranges that arrive after the job gave up on them: the label pass
     // shapes such text again from the glyphs on its next lookup, so one
@@ -2258,7 +2321,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     unawaited(wait.timeout(_glyphWaitLimit, onTimeout: () {
       gaveUp = true;
     }).then((_) {
-      if (!_parkedJobs.remove(job)) return; // dropped with the tiles
+      // Dropped with the tiles, or superseded by a newer raster.
+      if (!identical(_parkedJobs[tile], job)) return;
+      _parkedJobs.remove(tile);
       if (!mounted ||
           tile.cancellation.isCancelled ||
           job.generation != tile.loadGeneration ||
@@ -2274,7 +2339,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   }
 
   void _dropParkedJobs() {
-    for (final job in _parkedJobs) {
+    for (final job in _parkedJobs.values) {
       job.dispose();
     }
     _parkedJobs.clear();
@@ -2529,12 +2594,21 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       if (dataKey == null) continue;
       final data = store.peek(dataKey);
       if (data == null ||
-          FeatureQuery.drawsAny(displayKey, data, sourceLayer, ids.keys)) {
+          FeatureQuery.drawsAny(displayKey, data, sourceLayer, ids.keys,
+              slackPx: _stateSlackPx(displayKey, source, sourceLayer))) {
         return true;
       }
     }
     return false;
   }
+
+  /// How much further than the cull buffer [FeatureQuery.drawsAny] has
+  /// to look around [displayKey] for features of [source]'s
+  /// [sourceLayer]: as far as a layer reading their state translates
+  /// them at the tile's style zoom.
+  double _stateSlackPx(TileKey displayKey, String source, String sourceLayer) =>
+      FeatureQuery.stateSlackPx(widget.theme, source, sourceLayer,
+          _styleZoomOf(displayKey.z.toDouble()));
 
   /// Whether a tile drawn from [sources] drew a feature with state.
   bool _drewFeatureState(
@@ -2546,7 +2620,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       final data = sources[source];
       if (ids != null &&
           data != null &&
-          FeatureQuery.drawsAny(displayKey, data, sourceLayer, ids.keys)) {
+          FeatureQuery.drawsAny(displayKey, data, sourceLayer, ids.keys,
+              slackPx: _stateSlackPx(displayKey, source, sourceLayer))) {
         return true;
       }
     }
@@ -2571,17 +2646,27 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
     }
     // Screen-space labels evaluate their paint every frame, against a
-    // style memo the state version invalidates: one repaint is all they
-    // need. Drawn into the tiles, they are part of the image.
-    if (labels && _screenLabels) _repaint.trigger();
+    // style memo the state version invalidates, so a shown label follows
+    // on the next frame. Whether a label shows at all — its opacity may
+    // read the state — is a placement decision: the new generation has
+    // the next collision pass take it. Drawn into the tiles, labels are
+    // part of the image.
+    if (labels && _screenLabels) {
+      _labelGeneration++;
+      _repaint.trigger();
+    }
     if (!geometry && !(labels && _tileLabels)) return;
     final store = _stores[source];
     if (store == null) return;
     final offset = widget.tileOffset.zoomOffset;
-    for (final tile in _tiles.values) {
+    PreparedTile? dataOf(_DisplayTile tile) {
       final dataKey = store.dataKeyFor(tile.key, offset);
-      final data = tile.sources?[source] ??
+      return tile.sources?[source] ??
           (dataKey == null ? null : store.peek(dataKey));
+    }
+
+    for (final tile in _tiles.values) {
+      final data = dataOf(tile);
       if (data == null) {
         // A tile still loading is drawn with the new state when its
         // data arrives. One already showing an image whose data cannot
@@ -2593,7 +2678,29 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
       // One that never draws the feature — most of them, at overzoom —
       // keeps its image.
-      if (FeatureQuery.drawsAny(tile.key, data, sourceLayer, ids)) {
+      if (FeatureQuery.drawsAny(tile.key, data, sourceLayer, ids,
+          slackPx: _stateSlackPx(tile.key, source, sourceLayer))) {
+        _renderForFeatureState(tile);
+      }
+    }
+    // The outgoing level still shows wherever the new one has not
+    // covered it yet. Its finished tiles that draw the feature are drawn
+    // again too, but only their geometry: one still loading or
+    // provisional is about to go, and one whose labels live in its image
+    // ([LabelMode.tile]) or whose data cannot be checked is not worth a
+    // symbol phase or a speculative redraw on its way out.
+    if (_tileLabels) return;
+    for (final tile in _retained.values) {
+      if (tile.state != _TileState.ready ||
+          tile.isProvisional ||
+          tile.symbolsPending ||
+          tile.symbolsProvisional) {
+        continue;
+      }
+      final data = dataOf(tile);
+      if (data != null &&
+          FeatureQuery.drawsAny(tile.key, data, sourceLayer, ids,
+              slackPx: _stateSlackPx(tile.key, source, sourceLayer))) {
         _renderForFeatureState(tile);
       }
     }

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:isolate';
 
+import 'package:meta/meta.dart';
+
 import 'heatmap_density.dart';
 import 'heatmap_worker.dart';
 
@@ -9,6 +11,10 @@ import 'heatmap_worker.dart';
 /// spawning fail, or the isolate die, jobs run on the event loop instead
 /// — slower frames beat no heatmap.
 class PlatformHeatmapWorker implements HeatmapWorker {
+  /// Spawns isolates that exit before their handshake, for tests.
+  @visibleForTesting
+  static var debugExitBeforeHandshake = false;
+
   Future<SendPort?>? _port;
   Isolate? _isolate;
   ReceivePort? _results;
@@ -36,24 +42,37 @@ class PlatformHeatmapWorker implements HeatmapWorker {
   }
 
   Future<SendPort?> _spawn() async {
-    final startup = ReceivePort();
-    final exit = ReceivePort();
+    // The handshake and the exit share one port, as the label worker's
+    // do, listened to before the isolate starts: one that dies before
+    // reporting its port ends the wait instead of leaving it open.
+    final inbox = ReceivePort();
+    final handshake = Completer<SendPort?>();
+    inbox.listen((message) {
+      if (!handshake.isCompleted) {
+        handshake.complete(message is SendPort ? message : null);
+      } else if (message == null) {
+        _onExit();
+      }
+    });
     try {
-      _isolate = await Isolate.spawn(_workerMain, startup.sendPort,
-          debugName: 'vector-tile-heatmap', onExit: exit.sendPort);
+      _isolate = await Isolate.spawn(
+          debugExitBeforeHandshake ? _exitAtOnce : _workerMain, inbox.sendPort,
+          debugName: 'vector-tile-heatmap', onExit: inbox.sendPort);
     } catch (_) {
-      startup.close();
-      exit.close();
+      inbox.close();
       return null;
     }
-    final port = await startup.first as SendPort;
-    if (_disposed) {
-      exit.close();
+    final port = await handshake.future;
+    if (port == null || _disposed) {
+      // Dead before its handshake — jobs run on the event loop, as when
+      // spawning fails — or no longer wanted.
+      inbox.close();
       _isolate?.kill(priority: Isolate.immediate);
+      _isolate = null;
       return null;
     }
     final results = _results = ReceivePort()..listen(_onResult);
-    _exit = exit..listen((_) => _onExit());
+    _exit = inbox;
     port.send(results.sendPort);
     return port;
   }
@@ -64,8 +83,8 @@ class PlatformHeatmapWorker implements HeatmapWorker {
     _pending.remove(id)?.complete(rendered?.result);
   }
 
-  /// The isolate died under us (killed by the OS): fail what it held and
-  /// spawn afresh for the next job.
+  /// The isolate died under us after its handshake: fail what it held
+  /// and spawn afresh for the next job.
   void _onExit() {
     if (_disposed) return;
     _results?.close();
@@ -93,6 +112,9 @@ class PlatformHeatmapWorker implements HeatmapWorker {
     _isolate?.kill(priority: Isolate.immediate);
   }
 }
+
+/// The isolate of [PlatformHeatmapWorker.debugExitBeforeHandshake].
+void _exitAtOnce(SendPort startup) => Isolate.exit();
 
 void _workerMain(SendPort startup) {
   final commands = ReceivePort();

@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import '../core/tile_key.dart';
@@ -27,9 +28,11 @@ typedef GeometryHit = ({
 /// the tile's integer style zoom, the same filters (and the same
 /// once-per-tile match lists), stroke widths and circle radii evaluated
 /// at that zoom in the tile's logical pixels — which is what its image
-/// scales between levels — and polygons filled with the same non-zero
-/// rule. Paint opacity is not consulted, as in MapLibre: a transparent
-/// layer still answers queries, the usual way to widen a tap target.
+/// scales between levels — polygons filled with the same non-zero rule,
+/// geometry shifted by the same `*-translate` and lines moved sideways
+/// by the same `line-offset`. Paint opacity is not consulted, as in
+/// MapLibre: a transparent layer still answers queries, the usual way
+/// to widen a tap target.
 abstract final class FeatureQuery {
   /// The features of [theme]'s fill, line and circle layers drawn into
   /// [data]'s display tile at [styleZoom] that [area] — in the display
@@ -55,18 +58,31 @@ abstract final class FeatureQuery {
       if (!layer.coversZoom(styleZoom)) continue;
       final source = layer.source;
       if (source == null) continue;
+      final translate = _translateOf(layer, styleZoom);
       final tile = data.sources[source];
       if (tile != null) {
-        _hitIn(i, layer, data, tile, styleZoom, area, hits);
+        _hitIn(i, layer, data, tile, styleZoom, translate, area, hits);
       } else {
         for (final descendant
             in data.descendantSources[source] ?? const <PreparedTile>[]) {
-          _hitIn(i, layer, data, descendant, styleZoom, area, hits);
+          _hitIn(i, layer, data, descendant, styleZoom, translate, area, hits);
         }
       }
     }
     return hits;
   }
+
+  /// The `*-translate` the rasterizer draws [layer] shifted by at
+  /// [styleZoom] — fills (extrusions included), lines and circles; none
+  /// for any other layer.
+  static Offset _translateOf(ThemeLayer layer, double styleZoom) =>
+      switch (layer) {
+        FillThemeLayer(:final translate) ||
+        LineThemeLayer(:final translate) ||
+        CircleThemeLayer(:final translate) =>
+          TileRasterizer.translateOf(translate, styleZoom),
+        _ => Offset.zero,
+      };
 
   static void _hitIn(
     int layerIndex,
@@ -74,6 +90,7 @@ abstract final class FeatureQuery {
     DisplayTileData data,
     PreparedTile tile,
     double styleZoom,
+    Offset translate,
     HitArea area,
     List<GeometryHit> hits,
   ) {
@@ -83,13 +100,17 @@ abstract final class FeatureQuery {
     if (sourceLayer == null) return;
     final t = TileRasterizer.displayTransform(
         data.displayKey, tile.key, sourceLayer.extent);
+    // The display transform shifted by the translate, as the rasterizer
+    // draws through it.
+    final dx = t.dx + translate.dx, dy = t.dy + translate.dy;
     // The query in extent units, and the slack — a stroke's half width,
     // a circle's reach — converted with it.
-    var query = area
-        .map((p) => Offset((p.dx - t.dx) / t.scale, (p.dy - t.dy) / t.scale));
+    var query =
+        area.map((p) => Offset((p.dx - dx) / t.scale, (p.dy - dy) / t.scale));
     if (tile.key.z > data.displayKey.z) {
       // A descendant standing in on zoom-out is drawn clipped to its
-      // own extent; so is what it answers for.
+      // own extent; so is what it answers for. The clip is in extent
+      // units, so it moves with the translate, as the rasterizer's does.
       final extent = sourceLayer.extent.toDouble();
       final clipped = query.clipTo(Rect.fromLTWH(0, 0, extent, extent));
       if (clipped == null) return;
@@ -99,13 +120,20 @@ abstract final class FeatureQuery {
 
     // A stroke or a circle reaching past what the bounds test below
     // allows for is drawn no further than the rasterizer's cull buffer
-    // into a tile either, so that is the most a data-driven size needs.
+    // into a tile either, so that is the most a data-driven size needs —
+    // or a data-driven `line-offset`, which adds to a line's reach.
     final double reachPx;
     switch (layer) {
-      case LineThemeLayer():
-        reachPx = _constant(layer.width) && _constant(layer.gapWidth)
-            ? _halfWidth(layer, EvalContext(zoom: styleZoom))
-            : TileRasterizer.cullBufferPx;
+      case LineThemeLayer(:final offset):
+        final zoomCtx = EvalContext(zoom: styleZoom);
+        reachPx = (_constant(layer.width) && _constant(layer.gapWidth)
+                ? _halfWidth(layer, zoomCtx)
+                : TileRasterizer.cullBufferPx) +
+            (offset == null
+                ? 0.0
+                : _constant(offset)
+                    ? offset.eval(zoomCtx).abs()
+                    : TileRasterizer.cullBufferPx);
       case CircleThemeLayer():
         reachPx = _constant(layer.radius) && _constant(layer.strokeWidth)
             ? _circleReach(layer, EvalContext(zoom: styleZoom))
@@ -114,8 +142,16 @@ abstract final class FeatureQuery {
         reachPx = 0;
     }
     final reach = reachPx / t.scale;
-    final minX = bounds.left - reach, maxX = bounds.right + reach;
-    final minY = bounds.top - reach, maxY = bounds.bottom + reach;
+    // Nor does the rasterizer draw a feature whose bounds miss the
+    // tile's cull window, however far its stroke or offset would reach:
+    // the bounds test takes the narrower of the two.
+    const buffer = TileRasterizer.cullBufferPx;
+    const size = TileRasterizer.logicalTileSize;
+    final minX = math.max(bounds.left - reach, (-buffer - dx) / t.scale);
+    final maxX = math.min(bounds.right + reach, (size + buffer - dx) / t.scale);
+    final minY = math.max(bounds.top - reach, (-buffer - dy) / t.scale);
+    final maxY =
+        math.min(bounds.bottom + reach, (size + buffer - dy) / t.scale);
 
     final states = layer.readsFeatureState
         ? data.featureStates?.sourceLayer(layer.source, sourceLayerName)
@@ -144,8 +180,8 @@ abstract final class FeatureQuery {
         FillThemeLayer() => feature.type == PreparedGeomType.polygon &&
             query.hitsPolygon(feature.parts),
         LineThemeLayer() => feature.type != PreparedGeomType.point &&
-            query.hitsLine(feature.parts, _halfWidth(layer, ctx) / t.scale,
-                close: feature.type == PreparedGeomType.polygon),
+            _hitsLine(layer, ctx, data.displayKey, tile.key, sourceLayer,
+                feature, translate, query, area, t.scale),
         CircleThemeLayer() => feature.type == PreparedGeomType.point &&
             _hitsPoints(query, feature, _circleReach(layer, ctx) / t.scale),
         _ => false,
@@ -156,20 +192,91 @@ abstract final class FeatureQuery {
     }
   }
 
+  /// Whether [layer]'s stroke of [feature] reaches [query] (extent units,
+  /// translated) — or, when its `line-offset` moves it sideways, whether
+  /// the offset runs the rasterizer draws reach [area] (logical px).
+  static bool _hitsLine(
+    LineThemeLayer layer,
+    EvalContext ctx,
+    TileKey displayKey,
+    TileKey tileKey,
+    PreparedSourceLayer sourceLayer,
+    PreparedFeature feature,
+    Offset translate,
+    HitArea query,
+    HitArea area,
+    double scale,
+  ) {
+    final halfWidth = _halfWidth(layer, ctx);
+    final offset = layer.offset?.eval(ctx) ?? 0;
+    if (offset == 0) {
+      return query.hitsLine(feature.parts, halfWidth / scale,
+          close: feature.type == PreparedGeomType.polygon);
+    }
+    // An offset is a shift in logical px, at every vertex — no single
+    // transform of the query matches it, so the runs go to pixels, as
+    // the rasterizer takes them, clipped where it clips them.
+    for (final (:run, :closed) in TileRasterizer.offsetLineRuns(
+        displayKey, tileKey, sourceLayer.extent, feature,
+        translate: translate, offset: offset)) {
+      if (area.hitsLine([run], halfWidth, close: closed)) return true;
+    }
+    return false;
+  }
+
+  /// The `slackPx` [drawsAny] needs for display tiles drawn at
+  /// [styleZoom] when the state of [source]'s [sourceLayer] changes: how
+  /// far the rasterizer shifts those features — the largest
+  /// `*-translate` component of [theme]'s fill, line and circle layers
+  /// that read their state and are drawn at that zoom. It culls a
+  /// feature on its bounds shifted by its translate, so that is all a
+  /// state change has to allow for. `line-offset` adds nothing: the
+  /// rasterizer moves a line sideways only after that test, so an offset
+  /// never makes a tile draw a feature its bounds keep out of it — a
+  /// data-driven one included, so none needs a conservative bound.
+  ///
+  /// A translate is evaluated at the zoom alone, as the rasterizer
+  /// evaluates it, so the answer is exact; it is remembered per theme.
+  static double stateSlackPx(
+      Theme theme, String source, String sourceLayer, double styleZoom) {
+    final memo = _slack[theme] ??= {};
+    return memo[(source, sourceLayer, styleZoom)] ??= () {
+      var slack = 0.0;
+      for (final layer in theme.layers) {
+        if (!layer.readsFeatureState ||
+            layer.source != source ||
+            layer.sourceLayer != sourceLayer ||
+            !layer.coversZoom(styleZoom)) {
+          continue;
+        }
+        final translate = _translateOf(layer, styleZoom);
+        slack =
+            math.max(slack, math.max(translate.dx.abs(), translate.dy.abs()));
+      }
+      return slack;
+    }();
+  }
+
+  /// [stateSlackPx] by (source, source layer, style zoom), per theme.
+  static final _slack = Expando<Map<(String, String, double), double>>();
+
   /// Whether display tile [displayKey], drawn from [tile], draws any
   /// feature of [sourceLayerName] whose normalized id
   /// ([FeatureStates.normalizeId]) is in [ids] — so whether a change to
   /// those features' state changes its image. Bounds-tested against
   /// the tile's window plus the rasterizer's cull buffer, so at overzoom
-  /// only the display tiles the feature reaches answer yes.
+  /// only the display tiles the feature reaches answer yes, widened by
+  /// [slackPx] for the layers that draw the features shifted
+  /// ([stateSlackPx]).
   static bool drawsAny(TileKey displayKey, PreparedTile tile,
-      String sourceLayerName, Iterable<Object> ids) {
+      String sourceLayerName, Iterable<Object> ids,
+      {double slackPx = 0}) {
     final sourceLayer = tile.layers[sourceLayerName];
     if (sourceLayer == null) return false;
     final index = _byId[sourceLayer] ??= _indexById(sourceLayer.features);
     final t = TileRasterizer.displayTransform(
         displayKey, tile.key, sourceLayer.extent);
-    const buffer = TileRasterizer.cullBufferPx;
+    final buffer = TileRasterizer.cullBufferPx + slackPx;
     const size = TileRasterizer.logicalTileSize;
     final minX = (-buffer - t.dx) / t.scale;
     final maxX = (size + buffer - t.dx) / t.scale;

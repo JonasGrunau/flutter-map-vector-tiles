@@ -86,19 +86,141 @@ class _GatedGlyphs {
   );
 }
 
-Widget _app(VectorTileProvider provider, GlyphSource glyphs) => MaterialApp(
+/// The map's centre tile, (14, 8726, 5683), gets its own data — a green
+/// 'AAAA' over a yellow square — only once [gate] completes. Until then
+/// it is drawn from its parent, (13, 4363, 2841), whose red
+/// [ancestorName] sits right where the tile's own label does.
+class _AncestorLabelProvider extends CountingProvider {
+  _AncestorLabelProvider({required this.ancestorName, required this.key});
+
+  final String ancestorName;
+  final String key;
+  final gate = Completer<void>();
+
+  @override
+  String get cacheKey => key;
+
+  @override
+  Future<TileResponse> load(TileKey tile,
+      {CancellationToken? cancellation}) async {
+    note(tile);
+    if (tile == const TileKey(13, 4363, 2841)) {
+      // The centre tile's quadrant of it: the left half, the bottom half.
+      return TileResponseData(_colouredLabelTile(
+          ancestorName, '#ff0000', extent ~/ 4, 3 * extent ~/ 4));
+    }
+    if (tile == const TileKey(14, 8726, 5683)) {
+      await gate.future;
+      return TileResponseData(_colouredLabelTile(
+          'AAAA', '#00ff00', extent ~/ 2, extent ~/ 2,
+          square: true));
+    }
+    return TileResponseData(MvtTileBuilder().build());
+  }
+}
+
+/// A label [name] in [color] at ([x], [y]), and with [square] a yellow
+/// square in the tile's top-left corner, so that the tile draws an image
+/// of its own.
+Uint8List _colouredLabelTile(String name, String color, int x, int y,
+    {bool square = false}) {
+  final builder = MvtTileBuilder();
+  builder.layer('poi', extent: extent).feature(
+    type: 1,
+    geometry: [cmd(1, 1), zig(x), zig(y)],
+    properties: {'name': name, 'color': color},
+  ).done();
+  if (square) {
+    const q = extent ~/ 4;
+    builder.layer('own', extent: extent).feature(type: 3, geometry: [
+      cmd(1, 1), zig(0), zig(0), //
+      cmd(2, 3), zig(q), zig(0), zig(0), zig(q), zig(-q), zig(0),
+      cmd(7, 1),
+    ]).done();
+  }
+  return builder.build();
+}
+
+/// Labels in their feature's colour, from z14 on: the parent tile shows
+/// none of its own at z13, and asks for no glyphs there.
+Theme _ancestorTheme() => const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'bg',
+          'type': 'background',
+          'paint': {'background-color': '#0000ff'},
+        },
+        {
+          'id': 'own',
+          'type': 'fill',
+          'source': 's',
+          'source-layer': 'own',
+          'paint': {'fill-color': '#ffff00'},
+        },
+        {
+          'id': 'poi',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'poi',
+          'minzoom': 14,
+          'layout': {
+            'text-field': '{name}',
+            'text-size': 40,
+            'text-font': [_stack],
+          },
+          'paint': {
+            'text-color': ['get', 'color'],
+          },
+        },
+      ],
+    });
+
+/// Glyph ranges 0 and 256, each loading once its own gate completes,
+/// recording the ranges asked for.
+class _RangeGatedGlyphs {
+  _RangeGatedGlyphs(this.signature);
+
+  final String signature;
+  final gate0 = Completer<void>();
+  final gate256 = Completer<void>();
+  final asked = <int>[];
+  late final source = GlyphSource(
+    load: (stack, start) async {
+      asked.add(start);
+      await (start == 256 ? gate256 : gate0).future;
+      return GlyphPbfBuilder().stack(stack, '$start-${start + 255}', [
+        TestGlyph(0x41),
+        TestGlyph(0x42),
+        TestGlyph(0x110),
+      ]).build();
+    },
+    signature: signature,
+  );
+}
+
+Widget _app(
+  VectorTileProvider provider,
+  GlyphSource glyphs, {
+  MapController? controller,
+  double initialZoom = 14,
+  Theme? theme,
+  LabelMode labelMode = LabelMode.screen,
+}) =>
+    MaterialApp(
       home: RepaintBoundary(
         key: boundaryKey,
         child: FlutterMap(
-          options: const MapOptions(
-            initialCenter: LatLng(48.1725, 11.7375),
-            initialZoom: 14,
+          mapController: controller,
+          options: MapOptions(
+            initialCenter: const LatLng(48.1725, 11.7375),
+            initialZoom: initialZoom,
           ),
           children: [
             VectorTileLayer(
-              theme: _theme(),
+              theme: theme ?? _theme(),
               tileProviders: TileProviders({'s': provider}),
               glyphs: glyphs,
+              labelMode: labelMode,
               tileOffset: TileOffset.none,
               tileFadeDuration: Duration.zero,
               labelFadeDuration: Duration.zero,
@@ -150,6 +272,38 @@ Future<void> _untilParked(WidgetTester tester, _GatedGlyphs glyphs) async {
   for (var i = 0; i < 10; i++) {
     await tester.pump(const Duration(milliseconds: 16));
   }
+}
+
+/// [n] frames of 16 ms, each with a moment of real time for loads and
+/// decodes to move — a few seconds at most on the fake clock, well
+/// short of the glyph wait limit.
+Future<void> _frames(WidgetTester tester, int n) async {
+  for (var i = 0; i < n; i++) {
+    await tester.pump(const Duration(milliseconds: 16));
+    await tester
+        .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 5)));
+  }
+}
+
+/// How many pixels show the ancestor's red label and the tile's own
+/// green one.
+Future<({int red, int green})> _labelColours(WidgetTester tester) async {
+  final boundary =
+      tester.renderObject<RenderRepaintBoundary>(find.byKey(boundaryKey));
+  final image = boundary.toImageSync();
+  final count = await tester.runAsync(() async {
+    final data = (await image.toByteData())!;
+    var red = 0, green = 0;
+    for (var i = 0; i < data.lengthInBytes; i += 4) {
+      final r = data.getUint8(i), g = data.getUint8(i + 1);
+      final b = data.getUint8(i + 2);
+      if (r > 200 && g < 60 && b < 60) red++;
+      if (g > 200 && r < 60 && b < 60) green++;
+    }
+    return (red: red, green: green);
+  });
+  image.dispose();
+  return count!;
 }
 
 void main() {
@@ -303,5 +457,97 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
     glyphs.dispose();
+  });
+
+  for (final mode in LabelMode.values) {
+    testWidgets(
+        'labels drawn from an ancestor and waiting on glyphs do not come '
+        'back over the tile\'s own (${mode.name} labels)', (tester) async {
+      // Regression: the provisional render's symbols job, parked on the
+      // same range as the final one, resumed after it and published the
+      // ancestor's labels over the tile's own — in tile mode, as a
+      // provisional image that never let the retained level go.
+      tester.view.physicalSize = const Size(600, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      final glyphs = _RangeGatedGlyphs('ancestor-labels-${mode.name}');
+      final provider = _AncestorLabelProvider(
+          ancestorName: 'BBBB', key: 'ancestor-labels-${mode.name}');
+      final controller = MapController();
+      await tester.pumpWidget(_app(provider, glyphs.source,
+          controller: controller,
+          initialZoom: 13,
+          theme: _ancestorTheme(),
+          labelMode: mode));
+      await settleLoads(tester, provider, painted: false);
+      expect(glyphs.asked, isEmpty);
+
+      // At z14 the tile's data is held back: it is drawn from its parent,
+      // whose label waits for range 0.
+      controller.move(const LatLng(48.1725, 11.7375), 14);
+      expect(
+          await pumpUntil(tester, () async => glyphs.asked.isNotEmpty), isTrue);
+      await _frames(tester, 10);
+
+      // Its own data arrives; its own label waits for the same range.
+      await tester.runAsync(() async => provider.gate.complete());
+      await _frames(tester, 30);
+      expect(glyphs.asked, [0]);
+
+      await tester.runAsync(() async => glyphs.gate0.complete());
+      await _frames(tester, 60);
+      final colours = await _labelColours(tester);
+      expect(colours.green, greaterThan(0), reason: 'the tile\'s own label');
+      expect(colours.red, 0, reason: 'no label of the ancestor');
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      glyphs.source.dispose();
+    });
+  }
+
+  testWidgets(
+      'labels drawn from an ancestor and waiting on a range the tile\'s '
+      'own labels do not need are dropped once those are in', (tester) async {
+    // Regression: the provisional render's symbols job, parked on range
+    // 256, resumed after the final labels had published and replaced
+    // them with the ancestor's.
+    tester.view.physicalSize = const Size(600, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final glyphs = _RangeGatedGlyphs('ancestor-labels-other-range');
+    glyphs.gate0.complete();
+    final provider = _AncestorLabelProvider(
+        ancestorName: 'BĐBĐ', key: 'ancestor-labels-other-range');
+    final controller = MapController();
+    await tester.pumpWidget(_app(provider, glyphs.source,
+        controller: controller, initialZoom: 13, theme: _ancestorTheme()));
+    await settleLoads(tester, provider, painted: false);
+    expect(glyphs.asked, isEmpty);
+
+    controller.move(const LatLng(48.1725, 11.7375), 14);
+    expect(await pumpUntil(tester, () async => glyphs.asked.contains(256)),
+        isTrue);
+    await _frames(tester, 10);
+
+    // 'AAAA' needs range 0 alone, which is in: the tile's own label shows.
+    await tester.runAsync(() async => provider.gate.complete());
+    expect(
+        await pumpUntil(
+            tester, () async => (await _labelColours(tester)).green > 0,
+            timeout: const Duration(seconds: 5)),
+        isTrue);
+
+    await tester.runAsync(() async => glyphs.gate256.complete());
+    await _frames(tester, 40);
+    final colours = await _labelColours(tester);
+    expect(colours.green, greaterThan(0), reason: 'the tile\'s own label');
+    expect(colours.red, 0, reason: 'no label of the ancestor');
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    glyphs.source.dispose();
   });
 }
