@@ -34,7 +34,7 @@ Every run measures exactly one arm, in a fresh process.
 
 | arm | configuration |
 |---|---|
-| `fmvt` | `flutter_map_vector_tiles` at its defaults |
+| `fmvt` | `flutter_map_vector_tiles` at its defaults, with the style's glyphs (`glyphs: style.glyphs`) as its quick start passes them |
 | `fmvt-raster` | `flutter_map_vector_tiles` with `labelMode: LabelMode.tile`: labels drawn into the tile images |
 | `vmt-raster` | `vector_map_tiles` at its defaults (raster mode) plus `maximumZoom: 22`, without which its layer goes blank past z18 |
 | `vmt-vector` | `vector_map_tiles` in vector mode, which its docs recommend for sharpness |
@@ -50,6 +50,11 @@ costs UI-thread time while the camera moves. `vector_map_tiles`' vector
 mode redraws everything, geometry included, every frame. Like against
 like is therefore `fmvt-raster` ↔ `vmt-raster` (labels baked into the
 tiles) and `fmvt` ↔ `vmt-vector` (labels drawn per frame).
+
+Every `fmvt` arm draws its labels in the style's own fonts from its
+glyph PBFs, as MapLibre does, where the script allows; `vector_map_tiles`
+draws them in the system font. Sessions from before that (2.10.1 and
+earlier) drew both in the system font.
 
 The control arm exists because the two packages do not draw the same map
 at the same camera. `flutter_map_vector_tiles` evaluates a 512 px style

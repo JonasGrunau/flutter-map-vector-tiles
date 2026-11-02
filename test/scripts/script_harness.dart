@@ -8,6 +8,7 @@ import 'package:flutter_map_vector_tiles/src/render/label_painter.dart';
 import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
+import 'package:flutter_map_vector_tiles/src/text/glyph_source.dart';
 
 import '../fixtures/label_ids.dart';
 import 'script_fonts_io.dart'
@@ -187,16 +188,25 @@ PlacedSymbol label(
   );
 }
 
+/// How many labels the last [paintLabels] drew from the style's glyphs
+/// rather than the platform's fonts — for `script_glyphs_test.dart`,
+/// which checks which path each script takes.
+var lastGlyphShaped = 0;
+
 /// Paints [symbols] in one frame of a fresh [LabelPainter], [size]
 /// logical pixels at [devicePixelRatio] over [background] (transparent
-/// by default), and returns the image and how many were placed.
+/// by default), and returns the image and how many were placed. With
+/// [glyphs], the painter draws what text it can from them, as a layer
+/// given `glyphs` does, once the ranges the labels need have loaded.
 Future<(ui.Image, int)> paintLabels(
   List<PlacedSymbol> symbols, {
   Size size = const Size(400, 120),
   double devicePixelRatio = 2,
   Color? background,
+  GlyphSource? glyphs,
 }) async {
-  final painter = LabelPainter();
+  final painter = LabelPainter()..glyphs = glyphs;
+  await painter.glyphsPending([for (final s in symbols) s.instance], 12);
   final recorder = ui.PictureRecorder();
   final canvas = Canvas(recorder)..scale(devicePixelRatio);
   if (background != null) canvas.drawColor(background, BlendMode.src);
@@ -208,6 +218,7 @@ Future<(ui.Image, int)> paintLabels(
     devicePixelRatio: devicePixelRatio,
     placementGeneration: _generation++,
   );
+  lastGlyphShaped = painter.debugGlyphShapedTextCount;
   final picture = recorder.endRecording();
   final image = await picture.toImage((size.width * devicePixelRatio).round(),
       (size.height * devicePixelRatio).round());
@@ -226,12 +237,14 @@ Future<LabelImage> drawLabel(
   Size size = const Size(400, 120),
   double devicePixelRatio = 2,
   Color? background,
+  GlyphSource? glyphs,
 }) async {
   final (image, placed) = await paintLabels(
     [label(text, layout: layout, paint: paint, path: path, at: at)],
     size: size,
     devicePixelRatio: devicePixelRatio,
     background: background,
+    glyphs: glyphs,
   );
   final bytes =
       await image.toByteData(format: ui.ImageByteFormat.rawStraightRgba);

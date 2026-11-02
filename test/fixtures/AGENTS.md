@@ -15,6 +15,7 @@ expression fixtures, generated into a Dart file.
 | File | Description |
 |------|-------------|
 | `mvt_builder.dart` | `MvtTileBuilder` / `MvtLayerBuilder` — a minimal MVT (protobuf) encoder: layers, features, tags, geometry commands, varint and tag writing |
+| `glyph_pbf_builder.dart` | `GlyphPbfBuilder` / `TestGlyph` — a minimal glyph PBF encoder written from the schema, independently of `lib/src/text/glyph_pbf.dart`, with optional unknown fields to skip; `boxField` makes the distance field of a solid box, so a test font's glyphs are known rectangles |
 | `pmtiles_builder.dart` | `PmTilesArchiveBuilder` — a minimal PMTiles v3 archive writer: header, delta-varint directories, optional leaf splitting and pluggable compression. Web-safe (arithmetic only) so the same fixtures run in the browser suite |
 | `lifecycle_harness.dart` | The widget-test harness: `app()` (a `FlutterMap` with one `VectorTileLayer` at a fixed 600×600, `landTheme()` unless a `theme` is passed), `CountingProvider` / `EverywhereProvider`, the pixel readers (`centrePixel`, `fullyPainted`) and the waits (`pumpUntil`, `settle`, `settleLoads`, `sampleDuring`) |
 | `maplibre_expression_fixtures.dart` | GENERATED — maplibre-style-spec's expression fixtures as one JSON string, a line per fixture, plus the spec commit they came from. Embedded in Dart, not read from disk, so the conformance test runs in the browser too. BSD-3-Clause, MapLibre contributors: `MAPLIBRE_LICENSE.txt` |
