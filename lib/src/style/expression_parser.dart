@@ -85,15 +85,24 @@ class ExpressionParser {
   /// value, as MapLibre does — which holds an enum property to its
   /// values only when the function has a default, and otherwise takes
   /// any string.
+  ///
+  /// [interpolated] is false for a property the spec does not
+  /// interpolate (`line-dasharray`, the sort keys): a legacy stop
+  /// function that names no `type` steps through its stops there
+  /// (`interval`) instead of ramping between them, as MapLibre does.
   ({Expr expr, bool zoomOnly, bool readsZoom}) parseForProperty(Object? json,
-      {bool Function(Object? value)? accepts, Set<String>? enumValues}) {
+      {bool Function(Object? value)? accepts,
+      Set<String>? enumValues,
+      bool interpolated = true}) {
     final savedFeature = _readsFeature;
     final savedZoom = _readsZoom;
     _readsFeature = false;
     _readsZoom = false;
     final expr = json is Map
         ? _parseLegacyFunction(
-            json.cast<String, Object?>(),
+            !interpolated && json['type'] == null && json['stops'] != null
+                ? {...json.cast<String, Object?>(), 'type': 'interval'}
+                : json.cast<String, Object?>(),
             json['default'] != null && enumValues != null
                 ? enumValues.contains
                 : accepts)
@@ -368,10 +377,10 @@ class ExpressionParser {
       case 'match':
         return _parseMatch(a);
       case 'coalesce':
-        final es = a.skip(1).map(parse).toList();
+        final es = a.skip(1).map(parse).toList(growable: false);
         return (ctx) {
-          for (final e in es) {
-            final v = e(ctx);
+          for (var i = 0; i < es.length; i++) {
+            final v = es[i](ctx);
             if (v != null) return v;
           }
           return null;
@@ -412,7 +421,7 @@ class ExpressionParser {
           // In this order, as MapLibre tests them: a falsy haystack
           // (null, empty string, 0, false) holds nothing, before either
           // type is checked.
-          if (_isFalsy(h)) return false;
+          if (!toBoolean(h)) return false;
           if (!_isNeedle(n)) return evalError;
           if (h is List) {
             for (var i = 0; i < h.length; i++) {
@@ -502,10 +511,10 @@ class ExpressionParser {
           return identical(v, evalError) ? v : toStringValue(v);
         };
       case 'to-number':
-        final es = a.skip(1).map(parse).toList();
+        final es = a.skip(1).map(parse).toList(growable: false);
         return (ctx) {
-          for (final e in es) {
-            final v = e(ctx);
+          for (var i = 0; i < es.length; i++) {
+            final v = es[i](ctx);
             if (identical(v, evalError)) return v;
             // Null converts, to 0; an input nothing converts falls
             // through to the next.
@@ -522,10 +531,10 @@ class ExpressionParser {
           return identical(v, evalError) ? v : toBoolean(v);
         };
       case 'to-color':
-        final es = a.skip(1).map(parse).toList();
+        final es = a.skip(1).map(parse).toList(growable: false);
         return (ctx) {
-          for (final e in es) {
-            final v = e(ctx);
+          for (var i = 0; i < es.length; i++) {
+            final v = es[i](ctx);
             if (identical(v, evalError)) return v;
             final c = toColor(v);
             if (c != null) return c;
@@ -552,13 +561,13 @@ class ExpressionParser {
         final value = a[1];
         if (value is! List) return (_) => value;
         if (!value.any((e) => e is List)) return (_) => value;
-        final es = value.map(parse).toList();
+        final es = value.map(parse).toList(growable: false);
         return (ctx) {
-          final out = <Object?>[];
-          for (final e in es) {
-            final v = e(ctx);
+          final out = List<Object?>.filled(es.length, null);
+          for (var i = 0; i < es.length; i++) {
+            final v = es[i](ctx);
             if (identical(v, evalError)) return v;
-            out.add(v);
+            out[i] = v;
           }
           return out;
         };
@@ -630,17 +639,19 @@ class ExpressionParser {
         // All-literal channels (the typical shape, e.g. as interpolate
         // outputs) fold to a Color at parse time.
         if (a.length >= 4 && a.skip(1).every((e) => e is num)) {
-          final channels = a.sublist(1);
-          if (!_validRgba(channels)) {
-            return _unsupported('$op channels out of range: $channels');
+          final c = toColor(a.sublist(1));
+          if (c == null) {
+            return _unsupported('$op channels out of range: ${a.sublist(1)}');
           }
-          final c = toColor(channels);
           return (_) => c;
         }
-        final es = a.skip(1).map(parse).toList();
+        final es = a.skip(1).map(parse).toList(growable: false);
         return (ctx) {
-          final channels = [for (final e in es) e(ctx)];
-          return _validRgba(channels) ? toColor(channels) : evalError;
+          final channels = List<Object?>.filled(es.length, null);
+          for (var i = 0; i < es.length; i++) {
+            channels[i] = es[i](ctx);
+          }
+          return toColor(channels) ?? evalError;
         };
       case 'to-rgba':
         final e = parse(a.length > 1 ? a[1] : null);
@@ -651,17 +662,20 @@ class ExpressionParser {
         };
 
       // --- math ---
-      // Operands are numbers; a numeric string is not one.
+      // Operands are numbers; a numeric string is not one. Infinity and
+      // NaN are numbers here, as in MapLibre: they come out of math
+      // (`["/", 1, 0]`) and go into it; only a property reading one
+      // falls back.
       case '+':
       case '*':
         // The operator is bound at parse time — the old form re-tested
         // the op string per operand per evaluation.
-        final es = a.skip(1).map(parse).toList();
+        final es = a.skip(1).map(parse).toList(growable: false);
         if (op == '+') {
           return (ctx) {
             var acc = 0.0;
-            for (final e in es) {
-              final n = asNumber(e(ctx));
+            for (var i = 0; i < es.length; i++) {
+              final n = _operand(es[i](ctx));
               if (n == null) return evalError;
               acc += n;
             }
@@ -670,8 +684,8 @@ class ExpressionParser {
         }
         return (ctx) {
           var acc = 1.0;
-          for (final e in es) {
-            final n = asNumber(e(ctx));
+          for (var i = 0; i < es.length; i++) {
+            final n = _operand(es[i](ctx));
             if (n == null) return evalError;
             acc *= n;
           }
@@ -681,13 +695,13 @@ class ExpressionParser {
         if (a.length == 2) {
           final e = parse(a[1]);
           return (ctx) {
-            final n = asNumber(e(ctx));
+            final n = _operand(e(ctx));
             return n == null ? evalError : -n;
           };
         }
         return _binaryMath(a, (x, y) => x - y);
       case '/':
-        return _binaryMath(a, (x, y) => y == 0 ? double.nan : x / y);
+        return _binaryMath(a, (x, y) => x / y);
       case '%':
         return _binaryMath(a, (x, y) => x % y);
       case '^':
@@ -722,14 +736,17 @@ class ExpressionParser {
         return _unaryMath(a, math.atan);
       case 'min':
       case 'max':
-        final es = a.skip(1).map(parse).toList();
+        // Of nothing, the identity of each: min is Infinity, max
+        // -Infinity, as JavaScript's Math.min / Math.max give.
+        final es = a.skip(1).map(parse).toList(growable: false);
         final pick = op == 'min' ? math.min<double> : math.max<double>;
+        final empty = op == 'min' ? double.infinity : double.negativeInfinity;
         return (ctx) {
-          double? acc;
-          for (final e in es) {
-            final n = asNumber(e(ctx));
+          var acc = empty;
+          for (var i = 0; i < es.length; i++) {
+            final n = _operand(es[i](ctx));
             if (n == null) return evalError;
-            acc = acc == null ? n : pick(acc, n);
+            acc = pick(acc, n);
           }
           return acc;
         };
@@ -748,8 +765,14 @@ class ExpressionParser {
         _readsFeatureState = true;
         final key = a.length > 1 ? a[1] : null;
         if (key is String) return (ctx) => _featureStateOf(ctx)?[key];
+        // A computed key is a string, as for `get` and `has`: anything
+        // else is an error, not its string form.
         final keyExpr = parse(key);
-        return (ctx) => _featureStateOf(ctx)?[toStringValue(keyExpr(ctx))];
+        return (ctx) {
+          final k = keyExpr(ctx);
+          if (k is! String) return evalError;
+          return _featureStateOf(ctx)?[k];
+        };
 
       case 'heatmap-density':
         // An input besides the zoom, like feature data: a ramp over it
@@ -852,10 +875,10 @@ class ExpressionParser {
         _ => (v) => v is Map,
       };
     }
-    final es = a.skip(first).map(parse).toList();
+    final es = a.skip(first).map(parse).toList(growable: false);
     return (ctx) {
-      for (final e in es) {
-        final v = e(ctx);
+      for (var i = 0; i < es.length; i++) {
+        final v = es[i](ctx);
         if (identical(v, evalError) || matches(v)) return v;
       }
       return evalError;
@@ -876,23 +899,39 @@ class ExpressionParser {
           'each other');
     }
     final input = parse(a[1]);
-    Expr option(String key) => parse(options[key]);
+    // An option left out (or null) is no option. One given is typed —
+    // `locale`, `currency` and `unit` strings, the digits finite
+    // numbers — and a value of another type, null or an error, is an
+    // error, as MapLibre's assertions on them make it.
+    Expr? option(String key) =>
+        options[key] == null ? null : parse(options[key]);
     final locale = option('locale');
     final currency = option('currency');
     final unit = option('unit');
     final minDigits = option('min-fraction-digits');
     final maxDigits = option('max-fraction-digits');
-    String? text(Object? v) => v == null ? null : toStringValue(v);
     return (ctx) {
       final n = asNumber(input(ctx));
       if (n == null) return evalError;
+      final l = locale?.call(ctx);
+      final c = currency?.call(ctx);
+      final u = unit?.call(ctx);
+      final lo = minDigits == null ? null : asNumber(minDigits(ctx));
+      final hi = maxDigits == null ? null : asNumber(maxDigits(ctx));
+      if ((locale != null && l is! String) ||
+          (currency != null && c is! String) ||
+          (unit != null && u is! String) ||
+          (minDigits != null && lo == null) ||
+          (maxDigits != null && hi == null)) {
+        return evalError;
+      }
       return formatNumber(
         n,
-        locale: text(locale(ctx)),
-        currency: text(currency(ctx)),
-        unit: text(unit(ctx)),
-        minFractionDigits: toNumber(minDigits(ctx))?.toInt(),
-        maxFractionDigits: toNumber(maxDigits(ctx))?.toInt(),
+        locale: l as String?,
+        currency: c as String?,
+        unit: u as String?,
+        minFractionDigits: lo?.toInt(),
+        maxFractionDigits: hi?.toInt(),
       );
     };
   }
@@ -944,11 +983,11 @@ class ExpressionParser {
       final s = parts.map(toStringValue).join();
       return (_) => s;
     }
-    final es = parts.map(parse).toList();
+    final es = parts.map(parse).toList(growable: false);
     return (ctx) {
       final sb = StringBuffer();
-      for (final e in es) {
-        final v = e(ctx);
+      for (var i = 0; i < es.length; i++) {
+        final v = es[i](ctx);
         if (identical(v, evalError)) return v;
         sb.write(toStringValue(v));
       }
@@ -968,13 +1007,15 @@ class ExpressionParser {
     return null;
   }
 
+  /// A math operand: any number, Infinity and NaN included (see the
+  /// math operators) — unlike [asNumber], which a property reads with.
+  static double? _operand(Object? v) => v is num ? v.toDouble() : null;
+
   Expr _unaryMath(List<Object?> a, double Function(double) f) {
     final e = parse(a.length > 1 ? a[1] : null);
     return (ctx) {
-      final n = asNumber(e(ctx));
-      if (n == null) return evalError;
-      final r = f(n);
-      return r.isFinite ? r : null;
+      final n = _operand(e(ctx));
+      return n == null ? evalError : f(n);
     };
   }
 
@@ -982,11 +1023,10 @@ class ExpressionParser {
     final x = parse(a.length > 1 ? a[1] : null);
     final y = parse(a.length > 2 ? a[2] : null);
     return (ctx) {
-      final nx = asNumber(x(ctx));
-      final ny = asNumber(y(ctx));
+      final nx = _operand(x(ctx));
+      final ny = _operand(y(ctx));
       if (nx == null || ny == null) return evalError;
-      final r = f(nx, ny).toDouble();
-      return r.isFinite ? r : null;
+      return f(nx, ny).toDouble();
     };
   }
 
@@ -1164,11 +1204,13 @@ class ExpressionParser {
     };
   }
 
-  /// Normalizes match labels so `1` and `1.0` compare equal.
+  /// Normalizes match labels so `1` and `1.0` compare equal. Infinity
+  /// and NaN stay doubles: `round()` throws on them, and a tile can
+  /// carry either as a property value.
   static Object? _matchKey(Object? v) {
     if (v is num) {
       final d = v.toDouble();
-      return d == d.roundToDouble() ? d.round() : d;
+      return d.isFinite && d == d.roundToDouble() ? d.round() : d;
     }
     return v;
   }
@@ -1293,11 +1335,12 @@ class ExpressionParser {
     // a legacy function ("0" → "1") holds each stop like any other
     // string, as it does in MapLibre.
     if (a is num && b is num) return a + (b - a) * t;
-    final ca = toColor(a);
-    final cb = toColor(b);
-    if (ca != null && cb != null) return lerpColor(ca, cb, t, space);
-    if (a is List && b is List && a.length == b.length) {
-      final out = <Object?>[];
+    // Lists before colours: `toColor` reads three or four numbers as a
+    // colour, which turned a ramp between padding values or dash arrays
+    // into one the property could not read.
+    if (a is List || b is List) {
+      if (a is! List || b is! List || a.length != b.length) return null;
+      final out = List<Object?>.filled(a.length, null);
       for (var i = 0; i < a.length; i++) {
         final x = a[i], y = b[i];
         // The anchors of a `text-variable-anchor-offset` collection stay;
@@ -1306,10 +1349,13 @@ class ExpressionParser {
             ? (x == y ? x : null)
             : _blend(x, y, t, space);
         if (v == null) return null;
-        out.add(v);
+        out[i] = v;
       }
       return out;
     }
+    final ca = toColor(a);
+    final cb = toColor(b);
+    if (ca != null && cb != null) return lerpColor(ca, cb, t, space);
     return null;
   }
 
@@ -1333,8 +1379,7 @@ class ExpressionParser {
   /// `{"zoom": z, "value": v}`: one property function per zoom, the
   /// zooms ramped with the function's base — or stepped through, for
   /// `interval` and `categorical` functions.
-  Expr _parseCompositeFunction(Map<String, Object?> json, List<Object?> stops,
-      bool Function(Object?)? accepts) {
+  Expr _parseCompositeFunction(Map<String, Object?> json, List<Object?> stops) {
     final byZoom = <double, List<Object?>>{};
     for (final stop in stops) {
       if (stop is! List || stop.length < 2 || stop[0] is! Map) continue;
@@ -1350,7 +1395,7 @@ class ExpressionParser {
     final zooms = byZoom.keys.toList()..sort();
     final perZoom = [
       for (final z in zooms)
-        _parseLegacyFunction({...json, 'stops': byZoom[z]}, accepts),
+        _parseLegacyFunction({...json, 'stops': byZoom[z]}),
     ];
     final type = json['type'] as String? ?? 'exponential';
     final base = toNumber(json['base']) ?? 1.0;
@@ -1417,7 +1462,7 @@ class ExpressionParser {
     }
     final first = stopsJson.first;
     if (first is List && first.isNotEmpty && first.first is Map) {
-      return _parseCompositeFunction(json, stopsJson, accepts);
+      return _parseCompositeFunction(json, stopsJson);
     }
     final base = toNumber(json['base']) ?? 1.0;
     final space = _legacyColorSpace(json);
@@ -1528,15 +1573,17 @@ class ExpressionParser {
   Expr _parseLegacyFilter(List<Object?> filter) {
     final op = filter[0];
     switch (op) {
-      // Plain loops, not every/any: the iterator callbacks captured ctx
-      // and allocated a closure per evaluation of the hottest closures
-      // in the engine (every layer × every feature of its source-layer).
+      // Indexed loops over fixed-length lists, as for the expression
+      // `all` / `any`: these are the hottest closures in the engine
+      // (every layer × every feature of its source-layer), and a for-in
+      // pays an iterator per evaluation. A nested filter is a boolean
+      // (see [parseFilter]), so `true` is all there is to test for.
       case 'all':
         final es =
             filter.skip(1).map((f) => parseFilter(f)).toList(growable: false);
         return (ctx) {
-          for (final e in es) {
-            if (!toBoolean(e(ctx))) return false;
+          for (var i = 0; i < es.length; i++) {
+            if (!identical(es[i](ctx), true)) return false;
           }
           return true;
         };
@@ -1544,8 +1591,8 @@ class ExpressionParser {
         final es =
             filter.skip(1).map((f) => parseFilter(f)).toList(growable: false);
         return (ctx) {
-          for (final e in es) {
-            if (toBoolean(e(ctx))) return true;
+          for (var i = 0; i < es.length; i++) {
+            if (identical(es[i](ctx), true)) return true;
           }
           return false;
         };
@@ -1553,8 +1600,8 @@ class ExpressionParser {
         final es =
             filter.skip(1).map((f) => parseFilter(f)).toList(growable: false);
         return (ctx) {
-          for (final e in es) {
-            if (toBoolean(e(ctx))) return false;
+          for (var i = 0; i < es.length; i++) {
+            if (identical(es[i](ctx), true)) return false;
           }
           return true;
         };
@@ -1639,23 +1686,6 @@ class ExpressionParser {
   /// an error is not one.
   static bool _isNeedle(Object? v) =>
       v == null || v is String || v is num || v is bool;
-
-  /// JavaScript's falsiness, which `in` tests its haystack for before
-  /// anything else.
-  static bool _isFalsy(Object? v) =>
-      v == null || v == false || v == 0 || v == '' || (v is double && v.isNaN);
-
-  /// MapLibre's range check for `rgb` / `rgba` channels: 0–255 for red,
-  /// green and blue, 0–1 for alpha.
-  static bool _validRgba(List<Object?> channels) {
-    if (channels.length != 3 && channels.length != 4) return false;
-    for (var i = 0; i < channels.length; i++) {
-      final c = channels[i];
-      // Written so that NaN fails too.
-      if (c is! num || !(c >= 0 && c <= (i == 3 ? 1 : 255))) return false;
-    }
-    return true;
-  }
 
   static bool _looseEquals(Object? a, Object? b) {
     if (a == null || b == null) return a == b;

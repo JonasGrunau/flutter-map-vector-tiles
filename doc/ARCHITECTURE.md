@@ -1660,7 +1660,16 @@ too, since it is not null); the typed wrappers turn it into the
 property's fallback and a filter into false, as MapLibre does with its
 runtime errors. The wrappers check the property's type the same way:
 number, boolean and list properties take only values of their type,
-colour and string properties convert. The checks live inside the
+colour and string properties convert. Infinity and NaN are numbers to
+the operators, as in JavaScript — math produces and consumes them —
+but not to a number property, which falls back on them.
+
+A legacy identity function hands on a feature value only when the
+property takes it, by `ThemeReader.acceptsOf`, the property type's
+check; text and image names take any value. A legacy function that
+names no `type` ramps between its stops, except on a property the spec
+does not interpolate (`line-dasharray`, the sort keys), where it steps,
+as MapLibre's do. The checks live inside the
 closures that already exist, never in an extra closure layer or a field
 on `EvalContext`, and where the parser can see an operand's type they
 compile away: `[">=", ["get", "rank"], 5]` is one type test and one

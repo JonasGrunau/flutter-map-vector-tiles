@@ -358,6 +358,10 @@ class StyleReader {
             fonts.isNotEmpty &&
             fonts.every((f) => f is String)) {
           stacks.add(fonts.join(','));
+        } else if (fonts is String && fonts.isNotEmpty) {
+          // A one-font stack written without its brackets, which the
+          // theme reader takes too.
+          stacks.add(fonts);
         }
       }
     }

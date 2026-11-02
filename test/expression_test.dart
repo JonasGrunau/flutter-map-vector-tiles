@@ -1233,4 +1233,299 @@ void main() {
           const Color(0xffff0000));
     });
   });
+
+  group('review fixes', () {
+    test('math gives and takes Infinity and NaN, as JavaScript does', () {
+      expect(eval(['/', 1, 0]), double.infinity);
+      expect(eval(['/', 0, 0]), isNaN);
+      expect(
+          eval([
+            '+',
+            ['/', 1, 0],
+            1
+          ]),
+          double.infinity);
+      expect(
+          eval([
+            '-',
+            ['/', 1, 0]
+          ]),
+          double.negativeInfinity);
+      expect(eval(['max']), double.negativeInfinity);
+      expect(eval(['min']), double.infinity);
+      expect(eval(['^', 10, 400]), double.infinity);
+      // `coalesce` takes it, being no null; a property falls back on it.
+      expect(
+          eval([
+            'coalesce',
+            ['/', 1, 0],
+            5
+          ]),
+          double.infinity);
+      final parsed = ExpressionParser().parse(['/', 1, 0]);
+      expect(DoubleProp(parsed, 7).eval(EvalContext.empty), 7);
+    });
+
+    test('number-format options are typed', () {
+      Object? format(Map<String, Object?> options,
+              [Map<String, Object?> props = const {}]) =>
+          eval(['number-format', 5, options], props: props);
+      expect(
+          format({
+            'locale': ['get', 'missing']
+          }),
+          same(evalError));
+      expect(
+          format({
+            'locale': ['get', 'l']
+          }, {
+            'l': 1
+          }),
+          same(evalError));
+      expect(
+          format({
+            'currency': ['get', 'missing']
+          }),
+          same(evalError));
+      expect(
+          format({
+            'unit': ['get', 'missing']
+          }),
+          same(evalError));
+      expect(
+          format({
+            'min-fraction-digits': ['get', 'd']
+          }, {
+            'd': '2'
+          }),
+          same(evalError));
+      expect(
+          format({
+            'max-fraction-digits': ['/', 1, 0]
+          }),
+          same(evalError));
+      // Left out, or null, is no option.
+      expect(format({'locale': null}), '5');
+      expect(
+          format({
+            'min-fraction-digits': ['get', 'd']
+          }, {
+            'd': 2
+          }),
+          '5.00');
+      // An error never reaches the label as text.
+      final label = ExpressionParser().parse([
+        'concat',
+        'n ',
+        [
+          'number-format',
+          5,
+          {
+            'locale': ['get', 'missing']
+          }
+        ],
+      ]);
+      expect(StringProp(label, 'fallback').eval(EvalContext.empty), 'fallback');
+    });
+
+    test('feature-state takes a computed key only as a string', () {
+      final ctx = featureContext(
+          zoom: 10,
+          properties: const {'k': 1},
+          geometryType: 'Point',
+          featureId: 1,
+          featureState: {'1': 'one'});
+      final byNumber = ExpressionParser().parse([
+        'feature-state',
+        ['get', 'k']
+      ]);
+      expect(byNumber(ctx), same(evalError));
+      final byString = ExpressionParser().parse([
+        'feature-state',
+        [
+          'to-string',
+          ['get', 'k']
+        ]
+      ]);
+      expect(byString(ctx), 'one');
+    });
+
+    test('an infinite value is a key like any other, not a throw', () {
+      final props = {'v': double.infinity};
+      expect(
+          eval([
+            'match',
+            ['get', 'v'],
+            1,
+            'one',
+            'other'
+          ], props: props),
+          'other');
+      expect(
+          eval([
+            'in',
+            ['get', 'v'],
+            [
+              'literal',
+              [1, 2]
+            ]
+          ], props: props),
+          false);
+      expect(evalFilter(['in', 'v', 1, 2], props: props), false);
+      expect(
+          eval({
+            'type': 'categorical',
+            'property': 'v',
+            'stops': [
+              [1, 'one']
+            ],
+            'default': 'other',
+          }, props: props),
+          'other');
+      expect(
+          eval([
+            'match',
+            ['get', 'v'],
+            1,
+            'one',
+            'other'
+          ], props: {
+            'v': double.nan
+          }),
+          'other');
+    });
+
+    test('to-color takes three or four numbers in range, as rgba does', () {
+      Object? toColorOf(List<Object?> v) => eval([
+            'to-color',
+            ['literal', v]
+          ]);
+      expect(toColorOf([255, 0, 0]), const Color(0xffff0000));
+      expect(toColorOf([0, 0, 255, 0.5]), const Color(0x800000ff));
+      expect(toColorOf([300, 0, 0]), same(evalError));
+      expect(toColorOf([255, 0, 0, 2]), same(evalError));
+      expect(toColorOf(['255', 0, 0]), same(evalError));
+      expect(toColorOf([255, 0]), same(evalError));
+      expect(toColorOf([255, 0, 0, 1, 0]), same(evalError));
+      expect(toColor([double.nan, 0, 0]), isNull);
+      expect(
+          eval([
+            'rgb',
+            ['get', 'r'],
+            0,
+            0
+          ], props: {
+            'r': 256
+          }),
+          same(evalError));
+    });
+
+    test('number lists ramp as lists, not as colours', () {
+      expect(
+          eval([
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            0,
+            [
+              'literal',
+              [1, 2, 3]
+            ],
+            10,
+            [
+              'literal',
+              [3, 4, 5]
+            ],
+          ], zoom: 5),
+          [2, 3, 4]);
+      expect(
+          eval({
+            'base': 1,
+            'stops': [
+              [
+                0,
+                [2, 2, 2, 2]
+              ],
+              [
+                10,
+                [4, 4, 4, 4]
+              ],
+            ],
+          }, zoom: 5),
+          [3, 3, 3, 3]);
+      // A list against anything else does not blend.
+      expect(
+          eval([
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            0,
+            [
+              'literal',
+              [1, 2, 3]
+            ],
+            10,
+            'red',
+          ], zoom: 5),
+          same(evalError));
+    });
+
+    test(
+        'a typeless legacy function steps where the spec does not '
+        'interpolate', () {
+      Object? at(double zoom, {required bool interpolated}) {
+        final p = ExpressionParser().parseForProperty({
+          'stops': [
+            [0, 0],
+            [10, 10],
+          ],
+        }, interpolated: interpolated);
+        return p.expr(EvalContext(zoom: zoom, properties: const {}));
+      }
+
+      expect(at(5, interpolated: true), 5);
+      expect(at(5, interpolated: false), 0);
+      expect(at(10, interpolated: false), 10);
+      // A type the style names wins.
+      final named = ExpressionParser().parseForProperty({
+        'type': 'exponential',
+        'stops': [
+          [0, 0],
+          [10, 10],
+        ],
+      }, interpolated: false);
+      expect(named.expr(const EvalContext(zoom: 5, properties: {})), 5);
+    });
+
+    test('legacy all / any / none test their filters for true', () {
+      final props = {'a': 1, 'b': 2};
+      expect(
+          evalFilter([
+            'all',
+            ['==', 'a', 1],
+            ['==', 'b', 2]
+          ], props: props),
+          true);
+      expect(
+          evalFilter([
+            'any',
+            ['==', 'a', 0],
+            ['==', 'b', 2]
+          ], props: props),
+          true);
+      expect(
+          evalFilter([
+            'none',
+            ['==', 'a', 0],
+            ['==', 'b', 0]
+          ], props: props),
+          true);
+      expect(
+          evalFilter([
+            'none',
+            ['==', 'a', 1]
+          ], props: props),
+          false);
+    });
+  });
 }

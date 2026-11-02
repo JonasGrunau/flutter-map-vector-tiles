@@ -550,7 +550,7 @@ compiles, as do legacy filters, legacy `{stops}` functions (zoom,
 property and zoom-and-property ones, with `{token}` templates in their
 `text-field` / `icon-image` outputs) and `{token}` templates. The engine
 is checked against all 583 expression fixtures of `maplibre-style-spec`:
-the 425 that MapLibre evaluates give MapLibre's results, apart from 44
+the 425 that MapLibre evaluates give MapLibre's results, apart from 42
 listed one by one, with the reason, in
 `test/maplibre_expression_conformance_test.dart`.
 
@@ -561,10 +561,13 @@ bounds, an `rgb` channel above 255 — the property falls back to its
 default and a filter leaves the feature out, as in MapLibre. Number,
 boolean and array properties take only values of their type, so
 `["get", "size"]` with `"12"` in the tile is not a text size of 12;
-`["to-number", ["get", "size"]]` is. Legacy functions follow the same
-rules: a property function needs a number, not a numeric string, and
-an identity function falls back to its `default` for a value of the
-wrong type. A few operators answer with a fixed value because what
+`["to-number", ["get", "size"]]` is. Math follows JavaScript's:
+`["/", 1, 0]` is Infinity, which a property then falls back on. Legacy
+functions follow the same rules: a property function needs a number,
+not a numeric string, and an identity function falls back to its
+`default` for a value of the wrong type — though `text-field`,
+`icon-image` and the patterns take any value, a number as its digits,
+as MapLibre's do. A few operators answer with a fixed value because what
 they read does not exist here:
 
 | Operator | Here |

@@ -5,6 +5,7 @@ import 'dart:ui' show Color;
 
 import 'package:flutter_map_vector_tiles/src/style/expression.dart';
 import 'package:flutter_map_vector_tiles/src/style/expression_parser.dart';
+import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fixtures/maplibre_expression_fixtures.dart';
@@ -103,8 +104,6 @@ const _divergences = <String, String>{
   'is-supported-script/default': 'every script is drawn through the '
       'platform text stack: `is-supported-script` is always true',
   'legacy/interval/tokens-zoom': _tokens,
-  'max/arity-0': _nonFinite,
-  'min/arity-0': _nonFinite,
   'number-format/precision': '`intl` formats through 64-bit integers: '
       'fraction digits are capped at 15 significant digits, not padded '
       'with zeros past them',
@@ -124,8 +123,6 @@ const _formatOverrides = '`format` style overrides (fonts, scale, '
 const _tokens = 'legacy `{token}` templates are expanded by the theme '
     'reader, which this harness does not run: the template reads the '
     'feature there';
-const _nonFinite = 'non-finite numbers are not numbers here: `max` of '
-    'nothing is null, not -Infinity';
 
 /// Null when [fixture] matches MapLibre, else what differs.
 String? _run(Map<String, Object?> fixture) {
@@ -135,9 +132,13 @@ String? _run(Map<String, Object?> fixture) {
   final globalState =
       (fixture['globalState'] as Map?)?.cast<String, Object?>() ?? const {};
   final parser = ExpressionParser(globalState: globalState);
+  // Parsed as the theme reader parses a property of the fixture's type.
   final parsed = parser.parseForProperty(fixture['expression'],
-      accepts: _accepts(spec),
-      enumValues: (spec?['values'] as Map?)?.keys.cast<String>().toSet());
+      accepts: ThemeReader.acceptsOf(spec?['type'] as String?,
+          value: spec?['value'] as String?,
+          length: (spec?['length'] as num?)?.toInt()),
+      enumValues: (spec?['values'] as Map?)?.keys.cast<String>().toSet(),
+      interpolated: (spec?['expression'] as Map?)?['interpolated'] != false);
   if (compiled['result'] == 'error') return null;
   if (parser.warnings.isNotEmpty) {
     return 'warns on a valid expression: ${parser.warnings.join('; ')}';
@@ -287,29 +288,6 @@ Object? _expected(Object? v, String type) {
   return v;
 }
 
-/// What the theme reader tells the parser a property of [spec]'s type
-/// takes (`ThemeReader._double`, `_color`, `_string`, `_enum`, …).
-bool Function(Object?)? _accepts(Map<String, Object?>? spec) {
-  switch (spec?['type']) {
-    case 'number':
-      return (v) => v is num;
-    case 'color':
-      return (v) => toColor(v) != null;
-    case 'string' || 'enum':
-      return (v) => v is String;
-    case 'boolean':
-      return (v) => v is bool;
-    case 'array':
-      final length = (spec!['length'] as num?)?.toInt();
-      return switch (spec['value']) {
-        'number' => (v) => asNumberList(v, length) != null,
-        'string' => (v) => asStringList(v) != null,
-        _ => null,
-      };
-  }
-  return null;
-}
-
 /// The value as the renderer reads it: [_fallback] for null and for an
 /// error — every typed property falls back to its default there —
 /// through the reading of `DoubleProp`, `StringProp`, `ColorProp`,
@@ -325,7 +303,7 @@ Object? _asProperty(Object? v, Map<String, Object?>? spec, String type) {
       return c == null ? _fallback : _rgba(c);
     case 'number' when propertyType == 'number':
       return asNumber(v) ?? _fallback;
-    case 'string' || 'formatted':
+    case 'string' || 'formatted' || 'resolvedImage':
       return toStringValue(v);
     case 'boolean' when propertyType == 'boolean':
       return v is bool ? v : _fallback;

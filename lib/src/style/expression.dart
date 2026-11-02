@@ -261,20 +261,27 @@ String _json(Object? v) => switch (v) {
       _ => jsonEncode(toStringValue(v)),
     };
 
+/// [v] as a colour: a colour, a CSS colour string, or `[r, g, b]` /
+/// `[r, g, b, a]` — numbers, red, green and blue 0–255 and alpha 0–1,
+/// as MapLibre's `to-color` and `rgba` take them. Out of range, of
+/// another length or with a channel that is not a number (a numeric
+/// string included), a list is no colour: MapLibre fails on it rather
+/// than clamping.
 Color? toColor(Object? v) {
   if (v is Color) return v;
   if (v is String) return parseCssColor(v);
-  if (v is List && v.length >= 3) {
-    final r = toNumber(v[0]);
-    final g = toNumber(v[1]);
-    final b = toNumber(v[2]);
-    final a = v.length > 3 ? (toNumber(v[3]) ?? 1.0) : 1.0;
-    if (r == null || g == null || b == null) return null;
+  if (v is List && (v.length == 3 || v.length == 4)) {
+    for (var i = 0; i < v.length; i++) {
+      final c = v[i];
+      // Written so that NaN fails too.
+      if (c is! num || !(c >= 0 && c <= (i == 3 ? 1 : 255))) return null;
+    }
+    final a = v.length == 4 ? (v[3] as num).toDouble() : 1.0;
     return Color.fromARGB(
-      (a.clamp(0.0, 1.0) * 255).round(),
-      r.round().clamp(0, 255),
-      g.round().clamp(0, 255),
-      b.round().clamp(0, 255),
+      (a * 255).round(),
+      (v[0] as num).round(),
+      (v[1] as num).round(),
+      (v[2] as num).round(),
     );
   }
   return null;
@@ -288,10 +295,11 @@ Expr constExpr(Object? value) => (_) => value;
 /// A typed wrapper around a compiled [Expr] with a fallback value.
 ///
 /// When [zoomOnly] is set — the theme reader proved at compile time
-/// that the expression reads no feature data — the *coerced* result is
+/// that the expression reads no feature data — the result as the
+/// property reads it (checked, or converted, per the rules below) is
 /// memoized against `ctx.zoom`. A tile pass and a label frame each run
 /// at one fixed zoom, so thousands of identical ramp evaluations (and
-/// their `toNumber`/`toColor` coercions) collapse into one.
+/// their checks and conversions) collapse into one.
 ///
 /// [isConstant] promises that the expression always yields [fallback]
 /// (only [DoubleProp.constant] constructs that shape).

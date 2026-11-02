@@ -577,4 +577,156 @@ void main() {
         })),
         [0, 0, 0, 0]);
   });
+
+  test('text and image names take any value from an identity function', () {
+    Map<String, Object?> identity(String property) =>
+        {'type': 'identity', 'property': property};
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'labels',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'peak',
+          'layout': {
+            'text-field': identity('ele'),
+            'icon-image': identity('icon'),
+          },
+        },
+        {
+          'id': 'fill',
+          'type': 'fill',
+          'source': 's',
+          'source-layer': 'landuse',
+          'paint': {'fill-pattern': identity('pattern')},
+        },
+      ],
+    });
+    final labels = theme.layers.first as SymbolThemeLayer;
+    final fill = theme.layers.last as FillThemeLayer;
+    const ctx = EvalContext(
+        zoom: 10, properties: {'ele': 1234, 'icon': 7, 'pattern': 3});
+    expect(labels.textField.eval(ctx), '1234');
+    expect(labels.iconImage!.eval(ctx), '7');
+    expect(fill.pattern!.eval(ctx), '3');
+  });
+
+  test('a legacy text-font function may name a one-font stack bare', () {
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'labels',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'place',
+          'layout': {
+            'text-font': {
+              'stops': [
+                [0, 'Noto Sans Regular'],
+                [
+                  10,
+                  ['Noto Sans Bold']
+                ],
+              ],
+            },
+          },
+        },
+      ],
+    });
+    final labels = theme.layers.single as SymbolThemeLayer;
+    expect(labels.textFont.eval(const EvalContext(zoom: 5, properties: {})),
+        ['Noto Sans Regular']);
+    expect(labels.textFont.eval(const EvalContext(zoom: 12, properties: {})),
+        ['Noto Sans Bold']);
+  });
+
+  test('dash arrays and sort keys step through typeless legacy stops', () {
+    final stops = {
+      'stops': [
+        [0, 1],
+        [10, 3],
+      ],
+    };
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'line',
+          'type': 'line',
+          'source': 's',
+          'source-layer': 'road',
+          'layout': {'line-sort-key': stops},
+          'paint': {
+            'line-dasharray': {
+              'stops': [
+                [
+                  0,
+                  [1, 2, 3]
+                ],
+                [
+                  10,
+                  [3, 4, 5]
+                ],
+              ],
+            },
+          },
+        },
+        {
+          'id': 'labels',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'place',
+          'layout': {'symbol-sort-key': stops},
+        },
+        {
+          'id': 'width',
+          'type': 'line',
+          'source': 's',
+          'source-layer': 'road',
+          'paint': {
+            'line-width': stops,
+            'line-dasharray': {
+              'type': 'exponential',
+              'stops': [
+                [
+                  0,
+                  [1, 2, 3]
+                ],
+                [
+                  10,
+                  [3, 4, 5]
+                ],
+              ],
+            },
+          },
+        },
+      ],
+    });
+    final line = theme.layers[0] as LineThemeLayer;
+    final labels = theme.layers[1] as SymbolThemeLayer;
+    final width = theme.layers[2] as LineThemeLayer;
+    const ctx = EvalContext(zoom: 5, properties: {});
+    // A three-number dash array is a dash array, never a colour.
+    expect(line.dashArray!.eval(ctx), [1, 2, 3]);
+    expect(line.sortKey!.eval(ctx), 1);
+    expect(labels.sortKey.eval(ctx), 1);
+    // Where the spec interpolates, or the style names the type, it ramps.
+    expect(width.width.eval(ctx), 2);
+    expect(width.dashArray!.eval(ctx), [2, 3, 4]);
+  });
+
+  test('acceptsOf gives each spec property type its check', () {
+    expect(ThemeReader.acceptsOf('number')!(5), isTrue);
+    expect(ThemeReader.acceptsOf('number')!('5'), isFalse);
+    expect(ThemeReader.acceptsOf('formatted')!(5), isTrue);
+    expect(ThemeReader.acceptsOf('resolvedImage')!(5), isTrue);
+    expect(ThemeReader.acceptsOf('string')!(5), isFalse);
+    expect(ThemeReader.acceptsOf('padding')!([1, 2, 3]), isTrue);
+    expect(ThemeReader.acceptsOf('array', value: 'number', length: 2)!([1, 2]),
+        isTrue);
+    expect(
+        ThemeReader.acceptsOf('array', value: 'number', length: 2)!([1, 2, 3]),
+        isFalse);
+    expect(ThemeReader.acceptsOf('array', value: 'enum')!(['top']), isTrue);
+    expect(ThemeReader.acceptsOf('numberArray'), isNull);
+  });
 }

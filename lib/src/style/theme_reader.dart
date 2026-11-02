@@ -107,7 +107,8 @@ class ThemeReader {
           opacity: _double(parser, paint['background-opacity'], 1),
           pattern: paint['background-pattern'] == null
               ? null
-              : _string(parser, paint['background-pattern'], ''),
+              : _string(parser, paint['background-pattern'], '',
+                  accepts: _isAny),
         );
       case 'fill':
       case 'fill-extrusion':
@@ -131,13 +132,11 @@ class ThemeReader {
           antialias: paint['fill-antialias'] != false,
           pattern: paint['$prefix-pattern'] == null
               ? null
-              : _string(parser, paint['$prefix-pattern'], ''),
+              : _string(parser, paint['$prefix-pattern'], '', accepts: _isAny),
           extrusion: extrusion,
           translate: _optionalNumList(parser, paint['$prefix-translate']),
           // An extrusion has no sort key.
-          sortKey: extrusion
-              ? null
-              : _optionalDouble(parser, layout['fill-sort-key']),
+          sortKey: extrusion ? null : _sortKey(parser, layout['fill-sort-key']),
         );
       case 'line':
         layer = LineThemeLayer(
@@ -153,19 +152,20 @@ class ThemeReader {
           gapWidth: _double(parser, paint['line-gap-width'], 0),
           dashArray: paint['line-dasharray'] == null
               ? null
-              : _numList(parser, paint['line-dasharray'], const []),
+              : _numList(parser, paint['line-dasharray'], const [],
+                  interpolated: false),
           cap: _enum(parser, layout['line-cap'], 'butt', _lineCaps),
           join: _enum(parser, layout['line-join'], 'miter', _lineJoins),
           pattern: paint['line-pattern'] == null
               ? null
-              : _string(parser, paint['line-pattern'], ''),
+              : _string(parser, paint['line-pattern'], '', accepts: _isAny),
           translate: _optionalNumList(parser, paint['line-translate']),
           offset: _optionalDouble(parser, paint['line-offset']),
           blur: _optionalDouble(parser, paint['line-blur']),
           miterLimit: layout['line-miter-limit'] == null
               ? null
               : _double(parser, layout['line-miter-limit'], 2),
-          sortKey: _optionalDouble(parser, layout['line-sort-key']),
+          sortKey: _sortKey(parser, layout['line-sort-key']),
         );
       case 'circle':
         layer = CircleThemeLayer(
@@ -184,7 +184,7 @@ class ThemeReader {
           strokeOpacity: _double(parser, paint['circle-stroke-opacity'], 1),
           blur: _optionalDouble(parser, paint['circle-blur']),
           translate: _optionalNumList(parser, paint['circle-translate']),
-          sortKey: _optionalDouble(parser, layout['circle-sort-key']),
+          sortKey: _sortKey(parser, layout['circle-sort-key']),
         );
       case 'symbol':
         layer = SymbolThemeLayer(
@@ -196,7 +196,8 @@ class ThemeReader {
           filter: filter,
           placement:
               _enum(parser, layout['symbol-placement'], 'point', _placements),
-          sortKey: _double(parser, layout['symbol-sort-key'], 0),
+          sortKey: _double(parser, layout['symbol-sort-key'], 0,
+              interpolated: false),
           spacing: _double(parser, layout['symbol-spacing'], 250),
           textField: _tokenString(parser, layout['text-field'], ''),
           textSize: _double(parser, layout['text-size'], 16),
@@ -398,13 +399,40 @@ class ThemeReader {
   static Map<String, Object?> _map(Object? v) =>
       v is Map ? v.cast<String, Object?>() : const {};
 
-  // What each kind of property takes from a legacy identity function
-  // (see `ExpressionParser.parseForProperty`).
+  /// What a legacy identity function hands on to a property of the
+  /// style spec's [type] — the `accepts` the readers below pass
+  /// `ExpressionParser.parseForProperty` — with, for an `array`
+  /// property, the type of its items ([value]) and their number when
+  /// fixed ([length]). Null for a type no reader here checks.
+  ///
+  /// The conformance test parses MapLibre's fixtures through this, so
+  /// the test and the reader cannot disagree on it.
+  @internal
+  static bool Function(Object?)? acceptsOf(String? type,
+          {String? value, int? length}) =>
+      switch (type) {
+        'number' => _isNumber,
+        'color' => _isColor,
+        'string' || 'enum' => _isString,
+        'formatted' || 'resolvedImage' => _isAny,
+        'boolean' => _isBool,
+        'padding' => _isPadding,
+        'array' when value == 'number' => (v) =>
+            asNumberList(v, length) != null,
+        'array' => _isStringList,
+        _ => null,
+      };
+
   static bool _isNumber(Object? v) => v is num;
   static bool _isColor(Object? v) => toColor(v) != null;
   static bool _isString(Object? v) => v is String;
   static bool _isBool(Object? v) => v is bool;
   static bool _isStringList(Object? v) => asStringList(v) != null;
+  static bool _isPadding(Object? v) =>
+      asNumber(v) != null || asNumberList(v) != null;
+  // Text (`formatted`) and image names (`resolvedImage`): MapLibre
+  // makes one out of any value, so a number reads as its digits.
+  static bool _isAny(Object? v) => true;
 
   // The values of the enum properties read here.
   static const _lineCaps = {'butt', 'round', 'square'};
@@ -438,11 +466,15 @@ class ThemeReader {
   };
   static const _resamplings = {'linear', 'nearest'};
 
+  /// [interpolated] as `ExpressionParser.parseForProperty` takes it:
+  /// false for the sort keys.
   static DoubleProp _double(
-      ExpressionParser parser, Object? json, double fallback) {
+      ExpressionParser parser, Object? json, double fallback,
+      {bool interpolated = true}) {
     if (json == null) return DoubleProp.constant(fallback);
     if (json is num) return DoubleProp.constant(json.toDouble());
-    final p = parser.parseForProperty(json, accepts: _isNumber);
+    final p = parser.parseForProperty(json,
+        accepts: _isNumber, interpolated: interpolated);
     return DoubleProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
@@ -484,6 +516,11 @@ class ThemeReader {
   static DoubleProp? _optionalDouble(ExpressionParser parser, Object? json) =>
       json == null ? null : _double(parser, json, 0);
 
+  /// A sort key — [_optionalDouble], but not interpolated: a legacy
+  /// function that names no type steps through its stops.
+  static DoubleProp? _sortKey(ExpressionParser parser, Object? json) =>
+      json == null ? null : _double(parser, json, 0, interpolated: false);
+
   /// [_optionalDouble] for the `[x, y]` translate properties.
   static NumListProp? _optionalNumList(ExpressionParser parser, Object? json) =>
       json == null ? null : _numList(parser, json, const [0, 0], length: 2);
@@ -522,9 +559,11 @@ class ThemeReader {
     return [_color(parser, json, fallback)];
   }
 
+  /// [accepts] is [_isString] for a `string` or `enum` property, and
+  /// [_isAny] for the text and image names (see [acceptsOf]).
   static StringProp _string(
       ExpressionParser parser, Object? json, String fallback,
-      {Set<String>? enumValues}) {
+      {Set<String>? enumValues, bool Function(Object?) accepts = _isString}) {
     if (json == null) return StringProp.constant(fallback);
     if (json is String && !json.contains('{')) {
       return StringProp.constant(json);
@@ -533,8 +572,8 @@ class ThemeReader {
       // Legacy token syntax: "{name} ({ref})".
       return StringProp(_tokenExpr(parser, json), fallback);
     }
-    final p = parser.parseForProperty(json,
-        accepts: _isString, enumValues: enumValues);
+    final p =
+        parser.parseForProperty(json, accepts: accepts, enumValues: enumValues);
     return StringProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
@@ -552,7 +591,7 @@ class ThemeReader {
   static StringProp _tokenString(
       ExpressionParser parser, Object? json, String fallback) {
     final stops = json is Map ? json['stops'] : null;
-    if (stops is! List) return _string(parser, json, fallback);
+    if (stops is! List) return _string(parser, json, fallback, accepts: _isAny);
     final templates = <String, Expr>{};
     for (final stop in stops) {
       if (stop is List &&
@@ -567,7 +606,7 @@ class ThemeReader {
     if (defaultValue is String && defaultValue.contains('{')) {
       templates[defaultValue] ??= _tokenExpr(parser, defaultValue);
     }
-    final p = parser.parseForProperty(json, accepts: _isString);
+    final p = parser.parseForProperty(json, accepts: _isAny);
     if (templates.isEmpty) {
       return StringProp(p.expr, fallback, zoomOnly: p.zoomOnly);
     }
@@ -582,7 +621,8 @@ class ThemeReader {
   /// String-array layout properties (font stacks, anchor lists): a bare
   /// array of strings whose head is not an expression operator is a
   /// literal value, not an expression, and so is a single string — a
-  /// one-font stack written without its brackets.
+  /// one-font stack written without its brackets. So is a single string
+  /// among a legacy function's stop outputs and its `default`.
   static StringListProp _stringList(
       ExpressionParser parser, Object? json, List<String> fallback) {
     if (json == null) return StringListProp(constExpr(null), fallback);
@@ -593,16 +633,37 @@ class ThemeReader {
         !ExpressionParser.operators.contains(json.first)) {
       return StringListProp.constant(json.cast<String>());
     }
+    if (json is Map) json = _bracketStringOutputs(json);
     final p = parser.parseForProperty(json, accepts: _isStringList);
     return StringListProp(p.expr, fallback, zoomOnly: p.zoomOnly);
   }
 
+  /// [json], a legacy function, with each bare-string stop output and
+  /// `default` in brackets: `"Noto Sans Bold"` → `["Noto Sans Bold"]`.
+  static Map<Object?, Object?> _bracketStringOutputs(
+      Map<Object?, Object?> json) {
+    Object? bracket(Object? v) => v is String ? [v] : v;
+    final stops = json['stops'];
+    return {
+      ...json,
+      if (stops is List)
+        'stops': [
+          for (final stop in stops)
+            stop is List && stop.length >= 2
+                ? [stop[0], bracket(stop[1]), ...stop.skip(2)]
+                : stop,
+        ],
+      if (json.containsKey('default')) 'default': bracket(json['default']),
+    };
+  }
+
   /// Numeric-array properties (text-offset, icon-offset, dash arrays):
   /// a bare array of numbers is a literal value, pre-converted once.
-  /// [length] is the one length the property takes, if it has one.
+  /// [length] is the one length the property takes, if it has one;
+  /// [interpolated] is false for `line-dasharray` (see [_double]).
   static NumListProp _numList(
       ExpressionParser parser, Object? json, List<double> fallback,
-      {int? length}) {
+      {int? length, bool interpolated = true}) {
     if (json == null) return NumListProp.constant(fallback);
     if (json is List && json.isNotEmpty && json.every((e) => e is num)) {
       if (length != null && json.length != length) {
@@ -614,7 +675,8 @@ class ThemeReader {
           [for (final e in json) (e as num).toDouble()]);
     }
     final p = parser.parseForProperty(json,
-        accepts: (v) => asNumberList(v, length) != null);
+        accepts: (v) => asNumberList(v, length) != null,
+        interpolated: interpolated);
     return NumListProp(p.expr, fallback, zoomOnly: p.zoomOnly, length: length);
   }
 
@@ -626,8 +688,7 @@ class ThemeReader {
     if (json == null || json is List && json.every((e) => e is num)) {
       return _numList(parser, json, fallback);
     }
-    final p = parser.parseForProperty(json,
-        accepts: (v) => asNumber(v) != null || asNumberList(v) != null);
+    final p = parser.parseForProperty(json, accepts: _isPadding);
     final expr = p.expr;
     return NumListProp((ctx) {
       final v = expr(ctx);

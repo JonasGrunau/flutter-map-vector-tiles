@@ -89,7 +89,7 @@
   `join`, `split` and `semiliteral`. `elevation` is null, since no
   terrain is drawn. Before, a layer using any of these got the
   property's default and logged a warning. Checked against the 583
-  expression fixtures of `maplibre-style-spec`, 381 of the 425 that
+  expression fixtures of `maplibre-style-spec`, 383 of the 425 that
   MapLibre evaluates now give its result, up from 203. The rest are
   listed with reasons in the test suite.
 - 🎨 Expressions are as strict about types as MapLibre's. Where an
@@ -101,7 +101,11 @@
   here than in MapLibre. Number, boolean and array properties take only
   values of their type, legacy property functions need a number rather
   than a numeric string, and a legacy identity function falls back to
-  its own `default` for a value of the wrong type. The OpenFreeMap
+  its own `default` for a value of the wrong type (`text-field`,
+  `icon-image` and the patterns still take any value, a number as its
+  digits). Math follows JavaScript: `["/", 1, 0]` is Infinity and
+  `["max"]` -Infinity, where both were null, so `coalesce` no longer
+  skips them; a property reading one falls back. The OpenFreeMap
   styles and six older OpenMapTiles styles evaluate exactly as before
   on real tiles.
 - 🎨 **More of the style spec drawn on fills, lines, circles and
@@ -247,6 +251,15 @@
   property's default. Legacy functions over numeric strings
   (`[[0, "0"], [1, "1"]]`) blended them as numbers, and a stop listed
   twice took the second output instead of the first.
+- 🐛 A ramp between lists of three or four numbers — dash arrays,
+  `icon-padding` — was blended as if they were colours, so the property
+  fell back to its default between stops: a legacy zoom function on
+  `line-dasharray` drew a solid line there. Legacy functions that name
+  no `type` on `line-dasharray` and the sort keys now step through their
+  stops, as MapLibre does, instead of ramping.
+- 🐛 A feature property of Infinity made `match`, `in` and legacy
+  categorical functions and `in` filters throw, which could leave the
+  whole tile blank.
 - 🐛 Sharp corners of miter-joined lines — `miter` is the spec's
   default join — drew long spikes. Lines were stroked with Skia's miter
   limit of 4 instead of the spec's `line-miter-limit` default of 2, so
