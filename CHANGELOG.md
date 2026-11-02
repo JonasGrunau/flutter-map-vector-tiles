@@ -117,6 +117,31 @@
   the fill, so a stroked circle came out half a stroke width smaller
   than in MapLibre. The stroke now lies outside the radius, as the spec
   says.
+- ⚡ The label pass no longer searches for every label's previous place
+  on screen each frame, which makes its sort and fade sweep cheaper. On
+  the Nothing Phone (1), the compare harness's camera runs deliver 1 to
+  2 points more frames, with a UI-thread p90 1 to 2 ms lower.
+- 🐛 During a fast zoom, a label the last collision pass had placed
+  could stop drawing until the next pass once its tile was replaced
+  under it (a republish, the next zoom level arriving), because the
+  label pass no longer recognised it. It now keeps drawing from the new
+  tile's copy: the bench's fastest sweep draws about half as many
+  labels again per frame.
+- 🐛 One-way arrows just past a zoom crossing could vanish at full
+  opacity instead of fading out. They fade now.
+- 🐛 A label two tiles laid out at once — the feature on a seam that
+  both neighbours claim, or the outgoing and arriving level's copy
+  during a zoom crossing — drew twice, one copy over the other, in a
+  layer with `text-allow-overlap` or `icon-allow-overlap`, where nothing
+  collided to remove the second copy. One label now draws once.
+- 🧹 Every label has an identity that outlives the tile it was laid out
+  for: when a tile publishes, its labels are matched to the ones already
+  on screen by name and position, and a republished tile, the next zoom
+  level and both sides of a seam carry the same label on. The label pass
+  keys its fades, its placement memory and the frozen decision between
+  collision passes on it, instead of matching every label by screen
+  position on every frame. Two same-named labels within 32 px of each
+  other no longer share one fade.
 - 📚 The README's trade-offs with `vector_map_tiles` no longer list
   revisits. The one gap measured there was a single point of frames on
   the Android phone's repeated pan (97.7% against 98.7%, with the same

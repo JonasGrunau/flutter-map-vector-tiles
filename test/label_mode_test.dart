@@ -301,7 +301,7 @@ void main() {
         styleZoom: 14,
         symbols: [
           PlacedSymbol(
-              instance: edge, screenAnchor: edge.anchor, screenAngle: 0),
+              instance: edge, id: 1, screenAnchor: edge.anchor, screenAngle: 0),
         ],
         placementGeneration: 1,
       );
@@ -348,10 +348,7 @@ void main() {
 
       expect(paintTile(painter, [candidate]), hasLength(1));
 
-      expect(
-          painter.debugPlacement
-              .lookup(candidate.continuityKey, candidate.anchor),
-          isNull,
+      expect(painter.debugPlacement.lookup(1), isNull,
           reason: 'a tile pass keeps no placement memory');
       expect(painter.hasActiveFades, isFalse);
       expect(painter.placementPending, isFalse);

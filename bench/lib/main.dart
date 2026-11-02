@@ -75,7 +75,9 @@ const _mode = String.fromEnvironment('BENCH_MODE', defaultValue: 'bench');
 const _logGone = bool.fromEnvironment('BENCH_LOG_GONE');
 
 /// `BENCH_WATCH=<regexp>` prints every rejection, frame by frame, of the
-/// labels whose continuity key matches — for chasing one blink.
+/// labels whose continuity key matches, and a `DRAWN` line (label id,
+/// screen position, opacity) for every frame one is drawn — for chasing
+/// one blink.
 const _watch = String.fromEnvironment('BENCH_WATCH');
 final _watchRe = _watch.isEmpty ? null : RegExp(_watch);
 
@@ -217,6 +219,11 @@ class _BenchPageState extends State<BenchPage>
   final _labelsGone = <_GoneLabel>[];
   final _labelsAppeared = <_GoneLabel>[];
   final _rejects = <String, int>{};
+
+  /// The continuity key of every label id drawn so far: a fade-out with
+  /// no copy left to draw (`ghost:none`) is reported by id alone, and
+  /// this names it, for the tallies and for `BENCH_WATCH`.
+  final _keyOfId = <int, Object>{};
   var _stab = _StabilityCounters();
 
   @override
@@ -240,6 +247,7 @@ class _BenchPageState extends State<BenchPage>
       LabelPainter.debugDrawnProbe = _onLabelsDrawn;
       LabelPainter.debugRejectProbe = (key, reason, replay) {
         if (!_recording) return;
+        if (key is int) key = _keyOfId[key] ?? key;
         final k = '$reason${replay ? '/replay' : ''} $key';
         if (_watchRe?.hasMatch('$key') ?? false) {
           debugPrint('BENCH[$_label] WATCH z=${_zoomNow()?.toStringAsFixed(3)} '
@@ -341,6 +349,18 @@ class _BenchPageState extends State<BenchPage>
   /// while a window is recording; the frame-to-frame memory runs
   /// always, so a window never opens against an empty previous frame.
   void _onLabelsDrawn(double styleZoom, List<DrawnLabelRecord> drawn) {
+    final watch = _recording ? _watchRe : null;
+    for (final record in drawn) {
+      _keyOfId[record.id] = record.key;
+      if (watch != null && watch.hasMatch('${record.key}')) {
+        debugPrint('BENCH[$_label] DRAWN z=${_zoomNow()?.toStringAsFixed(3)} '
+            't=${DateTime.now().millisecondsSinceEpoch % 100000} '
+            'id=${record.id} at=${record.position.dx.toStringAsFixed(1)},'
+            '${record.position.dy.toStringAsFixed(1)} '
+            'opacity=${record.opacity.toStringAsFixed(2)}'
+            '${record.ghost ? ' ghost' : ''} ${record.key}');
+      }
+    }
     if (!_mapReady.isCompleted) return;
     final camera = _controller.camera;
     final scale = math.pow(2.0, 20 - camera.zoom).toDouble();

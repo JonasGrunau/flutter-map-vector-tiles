@@ -7,6 +7,8 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fixtures/label_ids.dart';
+
 /// `text-max-width` wrapping, observed through the collision box: a
 /// label's box is as tall as its lines, so whether a second label just
 /// below it fits tells how many lines the first one took.
@@ -47,6 +49,7 @@ PlacedSymbol _symbol(SymbolThemeLayer layer, String text, Offset at) =>
         geometryType: 'Point',
         featureId: null,
       ),
+      id: labelIdOf((text, at)),
       screenAnchor: at,
       screenAngle: 0,
     );

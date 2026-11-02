@@ -12,6 +12,8 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fixtures/label_ids.dart';
+
 const _atlasSize = 16;
 const _canvasSize = 64;
 const _canvasBox = Size(64, 64);
@@ -113,6 +115,7 @@ PlacedSymbol _arrowSymbol(SymbolThemeLayer layer,
         geometryType: alongLine ? 'LineString' : 'Point',
         featureId: null,
       ),
+      id: labelIdOf(('arrow', screenAnchor)),
       // Centred, so the 16x16 sprite lands on (24,24)-(40,40) and rect.center
       // is exactly (32,32) — rotation has no sub-pixel remainder to blur.
       screenAnchor: screenAnchor,
@@ -188,6 +191,7 @@ Future<int> _rotatedCollisionCount() async {
           geometryType: 'Point',
           featureId: null,
         ),
+        id: labelIdOf(('wide', anchor)),
         screenAnchor: anchor,
         screenAngle: 0,
       );

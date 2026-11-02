@@ -8,6 +8,8 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fixtures/label_ids.dart';
+
 const _screenSize = Size(180, 100);
 
 Theme _theme({
@@ -74,6 +76,7 @@ PlacedSymbol _symbol(
         geometryType: 'LineString',
         featureId: null,
       ),
+      id: labelIdOf((layerIndex, text, anchor)),
       screenAnchor: anchor,
       screenAngle: angle,
       retained: retained,

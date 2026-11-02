@@ -8,6 +8,8 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fixtures/label_ids.dart';
+
 /// A replay frame — between placement passes — sorts only the last
 /// pass's winners instead of every candidate. These pin down that it
 /// draws exactly what the pass decided, whatever order the candidate
@@ -86,6 +88,7 @@ List<PlacedSymbol> _frame(
       for (final c in candidates)
         PlacedSymbol(
           instance: c.instance,
+          id: labelIdOf(c.instance),
           screenAnchor: c.anchor,
           screenAngle: 0,
           order: c.order,

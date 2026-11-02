@@ -7,6 +7,8 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fixtures/label_ids.dart';
+
 /// Each paint models changed placement input; a constant would replay
 /// the first pass forever once fades are on.
 var _nextPlacementGeneration = 0;
@@ -41,6 +43,7 @@ PlacedSymbol _symbol(SymbolThemeLayer layer, String text) => PlacedSymbol(
         geometryType: 'Point',
         featureId: null,
       ),
+      id: labelIdOf(text),
       screenAnchor: const Offset(200, 200),
       screenAngle: 0,
     );
@@ -162,6 +165,7 @@ void main() {
       final a = _symbol(layer, 'Isar');
       final b = PlacedSymbol(
         instance: _symbol(layer, 'Amper').instance,
+        id: labelIdOf('Amper'),
         screenAnchor: const Offset(200, 228),
         screenAngle: 0,
       );

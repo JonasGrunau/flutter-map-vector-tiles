@@ -10,6 +10,8 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fixtures/label_ids.dart';
+
 /// Each paint models changed placement input; a constant would replay
 /// the first pass forever once fades are on.
 var _nextPlacementGeneration = 0;
@@ -75,6 +77,7 @@ PlacedSymbol _lineSymbol(
       geometryType: 'LineString',
       featureId: null,
     ),
+    id: labelIdOf(text),
     screenAnchor: transform.apply(anchor),
     screenAngle: path.angleAt(d),
     transform: transform,
@@ -115,9 +118,7 @@ SymbolPath _hairpin(double radius, {int segments = 18}) {
 
 /// The reading direction [painter] remembers for [symbol]'s label.
 bool? _flipOf(LabelPainter painter, PlacedSymbol symbol) =>
-    painter.debugPlacement
-        .lookup(symbol.instance.continuityKey, symbol.screenAnchor)
-        ?.flip;
+    painter.debugPlacement.lookup(symbol.id)?.flip;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -352,6 +353,7 @@ void main() {
           TileTransform(origin: Offset.zero, scale: scale, rotation: 0);
       return PlacedSymbol(
         instance: base.instance,
+        id: base.id,
         screenAnchor: transform.apply(base.instance.anchor),
         screenAngle: base.instance.angle,
         transform: transform,
@@ -401,6 +403,7 @@ void main() {
           TileTransform(origin: Offset.zero, scale: scale, rotation: 0);
       return PlacedSymbol(
         instance: base.instance,
+        id: base.id,
         screenAnchor: transform.apply(base.instance.anchor),
         screenAngle: base.instance.angle,
         transform: transform,
@@ -446,6 +449,7 @@ void main() {
           TileTransform(origin: Offset.zero, scale: scale, rotation: 0);
       return PlacedSymbol(
         instance: base.instance,
+        id: base.id,
         screenAnchor: transform.apply(base.instance.anchor),
         screenAngle: base.instance.angle,
         transform: transform,
@@ -507,6 +511,7 @@ void main() {
           TileTransform(origin: a - spun, scale: 1, rotation: rotation);
       return PlacedSymbol(
         instance: instance,
+        id: labelIdOf(instance.text),
         screenAnchor: transform.apply(a),
         screenAngle: instance.angle + rotation,
         transform: transform,
@@ -638,6 +643,7 @@ void main() {
         symbols: [
           PlacedSymbol(
             instance: instance,
+            id: labelIdOf(instance.text),
             screenAnchor: transform.apply(instance.anchor),
             screenAngle: instance.angle,
             transform: transform,

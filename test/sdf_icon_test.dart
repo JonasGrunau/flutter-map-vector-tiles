@@ -12,6 +12,8 @@ import 'package:flutter_map_vector_tiles/src/style/theme.dart';
 import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fixtures/label_ids.dart';
+
 const _atlasSize = 16;
 const _canvasSize = 64;
 const _canvasBox = Size(64, 64);
@@ -90,6 +92,7 @@ PlacedSymbol _iconSymbol(SymbolThemeLayer layer) => PlacedSymbol(
         geometryType: 'Point',
         featureId: null,
       ),
+      id: labelIdOf('dot'),
       // Centred, so the 16x16 sprite lands on (24,24)-(40,40) and each
       // destination pixel samples exactly one texel.
       screenAnchor: const Offset(32, 32),
