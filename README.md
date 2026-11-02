@@ -629,16 +629,24 @@ baked into the tile rasters, which is what the behaviour below rests on.
 `LabelMode.tile` bakes them in instead; [Choosing a label
 mode](#choosing-a-label-mode) has what changes then.
 
-- **Curved along the road.** Glyphs are placed one by one with MapLibre
-  semantics: `text-max-angle` rejects sharp bends, `text-keep-upright`
-  flips reading direction, `text-rotation-alignment: viewport` keeps
-  shield text horizontal. Nearly straight windows are drawn as a single
-  rotated string for speed; scripts with contextual shaping (Arabic,
-  Indic, …) fall back to straight placement so glyphs are never
-  mis-joined. One deliberate difference: a kept-upright label whose road
-  turns back on itself (a hairpin) is dropped rather than drawn with
-  the letters past the turn upside down, which `text-max-angle` alone
-  lets through because each step of a smooth turn stays under it.
+- **Straight or smoothly curved along the road.** Where the road under
+  a label is straight at the label's scale it is drawn as one straight
+  string, even when the road is digitized as a zigzag, as most
+  footpaths and residential streets in OpenStreetMap are; where the
+  road bends, the glyphs follow one smooth curve through it, the way
+  Google Maps draws street names, rather than the angle of each little
+  segment beneath them as MapLibre does, which draws a zigzag's name
+  crooked. `text-max-angle` rejects sharp corners with MapLibre's
+  semantics (turns summed within 3/5 em at the road's own vertices),
+  `text-keep-upright` flips reading direction,
+  `text-rotation-alignment: viewport` keeps shield text horizontal;
+  scripts with contextual shaping (Arabic, Indic, …) fall back to
+  straight placement so glyphs are never mis-joined. Deliberate
+  differences: a label whose road turns more than 60° under it, between
+  stretches a line of text long, is dropped, since its curve could not
+  follow the road, and so is a kept-upright label whose road turns back
+  on itself (a hairpin) rather than drawn with the letters past the
+  turn upside down.
 - **Only where it fits.** Anything placed along a line, curved text, a
   road shield, a one-way arrow, needs all of itself on the line,
   centred on its anchor, as in MapLibre: a ramp or a crossing shorter

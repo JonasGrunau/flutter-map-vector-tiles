@@ -294,6 +294,39 @@ class LabelPainter {
   /// not for a glyph that reads upside down. See [_prepareCurved].
   static const double _uprightSlack = math.pi / 6;
 
+  /// How far, in ems, the road under an along-line label may stray to
+  /// either side of the chord between the label's ends for the label to
+  /// be drawn straight along that chord. Past [_curvedAboveEm] the text
+  /// follows the road's curve; between the two it eases from one to the
+  /// other. Most streets are straight at a label's scale but digitized
+  /// as zigzags of 30–50° every few metres, and glyph by glyph those
+  /// zigzags drew the name crooked.
+  static const double _straightBelowEm = 0.25;
+  static const double _curvedAboveEm = 0.45;
+
+  /// The same bounds for how far the road turns, in radians, between
+  /// the chords over the first and the last third of the label (15° and
+  /// 30°). On real streets a label straight by its stray rarely turns
+  /// more than 15°; a short label round a tight bend strays less than a
+  /// quarter em and still needs the curve.
+  static const double _straightBelowTurn = 15 * math.pi / 180;
+  static const double _curvedAboveTurn = 30 * math.pi / 180;
+
+  /// The stretch of road, in ems, over which [_bendsPast] sums the
+  /// turns at its vertices against `text-max-angle`: 3/5 of an em, as
+  /// in MapLibre.
+  static const double _maxAngleWindowEm = 0.6;
+
+  /// The sharpest turn, between segments at least a line of text long,
+  /// that curved text may follow (see [_turnsSharply]): 60°, Google
+  /// Maps' limit, as its cosine.
+  static const double _cosMaxSegmentTurn = 0.5;
+
+  /// How far, in ems, the curve curved text is drawn on may stray from
+  /// its road between the points it passes through before a placement
+  /// pass rejects the label.
+  static const double _maxCurveStrayEm = 1.0;
+
   /// Paragraph shapings performed (cache misses); for tests asserting
   /// that zoom motion does not re-shape text.
   @visibleForTesting
@@ -356,6 +389,14 @@ class LabelPainter {
   /// the label id instead. For the bench; null otherwise.
   static void Function(Object key, String reason, bool replay)?
       debugRejectProbe;
+
+  /// Debug hook: called with an along-line label's text and the screen
+  /// position and angle of each of its glyph clusters, in reading
+  /// order, whenever one is laid out along its line — straight or
+  /// curved. For tests; null otherwise.
+  @visibleForTesting
+  static void Function(String text, List<(Offset, double)> glyphs)?
+      debugLineGlyphsProbe;
 
   static void Function(double styleZoom, List<DrawnLabelRecord> drawn)?
       debugDrawnProbe;
@@ -2638,10 +2679,13 @@ class LabelPainter {
     };
   }
 
-  /// Curved line text: each glyph cluster is placed and rotated
-  /// individually along the projected line. Labels that don't fit their
-  /// line or bend sharper than `text-max-angle` are not placed, matching
-  /// MapLibre. [shift] is `text-translate`, moving every glyph.
+  /// Text along its line. Where the road under the label is straight at
+  /// the label's scale (see [_straightBelowEm]) it is drawn as one
+  /// string along the chord between the label's ends; elsewhere each
+  /// glyph cluster sits on one smooth curve through the road and turns
+  /// with it. Labels that don't fit their line or bend sharper than
+  /// `text-max-angle` are not placed, matching MapLibre. [shift] is
+  /// `text-translate`, moving every glyph.
   _DrawableSymbol? _prepareCurved(
     PlacedSymbol placed,
     SymbolThemeLayer layer,
@@ -2731,8 +2775,10 @@ class LabelPainter {
     // come out upside-down on screen. Measured over the label's own
     // span rather than the whole line, and held across the vertical it
     // would otherwise flip at (see [_readsBackwards]).
-    final s0 = transform.apply(path.pointAt(d0));
-    final s1 = transform.apply(path.pointAt(d1));
+    final p0 = path.pointAt(d0);
+    final p1 = path.pointAt(d1);
+    final s0 = transform.apply(p0);
+    final s1 = transform.apply(p1);
     final chord = s1 - s0;
     final chordLength = chord.distance;
     final backwards = chordLength > 0
@@ -2759,20 +2805,179 @@ class LabelPainter {
             180 *
             (placed.incumbent ? 1.25 : 1.0);
 
+    // How far the road under the label strays to either side of the
+    // chord between its ends, and how far it turns from the label's
+    // first third to its last, decide how much the text curves: not at
+    // all within [_straightBelowEm] and [_straightBelowTurn], fully past
+    // either upper bound, and eased in between, so a zoom that carries
+    // the label across a threshold bends it gradually instead of
+    // snapping it to the road. A zigzag strays little and turns little
+    // at the label's scale; a short label on a tight bend strays little
+    // but turns a lot, and drawn straight it would cross the road at
+    // its ends.
+    final length = d1 - d0;
+    final pa = path.pointAt(d0 + length / 3);
+    final pb = path.pointAt(d0 + length * 2 / 3);
+    final (lo, hi) = _chordSpread(path, d0, d1, p0, p1);
+    final strayEm = (hi - lo) / 2 * scale / fontSize;
+    final ax = pa.dx - p0.dx, ay = pa.dy - p0.dy;
+    final bx = p1.dx - pb.dx, by = p1.dy - pb.dy;
+    final turn = math.atan2((ax * by - ay * bx).abs(), ax * bx + ay * by);
+    final curve = math.max(
+        ((strayEm - _straightBelowEm) / (_curvedAboveEm - _straightBelowEm))
+            .clamp(0.0, 1.0),
+        ((turn - _straightBelowTurn) / (_curvedAboveTurn - _straightBelowTurn))
+            .clamp(0.0, 1.0));
+    if (curve > 0 &&
+        maxAngle.isFinite &&
+        (_bendsPast(
+                path, d0, d1, _maxAngleWindowEm * fontSize / scale, maxAngle) ||
+            _turnsSharply(
+                path, d0, d1, text.size.height * textScale / scale))) {
+      // A corner under the label sharper than `text-max-angle`, counted
+      // at the road's own vertices as MapLibre does — glyphs placed
+      // either side of it would compare equal and never see it — or a
+      // road that turns too far for the curve below to stay on it.
+      debugRejectProbe?.call(instance.continuityKey, 'angle', false);
+      return textRejected();
+    }
+
+    // The straight reading: along the chord, centred on the band the
+    // road occupies — off the chord when the road bows to one side.
+    final total = text.size.width * textScale;
+    final chordPath = p1 - p0;
+    final chordPathLength = chordPath.distance;
+    final band = chordPathLength > 0
+        ? Offset(-chordPath.dy, chordPath.dx) *
+            ((hi + lo) / 2 / chordPathLength)
+        : Offset.zero;
+    final centre = transform.apply((p0 + p1) / 2 + band);
+    var dirX = chordLength > 0 ? chord.dx / chordLength : 1.0;
+    var dirY = chordLength > 0 ? chord.dy / chordLength : 0.0;
+    if (chordLength == 0) {
+      dirX = math.cos(placed.screenAngle);
+      dirY = math.sin(placed.screenAngle);
+    }
+    if (reversed) {
+      dirX = -dirX;
+      dirY = -dirY;
+    }
+    final straightAngle = math.atan2(dirY, dirX);
+    final padding = layer.textPadding.eval(ctx);
+
+    if (curve == 0) {
+      // Drawn as a single rotated string, much cheaper than glyph by
+      // glyph, and boxed in pieces along it: one box around a label
+      // on a diagonal road claimed the corners beside it too.
+      var anchor = centre + shift;
+      if (perp != 0) {
+        anchor += Offset(-dirY, dirX) * perp;
+      }
+      final height = text.size.height * textScale;
+      final textRect =
+          Rect.fromCenter(center: anchor, width: total, height: height);
+      final pieces = math.max(1, (total / (2 * height)).ceil());
+      final piece = total / pieces;
+      if (debugLineGlyphsProbe != null) {
+        debugLineGlyphsProbe!(instance.text, [
+          for (final cluster in clusters)
+            (
+              anchor +
+                  Offset(dirX, dirY) * (cluster.center * textScale - total / 2),
+              straightAngle
+            ),
+        ]);
+      }
+      return placeWith(
+          [
+            for (var i = 0; i < pieces; i++)
+              () {
+                final along = (i + 0.5) * piece - total / 2;
+                final at = anchor + Offset(dirX, dirY) * along;
+                return _rotatedBounds(
+                        Rect.fromCenter(
+                            center: at, width: piece, height: height),
+                        at,
+                        straightAngle)
+                    .inflate(padding);
+              }(),
+          ],
+          (icon) => _DrawableSymbol(placed,
+              icon: icon,
+              text: text,
+              textRect: textRect,
+              textAnchor: anchor,
+              textAngle: straightAngle,
+              textScale: textScale));
+    }
+
+    // The curved reading: one cubic through the road at the label's
+    // ends and its thirds, in screen space and in reading order — the
+    // curve Google Maps lays its street names on. Its control points
+    // make it pass through all four, so it follows the road's bends at
+    // the label's scale while every zigzag between the samples, which
+    // turned neighbouring glyphs by the zigzag's full angle when each
+    // took its own segment's, smooths out.
+    final sa = transform.apply(pa);
+    final sb = transform.apply(pb);
+    final q0 = reversed ? s1 : s0;
+    final q1 = reversed ? sb : sa;
+    final q2 = reversed ? sa : sb;
+    final q3 = reversed ? s0 : s1;
+    final c1x = (-5 * q0.dx + 18 * q1.dx - 9 * q2.dx + 2 * q3.dx) / 6;
+    final c1y = (-5 * q0.dy + 18 * q1.dy - 9 * q2.dy + 2 * q3.dy) / 6;
+    final c2x = (2 * q0.dx - 9 * q1.dx + 18 * q2.dx - 5 * q3.dx) / 6;
+    final c2y = (2 * q0.dy - 9 * q1.dy + 18 * q2.dy - 5 * q3.dy) / 6;
+    if (maxAngle.isFinite) {
+      // The curve passes through the road at its four samples; between
+      // them it must not wander off it, as it would round a hairpin or
+      // loop of short segments that every test above lets through. On
+      // real streets it keeps within about half an em.
+      final limit = _maxCurveStrayEm * fontSize;
+      for (var k = 1; k <= 5; k += 2) {
+        final t = k / 6;
+        final u = 1 - t;
+        final b0 = u * u * u, b1 = 3 * u * u * t;
+        final b2 = 3 * u * t * t, b3 = t * t * t;
+        final road = transform
+            .apply(path.pointAt(reversed ? d1 - t * length : d0 + t * length));
+        final dx = b0 * q0.dx + b1 * c1x + b2 * c2x + b3 * q3.dx - road.dx;
+        final dy = b0 * q0.dy + b1 * c1y + b2 * c2y + b3 * q3.dy - road.dy;
+        if (dx * dx + dy * dy > limit * limit) {
+          debugRejectProbe?.call(instance.continuityKey, 'angle', false);
+          return textRejected();
+        }
+      }
+    }
+
     final placements =
         <({_Cluster cluster, Offset pos, double angle, double width})>[];
     var previousAngle = double.nan;
-    var maxDeviation = 0.0;
-    double? firstAngle;
     for (final cluster in clusters) {
-      final centre = cluster.center * textScale;
-      final d = reversed ? d1 - centre / scale : d0 + centre / scale;
-      var angle = path.angleAt(d) + transform.rotation;
-      if (reversed) angle += math.pi;
-      angle = _foldAngle(angle);
+      final c = cluster.center * textScale;
+      final t = c / total;
+      final u = 1 - t;
+      final b0 = u * u * u, b1 = 3 * u * u * t;
+      final b2 = 3 * u * t * t, b3 = t * t * t;
+      final tx = 3 * u * u * (c1x - q0.dx) +
+          6 * u * t * (c2x - c1x) +
+          3 * t * t * (q3.dx - c2x);
+      final ty = 3 * u * u * (c1y - q0.dy) +
+          6 * u * t * (c2y - c1y) +
+          3 * t * t * (q3.dy - c2y);
+      // Eased from the straight reading by [curve].
+      final along = c - total / 2;
+      final sx = centre.dx + dirX * along;
+      final sy = centre.dy + dirY * along;
+      var pos = Offset(
+          sx + (b0 * q0.dx + b1 * c1x + b2 * c2x + b3 * q3.dx - sx) * curve,
+          sy + (b0 * q0.dy + b1 * c1y + b2 * c2y + b3 * q3.dy - sy) * curve);
+      final angle = _foldAngle(straightAngle +
+          _foldAngle(math.atan2(ty, tx) - straightAngle) * curve);
       if (!previousAngle.isNaN &&
           _foldAngle(angle - previousAngle).abs() > maxAngle) {
-        // line bends too sharply for this label
+        // `text-max-angle` between neighbouring glyphs, as the spec
+        // words it, on the curve they are drawn on.
         debugRejectProbe?.call(
             instance.continuityKey, 'angle', collision.permissive);
         return textRejected();
@@ -2790,10 +2995,7 @@ class LabelPainter {
         return textRejected();
       }
       previousAngle = angle;
-      firstAngle ??= angle;
-      maxDeviation =
-          math.max(maxDeviation, _foldAngle(angle - firstAngle).abs());
-      var pos = transform.apply(path.pointAt(d)) + shift;
+      pos += shift;
       if (perp != 0) {
         pos += Offset(-math.sin(angle), math.cos(angle)) * perp;
       }
@@ -2804,29 +3006,11 @@ class LabelPainter {
         width: cluster.width * textScale,
       ));
     }
-    if (placements.isEmpty) return null;
 
-    final padding = layer.textPadding.eval(ctx);
-
-    // The window under the label is essentially straight: draw it as a
-    // single rotated string, which is much cheaper.
-    if (maxDeviation < 0.02 && perp == 0) {
-      final angle = _orientAngle(placed.screenAngle, backwards);
-      final textRect = Rect.fromCenter(
-          center: textAnchor,
-          width: text.size.width * textScale,
-          height: text.size.height * textScale);
-      return placeWith(
-          [
-            _rotatedBounds(textRect, textAnchor, angle).inflate(padding),
-          ],
-          (icon) => _DrawableSymbol(placed,
-              icon: icon,
-              text: text,
-              textRect: textRect,
-              textAnchor: textAnchor,
-              textAngle: angle,
-              textScale: textScale));
+    if (debugLineGlyphsProbe != null) {
+      debugLineGlyphsProbe!(instance.text, [
+        for (final p in placements) (p.pos, p.angle),
+      ]);
     }
 
     // Per-glyph collision boxes.
@@ -2888,6 +3072,100 @@ class LabelPainter {
       }
     }
     return glyphs;
+  }
+
+  /// How far [path]'s vertices strictly between [d0] and [d1] stray to
+  /// either side of the chord from [p0] to [p1], the path's points at
+  /// those distances: the farthest to its right (≤ 0) and to its left
+  /// (≥ 0), in path units.
+  static (double, double) _chordSpread(
+      SymbolPath path, double d0, double d1, Offset p0, Offset p1) {
+    final dx = p1.dx - p0.dx;
+    final dy = p1.dy - p0.dy;
+    final length = math.sqrt(dx * dx + dy * dy);
+    if (length == 0) return (0.0, 0.0);
+    final nx = -dy / length;
+    final ny = dx / length;
+    final points = path.points;
+    final cumulative = path.cumulative;
+    var lo = 0.0;
+    var hi = 0.0;
+    for (var i = path.segmentAt(d0) + 1;
+        i < cumulative.length && cumulative[i] < d1;
+        i++) {
+      final off =
+          (points[i * 2] - p0.dx) * nx + (points[i * 2 + 1] - p0.dy) * ny;
+      if (off < lo) lo = off;
+      if (off > hi) hi = off;
+    }
+    return (lo, hi);
+  }
+
+  /// Whether [path] turns by more than [maxAngle] in total within any
+  /// stretch of [window] between [d0] and [d1]: MapLibre's reading of
+  /// `text-max-angle`, which sums the turns at the line's own vertices
+  /// under the label, so a corner that falls between two glyphs counts
+  /// as much as one under a glyph.
+  static bool _bendsPast(
+      SymbolPath path, double d0, double d1, double window, double maxAngle) {
+    final points = path.points;
+    final cumulative = path.cumulative;
+    final last = cumulative.length - 1;
+    final first = path.segmentAt(d0) + 1;
+    var sum = 0.0;
+    var tail = first;
+    for (var i = first; i < last && cumulative[i] < d1; i++) {
+      sum += _turnAt(points, i);
+      while (cumulative[i] - cumulative[tail] > window) {
+        sum -= _turnAt(points, tail);
+        tail++;
+      }
+      if (sum > maxAngle) return true;
+    }
+    return false;
+  }
+
+  /// Whether the road between [d0] and [d1] turns by more than 60°
+  /// ([_cosMaxSegmentTurn]) from one of its segments to the next, counting
+  /// only segments at least [minLength] long there and carrying the
+  /// comparison across the shorter ones between them (the last is
+  /// always compared) — Google Maps' test for a stretch its street
+  /// names can follow. The curve curved text is drawn on rounds every
+  /// corner the road takes, so it only stays on a road that bends
+  /// gently at the label's scale. A hairpin of short segments passes
+  /// [_bendsPast], whose window sees a few degrees at a time, and its
+  /// curve would cut straight across the turn.
+  static bool _turnsSharply(
+      SymbolPath path, double d0, double d1, double minLength) {
+    final points = path.points;
+    final cumulative = path.cumulative;
+    final last = path.segmentAt(d1);
+    var px = 0.0;
+    var py = 0.0;
+    var seen = false;
+    for (var i = path.segmentAt(d0); i <= last; i++) {
+      final inSpan =
+          math.min(d1, cumulative[i + 1]) - math.max(d0, cumulative[i]);
+      if (inSpan <= 0 || (inSpan < minLength && i < last)) continue;
+      final dx = points[i * 2 + 2] - points[i * 2];
+      final dy = points[i * 2 + 3] - points[i * 2 + 1];
+      final length = math.sqrt(dx * dx + dy * dy);
+      if (length == 0) continue;
+      if (seen && px * dx + py * dy < _cosMaxSegmentTurn * length) return true;
+      px = dx / length;
+      py = dy / length;
+      seen = true;
+    }
+    return false;
+  }
+
+  /// The unsigned turn, in radians, at interior vertex [i] of [points].
+  static double _turnAt(Float32List points, int i) {
+    final ax = points[i * 2] - points[i * 2 - 2];
+    final ay = points[i * 2 + 1] - points[i * 2 - 1];
+    final bx = points[i * 2 + 2] - points[i * 2];
+    final by = points[i * 2 + 3] - points[i * 2 + 1];
+    return math.atan2(ax * by - ay * bx, ax * bx + ay * by).abs();
   }
 
   /// Folds an angle into (-π, π].

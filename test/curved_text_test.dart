@@ -315,15 +315,167 @@ void main() {
     expect(placed, isEmpty);
   });
 
-  test('without text-keep-upright the hairpin label stays', () {
-    // The control: the same label passes every other check, so the
-    // test above fails on the upright guard alone.
+  test('without text-keep-upright the hairpin label is dropped too', () {
+    // Upside down or not, the curve the text would sit on cannot follow
+    // a turn this tight: it would cut across the inside of the hairpin.
     final layer = _lineLayer(layout: {'text-keep-upright': false});
     final path = _hairpin(28);
     final placed = _paint([
       _lineSymbol(layer, path, 'Petersplatz', pathDistance: path.length / 2),
     ]);
-    expect(placed, hasLength(1));
+    expect(placed, isEmpty);
+  });
+
+  group('straight or curved', () {
+    late List<(String, List<(Offset, double)>)> laidOut;
+    setUp(() {
+      laidOut = [];
+      LabelPainter.debugLineGlyphsProbe =
+          (text, glyphs) => laidOut.add((text, glyphs));
+    });
+    tearDown(() => LabelPainter.debugLineGlyphsProbe = null);
+
+    List<(Offset, double)> glyphsOf(String text) =>
+        laidOut.lastWhere((entry) => entry.$1 == text).$2;
+
+    double maxNeighbourTurn(List<(Offset, double)> glyphs) {
+      var most = 0.0;
+      for (var i = 1; i < glyphs.length; i++) {
+        var d = (glyphs[i].$2 - glyphs[i - 1].$2).abs();
+        if (d > math.pi) d = 2 * math.pi - d;
+        most = math.max(most, d);
+      }
+      return most;
+    }
+
+    test('a street digitized as a zigzag is drawn straight', () {
+      // Straight at the label's scale, but every vertex turns ±23°: the
+      // shape of most footpaths in OpenStreetMap. Glyph by glyph, each
+      // took its own segment's angle and the name came out crooked.
+      final points = [
+        for (var i = 0; i <= 40; i++) Offset(i * 10.0, 100 + (i.isOdd ? 4 : 0)),
+      ];
+      final placed =
+          _paint([_lineSymbol(_lineLayer(), _path(points), 'Buntspechtweg')]);
+      expect(placed, hasLength(1));
+      final glyphs = glyphsOf('Buntspechtweg');
+      expect(maxNeighbourTurn(glyphs), 0);
+      for (final (position, _) in glyphs) {
+        expect(position.dy, closeTo(glyphs.first.$1.dy, 1e-3),
+            reason: 'one straight baseline');
+        expect(position.dy, inInclusiveRange(100, 104),
+            reason: 'on the band the road occupies');
+      }
+    });
+
+    test('a jog in a straight street keeps the glyphs apart and level', () {
+      // Two straight stretches offset sideways by a 10 px step: drawn
+      // glyph by glyph on its segments, the glyphs either side of the
+      // step stood at different angles and ran into each other.
+      final path = _path(const [
+        Offset(0, 100),
+        Offset(190, 100),
+        Offset(208, 110),
+        Offset(400, 110),
+      ]);
+      final placed = _paint([
+        _lineSymbol(_lineLayer(), path, 'Falkengasse', pathDistance: 200),
+      ]);
+      expect(placed, hasLength(1));
+      final glyphs = glyphsOf('Falkengasse');
+      expect(maxNeighbourTurn(glyphs), lessThan(10 * math.pi / 180));
+      for (var i = 1; i < glyphs.length; i++) {
+        // The test font's glyphs are 1 em wide.
+        expect(
+            (glyphs[i].$1 - glyphs[i - 1].$1).distance, greaterThan(0.9 * 14),
+            reason: 'glyphs ${i - 1} and $i overlap');
+      }
+    });
+
+    test('a label on a curve follows it, turning smoothly', () {
+      final points = [
+        for (var a = 230; a <= 310; a += 2)
+          const Offset(300, 400) +
+              Offset(math.cos(a * math.pi / 180), math.sin(a * math.pi / 180)) *
+                  120,
+      ];
+      final placed =
+          _paint([_lineSymbol(_lineLayer(), _path(points), 'Ringstraße')]);
+      expect(placed, hasLength(1));
+      final glyphs = glyphsOf('Ringstraße');
+      expect(glyphs.last.$2 - glyphs.first.$2, greaterThan(0.8),
+          reason: 'turns with the road');
+      for (var i = 1; i < glyphs.length; i++) {
+        expect(glyphs[i].$2, greaterThan(glyphs[i - 1].$2),
+            reason: 'a steady turn, glyph after glyph');
+      }
+      for (final (position, _) in glyphs) {
+        final fromCentre = (position - const Offset(300, 400)).distance;
+        expect(fromCentre, closeTo(120, 3), reason: 'on the road');
+      }
+    });
+
+    test('zooming across the straight threshold bends a label gradually', () {
+      // A wide arc: zoomed in, the label covers so little of it that it
+      // is drawn straight; zoomed out, it follows the curve. In between
+      // no frame may snap the glyphs from one shape to the other.
+      final path = _path([
+        for (var a = 240; a <= 300; a += 2)
+          const Offset(120, 312) +
+              Offset(math.cos(a * math.pi / 180), math.sin(a * math.pi / 180)) *
+                  212,
+      ]);
+      final base = _lineSymbol(_lineLayer(), path, 'Hauptstraße');
+      List<Offset>? previous;
+      var curved = false;
+      var straight = false;
+      for (var scale = 1.0; scale <= 2.6; scale += 0.02) {
+        final transform =
+            TileTransform(origin: Offset.zero, scale: scale, rotation: 0);
+        final anchor = transform.apply(base.instance.anchor);
+        laidOut.clear();
+        _paint([
+          PlacedSymbol(
+            instance: base.instance,
+            id: base.id,
+            screenAnchor: anchor,
+            screenAngle: base.instance.angle,
+            transform: transform,
+          ),
+        ]);
+        expect(laidOut, isNotEmpty, reason: 'laid out at scale $scale');
+        final glyphs = glyphsOf('Hauptstraße');
+        final offsets = [for (final (p, _) in glyphs) p - anchor];
+        if (maxNeighbourTurn(glyphs) == 0) {
+          straight = true;
+        } else {
+          curved = true;
+        }
+        if (previous != null) {
+          for (var i = 0; i < offsets.length; i++) {
+            expect((offsets[i] - previous[i]).distance, lessThan(1),
+                reason: 'glyph $i jumped at scale $scale');
+          }
+        }
+        previous = offsets;
+      }
+      expect(curved && straight, isTrue,
+          reason: 'the sweep crosses from curved to straight');
+    });
+
+    test('a straight label on a diagonal road claims the road, not its box',
+        () {
+      // One box around the turned string covered a square on either
+      // side of the road and pushed away labels it never touched.
+      final layer = _lineLayer();
+      final diagonal = _path(const [Offset(0, 0), Offset(300, 300)]);
+      final street = _path(const [Offset(180, 100), Offset(340, 100)]);
+      final placed = _paint([
+        _lineSymbol(layer, diagonal, 'Diagonalstraße'),
+        _lineSymbol(layer, street, 'Nebenweg'),
+      ]);
+      expect(placed, hasLength(2));
+    });
   });
 
   test('a road winding near vertical keeps its label', () {
@@ -689,10 +841,12 @@ void main() {
       return theme.layers.single as SymbolThemeLayer;
     }
 
-    // A gentle arc, so the label is laid out glyph by glyph.
+    // An arc curved enough under the label that it is laid out glyph
+    // by glyph rather than drawn straight.
     final arc = _path([
-      for (var i = 0; i <= 20; i++)
-        Offset(20 + i * 18.0, 150 + 30 * math.sin(i / 20 * math.pi)),
+      for (var a = 200; a <= 340; a += 5)
+        Offset(200 + 150 * math.cos(a * math.pi / 180),
+            220 + 150 * math.sin(a * math.pi / 180)),
     ]);
 
     Future<(Uint8List, LabelPainter)> render(

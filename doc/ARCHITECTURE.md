@@ -298,6 +298,42 @@ glyph; the rest are drawn straight along the line. `test/scripts/`
 draws all of it in 23 scripts with bundled fonts and asserts on the
 pixels.
 
+**Text along a line is drawn straight or on one curve, never on the
+road's own segments.** Streets in OpenStreetMap are mostly digitized as
+zigzags — footpaths turn 30–50° every 10–40 px at z17 — and MapLibre,
+which this package first copied, turns each glyph to the segment under
+its centre: neighbouring glyphs then differ by the zigzag's full angle,
+the baseline waves, and glyphs collide on the inside of every corner.
+`_prepareCurved` measures how far the road's vertices under the label
+stray to either side of the chord between the label's ends, and how far
+the road turns from the label's first third to its last. Within a
+quarter of an em and 15° the label is drawn straight along that chord,
+centred on the band the road occupies — as one rotated string, the
+cheap path, collided as boxes about two lines long along it rather than
+one box around the turned string, which on a diagonal road claimed a
+square on either side. Past 0.45 em or 30° each glyph cluster sits on
+one cubic Bézier through the road at the label's ends and its thirds
+(the interpolating cubic, the curve Google Maps lays its street names
+on), at the fraction of the text its centre marks, turned to the
+curve's tangent; in between the glyphs ease from the straight reading
+to the curve, so a zoom that carries a label across a threshold bends
+it gradually. The turn bound is for short labels on tight bends, which
+stray little and would cross the road at their ends drawn straight. The
+curve passes through the road at four points and rounds everything
+between them, so three placement-pass checks keep it on roads it can
+follow: `text-max-angle` summed over the turns at the road's own
+vertices within 3/5 em (MapLibre's test — comparing glyphs, a corner
+between two of them never showed), a turn of more than 60° between
+segments at least a line of text long, skipping the shorter ones
+(Google's test, which a hairpin of short segments fails), and the curve
+straying more than an em from the road between its samples (a loop).
+On the streets of Kirchheim bei München that prompted it (OpenFreeMap
+tiles, every named street labelled at its middle, z16–18), crooked
+labels — neighbours turned more than 20° apart or overlapping by 2 px —
+fell from 18–22 % to 0–1 %, with 0–9 % fewer labels placed and about
+four in five drawn straight; MapLibre GL JS draws those streets kinked
+as the old code did.
+
 **Text from the style's glyphs.** Given the style's `glyphs`
 (`VectorTileLayer.glyphs`, a `GlyphSource`), a label whose text needs
 no complex shaping is not handed to the platform at all. Platform
@@ -814,15 +850,18 @@ popped out at full opacity. On a pass, a label already on screen keeps
 its seat up to a quarter more bend than a newcomer may take, so a
 sitting near the limit does not toggle as the zoom drifts across it.
 
-`text-max-angle` limits the turn between neighbouring glyphs, and the
+`text-max-angle` limits the turn between neighbouring glyphs and, as
+in MapLibre, the turns at the road's own vertices within 3/5 em; the
 reading direction (`text-keep-upright`) is chosen once per label from
 the chord between its ends, as in MapLibre. A road that turns back on
-itself, such as Petersplatz in Munich looping round its church, can pass
-the first at every step and still leave the glyphs past the turn upside
-down. So a kept-upright curved label also has no glyph more than 30°
-past vertical on screen (`_uprightSlack`): a pass rejects one that
+itself, such as Petersplatz in Munich looping round its church, passes
+both at every step. The 60° segment test above drops a label wrapped
+round it, and a kept-upright curved label also has no glyph more than
+30° past vertical on screen (`_uprightSlack`): a pass rejects one that
 would, and a replay or ghost draws it straight at its anchor, the same
-as text that outgrew its line. The painter reports a pending pass
+as text that outgrew its line. The bend tests are skipped on replays
+like `text-max-angle`; how straight a label is drawn is not a decision
+but geometry, eased by the stray, so replays recompute it every frame. The painter reports a pending pass
 only while the latest generation differs from the one it placed, and the
 fade ticker paints until that pass runs. The final settling repaint sees
 the same generation and creates no new debt, allowing the ticker to stop
