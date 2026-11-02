@@ -105,23 +105,30 @@ abstract final class FeatureQuery {
     final dx = t.dx + translate.dx, dy = t.dy + translate.dy;
     // The query in extent units, and the slack — a stroke's half width,
     // a circle's reach — converted with it.
-    var query =
+    final unclipped =
         area.map((p) => Offset((p.dx - dx) / t.scale, (p.dy - dy) / t.scale));
+    HitArea? query = unclipped;
+    // A line `line-offset` may move: its offset runs are tested in
+    // pixels, against [area], clipped where the rasterizer clips them.
+    final offsetLines = layer is LineThemeLayer && layer.offset != null;
     if (tile.key.z > data.displayKey.z) {
       // A descendant standing in on zoom-out is drawn clipped to its
       // own extent; so is what it answers for. The clip is in extent
       // units, so it moves with the translate, as the rasterizer's does.
+      // An offset line is clipped before it moves sideways, so it may be
+      // drawn outside that extent: the query outside it still counts.
       final extent = sourceLayer.extent.toDouble();
-      final clipped = query.clipTo(Rect.fromLTWH(0, 0, extent, extent));
-      if (clipped == null) return;
-      query = clipped;
+      query = unclipped.clipTo(Rect.fromLTWH(0, 0, extent, extent));
+      if (query == null && !offsetLines) return;
     }
-    final bounds = query.bounds;
+    final bounds = offsetLines ? unclipped.bounds : query!.bounds;
 
     // A stroke or a circle reaching past what the bounds test below
     // allows for is drawn no further than the rasterizer's cull buffer
-    // into a tile either, so that is the most a data-driven size needs —
-    // or a data-driven `line-offset`, which adds to a line's reach.
+    // into a tile either, so that is the most a data-driven size needs.
+    // A data-driven `line-offset` has no such bound — the rasterizer
+    // culls a line on its own bounds, then moves it any distance — so
+    // only the cull window limits it.
     final double reachPx;
     switch (layer) {
       case LineThemeLayer(:final offset):
@@ -133,7 +140,7 @@ abstract final class FeatureQuery {
                 ? 0.0
                 : _constant(offset)
                     ? offset.eval(zoomCtx).abs()
-                    : TileRasterizer.cullBufferPx);
+                    : double.infinity);
       case CircleThemeLayer():
         reachPx = _constant(layer.radius) && _constant(layer.strokeWidth)
             ? _circleReach(layer, EvalContext(zoom: styleZoom))
@@ -178,12 +185,12 @@ abstract final class FeatureQuery {
       if (matched == null && !layer.matches(ctx)) continue;
       final hit = switch (layer) {
         FillThemeLayer() => feature.type == PreparedGeomType.polygon &&
-            query.hitsPolygon(feature.parts),
+            query!.hitsPolygon(feature.parts),
         LineThemeLayer() => feature.type != PreparedGeomType.point &&
             _hitsLine(layer, ctx, data.displayKey, tile.key, sourceLayer,
                 feature, translate, query, area, t.scale),
         CircleThemeLayer() => feature.type == PreparedGeomType.point &&
-            _hitsPoints(query, feature, _circleReach(layer, ctx) / t.scale),
+            _hitsPoints(query!, feature, _circleReach(layer, ctx) / t.scale),
         _ => false,
       };
       if (hit) {
@@ -193,8 +200,9 @@ abstract final class FeatureQuery {
   }
 
   /// Whether [layer]'s stroke of [feature] reaches [query] (extent units,
-  /// translated) — or, when its `line-offset` moves it sideways, whether
-  /// the offset runs the rasterizer draws reach [area] (logical px).
+  /// translated; null where a descendant's clip leaves none of it) — or,
+  /// when its `line-offset` moves it sideways, whether the offset runs
+  /// the rasterizer draws reach [area] (logical px).
   static bool _hitsLine(
     LineThemeLayer layer,
     EvalContext ctx,
@@ -203,15 +211,16 @@ abstract final class FeatureQuery {
     PreparedSourceLayer sourceLayer,
     PreparedFeature feature,
     Offset translate,
-    HitArea query,
+    HitArea? query,
     HitArea area,
     double scale,
   ) {
     final halfWidth = _halfWidth(layer, ctx);
     final offset = layer.offset?.eval(ctx) ?? 0;
     if (offset == 0) {
-      return query.hitsLine(feature.parts, halfWidth / scale,
-          close: feature.type == PreparedGeomType.polygon);
+      return query != null &&
+          query.hitsLine(feature.parts, halfWidth / scale,
+              close: feature.type == PreparedGeomType.polygon);
     }
     // An offset is a shift in logical px, at every vertex — no single
     // transform of the query matches it, so the runs go to pixels, as

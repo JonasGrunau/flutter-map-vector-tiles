@@ -346,8 +346,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   final _demEncodings = <String, DemEncoding>{};
 
   /// The hillshade layers over each of [_demEncodings]' sources — a DEM
-  /// tile is fetched, with its neighbours and the shaders, only for a
-  /// display tile at a zoom where one of them draws.
+  /// tile is fetched with its neighbours, and the shaders are waited
+  /// for, only for a display tile at a zoom where one of them draws.
+  /// (The shaders start loading with the stores all the same: two small
+  /// assets, ready by the time a hillshade first draws.)
   final _hillshadeLayers = <String, List<HillshadeThemeLayer>>{};
 
   /// Whether a hillshade layer over DEM source [id] draws at
@@ -1492,7 +1494,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // shown zoom level free. Only fresh tiles consult it: the refresh
     // and revalidation paths reset `renderedWith` after invalidating
     // their cache entries, so they can never be served stale content.
-    if (tile.renderedWith == null) {
+    // Not a retained tile redrawn for a state change: its labels were
+    // cut down to what it last drew, and a cached result would bring
+    // back the full list, labels the current level had already taken
+    // over included.
+    if (tile.renderedWith == null && !identical(_retained[tile.key], tile)) {
       // A cached result was drawn without feature state: it cannot
       // stand in for a tile that may draw a feature that has some.
       var cached =

@@ -67,8 +67,12 @@ class ThemeReader {
         try {
           final parser = ExpressionParser(globalState: globalState);
           final layer = _readLayer(json, parser, logger);
-          globalStateNames.addAll(parser.globalStateNames);
-          if (layer != null) layers.add(layer);
+          // A layer dropped after parsing (an unsupported type) draws
+          // nothing, so what it read changes nothing either.
+          if (layer != null) {
+            layers.add(layer);
+            globalStateNames.addAll(parser.globalStateNames);
+          }
         } catch (e) {
           logger.warn('skipping layer "${json['id']}": $e');
         }

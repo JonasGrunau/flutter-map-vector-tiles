@@ -11,9 +11,10 @@ class Theme {
   final List<ThemeLayer> layers;
 
   /// The values `["global-state", name]` expressions read in this theme:
-  /// the style's `state` defaults with the overrides it was made with,
-  /// of the keys its expressions read (see [withGlobalState]). Empty
-  /// for a style that declares none and for hand-built themes.
+  /// every default the style's `state` declares, read or not, with the
+  /// overrides it was made with — which [withGlobalState] keeps only
+  /// for the keys its expressions read. Empty for a style that declares
+  /// none and for hand-built themes.
   final Map<String, Object?> globalState;
 
   /// The theme's siblings under other global states, when its style

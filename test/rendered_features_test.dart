@@ -1061,6 +1061,116 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets(
+      'a state redraw of the outgoing zoom level brings back none of the '
+      'labels the crossing let go', (tester) async {
+    // Regression: clearing the state served the retained tile its
+    // stateless result from the finished-tile cache, labels and all —
+    // the full list, not the one the crossing cut to what was drawn.
+    // A label the outgoing level had been suppressing then appeared.
+    final tile = (MvtTileBuilder()
+            .layer('land')
+            .feature(type: 3, geometry: _box(-8, -8, 264, 264), id: 1)
+            .done()
+            .layer('poi')
+            .feature(type: 1, geometry: _point(128, 128), id: 3, properties: {
+              'name': 'Winner',
+            })
+            .done()
+            .layer('street')
+            .feature(type: 1, geometry: _point(128, 128), id: 4, properties: {
+              'name': 'Loser',
+            })
+            .done())
+        .build();
+    final theme = const ThemeReader().read({
+      'layers': [
+        {
+          'id': 'land',
+          'type': 'fill',
+          'source': 's',
+          'source-layer': 'land',
+          'paint': {
+            'fill-color': [
+              'case',
+              [
+                'boolean',
+                ['feature-state', 'selected'],
+                false
+              ],
+              '#00ff00',
+              '#ff0000'
+            ],
+          },
+        },
+        {
+          'id': 'street',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'street',
+          'layout': {'text-field': '{name}', 'text-size': 14},
+        },
+        // Placed first, as the topmost symbol layer, and gone at z15:
+        // the crossing frees its space.
+        {
+          'id': 'poi',
+          'type': 'symbol',
+          'source': 's',
+          'source-layer': 'poi',
+          'maxzoom': 15,
+          'layout': {'text-field': '{name}', 'text-size': 14},
+        },
+      ],
+    });
+    final provider = _HeldZ15Provider({_centre: tile}, 'rendered-features-pin');
+    final controller = VectorTileLayerController();
+    final mapController = MapController();
+    await _pumpMap(tester,
+        controller: controller,
+        mapController: mapController,
+        theme: theme,
+        providers: TileProviders({'s': provider}));
+    List<String> labels() => [
+          for (final f in controller
+              .queryRenderedFeaturesInRect(const Rect.fromLTWH(0, 0, 800, 600)))
+            if (f.layerId == 'poi' || f.layerId == 'street')
+              '${f.properties['name']}',
+        ];
+    expect(await pumpUntil(tester, () async => labels().contains('Winner')),
+        isTrue);
+    await _quiet(tester);
+    expect(labels(), ['Winner']);
+
+    // The decoded tiles go, the finished results stay: the new level has
+    // no parent to stand in with, and the z14 tile's stateless result is
+    // still cached.
+    TileStore.clearMemoryCaches();
+    mapController.move(_centreOf(_centre), 15);
+    expect(
+        await pumpUntil(
+            tester, () async => VectorTileLayer.debugRetainedTileCount > 0,
+            timeout: const Duration(seconds: 10)),
+        isTrue);
+    await _quiet(tester);
+    expect(labels(), isEmpty, reason: 'the crossing cut the loser');
+
+    controller.setFeatureState(
+        source: 's', sourceLayer: 'land', id: 1, state: {'selected': true});
+    expect(
+        await pumpUntil(tester, () => _colorAt(tester, _mid, _green),
+            timeout: const Duration(seconds: 3)),
+        isTrue);
+    controller.removeFeatureState(source: 's', sourceLayer: 'land', id: 1);
+    expect(
+        await pumpUntil(tester, () => _colorAt(tester, _mid, _red),
+            timeout: const Duration(seconds: 3)),
+        isTrue);
+    await _quiet(tester);
+    expect(labels(), isEmpty, reason: 'nothing the crossing let go returns');
+    provider.release();
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('state changes leak no image or picture', (tester) async {
     // Sized first: resizing the view replaces the root layer, disposing
     // a picture created before the count starts.

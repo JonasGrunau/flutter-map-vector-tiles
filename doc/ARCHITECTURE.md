@@ -921,12 +921,13 @@ by the platform's image codec off the UI thread, shared as ref-counted
 (`render/hillshade_renderer.dart`). It is MapLibre's two steps, both
 on the GPU, through two fragment shaders the package ships
 (`shaders/`, declared under `flutter: shaders:` in `pubspec.yaml` and
-loaded once per process by `HillshadePrograms`). A display tile fetches
-its DEM tile, the neighbours and the shaders only at a zoom where a
-hillshade layer over that source draws — the rasterizer's own
-`coversZoom` test — so a hillshade with a `maxzoom` costs nothing above
-it, and a neighbour that cannot be fetched there holds no result back
-from the cache:
+loaded once per process by `HillshadePrograms`, which the layer starts
+when it builds its stores). A display tile fetches its DEM tile and the
+neighbours, and waits for the shaders, only at a zoom where a hillshade
+layer over that source draws — the rasterizer's own `coversZoom` test —
+so a hillshade with a `maxzoom` fetches nothing above it, and a
+neighbour that cannot be fetched there holds no result back from the
+cache:
 
 1. **Prepare**, per DEM tile: a copy of its elevations with a
    two-texel border is drawn and snapshotted — the tile in the middle,
@@ -1183,9 +1184,12 @@ every candidate feature into pixels. A line offset is the exception: a
 sideways shift in pixels at every vertex is no single transform of the
 query, so a line whose `line-offset` is non-zero has its runs clipped,
 translated and offset exactly as the rasterizer draws them, and is
-tested in pixels. Features are rejected on their decode-time bounds
+tested in pixels — a descendant's included, which is clipped to its
+square before it moves and so may be drawn, and hit, outside it.
+Features are rejected on their decode-time bounds
 before any expression runs — against the query area widened by the
-reach of a stroke, circle or offset, and never outside the tile's cull
+reach of a stroke, circle or offset (a data-driven offset has no bound
+of its own), and never outside the tile's cull
 window, since the rasterizer draws nothing there however far a stroke
 or offset would carry it — and within a feature, edges whose bounds
 miss the query area (widened by the half width, for lines) are skipped

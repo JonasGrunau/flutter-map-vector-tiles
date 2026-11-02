@@ -486,6 +486,27 @@ void main() {
       expect(theme.withGlobalState({'highlight': 'forest'}), same(forest));
     });
 
+    test('a key only a dropped layer reads changes no theme', () {
+      final base = stateStyle();
+      final theme = const ThemeReader().read({
+        ...base,
+        'layers': [
+          ...base['layers']! as List,
+          // Not drawn, so the state it reads draws nothing either.
+          {
+            'id': 'sky',
+            'type': 'sky',
+            'filter': [
+              '==',
+              ['global-state', 'mode'],
+              'night'
+            ],
+          },
+        ],
+      });
+      expect(theme.withGlobalState({'mode': 'night'}), same(theme));
+    });
+
     test('a key the style reads without declaring it still takes effect', () {
       final theme = const ThemeReader().read(stateStyle()..remove('state'));
       expect(shows(theme, 'forest'), isFalse);

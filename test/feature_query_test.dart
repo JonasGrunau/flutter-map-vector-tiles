@@ -662,6 +662,24 @@ void main() {
         drawn: [(100, 140)],
         blank: [(100, 130), (100, 110)],
       );
+      // Data-driven past the cull buffer: the rasterizer culls the line
+      // on its own bounds, then moves it the whole 100 px.
+      await _queriedWhereDrawn(
+        _oneLayer('road', 'line', {
+          'line-width': 4,
+          'line-offset': ['get', 'o'],
+        }),
+        one(_feature(
+            PreparedGeomType.line,
+            [
+              [20 * _px, 100 * _px, 200 * _px, 100 * _px]
+            ],
+            properties: {'o': 100},
+            id: 2)),
+        hit: 'road:2',
+        drawn: [(100, 200)],
+        blank: [(100, 100), (100, 170)],
+      );
       // A polygon's outline, inset, corners included.
       await _queriedWhereDrawn(
         _oneLayer('outline', 'line', {'line-width': 6, 'line-offset': 10}),
@@ -753,6 +771,20 @@ void main() {
         hit: 'road:2',
         drawn: [(100, 74)],
         blank: [(135, 74), (100, 64)],
+      );
+      // Clipped to the child's square, then offset out of it: display
+      // y 120 → 140, below the square's edge at 128, where it is drawn.
+      await _queriedWhereDrawn(
+        _oneLayer('road', 'line', {'line-width': 4, 'line-offset': 20}),
+        standIn(_feature(
+            PreparedGeomType.line,
+            [
+              [0, 3840, 4096, 3840]
+            ],
+            id: 2)),
+        hit: 'road:2',
+        drawn: [(60, 140)],
+        blank: [(60, 120), (160, 140)],
       );
     });
 
