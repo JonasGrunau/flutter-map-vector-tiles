@@ -13,6 +13,7 @@ import '../style/expression.dart';
 import '../style/theme.dart';
 import 'display_tile_data.dart';
 import 'geometry_clipper.dart';
+import 'hillshade_renderer.dart';
 import 'matched_features.dart';
 import 'pattern_resolver.dart';
 
@@ -286,6 +287,8 @@ class TileRasterizer {
           painted |= _paintLine(canvas, layer, data, styleZoom, patterns);
         case RasterThemeLayer():
           painted |= _paintRaster(canvas, layer, data, zoomCtx);
+        case HillshadeThemeLayer():
+          painted |= HillshadeRenderer.paint(canvas, layer, data, zoomCtx);
         case CircleThemeLayer():
           painted |= _paintCircle(canvas, layer, data, styleZoom);
         case SymbolThemeLayer():

@@ -271,6 +271,56 @@ class RasterThemeLayer extends ThemeLayer {
   }) : super(sourceLayer: null, referencedProperties: const {});
 }
 
+/// A `hillshade` layer: terrain shading computed from a `raster-dem`
+/// source's elevations, painted into the tile raster at its style
+/// position.
+///
+/// [directions], [altitudes], [shadowColors] and [highlightColors] hold
+/// one entry per light source. Only [method] `multidirectional` uses
+/// more than the first; the shorter lists repeat their last entry, as
+/// MapLibre pads them, and at most [maxLights] lights are drawn.
+class HillshadeThemeLayer extends ThemeLayer {
+  /// `standard`, `basic`, `combined`, `igor` or `multidirectional`.
+  final StringProp method;
+
+  /// Degrees, 0 = north (or the top of the viewport), clockwise.
+  final List<DoubleProp> directions;
+
+  /// Degrees above the horizon. `standard` ignores it.
+  final List<DoubleProp> altitudes;
+
+  /// `map` or `viewport`. Tiles are shaded once and turn with the map,
+  /// so `viewport` is drawn as if the map were not rotated.
+  final StringProp anchor;
+  final DoubleProp exaggeration;
+  final List<ColorProp> shadowColors;
+  final List<ColorProp> highlightColors;
+  final ColorProp accentColor;
+
+  /// `linear` or `nearest`, for slopes between DEM texels.
+  final StringProp resampling;
+
+  /// The most light sources a `multidirectional` hillshade draws.
+  static const int maxLights = 4;
+
+  HillshadeThemeLayer({
+    required super.id,
+    required super.source,
+    required super.minzoom,
+    required super.maxzoom,
+    required super.filter,
+    required this.method,
+    required this.directions,
+    required this.altitudes,
+    required this.anchor,
+    required this.exaggeration,
+    required this.shadowColors,
+    required this.highlightColors,
+    required this.accentColor,
+    required this.resampling,
+  }) : super(sourceLayer: null, referencedProperties: const {});
+}
+
 class CircleThemeLayer extends ThemeLayer {
   final DoubleProp radius;
   final ColorProp color;

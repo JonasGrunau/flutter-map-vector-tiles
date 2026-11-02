@@ -20,11 +20,15 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │              └─ IsolatePool: decode MVT, trim to what the theme reads
      │                             └─ PreparedTile (compact, transferable)
      │
+     ├─ RasterTileStore (raster + raster-dem sources): bytes ─► image codec
+     │       └─ raster-dem: the data tile's 8 neighbours too, for the border
+     │
      ├─ TileRasterizer: PreparedTile ─► ui.Picture ─► toImageSync (GPU)
      │       one raster per *display* tile at tileSize·dpr, evaluated at
      │       the display zoom (crisp overzoom via subdivision, not scaling);
      │       features are culled — and at deep overzoom clipped — to the
-     │       tile's window of the data tile
+     │       tile's window of the data tile; hillshade: DEM + border ─►
+     │       slopes (shader, snapshot) ─► shaded per pixel (shader)
      │
      └─ symbols: SymbolLayouter collects label/icon anchors per tile
              ├─ LabelPainter: per-frame screen-space pass, global collision
@@ -578,6 +582,75 @@ The whole layer is one `CustomPaint` — no per-tile widget churn, one
 repaint boundary. The painter applies the camera transform (translate ·
 rotate about the screen centre) itself; `MobileLayerTransformer` is not
 used.
+
+### Hillshade
+
+A `hillshade` layer is a raster layer that is computed rather than
+fetched. Its `raster-dem` source travels the raster-source pipeline
+unchanged — bytes through the disk cache into `RasterTileStore`, decoded
+by the platform's image codec off the UI thread, shared as ref-counted
+`ui.Image` clones — and only the drawing differs
+(`render/hillshade_renderer.dart`). It is MapLibre's two steps, both
+on the GPU, through two fragment shaders the package ships
+(`shaders/`, declared under `flutter: shaders:` in `pubspec.yaml` and
+loaded once per process by `HillshadePrograms`):
+
+1. **Prepare**, per DEM tile: a copy of its elevations with a
+   two-texel border is drawn and snapshotted — the tile in the middle,
+   the nearest two rows or columns of each neighbour around it, and the
+   tile's own edge repeated where a neighbour is missing, as MapLibre
+   leaves it until the neighbour arrives. `hillshade_prepare.frag` runs
+   a Sobel kernel over that, on the raw 0–255 channel values — decoding
+   is linear, so the sums are small integers, exact at any float
+   precision, and only their result is decoded — and writes the
+   west-east and north-south slopes, eight bits each, one texel per DEM
+   texel plus a one-texel border.
+2. **Shade**: `hillshade.frag` colours the display tile's part of the
+   DEM tile per device pixel, from slopes interpolated between texel
+   centres by hand (the sampler's own filter differs between backends),
+   with the layer's method, lights and colours. It is recorded into the
+   tile's picture like any other layer, so it runs once per
+   rasterization, never per frame.
+
+The two snapshots are at the DEM's resolution (260² and 258² texels for
+a 256 px source) and transient: disposed as soon as they are recorded,
+the tile's picture holding the pixels until it is rasterized. There is
+no new cache, and nothing for the resume recovery to clear. Both are
+`toImageSync` output, which Impeller's OpenGL ES backend stored
+bottom-up until a Flutter release that defines
+`IMPELLER_OPENGLES_UNFLIPPED_DEPRECATED`, so both shaders flip their
+texture lookups on GLES unless that macro is defined.
+
+The border is what makes the shading seamless, and it costs loading
+the neighbours: `_loadTile` asks for the eight DEM tiles around the data
+tile (at overzoom only those of the edges the display tile touches) and
+awaits them with the tile's other sources. Pending neighbours alone
+never cause a provisional render, which would rasterize the whole tile
+twice for its border. One that failed — rather than being known absent
+— counts as missing, so the tile retries, and the neighbours are part
+of the set a render is identified by, so the retry re-renders once they
+are in. A background refresh of a DEM tile re-renders every display
+tile whose edges read it.
+
+The rasterizer reads the shaders synchronously, so a tile with a
+hillshade awaits `HillshadePrograms.load` before it renders for good: a
+result rendered without the shading would be cached as final. Where
+the shaders cannot load (Flutter's retired HTML web renderer), a
+warning is logged once and the layer is left out.
+
+On the web, CanvasKit records a pointer to a `FragmentShader`'s
+uniforms rather than a copy, and disposing the shader frees them. A
+shade draw recorded into the tile, which is rasterized only once the
+tile is complete, read freed memory there — correct until something
+reused it, then streaks. So on the web the shade pass is rasterized on
+its own first, which `toImageSync` does at once there, and the tile
+records the image. Native backends copy the uniforms when the draw is
+recorded and take the direct path.
+
+Tiles are shaded once and turn with the map, so
+`hillshade-illumination-anchor: viewport` is drawn as if the map were
+not rotated; following the camera would mean re-rasterizing every
+visible tile while it turns.
 
 ### Labels in the tile image (`LabelMode.tile`)
 

@@ -121,7 +121,7 @@ Everything has sensible defaults; override what you need:
 vt.VectorTileLayer(
   theme: style.theme,
   tileProviders: style.providers,
-  rasterSources: style.rasterSources,          // satellite/hybrid imagery
+  rasterSources: style.rasterSources,          // imagery and hillshade elevations
   sprites: style.sprites,
   tileOffset: vt.TileOffset.maplibre,          // 512px style convention (default)
   concurrency: 3,                              // decoding isolates
@@ -213,7 +213,9 @@ Everything you looked at recently keeps working without network:
   paint instantly and revalidate in the background: changed tiles
   cross-fade to the new imagery, and with no network the old tile simply
   stays. Stale tiles are deleted only by the size cap, oldest first, never
-  by age alone.
+  by age alone. Elevation tiles for a hillshade are tiles like any other;
+  one whose neighbour was never cached shades that edge without it, a
+  faint seam, until the neighbour can be fetched.
 - **Durable location.** Both caches default to the application support
   directory, which the OS doesn't purge, unlike the temp directory.
 
@@ -252,6 +254,9 @@ native:
 - **No MBTiles.** The companion package reads SQLite through `dart:ffi`,
   which has no web implementation. PMTiles fills the same role over HTTP
   range requests.
+- **Hillshade** draws on CanvasKit and Skwasm alike; the web engine
+  snapshots each tile's shading once more before the tile does, so a
+  hillshaded tile costs a little more to render there than on native.
 
 ## 🔌 Custom tile sources
 
@@ -326,11 +331,16 @@ storing a second copy. Implement it on anything reading from local
 storage, and use `vt.SingleFlight` to coalesce concurrent loads, as the
 built-in providers do.
 
-Raster imagery (satellite, hillshade) wires up the same way: pass
-`rasterSources:` entries of `RasterTileSource(provider: …, tileSize:
-512)`, where the provider serves encoded PNG/JPEG/WebP bytes instead of
-MVT. `NetworkVectorTileProvider` works unchanged. 256px sources are
-fetched one zoom deeper for the same visual scale.
+Raster imagery (satellite, pre-rendered hillshade) wires up the same
+way: pass `rasterSources:` entries of `RasterTileSource(provider: …,
+tileSize: 512)`, where the provider serves encoded PNG/JPEG/WebP bytes
+instead of MVT. `NetworkVectorTileProvider` works unchanged. 256px
+sources are fetched one zoom deeper for the same visual scale. An
+elevation source for `hillshade` layers (a style's `raster-dem`) is the
+same thing with an `encoding`:
+`RasterTileSource(provider: …, tileSize: 256, encoding:
+vt.DemEncoding.terrarium)` (or `.mapbox`, or a `DemEncoding(...)` with
+the factors of a `custom` one).
 
 ## 🎨 Style support
 
@@ -341,8 +351,9 @@ fetched one zoom deeper for the same visual scale.
 | `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, dashes and casing |
 | `symbol` | full, including curved line text and `text-variable-anchor` / `text-radial-offset`; see [Labels](#-labels) below |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity` and brightness/contrast/saturation/hue-rotate matching MapLibre's shader math |
+| `hillshade` | terrain shading computed from a `raster-dem` source (`terrarium`, `mapbox` or `custom` encoding), drawn at its layer position with every paint property: all five `hillshade-method`s (`standard`, `basic`, `combined`, `igor`, `multidirectional`, up to four lights), illumination direction, altitude and anchor, exaggeration, shadow/highlight/accent colours and `resampling`. Slopes are read across tile edges from the neighbouring elevation tiles, so the shading has no seams. One difference: tiles are shaded once and turn with the map, so `hillshade-illumination-anchor: viewport` (the default) is drawn as if the map were not rotated; with `map` it matches MapLibre at every bearing |
 | `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, patterned ones included, so a building part over its outline does not draw darker; the alpha of `fill-extrusion-color` is ignored, as the spec says |
-| `hillshade`, `heatmap`, `sky` | skipped, with a log line |
+| `color-relief`, `heatmap`, `sky` | skipped, with a log line |
 
 **Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
 per `icon-color`, `icon-halo-color` and `icon-halo-width`; dark MapLibre
@@ -724,6 +735,10 @@ runs a short version of the benchmark in your browser.
 - **Stale data after changing styles.** The disk cache keys by URL, and a
   changed `{key}` or map id is a different URL, so usually there is
   nothing to do. Supply `cachePath` to wipe it yourself.
+- **A `hillshade` layer draws nothing.** Its `raster-dem` source has to
+  reach the layer: pass `style.rasterSources` as `rasterSources`. The
+  shading is a fragment shader bundled with this package; a platform
+  where it cannot load logs a warning once and leaves the layer out.
 - **Blank map on web.** Open the browser console: missing
   `Access-Control-Allow-Origin` headers on the style or tile host block
   every request (see [Web support](#-web-support)).
