@@ -142,6 +142,11 @@ void main() {
     expect(blue(px, 20, 20), isTrue);
     expect(blue(px, 256 + 32 + 70, 256 + 32), isTrue);
     expect(HeatmapPainter.debugPassCount, greaterThan(0));
+
+    // Unmount inside the test, so the map's teardown cancels the timer
+    // its last frame set; left to the binding, it is still pending when
+    // the test ends (seen on Chrome).
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('a kernel reaches across a tile seam', (tester) async {
@@ -167,5 +172,7 @@ void main() {
     // As far left of the seam as right of it.
     expect(white(px, 256 - 12, 256 + 64), isTrue);
     expect(white(px, 256 + 12, 256 + 64), isTrue);
+
+    await tester.pumpWidget(const SizedBox());
   });
 }
