@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 2.11.0
+
+Hillshade and heatmap layers, global and feature state, queries for what
+is drawn at a tap, the style's own fonts, every expression operator of
+the MapLibre spec, and label placement off the UI thread.
 
 - ✨ **Global state**: styles can use `global-state` expressions, with
   defaults from the style's root `state`, and
