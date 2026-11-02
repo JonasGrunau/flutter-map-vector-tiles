@@ -521,11 +521,77 @@ class SymbolThemeLayer extends ThemeLayer {
   /// `icon-rotation-alignment`: auto | map | viewport. `auto` resolves to
   /// `map` for a line-placed icon and `viewport` otherwise, per spec.
   final StringProp iconRotationAlignment;
+
+  /// `text-justify`: auto | left | center | right — how the lines of
+  /// multi-line text align with each other. `auto` justifies towards
+  /// the side of the box the anchor is on.
+  final StringProp textJustify;
+
+  /// `text-line-height`, in ems: the distance between baselines, and so
+  /// also the height of one line's box.
+  final DoubleProp textLineHeight;
+
+  /// `text-rotate`: clockwise degrees about the anchor, for text that is
+  /// not placed along a line.
+  final DoubleProp textRotate;
+
+  /// `text-variable-anchor-offset`: anchors with an em offset each.
+  /// When set, it takes precedence over [textAnchor], [textOffset],
+  /// [textVariableAnchor] and [textRadialOffset], per spec.
+  final AnchorOffsetsProp? textVariableAnchorOffset;
+
+  /// `text-ignore-placement` / `icon-ignore-placement`: the symbol is
+  /// placed without reserving its space, so later symbols may overlap it.
+  final BoolProp textIgnorePlacement;
+  final BoolProp iconIgnorePlacement;
+
+  /// `text-overlap` / `icon-overlap`: never | always | cooperative.
+  /// Null when the style leaves them unset, in which case
+  /// [textAllowOverlap] / [iconAllowOverlap] decide, per spec.
+  final StringProp? textOverlap;
+  final StringProp? iconOverlap;
+
+  /// `icon-optional`: text may show without its icon when only the icon
+  /// collides — the counterpart of [textOptional].
+  final BoolProp iconOptional;
+
+  /// `icon-padding`: one to four numbers, CSS order (top, right, bottom,
+  /// left), added around the icon's collision box.
+  final NumListProp iconPadding;
+
+  /// `icon-text-fit`: none | width | height | both — stretches the icon
+  /// around the text, plus [iconTextFitPadding] (top, right, bottom,
+  /// left, in px).
+  final StringProp iconTextFit;
+  final NumListProp iconTextFitPadding;
+
+  /// `icon-keep-upright`: a map-aligned icon along a line is turned
+  /// around rather than drawn upside down.
+  final BoolProp iconKeepUpright;
+
+  /// `symbol-z-order`: auto | viewport-y | source — the draw order of
+  /// overlapping symbols within this layer.
+  final StringProp symbolZOrder;
+
+  /// `symbol-avoid-edges`: a symbol must not cross its tile's edge.
+  final BoolProp symbolAvoidEdges;
+
   // Paint
   final ColorProp textColor;
   final ColorProp textHaloColor;
   final DoubleProp textHaloWidth;
+
+  /// `text-halo-blur` / `icon-halo-blur`, in px: how far the halo fades
+  /// out towards its outer edge.
+  final DoubleProp textHaloBlur;
   final DoubleProp textOpacity;
+
+  /// `text-translate` / `icon-translate` (px, right and down) and their
+  /// `*-translate-anchor` (map | viewport).
+  final NumListProp textTranslate;
+  final StringProp textTranslateAnchor;
+  final NumListProp iconTranslate;
+  final StringProp iconTranslateAnchor;
   final DoubleProp iconOpacity;
 
   /// `icon-color`/`icon-halo-*` only apply to SDF sprites (see
@@ -533,7 +599,10 @@ class SymbolThemeLayer extends ThemeLayer {
   final ColorProp iconColor;
   final ColorProp iconHaloColor;
   final DoubleProp iconHaloWidth;
+  final DoubleProp iconHaloBlur;
 
+  /// Every property after [iconHaloWidth] is optional and defaults to
+  /// its spec value, so code constructing layers by hand keeps working.
   SymbolThemeLayer({
     required super.id,
     required super.source,
@@ -575,5 +644,44 @@ class SymbolThemeLayer extends ThemeLayer {
     required this.iconColor,
     required this.iconHaloColor,
     required this.iconHaloWidth,
-  });
+    StringProp? textJustify,
+    DoubleProp? textLineHeight,
+    DoubleProp? textRotate,
+    this.textVariableAnchorOffset,
+    BoolProp? textIgnorePlacement,
+    BoolProp? iconIgnorePlacement,
+    this.textOverlap,
+    this.iconOverlap,
+    BoolProp? iconOptional,
+    NumListProp? iconPadding,
+    StringProp? iconTextFit,
+    NumListProp? iconTextFitPadding,
+    BoolProp? iconKeepUpright,
+    StringProp? symbolZOrder,
+    BoolProp? symbolAvoidEdges,
+    DoubleProp? textHaloBlur,
+    NumListProp? textTranslate,
+    StringProp? textTranslateAnchor,
+    NumListProp? iconTranslate,
+    StringProp? iconTranslateAnchor,
+    DoubleProp? iconHaloBlur,
+  })  : textJustify = textJustify ?? StringProp.constant('center'),
+        textLineHeight = textLineHeight ?? DoubleProp.constant(1.2),
+        textRotate = textRotate ?? DoubleProp.constant(0),
+        textIgnorePlacement = textIgnorePlacement ?? BoolProp.constant(false),
+        iconIgnorePlacement = iconIgnorePlacement ?? BoolProp.constant(false),
+        iconOptional = iconOptional ?? BoolProp.constant(false),
+        iconPadding = iconPadding ?? NumListProp.constant(const [2]),
+        iconTextFit = iconTextFit ?? StringProp.constant('none'),
+        iconTextFitPadding =
+            iconTextFitPadding ?? NumListProp.constant(const [0, 0, 0, 0]),
+        iconKeepUpright = iconKeepUpright ?? BoolProp.constant(false),
+        symbolZOrder = symbolZOrder ?? StringProp.constant('auto'),
+        symbolAvoidEdges = symbolAvoidEdges ?? BoolProp.constant(false),
+        textHaloBlur = textHaloBlur ?? DoubleProp.constant(0),
+        textTranslate = textTranslate ?? NumListProp.constant(const [0, 0]),
+        textTranslateAnchor = textTranslateAnchor ?? StringProp.constant('map'),
+        iconTranslate = iconTranslate ?? NumListProp.constant(const [0, 0]),
+        iconTranslateAnchor = iconTranslateAnchor ?? StringProp.constant('map'),
+        iconHaloBlur = iconHaloBlur ?? DoubleProp.constant(0);
 }

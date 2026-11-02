@@ -17,17 +17,38 @@ class ShapedGlyphs {
   /// edge of its advance) and the middle of its line.
   final Float32List positions;
 
-  /// The block every line is centred in: the widest line, and
+  /// The block every line is aligned in: the widest line, and
   /// [lineCount] line heights.
   final double width;
   final double height;
   final int lineCount;
 
-  ShapedGlyphs._(
-      this.glyphs, this.positions, this.width, this.height, this.lineCount);
+  /// Where each line sits in the block's width: 0 against its left
+  /// edge, 0.5 centred, 1 against its right edge (`text-justify`).
+  final double justify;
+
+  /// Per glyph in [glyphs], the line it is on; per line, its width.
+  final Uint16List _lines;
+  final Float32List _lineWidths;
+
+  ShapedGlyphs._(this.glyphs, this.positions, this.width, this.height,
+      this.lineCount, this.justify, this._lines, this._lineWidths);
+
+  /// This text with its lines aligned to [justify] instead, as
+  /// [shapeGlyphs] would have laid it out with it.
+  ShapedGlyphs justified(double justify) {
+    if (justify == this.justify || lineCount < 2) return this;
+    final moved = Float32List.fromList(positions);
+    for (var i = 0; i < glyphs.length; i++) {
+      moved[i * 2] +=
+          (width - _lineWidths[_lines[i]]) * (justify - this.justify);
+    }
+    return ShapedGlyphs._(
+        glyphs, moved, width, height, lineCount, justify, _lines, _lineWidths);
+  }
 }
 
-/// Line height in ems — MapLibre's `text-line-height` default.
+/// Line height in ems — the `text-line-height` default.
 const double glyphLineHeightEm = 1.2;
 
 /// Where a glyph's bitmap starts, relative to the middle of its line:
@@ -39,7 +60,8 @@ const double glyphLineMiddleToReference = 17;
 /// Lays out [text] — which [isGlyphShapeable] accepted — from the glyphs
 /// [glyphOf] returns, as MapLibre does: each glyph advanced by its own
 /// advance plus [letterSpacingEm], lines broken at [maxWidthEm] (none
-/// when null) and centred on each other, [glyphLineHeightEm] apart.
+/// when null), [lineHeightEm] apart, and aligned in the widest one's
+/// width by [justify] (0 left, 0.5 centred, 1 right).
 ///
 /// Lines always break at `\n`, and where text is wider than
 /// [maxWidthEm] they may break after a space, a hyphen or dash, a
@@ -62,6 +84,8 @@ ShapedGlyphs? shapeGlyphs(
   SdfGlyph? Function(int code) glyphOf, {
   double letterSpacingEm = 0,
   double? maxWidthEm,
+  double lineHeightEm = glyphLineHeightEm,
+  double justify = 0.5,
 }) {
   final spacing = letterSpacingEm * glyphPbfEm;
   final maxWidth = maxWidthEm == null ? null : maxWidthEm * glyphPbfEm;
@@ -78,13 +102,15 @@ ShapedGlyphs? shapeGlyphs(
   }
   final lines = _breakLines(run, spacing, maxWidth);
 
-  final widths = [for (final line in lines) _lineWidth(line, spacing)];
+  final widths = Float32List.fromList(
+      [for (final line in lines) _lineWidth(line, spacing)]);
   final width = widths.fold(0.0, math.max);
-  const lineHeight = glyphLineHeightEm * glyphPbfEm;
+  final lineHeight = lineHeightEm * glyphPbfEm;
   final glyphs = <SdfGlyph>[];
   final positions = <double>[];
+  final lineOf = <int>[];
   for (var l = 0; l < lines.length; l++) {
-    var x = (width - widths[l]) / 2;
+    var x = (width - widths[l]) * justify;
     final middle = (l + 0.5) * lineHeight;
     for (final (_, glyph) in lines[l]) {
       if (glyph == null) continue;
@@ -93,12 +119,20 @@ ShapedGlyphs? shapeGlyphs(
         positions
           ..add(x)
           ..add(middle);
+        lineOf.add(l);
       }
       x += glyph.advance + spacing;
     }
   }
-  return ShapedGlyphs._(glyphs, Float32List.fromList(positions), width,
-      lines.length * lineHeight, lines.length);
+  return ShapedGlyphs._(
+      glyphs,
+      Float32List.fromList(positions),
+      width,
+      lines.length * lineHeight,
+      lines.length,
+      justify,
+      Uint16List.fromList(lineOf),
+      widths);
 }
 
 const _newline = 0x0a;

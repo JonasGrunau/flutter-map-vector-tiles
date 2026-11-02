@@ -102,6 +102,9 @@ Future<SpriteAtlas> padSpriteSheet(SpriteAtlas atlas,
           height: sprite.height,
           pixelRatio: sprite.pixelRatio,
           sdf: sprite.sdf,
+          stretchX: sprite.stretchX,
+          stretchY: sprite.stretchY,
+          content: sprite.content,
         ),
   };
   sheet.dispose();

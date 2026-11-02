@@ -313,6 +313,9 @@ class StringProp {
         zoomOnly = false;
 
   String eval(EvalContext ctx) {
+    // Most layout strings are a style's literal or the spec default, read
+    // per symbol per frame by the label pass: no closure, no coercion.
+    if (isConstant) return fallback;
     if (zoomOnly) {
       if (ctx.zoom == _memoZoom) return _memoValue;
       _memoZoom = ctx.zoom;
@@ -327,19 +330,26 @@ class StringProp {
   }
 }
 
-/// See [DoubleProp] for [zoomOnly] semantics.
+/// See [DoubleProp] for [isConstant]/[zoomOnly] semantics.
 class BoolProp {
   final Expr _expr;
   final bool fallback;
+  final bool isConstant;
   final bool zoomOnly;
   double _memoZoom = double.nan;
   bool _memoValue = false;
 
-  BoolProp(this._expr, this.fallback, {this.zoomOnly = false});
+  BoolProp(this._expr, this.fallback, {this.zoomOnly = false})
+      : isConstant = false;
 
-  factory BoolProp.constant(bool value) => BoolProp((_) => value, value);
+  BoolProp.constant(bool value)
+      : _expr = ((_) => value),
+        fallback = value,
+        isConstant = true,
+        zoomOnly = false;
 
   bool eval(EvalContext ctx) {
+    if (isConstant) return fallback;
     if (zoomOnly) {
       if (ctx.zoom == _memoZoom) return _memoValue;
       _memoZoom = ctx.zoom;
@@ -437,5 +447,59 @@ class StringListProp {
     if (v is List) return v.map(toStringValue).toList();
     if (v is String) return [v];
     return fallback;
+  }
+}
+
+/// One entry of a `text-variable-anchor-offset` collection: an anchor
+/// name and the offset, in ems, the text takes at it.
+typedef AnchorOffset = ({String anchor, double x, double y});
+
+/// `variableAnchorOffsetCollection` property: a flat list alternating
+/// anchor names and `[x, y]` em offsets. Literal collections are
+/// converted once; an expression's result is converted per evaluation,
+/// and anything that does not have that shape evaluates to null.
+class AnchorOffsetsProp {
+  final Expr _expr;
+  final List<AnchorOffset>? _constant;
+  final bool zoomOnly;
+  double _memoZoom = double.nan;
+  List<AnchorOffset>? _memoValue;
+
+  AnchorOffsetsProp(this._expr, {this.zoomOnly = false}) : _constant = null;
+
+  AnchorOffsetsProp.constant(List<AnchorOffset> value)
+      : _expr = constExpr(value),
+        _constant = List.unmodifiable(value),
+        zoomOnly = false;
+
+  bool get isConstant => _constant != null;
+
+  List<AnchorOffset>? eval(EvalContext ctx) {
+    final constant = _constant;
+    if (constant != null) return constant;
+    if (zoomOnly) {
+      if (ctx.zoom == _memoZoom) return _memoValue;
+      _memoZoom = ctx.zoom;
+      return _memoValue = parse(_expr(ctx));
+    }
+    return parse(_expr(ctx));
+  }
+
+  /// [value] as a collection, or null when it is not one.
+  static List<AnchorOffset>? parse(Object? value) {
+    if (value is! List || value.isEmpty || value.length.isOdd) return null;
+    final out = <AnchorOffset>[];
+    for (var i = 0; i < value.length; i += 2) {
+      final anchor = value[i];
+      final offset = value[i + 1];
+      if (anchor is! String || offset is! List || offset.length != 2) {
+        return null;
+      }
+      final x = toNumber(offset[0]);
+      final y = toNumber(offset[1]);
+      if (x == null || y == null) return null;
+      out.add((anchor: anchor, x: x, y: y));
+    }
+    return out;
   }
 }

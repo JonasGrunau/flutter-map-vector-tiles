@@ -217,12 +217,20 @@ class TextStyleMemo {
   /// `text-halo-width` as a ratio of the font size, in 1/128-em steps;
   /// 0 when the halo is absent or fully transparent.
   final int haloRatioQ;
+
+  /// `text-halo-blur` in the same 1/128-em steps; 0 without a halo.
+  final int haloBlurQ;
   final List<String> fonts;
 
   /// [fonts] joined by commas: the glyph source's name for the stack.
   late final String fontStack = fonts.join(',');
   final double letterSpacingEm;
   final double maxWidthEm;
+
+  /// `text-justify` resolved against the anchor (never `auto`), and
+  /// `text-line-height` in ems — both decide where lines go.
+  final String justify;
+  final double lineHeightEm;
 
   /// Key prefix shared by every glyph of this style (glyph cache).
   final String styleKey;
@@ -243,9 +251,12 @@ class TextStyleMemo {
     required this.fillArgb,
     required this.haloArgb,
     required this.haloRatioQ,
+    required this.haloBlurQ,
     required this.fonts,
     required this.letterSpacingEm,
     required this.maxWidthEm,
+    required this.justify,
+    required this.lineHeightEm,
     required this.styleKey,
     required this.cacheKey,
     required this.zoom,
@@ -256,15 +267,21 @@ class TextStyleMemo {
     int fillArgb,
     int haloArgb,
     int haloRatioQ,
+    int haloBlurQ,
     List<String> fonts,
     double letterSpacingEm,
     double maxWidthEm,
+    String justify,
+    double lineHeightEm,
   ) =>
       fillArgb == this.fillArgb &&
       haloArgb == this.haloArgb &&
       haloRatioQ == this.haloRatioQ &&
+      haloBlurQ == this.haloBlurQ &&
       letterSpacingEm == this.letterSpacingEm &&
       maxWidthEm == this.maxWidthEm &&
+      justify == this.justify &&
+      lineHeightEm == this.lineHeightEm &&
       _sameFonts(fonts);
 
   bool _sameFonts(List<String> other) {
