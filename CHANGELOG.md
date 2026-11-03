@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+Street names drawn straight or on a smooth curve, no longer crooked.
+
+- 🎨 **Street names follow their road smoothly**: a label along a line
+  is drawn straight where its road is straight at the label's scale,
+  and otherwise on one smooth curve through the road, turning glyph by
+  glyph along it — the way Google Maps draws them. Before, each glyph
+  took the angle of the road segment beneath it, as in MapLibre, so
+  roads digitized as zigzags — most footpaths and residential streets
+  in OpenStreetMap — drew their names crooked, with letters at jumpy
+  angles, a wavy baseline and neighbours running into each other on
+  the inside of corners. `text-max-angle` now sums the turns at the
+  road's own corners within 3/5 em, as MapLibre does, so a corner
+  between two glyphs no longer slips through, and a label is dropped
+  where its road turns more than 60° between stretches a line of text
+  long. A straight label on a diagonal road also reserves the road
+  rather than a square box around it, so it no longer pushes away
+  labels beside the road.
+- 🐛 `queryRenderedFeatures` finds turned label text where it is
+  drawn. Text moved by `text-translate`, and point text with
+  `text-rotate` and a `text-offset` or `text-anchor`, was tested turned
+  about its unmoved anchor, so a tap on the label could miss it and a
+  tap beside it could hit it.
+
 ## 2.11.0
 
 Hillshade and heatmap layers, global and feature state, queries for what
