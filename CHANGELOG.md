@@ -2,8 +2,29 @@
 
 ## Unreleased
 
-Street names drawn straight or on a smooth curve, no longer crooked.
+3D buildings: `fill-extrusion` layers drawn with their height, the way
+MapLibre GL draws them when the camera looks straight down, and street names drawn straight or on a smooth curve, no longer crooked.
 
+- ✨ **3D buildings**: `fill-extrusion` layers draw as MapLibre GL draws
+  them at pitch 0, through its perspective camera. Each roof sits
+  further from the screen centre than its foot, in proportion to
+  `fill-extrusion-height` (and `-base`), and the walls facing the
+  centre show, so buildings lean outward, more towards the screen edges
+  and the closer the zoom. Roofs and walls are shaded by the style's
+  root `light` (MapLibre's default when the style has none), with
+  `fill-extrusion-vertical-gradient`, and `fill-extrusion-opacity`
+  composites the layer once, as MapLibre does. The buildings are drawn
+  over the tile images on every frame the map moves, below the labels;
+  rendered-feature queries find a building where it is drawn, roof and
+  walls included, and an extrusion colour that reads `feature-state`
+  follows it. Before, extrusions were flat footprints in the tile
+  images. `VectorTileLayer.extrusions: ExtrusionMode.flat` keeps them
+  that way, at no per-frame cost; patterned extrusions, and every
+  extrusion under `LabelMode.tile`, stay flat. flutter_map has no
+  pitch, so the map itself never tilts.
+- ✨ `Theme.light` holds the style's root `light` (`anchor`,
+  `position`, `color`, `intensity`); `FillThemeLayer` gains
+  `extrusionHeight`, `extrusionBase` and `extrusionVerticalGradient`.
 - 🎨 **Street names follow their road smoothly**: a label along a line
   is drawn straight where its road is straight at the label's scale,
   and otherwise on one smooth curve through the road, turning glyph by

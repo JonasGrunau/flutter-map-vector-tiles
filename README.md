@@ -137,6 +137,7 @@ vt.VectorTileLayer(
   labelFadeDuration: const Duration(milliseconds: 150),
   showLabels: true,
   labelMode: vt.LabelMode.screen,              // or .tile: labels baked into tiles
+  extrusions: vt.ExtrusionMode.perspective,    // or .flat: buildings without height
   controller: myController,                    // queries + feature state, optional
   retainAllProperties: false,                  // keep properties the style never reads
   logger: const vt.Logger.console(),           // see style warnings in debug
@@ -157,6 +158,7 @@ vt.VectorTileLayer(
 | `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress; on a Nothing Phone (1) that took the peak GPU memory from 391–409 to 317–320 MB and cost frames ([compare/RESULTS.md](compare/RESULTS.md)). No effect with `LabelMode.tile`, where labels fade in with their tile |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 | `labelMode` | `LabelMode.screen` | where labels and icons are drawn: every frame in screen space, or once into each tile's image (`LabelMode.tile`, what `vector_map_tiles` calls raster mode). Changing it re-renders the tiles already on screen. See [Choosing a label mode](#choosing-a-label-mode) |
+| `extrusions` | `ExtrusionMode.perspective` | how `fill-extrusion` layers are drawn: as 3D buildings leaning away from the screen centre, as MapLibre draws them looking straight down, or flat in the tile images (`ExtrusionMode.flat`, no per-frame cost). Always flat with `LabelMode.tile`. See [3D buildings](#3d-buildings) |
 | `controller` | none | a `VectorTileLayerController` to ask what is drawn where and to set feature state. See [Querying features and feature state](#-querying-features-and-feature-state) |
 | `retainAllProperties` | `false` | decode every feature property, not only those the style reads, so query results carry them all. Costs memory and decode time, see below |
 
@@ -466,7 +468,7 @@ would.
 | `symbol` | every layout and paint property but `text-writing-mode` and the pitch alignments (flutter_map has no pitch), including curved line text, variable anchors and `icon-text-fit`; see *Symbol properties* and [Labels](#-labels) below |
 | `hillshade` | terrain shading computed from a `raster-dem` source (`terrarium`, `mapbox` or `custom` encoding), drawn at its layer position with every paint property: all five `hillshade-method`s (`standard`, `basic`, `combined`, `igor`, `multidirectional`, up to four lights), illumination direction, altitude and anchor, exaggeration, shadow/highlight/accent colours and `resampling`. Slopes are read across tile edges from the neighbouring elevation tiles, so the shading has no seams. One difference: tiles are shaded once and turn with the map, so `hillshade-illumination-anchor: viewport` (the default) is drawn as if the map were not rotated; with `map` it matches MapLibre at every bearing |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity`, brightness/contrast/saturation/hue-rotate matching MapLibre's shader math, and `resampling` / `raster-resampling` |
-| `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, patterned ones included, so a building part over its outline does not draw darker; the alpha of `fill-extrusion-color` is ignored, as the spec says |
+| `fill-extrusion` | 3D buildings, as MapLibre draws them with the camera looking straight down: `fill-extrusion-height`, `-base`, `-color`, `-opacity` (applied to the whole layer, as MapLibre does), `-vertical-gradient` and `-translate`, shaded by the style's root `light`; see **3D buildings** below. Patterned ones (`fill-extrusion-pattern`), and all of them with `LabelMode.tile` or `extrusions: ExtrusionMode.flat`, draw as flat footprints. The alpha of `fill-extrusion-color` darkens the colour rather than making it translucent, as in MapLibre |
 | `heatmap` | the kernel density MapLibre draws over a source layer's points, with `heatmap-radius`, `-weight`, `-intensity`, `-opacity` and a `heatmap-color` ramp over `["heatmap-density"]`, data-driven weight and radius included; drawn over all the tile geometry, see **Heatmaps** below |
 | `color-relief`, `sky` | skipped, with a log line |
 
@@ -548,6 +550,44 @@ from MapLibre:
   heatmap covers them too;
 - only point features count. MapLibre also takes every vertex of a line
   or polygon as a point.
+
+<a id="3d-buildings"></a>**3D buildings.** flutter_map's camera has no pitch, so the map
+never tilts; what MapLibre shows of a building with the camera looking
+straight down is drawn instead. Its camera is a perspective one, 1.5
+viewport heights above the map, so a roof `h` metres up is drawn
+scaled away from the screen centre by `D / (D − h · pixels per
+metre)`: buildings lean outward, more the further they are from the
+centre, the taller they are and the closer the zoom, and the walls
+facing the centre show — a 50 m building 300 px from the centre of an
+800 px tall map leans 16.6 px at style zoom 16. Because that changes
+with every pan and zoom, the buildings are not in the tile images: each
+frame projects the ones on screen and draws them over the tiles, the
+lowest roof first, each building's walls before its roof. Roofs and
+walls are shaded as MapLibre's shader does, by the style's root
+`light` (MapLibre's default when the style has none) and
+`fill-extrusion-vertical-gradient`. Rendered-feature queries find a
+building where it is drawn, its roof and its walls. Where it differs
+from MapLibre:
+
+- the buildings draw above every other geometry layer, wherever the
+  style puts them, and below the labels. In most styles only boundary
+  lines sit above them;
+- painter's order stands in for MapLibre's depth buffer: where a lower
+  roof leans over a detached taller building through a gap narrower
+  than the lean, or one part of a concave building over another, the
+  overlap can be drawn the wrong way round. A wall shared with a
+  neighbouring building (terraced houses, building parts) starts at the
+  neighbour's roof, as the depth buffer would show it;
+- a wall leaning less than half a pixel is left out, and walls leaning
+  under 3 px share their corners, so their colour runs into the next
+  wall's instead of changing at the corner;
+- a height reading both the zoom and the feature is blended linearly
+  between whole zoom levels.
+
+The per-frame cost is UI-thread time in proportion to the buildings on
+screen: most at style zoom 14, where a phone screen shows the most of
+them. `extrusions: ExtrusionMode.flat` draws them flat in the tile
+images instead, at no per-frame cost.
 
 **Expressions.** Every operator of the current MapLibre style spec
 compiles, as do legacy filters, legacy `{stops}` functions (zoom,
@@ -881,6 +921,7 @@ camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
    symbols ─────► per-frame screen-space label pass (global collision,
                   decided on its own isolate)
            └────► or, LabelMode.tile: drawn into that GPU image, once
+   building meshes (worker) ─► per-frame 3D pass over the tiles
    heatmap points ─► worker: density + colour ramp ─► one screen image
    finished tiles (image + symbols) ─► shared LRU ─► instant re-crossings
 ```
@@ -901,7 +942,8 @@ they are in.
 
 For profiling, the render pipeline emits DevTools timeline events:
 `VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`, `VT
-heatmap` (a heatmap pass's UI-thread part), and with `LabelMode.tile`
+extrusion` (a frame's 3D buildings), `VT heatmap` (a heatmap pass's
+UI-thread part), and with `LabelMode.tile`
 `VT rasterize with labels` and `VT tile labels`. A
 dense tile's `VT rasterize` and `VT symbols` repeat over several
 frames, one slice per frame.

@@ -10,6 +10,7 @@ import '../style/expression.dart';
 import '../style/theme.dart';
 import 'extrusion_layouter.dart';
 import 'extrusion_shading.dart';
+import 'tile_rasterizer.dart';
 
 /// A data tile's buildings on offer to the painter. [skip], when set,
 /// leaves out the buildings whose footprint centre falls in a cell of a
@@ -172,11 +173,14 @@ class ExtrusionPainter {
       if (opacity == 0) continue;
       final layouts = order.layouts;
       final tx = order.tx, ty = order.ty, ts = order.scale;
+      // `fill-extrusion-translate` moves the footprint on the ground,
+      // before the camera projects it.
+      final translate = TileRasterizer.translateOf(layer.translate, styleZoom);
       for (var i = 0; i < layouts.length; i++) {
         final layout = layouts[i];
         final rect = displayTileRect(layout.tile, cameraZoom);
-        tx[i] = rect.left - worldCenter.dx;
-        ty[i] = rect.top - worldCenter.dy;
+        tx[i] = rect.left - worldCenter.dx + translate.dx;
+        ty[i] = rect.top - worldCenter.dy + translate.dy;
         ts[i] = rect.width / layout.extent;
       }
       order.cull(cameraZoom, worldCenter, hx, hy);

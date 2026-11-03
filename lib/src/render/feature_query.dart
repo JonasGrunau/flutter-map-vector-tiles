@@ -121,7 +121,9 @@ abstract final class FeatureQuery {
       if (index == null || !layer.coversZoom(styleZoom)) continue;
       if (layerIds != null && !layerIds.contains(layer.id)) continue;
       final rect = displayTileRect(layout.tile, cameraZoom);
-      final tx = rect.left - worldCenter.dx, ty = rect.top - worldCenter.dy;
+      final translate = _translateOf(layer, styleZoom);
+      final tx = rect.left - worldCenter.dx + translate.dx;
+      final ty = rect.top - worldCenter.dy + translate.dy;
       final s = rect.width / layout.extent;
       final features = layout.source.features;
       final bounds = layout.bounds;

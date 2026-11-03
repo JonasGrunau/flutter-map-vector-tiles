@@ -15,7 +15,11 @@ The design commitments that shape almost every file: geometry is rasterized
 are **not** baked into those rasters but drawn per frame in screen space with
 one global collision pass, decided on a placement isolate where isolates
 exist (`LabelMode.tile` opts into baking them, through the same label
-painter); cancellation is a **state**, never an exception;
+painter); `fill-extrusion` layers are the other per-frame pass — 3D
+buildings projected through MapLibre's pitch-0 camera from meshes cut
+on the worker, since their lean changes with every pan
+(`ExtrusionMode.flat` puts them back in the rasters); cancellation is a
+**state**, never an exception;
 every `ui.Image` has exactly one owner and is disposed on eviction.
 
 ## Key Files
@@ -28,7 +32,7 @@ every `ui.Image` has exactly one owner and is disposed on eviction.
 | `CLAUDE.md` | Agent working agreements — doc-sync rules, README/version rules, release gate. Imports this file via `@AGENTS.md` |
 | `analysis_options.yaml` | `flutter_lints` + strict casts/inference/raw-types, plus `prefer_final_locals`, `unawaited_futures`, `avoid_print`, `directives_ordering` |
 | `.gitignore` | Repo exclusions |
-| `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs, `bench/`, `compare/` and the script suite's fonts and goldens (`test/scripts/`) |
+| `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs, `bench/`, `compare/`, the script suite's fonts and goldens (`test/scripts/`) and the extrusion painter's goldens (`test/goldens/`) |
 | `.tool-versions` | Pinned Flutter version — also the one the publish workflow installs |
 | `.github/workflows/checks.yml` | Reusable check suite: format, analyze, VM + Chrome tests, publish dry run, optional pana. Called by the two below |
 | `.github/workflows/ci.yml` | Runs `checks.yml` on every push to `main` and every PR into it |

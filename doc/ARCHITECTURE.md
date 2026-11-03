@@ -18,7 +18,8 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │      └─ miss: bytes ◄─ DiskCache ◄─ VectorTileProvider (network…)
      │                 (providers backed by local storage skip DiskCache)
      │              └─ IsolatePool: decode MVT, trim to what the theme reads,
-     │                             resolve the zoom-free layer filters
+     │                             resolve the zoom-free layer filters,
+     │                             cut extrusions' polygons into meshes
      │                             └─ PreparedTile (compact, transferable)
      │
      ├─ RasterTileStore (raster + raster-dem sources): bytes ─► image codec
@@ -38,6 +39,12 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │       │  grid across all tiles, upright text under rotation
      │       └─ or, LabelMode.tile: LabelPainter.paintTile places them once
      │          per tile and draws them into the tile's own image
+     │
+     ├─ 3D buildings: ExtrusionLayouter, per *data* tile, when an image
+     │       │  over it publishes: which buildings, how tall, what colour
+     │       └─ ExtrusionPainter: every frame, the buildings on screen
+     │          projected through MapLibre's pitch-0 camera into vertex
+     │          buffers, lowest roof first, drawn over the tiles
      │
      └─ heatmap points: HeatmapLayouter, per tile, when its image publishes
              └─ HeatmapPainter: a throttled density pass over every tile's
@@ -1103,6 +1110,109 @@ and in `LabelMode.tile`, whose labels are part of the tile images, it
 covers them. Only point features count, as for circle layers;
 MapLibre takes the vertices of lines and polygons as points too.
 
+### 3D buildings
+
+flutter_map's camera has no pitch, so a tilted map is out of reach of a
+layer: it would take a new camera, new tile-range maths, new gestures
+and a new label pipeline. What MapLibre GL shows of `fill-extrusion`
+layers with its camera looking straight down is not. Its camera is a
+perspective one, `D = 1.5 × viewport height` above the map (a 36.87°
+field of view, `tan(fov/2) = 1/3`), so a point at altitude `z` lands
+at `c + (foot − c) · D / (D − z · ppm)`, `ppm` being pixels per metre on
+the ground (`worldSize / (2π · 6371008.8 · cos(latitude))`, with
+flutter_map's world size: it does not depend on `TileOffset`). In the
+canvas the tiles are drawn in — world pixels relative to the camera
+centre, the rotation applied by the canvas — that is a plain scale
+`k(z) = D / (D − z · ppm)` about the origin, rotation or not. MapLibre's
+near plane, `H / 50` in front of the camera, caps the lift.
+
+The lean changes with every pan and zoom, so the buildings cannot be
+baked into the tile images; they are drawn after them every frame, in
+the heatmap's slot, by `ExtrusionPainter`, and the rasterizer leaves
+those layers out of the images (`flatExtrusions: false`). Three stages:
+
+- **Mesh, on the worker** (`pipeline/extrusion_mesh.dart`). For every
+  source layer an extrusion layer reads (`PrepareInput.extrusionLayers`),
+  `prepareTileSync` cuts each polygon — an exterior ring and its holes —
+  into roof triangles with a port of MapLibre's earcut
+  (`render/earcut.dart`) and lists its ring edges as walls, without the
+  edges that lie on the tile's clip boundary (MapLibre's
+  `isBoundaryEdge`). The unit is the polygon, not the feature:
+  OpenMapTiles merges every building of a height into one multipolygon
+  (a Munich z14 tile holds 12–427 building features but 567–3,587
+  polygons), and a feature spanning the tile could never be culled.
+  Each wall keeps its outward normal's direction quantized to 256 steps,
+  and the polygon on its other side when another ring runs the same
+  edge the other way (an exact endpoint hash, 8–37 % of the walls in
+  Munich and Berlin). It is geometry only, so it serves every extrusion
+  layer over the source layer at every zoom, and it counts in
+  `PreparedTile.byteSize` (65–550 KB a Munich tile); the store's memory
+  signature records which source layers carry one.
+- **Layout, on the UI isolate, per data tile** (`ExtrusionLayouter`).
+  Which polygons the layer's filter selects, their heights and bases,
+  and colour classes (the colour with the vertical-gradient inputs at
+  the wall's foot and top). It runs where a tile image publishes (and
+  takes a cached result's), but is cached on the prepared source layer
+  by an `Expando`, so every display tile over one data tile — every
+  zoom from 14 to 22 over Liberty's z14 data — shares one instance, and
+  the painter draws each building once by identity. A layout that
+  reads the zoom is keyed by integer zoom; a height or base reading the
+  zoom and the feature is evaluated at both ends of the level and
+  blended per frame, MapLibre's two-stop composite evaluation with a
+  linear factor. One reading `feature-state` is laid out again under
+  each new state version: a state change re-lays out the tiles'
+  buildings rather than re-rasterizing their images. A wall shared
+  with a drawn neighbour gets the neighbour's roof as its floor.
+- **Painter, every frame** (`ExtrusionPainter`). When the tile set
+  changes, every building on offer is sorted by roof height (a counting
+  sort in decimetres, stable). The current tiles' layouts are on offer,
+  and during a zoom crossing the nearest retained level's only where
+  the current level draws nothing from the same place — a data tile
+  the current level also draws is skipped, one it cuts into descendants
+  offers only the buildings outside them. Each frame then culls the
+  candidates — the buildings in a window half a viewport larger than
+  the screen, gathered again when the view leaves it or the zoom moves
+  a quarter level — against the viewport by footprint alone: leaning is
+  radial and outward, so a footprint past an edge never leans back in.
+  For each one left it writes the walls facing the screen centre (the
+  sign of `n · p`) and then the roof into reused typed lists, scaled by
+  `k(base)` and `k(height)`, and turns them into `ui.Vertices` of at
+  most 65,535 vertices each, drawn with `BlendMode.dst` (the vertex
+  colours) inside one `saveLayer` at `fill-extrusion-opacity`: every
+  face is opaque and the nearest wins, as MapLibre's depth pre-pass
+  arranges, and the spec ignores the colour's alpha. Walls leaning
+  under half a pixel are left out, walls under 3 px share their ring
+  corners (two vertices a wall instead of four), and a frame that moved
+  nothing — a label fade, a tile fading in — redraws the last frame's
+  vertices. `debugMicros` / `debugVertices` count the work, and each
+  frame is a `VT extrusion` timeline span.
+
+Shading is MapLibre's `fill_extrusion.vertex.glsl` on the CPU
+(`render/extrusion_shading.dart`): the premultiplied colour plus 3 %
+ambient, times `mix(1 − I, max(1 − luminance + I, 1), d)` — `d` the
+light's height for a roof, `clamp(−n · L)` for a wall — times the
+vertical gradient on walls and the light colour, clamped below towards
+its complement. The light (`Theme.light`, MapLibre's default
+`[1.15, 210°, 30°]`, white, 0.5 without one) is turned against the map
+when anchored to the viewport. Colour classes become tables of a roof
+colour and 64 wall levels when the light changes, and the 256 wall
+directions their levels when the rotation does, so a wall costs two
+lookups.
+
+Painter's order stands in for the depth buffer: it is right wherever
+the taller building is the nearer one, which a camera straight above
+almost always makes so. It is wrong where a lower roof leans over a
+detached taller neighbour through a gap narrower than the lean, and
+where one part of a concave building should hide another; a wall
+shared with a neighbour, the common case of terraced houses and
+building parts, is handled by its raised floor.
+
+On a Nothing Phone (1) the pass costs most at style zoom 14, where the
+screen holds the most buildings (see `bench/`'s `EXTRUDE` line). Patterned
+extrusions stay flat in the tile images (a pattern on a wall would need
+texture coordinates per face), and so does everything under
+`LabelMode.tile`, whose labels would end up under the buildings.
+
 ### Labels in the tile image (`LabelMode.tile`)
 
 Everything above about labels buys its quality with UI-thread time on
@@ -1409,7 +1519,7 @@ on web.
 | --- | --- | --- |
 | memory: `PreparedTile` | data tile, per source (`provider.cacheKey`) and property keep-lists | entry count + bytes |
 | memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
-| memory: finished display tile (raster `ui.Image` + symbols + heatmap points) | display tile, per render signature (theme id, providers, dpr, sprite and glyph *content*, labels, label mode) | GPU texture bytes, plus the heatmap points' bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
+| memory: finished display tile (raster `ui.Image` + symbols + heatmap points + 3D-building layouts, the last shared with the data tiles) | display tile, per render signature (theme id, providers, dpr, sprite and glyph *content*, labels, label mode) | GPU texture bytes, plus the heatmap points' bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
 | disk: raw tile bytes | hash of `provider.cacheKey` + z/x/y | TTL + total size sweep |
 
 All caches are plain deterministic LRU implementations — no external
