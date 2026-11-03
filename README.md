@@ -255,8 +255,9 @@ native:
 - **Decoding runs on the event loop.** A yielding queue replaces the
   worker-isolate pool, and `concurrency` is ignored. Layer filters are
   matched against a tile's features when it is first drawn, not while it
-  is decoded, and a heatmap layer's density is computed on the event loop
-  too, after the frame that asked for it.
+  is decoded, a heatmap layer's density is computed on the event loop
+  too, after the frame that asked for it, and so are the meshes of a
+  style's 3D buildings, cut while a tile is decoded.
 - **Label collision runs in the frame.** The placement pass that runs on
   an isolate of its own elsewhere costs the frame it is due in.
 - **CORS.** The browser fetches style.json, TileJSON, sprites, glyphs and
