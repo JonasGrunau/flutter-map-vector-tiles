@@ -1273,6 +1273,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _labelPainter.worker?.dispose();
     _labelPainter.dispose();
     _heatmapPainter.dispose();
+    _extrusionPainter.reset();
     _patterns?.dispose();
     _repaint.dispose();
     super.dispose();
