@@ -67,11 +67,11 @@ class ExtrusionLayout {
   /// light level.
   final Int32List classes;
 
-  /// Per wall of [mesh], for a wall a drawn neighbour shares
-  /// (`ExtrusionMesh.wallTwin`): the altitude its visible part starts
-  /// at, the neighbour's roof — at or above the building's own roof
-  /// when the neighbour hides it whole. NaN for the rest; null when no
-  /// wall of the tile has a drawn neighbour.
+  /// Per wall of [mesh], for a wall another drawn building stands in
+  /// front of (`ExtrusionMesh.wallCovers`): the altitude its visible part
+  /// starts at, that building's roof — at or above the building's own
+  /// roof when it hides the wall whole. NaN for the rest; null when no
+  /// wall of the tile has one.
   final Float32List? wallFloors;
 
   /// Per drawn building: its footprint's bounds in extent units,
@@ -324,10 +324,12 @@ abstract final class ExtrusionLayouter {
       if (height > maxHeight) maxHeight = height;
       count++;
     }
-    // Walls shared with a drawn neighbour start at its roof.
+    // A wall another drawn building stands in front of starts at that
+    // building's roof — the tallest such one standing no higher than
+    // this one's floor.
     Float32List? floors;
-    final twins = mesh.wallTwin;
-    if (count > 0) {
+    final coverStart = mesh.wallCoverStart, covers = mesh.wallCovers;
+    if (count > 0 && covers.isNotEmpty) {
       final drawnAs = Int32List(n)..fillRange(0, n, -1);
       for (var i = 0; i < count; i++) {
         drawnAs[buildings[i]] = i;
@@ -335,13 +337,18 @@ abstract final class ExtrusionLayouter {
       for (var i = 0; i < count; i++) {
         final p = buildings[i];
         for (var w = mesh.wallStart[p]; w < mesh.wallStart[p + 1]; w += 2) {
-          final twin = twins[w >> 1];
-          if (twin == ExtrusionMesh.noTwin) continue;
-          final other = drawnAs[twin];
-          if (other < 0 || !(heights[other] > bases[i])) continue;
-          floors ??= Float32List(twins.length)
-            ..fillRange(0, twins.length, double.nan);
-          floors[w >> 1] = heights[other];
+          final wall = w >> 1;
+          var floor = double.nan;
+          for (var k = coverStart[wall]; k < coverStart[wall + 1]; k++) {
+            final other = drawnAs[covers[k]];
+            if (other < 0 || bases[other] > bases[i]) continue;
+            final roofOf = heights[other];
+            if (roofOf > bases[i] && !(floor >= roofOf)) floor = roofOf;
+          }
+          if (floor.isNaN) continue;
+          floors ??= Float32List(coverStart.length - 1)
+            ..fillRange(0, coverStart.length - 1, double.nan);
+          floors[wall] = floor;
         }
       }
     }

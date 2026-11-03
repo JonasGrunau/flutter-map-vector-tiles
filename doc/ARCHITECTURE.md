@@ -1142,11 +1142,20 @@ those layers out of the images (`flatExtrusions: false`). Three stages:
   (a Munich z14 tile holds 12–427 building features but 567–3,587
   polygons), and a feature spanning the tile could never be culled.
   Each wall keeps its outward normal's direction quantized to 256 steps,
-  and the polygon on its other side when another ring runs the same
-  edge the other way (an exact endpoint hash, 8–37 % of the walls in
-  Munich and Berlin). It is geometry only, so it serves every extrusion
-  layer over the source layer at every zoom, and it counts in
-  `PreparedTile.byteSize` (65–550 KB a Munich tile); the store's memory
+  and the polygons standing right in front of it: those whose roof
+  triangles hold the point 1.5 units outside it (a grid over the
+  polygons' bounds finds the candidates). Sampled every 16 units, a wall
+  whose front changes along it is split there, at a vertex the roof does
+  not use. That catches a terraced neighbour sharing the wall, and the
+  outline a building part rises out of: OpenMapTiles keeps outlines and
+  parts both, OpenFreeMap without `hide_3d`, so in central Berlin a
+  37 m part stands inside a 22 m outline, all from the ground. 1.5
+  units bridges the slivers loosely mapped neighbours leave and stays
+  short of the gaps between the Holocaust memorial's stelae; measured
+  against MapLibre's walls over that area, it halved the wall pixels
+  only this package drew. It is geometry only, so it serves every
+  extrusion layer over the source layer at every zoom, and it counts in
+  `PreparedTile.byteSize` (65–580 KB a Munich tile); the store's memory
   signature records which source layers carry one.
 - **Layout, on the UI isolate, per data tile** (`ExtrusionLayouter`).
   Which polygons the layer's filter selects, their heights and bases,
@@ -1203,9 +1212,9 @@ Painter's order stands in for the depth buffer: it is right wherever
 the taller building is the nearer one, which a camera straight above
 almost always makes so. It is wrong where a lower roof leans over a
 detached taller neighbour through a gap narrower than the lean, and
-where one part of a concave building should hide another; a wall
-shared with a neighbour, the common case of terraced houses and
-building parts, is handled by its raised floor.
+where one part of a concave building should hide another; a wall with
+another building right in front of it, the common case of terraced
+houses and building parts, is handled by its raised floor.
 
 On a Nothing Phone (1) the pass costs most at style zoom 14, where the
 screen holds the most buildings: 2.4–4.0 ms a frame (median, 33k

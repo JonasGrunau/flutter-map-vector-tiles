@@ -576,9 +576,10 @@ from MapLibre:
 - painter's order stands in for MapLibre's depth buffer: where a lower
   roof leans over a detached taller building through a gap narrower
   than the lean, or one part of a concave building over another, the
-  overlap can be drawn the wrong way round. A wall shared with a
-  neighbouring building (terraced houses, building parts) starts at the
-  neighbour's roof, as the depth buffer would show it;
+  overlap can be drawn the wrong way round. A wall with another
+  building right in front of it — a terraced neighbour, the outline a
+  taller building part rises out of — starts at that building's roof,
+  as the depth buffer would show it;
 - a wall leaning less than half a pixel is left out, and walls leaning
   under 3 px share their corners, so their colour runs into the next
   wall's instead of changing at the corner;

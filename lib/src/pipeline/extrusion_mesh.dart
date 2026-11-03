@@ -56,16 +56,20 @@ class ExtrusionMesh {
   /// instead of normalizing every wall's normal.
   final Uint8List wallAngle;
 
-  /// Per wall, the polygon on its other side — another building whose
-  /// ring runs the same edge the other way, as terraced houses and
-  /// building parts share walls — or [noTwin]. Painter's order cannot hide
-  /// the lower part of the taller one's wall behind the lower one's
-  /// roof, which a depth buffer would: the layout raises its foot to the
-  /// neighbour's roof instead (`ExtrusionLayout.wallFloors`).
-  final Uint16List wallTwin;
-
-  /// [wallTwin] of a wall no other polygon shares.
-  static const int noTwin = 0xffff;
+  /// Per wall, the other polygons standing right in front of it: those
+  /// containing the point 1.5 units (of a 4096 extent) outside it. A
+  /// wall whose front changes along it is split there, at a vertex
+  /// appended to its polygon's that the roof does not use.
+  /// Wall w's are `wallCovers[wallCoverStart[w] ..< wallCoverStart[w +
+  /// 1]]` — a terraced neighbour sharing the wall, the outline a taller
+  /// building part rises out of, a lower part in front of a taller one.
+  /// Painter's order cannot hide the stretch of a wall inside such a
+  /// building behind its roof, as a depth buffer would: the layout
+  /// raises the wall's foot to that roof instead
+  /// (`ExtrusionLayout.wallFloors`), and leaves it out when the roof is
+  /// as high. Most walls face the street and have none.
+  final Int32List wallCoverStart;
+  final Uint16List wallCovers;
 
   const ExtrusionMesh({
     required this.feature,
@@ -77,7 +81,8 @@ class ExtrusionMesh {
     required this.wallStart,
     required this.walls,
     required this.wallAngle,
-    required this.wallTwin,
+    required this.wallCoverStart,
+    required this.wallCovers,
   });
 
   /// The number of polygons.
@@ -93,7 +98,8 @@ class ExtrusionMesh {
       wallStart.lengthInBytes +
       walls.lengthInBytes +
       wallAngle.lengthInBytes +
-      wallTwin.lengthInBytes +
+      wallCoverStart.lengthInBytes +
+      wallCovers.lengthInBytes +
       64;
 }
 
@@ -219,69 +225,251 @@ class ExtrusionMeshBuilder {
   bool get isEmpty => _feature.length == 0;
 
   ExtrusionMesh build() {
+    final bounds = _bounds.toFloat32List();
     final vertexStart = _vertexStart.toInt32List();
     final xy = _xy.toFloat32List();
+    final roofStart = _roofStart.toInt32List();
+    final roof = _roof.toUint16List();
     final wallStart = _wallStart.toInt32List();
     final walls = _walls.toUint16List();
+    final wallAngle = _wallAngle.toUint8List();
+    final polygons = wallStart.length - 1;
+    // Polygon indices in the cover lists are 16-bit.
+    if (polygons < 2 || polygons > 0xffff) {
+      return ExtrusionMesh(
+        feature: _feature.toInt32List(),
+        bounds: bounds,
+        vertexStart: vertexStart,
+        xy: xy,
+        roofStart: roofStart,
+        roof: roof,
+        wallStart: wallStart,
+        walls: walls,
+        wallAngle: wallAngle,
+        wallCoverStart: Int32List((walls.length >> 1) + 1),
+        wallCovers: Uint16List(0),
+      );
+    }
+    final covers = _Covers(extent, bounds, vertexStart, xy, roofStart, roof);
+
+    // Walls again, split where what stands in front of them changes —
+    // the extra vertices appended to their polygon's, which the roof
+    // triangles do not use — each with its covers.
+    final outXy = _FloatBuffer();
+    final outVertexStart = _IntBuffer()..add(0);
+    final outWallStart = _IntBuffer()..add(0);
+    final outWalls = _IntBuffer();
+    final outAngle = _IntBuffer();
+    final coverStart = _IntBuffer()..add(0);
+    final coverList = _IntBuffer();
+    final extra = <double>[];
+    for (var p = 0; p < polygons; p++) {
+      final v0 = vertexStart[p], vn = vertexStart[p + 1] - v0;
+      extra.clear();
+      for (var w = wallStart[p]; w < wallStart[p + 1]; w += 2) {
+        final ra = walls[w], rb = walls[w + 1];
+        final a = (v0 + ra) * 2, b = (v0 + rb) * 2;
+        final ax = xy[a], ay = xy[a + 1], bx = xy[b], by = xy[b + 1];
+        final angle = wallAngle[w >> 1];
+        final cuts = covers.along(p, ax, ay, bx, by);
+        // cuts: t values in (0, 1) where the cover changes, then the
+        // cover of each piece.
+        var from = ra;
+        for (var k = 0; k <= cuts.splits.length; k++) {
+          int to;
+          if (k == cuts.splits.length) {
+            to = rb;
+          } else if (vn + (extra.length >> 1) < maxVertices) {
+            final t = cuts.splits[k];
+            extra
+              ..add(ax + (bx - ax) * t)
+              ..add(ay + (by - ay) * t);
+            to = vn + (extra.length >> 1) - 1;
+          } else {
+            continue; // no room for a vertex: the piece runs on
+          }
+          outWalls
+            ..add(from)
+            ..add(to);
+          outAngle.add(angle);
+          for (final q in cuts.pieces[k]) {
+            coverList.add(q);
+          }
+          coverStart.add(coverList.length);
+          from = to;
+        }
+      }
+      for (var i = v0 * 2; i < (v0 + vn) * 2; i++) {
+        outXy.add(xy[i]);
+      }
+      for (final v in extra) {
+        outXy.add(v);
+      }
+      outVertexStart.add(outXy.length >> 1);
+      outWallStart.add(outWalls.length);
+    }
     return ExtrusionMesh(
       feature: _feature.toInt32List(),
-      bounds: _bounds.toFloat32List(),
-      vertexStart: vertexStart,
-      xy: xy,
-      roofStart: _roofStart.toInt32List(),
-      roof: _roof.toUint16List(),
-      wallStart: wallStart,
-      walls: walls,
-      wallAngle: _wallAngle.toUint8List(),
-      wallTwin: _twins(vertexStart, xy, wallStart, walls),
+      bounds: bounds,
+      vertexStart: outVertexStart.toInt32List(),
+      xy: outXy.toFloat32List(),
+      roofStart: roofStart,
+      roof: roof,
+      wallStart: outWallStart.toInt32List(),
+      walls: outWalls.toUint16List(),
+      wallAngle: outAngle.toUint8List(),
+      wallCoverStart: coverStart.toInt32List(),
+      wallCovers: coverList.toUint16List(),
     );
   }
+}
 
-  /// [ExtrusionMesh.wallTwin]: the walls whose edge another polygon
-  /// runs the other way, found by an exact endpoint hash.
-  Uint16List _twins(Int32List vertexStart, Float32List xy, Int32List wallStart,
-      Uint16List walls) {
-    final count = walls.length >> 1;
-    final twins = Uint16List(count)..fillRange(0, count, ExtrusionMesh.noTwin);
-    // Polygon indices must fit beside the marker.
-    if (wallStart.length > ExtrusionMesh.noTwin) return twins;
-    // An endpoint as 26 bits — 13 per axis, over the extent and half of
-    // it either side, which covers any buffer — and an edge as two:
-    // under 2^53, so exact on the web too, built without bit operations.
-    final half = extent / 2, unit = 4096 / extent;
-    int? pointKey(double x, double y) {
-      final qx = ((x + half) * unit).round(), qy = ((y + half) * unit).round();
-      if (qx < 0 || qx >= 8192 || qy < 0 || qy >= 8192) return null;
-      return qx * 8192 + qy;
-    }
-
-    final edges = <int, int>{};
-    final keys = List<int?>.filled(count, null);
-    final from = Int32List(count), to = Int32List(count);
-    final polygonOf = Int32List(count);
-    for (var p = 0; p + 1 < wallStart.length; p++) {
-      final v0 = vertexStart[p];
-      for (var w = wallStart[p]; w < wallStart[p + 1]; w += 2) {
-        final a = (v0 + walls[w]) * 2, b = (v0 + walls[w + 1]) * 2;
-        final ka = pointKey(xy[a], xy[a + 1]), kb = pointKey(xy[b], xy[b + 1]);
-        final i = w >> 1;
-        polygonOf[i] = p;
-        if (ka == null || kb == null) continue;
-        from[i] = ka;
-        to[i] = kb;
-        final key = ka * 67108864 + kb;
-        keys[i] = key;
-        edges[key] = i;
+/// Which polygons stand right in front of a wall, for
+/// [ExtrusionMesh.wallCovers]: the ones whose roof triangles hold the
+/// point [reach] outside it, looked up through a grid over the
+/// polygons' bounds.
+class _Covers {
+  _Covers(int extent, this.bounds, this.vertexStart, this.xy, this.roofStart,
+      this.roof)
+      : origin = -extent / 2,
+        cell = extent * 2 / side,
+        reach = 1.5 * extent / 4096 {
+    final polygons = bounds.length ~/ 4;
+    final count = Int32List(side * side + 1);
+    for (var pass = 0; pass < 2; pass++) {
+      final fill = pass == 0 ? null : Int32List.fromList(_cellStart);
+      for (var p = 0; p < polygons; p++) {
+        for (var cy = _cellOf(bounds[p * 4 + 1]);
+            cy <= _cellOf(bounds[p * 4 + 3]);
+            cy++) {
+          for (var cx = _cellOf(bounds[p * 4]);
+              cx <= _cellOf(bounds[p * 4 + 2]);
+              cx++) {
+            if (fill == null) {
+              count[cy * side + cx + 1]++;
+            } else {
+              _inCell[fill[cy * side + cx]++] = p;
+            }
+          }
+        }
+      }
+      if (pass == 0) {
+        for (var i = 1; i <= side * side; i++) {
+          count[i] += count[i - 1];
+        }
+        _cellStart = count;
+        _inCell = Int32List(count[side * side]);
       }
     }
-    for (var i = 0; i < count; i++) {
-      if (keys[i] == null) continue;
-      final twin = edges[to[i] * 67108864 + from[i]];
-      if (twin != null && polygonOf[twin] != polygonOf[i]) {
-        twins[i] = polygonOf[twin];
+  }
+
+  /// 128 × 128 cells over the extent and half of it either side, where a
+  /// tile's buffer lies.
+  static const side = 128;
+  final double origin, cell;
+
+  /// How far outside a wall it looks: 1.5 units of a 4096 extent, about
+  /// half a metre at z14 — past the unit-wide slivers loosely mapped
+  /// neighbours leave between them, short of the 2–3 units between the
+  /// stelae of Berlin's Holocaust memorial, which MapLibre draws with
+  /// every wall. Measured against MapLibre's walls there.
+  final double reach;
+  final Float32List bounds;
+  final Int32List vertexStart;
+  final Float32List xy;
+  final Int32List roofStart;
+  final Uint16List roof;
+  late Int32List _cellStart;
+  late Int32List _inCell;
+
+  /// A wall's samples are at most this many extent units apart.
+  static const double spacing = 16;
+
+  int _cellOf(double v) {
+    final c = ((v - origin) / cell).floor();
+    return c < 0 ? 0 : (c >= side ? side - 1 : c);
+  }
+
+  /// The polygons other than [p] holding (x, y), ascending.
+  List<int> at(int p, double x, double y) {
+    final c = _cellOf(y) * side + _cellOf(x);
+    List<int>? found;
+    for (var k = _cellStart[c]; k < _cellStart[c + 1]; k++) {
+      final q = _inCell[k];
+      if (q == p ||
+          x < bounds[q * 4] ||
+          x > bounds[q * 4 + 2] ||
+          y < bounds[q * 4 + 1] ||
+          y > bounds[q * 4 + 3]) {
+        continue;
+      }
+      if (_holds(q, x, y)) (found ??= []).add(q);
+    }
+    if (found == null) return const [];
+    return found..sort();
+  }
+
+  bool _holds(int p, double x, double y) {
+    final v0 = vertexStart[p];
+    for (var r = roofStart[p]; r < roofStart[p + 1]; r += 3) {
+      final a = (v0 + roof[r]) * 2;
+      final b = (v0 + roof[r + 1]) * 2;
+      final c = (v0 + roof[r + 2]) * 2;
+      final d1 = (xy[b] - xy[a]) * (y - xy[a + 1]) -
+          (xy[b + 1] - xy[a + 1]) * (x - xy[a]);
+      final d2 = (xy[c] - xy[b]) * (y - xy[b + 1]) -
+          (xy[c + 1] - xy[b + 1]) * (x - xy[b]);
+      final d3 = (xy[a] - xy[c]) * (y - xy[c + 1]) -
+          (xy[a + 1] - xy[c + 1]) * (x - xy[c]);
+      if ((d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0)) {
+        return true;
       }
     }
-    return twins;
+    return false;
+  }
+
+  /// The covers along polygon [p]'s wall from (ax, ay) to (bx, by):
+  /// where they change, as fractions of the wall, and the covers of each
+  /// piece between — sampled every [spacing] units, each change pinned
+  /// down to a unit by bisection.
+  ({List<double> splits, List<List<int>> pieces}) along(
+      int p, double ax, double ay, double bx, double by) {
+    final dx = bx - ax, dy = by - ay;
+    final length = math.sqrt(dx * dx + dy * dy);
+    // [reach] outside, along the outward normal (dy, -dx).
+    final ox = dy / length * reach, oy = -dx / length * reach;
+    List<int> sample(double t) => at(p, ax + dx * t + ox, ay + dy * t + oy);
+    final n = (length / spacing).ceil().clamp(1, 1 << 20);
+    var current = sample(0.5 / n);
+    if (n == 1) return (splits: const [], pieces: [current]);
+    final splits = <double>[];
+    final pieces = <List<int>>[current];
+    for (var i = 1; i < n; i++) {
+      final next = sample((i + 0.5) / n);
+      if (_same(next, current)) continue;
+      // The change lies between the two samples.
+      var lo = (i - 0.5) / n, hi = (i + 0.5) / n;
+      while ((hi - lo) * length > 1) {
+        final mid = (lo + hi) / 2;
+        if (_same(sample(mid), current)) {
+          lo = mid;
+        } else {
+          hi = mid;
+        }
+      }
+      splits.add((lo + hi) / 2);
+      pieces.add(next);
+      current = next;
+    }
+    return (splits: splits, pieces: pieces);
+  }
+
+  static bool _same(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 }
 

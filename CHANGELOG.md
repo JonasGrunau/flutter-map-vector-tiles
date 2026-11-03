@@ -16,8 +16,11 @@ MapLibre GL draws them when the camera looks straight down, and street names dra
   composites the layer once, as MapLibre does. The buildings are drawn
   over the tile images on every frame the map moves, below the labels;
   rendered-feature queries find a building where it is drawn, roof and
-  walls included, and an extrusion colour that reads `feature-state`
-  follows it. Before, extrusions were flat footprints in the tile
+  walls included. A wall with another building right in front of it —
+  a terraced neighbour, the outline a taller building part rises out
+  of — shows only above that building's roof, as MapLibre's depth
+  buffer would have it. An extrusion colour that reads `feature-state`
+  follows the state. Before, extrusions were flat footprints in the tile
   images. On a Nothing Phone (1) the pass adds about a millisecond to
   the 90th-percentile UI frame at style zoom 14 and nothing measurable
   from 16 on; a map without labels pays more at 14 (see the README's
