@@ -168,9 +168,9 @@ void main() {
       expect(layer.extrusionBaseReadsZoom, isTrue);
       expect(
           layer.extrusionHeight!.eval(
-              EvalContext(zoom: 15, properties: const {'render_height': 42})),
+              const EvalContext(zoom: 15, properties: {'render_height': 42})),
           42);
-      expect(layer.extrusionVerticalGradient!.eval(EvalContext(zoom: 15)),
+      expect(layer.extrusionVerticalGradient!.eval(const EvalContext(zoom: 15)),
           isFalse);
     });
 
