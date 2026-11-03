@@ -18,8 +18,11 @@ MapLibre GL draws them when the camera looks straight down, and street names dra
   rendered-feature queries find a building where it is drawn, roof and
   walls included, and an extrusion colour that reads `feature-state`
   follows it. Before, extrusions were flat footprints in the tile
-  images. `VectorTileLayer.extrusions: ExtrusionMode.flat` keeps them
-  that way, at no per-frame cost; patterned extrusions, and every
+  images. On a Nothing Phone (1) the pass adds about a millisecond to
+  the 90th-percentile UI frame at style zoom 14 and nothing measurable
+  from 16 on; a map without labels pays more at 14 (see the README's
+  *3D buildings*). `VectorTileLayer.extrusions: ExtrusionMode.flat`
+  keeps them flat, at no per-frame cost; patterned extrusions, and every
   extrusion under `LabelMode.tile`, stay flat. flutter_map has no
   pitch, so the map itself never tilts.
 - ✨ `Theme.light` holds the style's root `light` (`anchor`,
