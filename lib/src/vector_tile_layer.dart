@@ -1527,6 +1527,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// and waiting for the pump to reach them holds that GPU memory (and
   /// the tile object) for as many frames as the queue is deep.
   void _disposeTile(_DisplayTile tile) {
+    // Its buildings leave the painter's set with it.
+    if (tile.extrusions?.isNotEmpty ?? false) _extrusionGeneration++;
     _renderQueue.remove(tile);
     _parkedJobs.remove(tile)?.dispose();
     _labelIds.release(tile.key, tile.labelIds);
@@ -1569,6 +1571,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         tile.renderedWith = cached.renderedWith;
         tile.heatmap = cached.heatmap;
         tile.extrusions = cached.extrusions;
+        _extrusionGeneration++;
         tile.labelHits = cached.labelHits ?? const [];
         if (widget.controller != null) _adoptSources(tile);
         final owesShaping = cached.symbols.isNotEmpty;
@@ -2202,6 +2205,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     );
     tile.heatmap = _layoutHeatmap(data, styleZoom);
     tile.extrusions = _layoutExtrusions(data, styleZoom);
+    _extrusionGeneration++;
     tile.labelHits = const [];
     tile.sources = widget.controller == null ? null : job.sources;
     if (job.keepSymbols) {
