@@ -972,12 +972,11 @@ UI-thread part), and with `LabelMode.tile`
 dense tile's `VT rasterize` and `VT symbols` repeat over several
 frames, one slice per frame.
 
-On web the disk cache tier is absent, and decoding and heatmap
-densities run on the event loop instead of isolates. Everything else
-is identical.
-On web the disk cache tier is absent and decoding runs on a yielding
-event-loop queue instead of isolates, which leaves layer filters to be
-matched when a tile is first drawn. Everything else is identical.
+On web the disk cache tier is absent, and decoding (with the meshes
+of 3D buildings, when they are on) and heatmap densities run on a
+yielding event-loop queue instead of isolates, which leaves layer
+filters to be matched when a tile is first drawn. Everything else is
+identical.
 
 The full rendering model, and the reasoning behind each departure from
 [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles), is in
