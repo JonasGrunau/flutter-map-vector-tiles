@@ -217,7 +217,7 @@ void main() {
     expect(
         controller
             .queryRenderedFeaturesInRect(
-                Rect.fromLTWH(_mid + 90.0, _mid + 60.0, 12, 4))
+                const Rect.fromLTWH(_mid + 90.0, _mid + 60.0, 12, 4))
             .map((f) => f.id),
         [7]);
     await tester.pumpWidget(const SizedBox());
