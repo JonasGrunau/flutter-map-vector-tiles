@@ -11,6 +11,13 @@ import '../style/theme.dart';
 import 'extrusion_layouter.dart';
 import 'extrusion_shading.dart';
 
+/// A data tile's buildings on offer to the painter. [skip], when set,
+/// leaves out the buildings whose footprint centre falls in a cell of a
+/// [side] × [side] grid over the tile that it marks: a tile of the level
+/// a zoom crossing is leaving counts only where the arriving level has
+/// no buildings yet, or the two would draw each building twice.
+typedef ExtrusionTile = ({ExtrusionLayout layout, Uint8List? skip, int side});
+
 /// Draws `fill-extrusion` layers as 3D buildings, the way MapLibre GL
 /// draws them with the camera looking straight down (pitch 0): through a
 /// perspective camera, so a building's roof sits further from the screen
@@ -97,7 +104,7 @@ class ExtrusionPainter {
   void paint(
     Canvas canvas, {
     required int generation,
-    required Iterable<ExtrusionLayout> Function() layouts,
+    required Iterable<ExtrusionTile> Function() layouts,
     required double cameraZoom,
     required double styleZoom,
     required Offset worldCenter,
@@ -174,7 +181,7 @@ class ExtrusionPainter {
       }
       order.cull(cameraZoom, worldCenter, hx, hy);
       order.opacity = opacity;
-      _drawLayer(order, d, ppm, maxLift, hx, hy);
+      _drawLayer(order, styleZoom, d, ppm, maxLift, hx, hy);
       order.redraw(canvas);
     }
 
@@ -214,8 +221,8 @@ class ExtrusionPainter {
   /// — invisible on a sliver.
   static const double _shareCornersBelow = 3;
 
-  void _drawLayer(_LayerOrder order, double d, double ppm, double maxLift,
-      double hx, double hy) {
+  void _drawLayer(_LayerOrder order, double styleZoom, double d, double ppm,
+      double maxLift, double hx, double hy) {
     final layouts = order.layouts;
     final tables = order.tables;
     final levels = _levels;
@@ -243,10 +250,10 @@ class ExtrusionPainter {
       // Leaning is away from the centre: a footprint past an edge of
       // the viewport leans further past it.
       if (fy1 < -hy || fy0 > hy) continue;
-      var lift = layout.heights[bi] * ppm;
+      var lift = layout.heightAt(bi, styleZoom) * ppm;
       if (lift > maxLift) lift = maxLift;
       final kt = d / (d - lift);
-      var baseLift = layout.bases[bi] * ppm;
+      var baseLift = layout.baseAt(bi, styleZoom) * ppm;
       if (baseLift > maxLift) baseLift = maxLift;
       final kb = d / (d - baseLift);
 
@@ -284,6 +291,8 @@ class ExtrusionPainter {
       if (wallCount > 0) {
         final walls = mesh.walls;
         final angles = mesh.wallAngle;
+        final floors = layout.wallFloors;
+        final height = layout.heightAt(bi, styleZoom);
         const top = 1 + ExtrusionShading.levels;
         final share = lean < _shareCornersBelow;
         // The relative vertex the last wall drawn ended on, while its
@@ -306,15 +315,29 @@ class ExtrusionPainter {
           final level = colorAt + levels[angles[w >> 1]];
           final foot = table[level + 1];
           final head = table[level + top];
+          // A wall shared with a neighbour shows above its roof only.
+          var kf = kb;
+          if (floors != null) {
+            final floor = floors[w >> 1];
+            if (!floor.isNaN) {
+              if (floor >= height) {
+                openEnd = -1;
+                continue;
+              }
+              var floorLift = floor * ppm;
+              if (floorLift > maxLift) floorLift = maxLift;
+              kf = d / (d - floorLift);
+            }
+          }
           int footA, headA;
-          if (share && openEnd == ra) {
+          if (share && openEnd == ra && kf == kb) {
             // Continue the strip from the last wall's end corner.
             footA = v - 2;
             headA = v - 1;
           } else {
             final o = v * 2;
-            pos[o] = ax * kb;
-            pos[o + 1] = ay * kb;
+            pos[o] = ax * kf;
+            pos[o + 1] = ay * kf;
             pos[o + 2] = ax * kt;
             pos[o + 3] = ay * kt;
             col[v] = foot;
@@ -324,8 +347,8 @@ class ExtrusionPainter {
             v += 2;
           }
           final o = v * 2;
-          pos[o] = cx * kb;
-          pos[o + 1] = cy * kb;
+          pos[o] = cx * kf;
+          pos[o + 1] = cy * kf;
           pos[o + 2] = cx * kt;
           pos[o + 3] = cy * kt;
           col[v] = foot;
@@ -338,7 +361,7 @@ class ExtrusionPainter {
           idx[k + 5] = headA;
           k += 6;
           v += 2;
-          openEnd = share ? rc : -1;
+          openEnd = share && kf == kb ? rc : -1;
         }
         _vertexCount = v;
         _indexCount = k;
@@ -390,10 +413,10 @@ class ExtrusionPainter {
 
   /// Every building of [layouts], per layer in theme order, lowest roof
   /// first.
-  static List<_LayerOrder> _order(Iterable<ExtrusionLayout> layouts) {
-    final byLayer = <FillThemeLayer, List<ExtrusionLayout>>{};
-    for (final layout in layouts) {
-      (byLayer[layout.layer] ??= []).add(layout);
+  static List<_LayerOrder> _order(Iterable<ExtrusionTile> layouts) {
+    final byLayer = <FillThemeLayer, List<ExtrusionTile>>{};
+    for (final tile in layouts) {
+      (byLayer[tile.layout.layer] ??= []).add(tile);
     }
     return [
       for (final entry in byLayer.entries)
@@ -540,12 +563,25 @@ class _LayerOrder {
   }
 
   /// A counting sort on the roof height in decimetres: linear in the
-  /// buildings, and stable, so equal heights keep tile order.
-  factory _LayerOrder.sorted(
-      FillThemeLayer layer, List<ExtrusionLayout> layouts) {
+  /// buildings, and stable, so equal heights keep tile order. Buildings
+  /// a tile's skip mask leaves out are not entered.
+  factory _LayerOrder.sorted(FillThemeLayer layer, List<ExtrusionTile> tiles) {
+    final layouts = [for (final tile in tiles) tile.layout];
+    // Per tile, its buildings kept, or null for all of them.
+    final kept = <Uint8List?>[
+      for (final tile in tiles)
+        tile.skip == null ? null : _kept(tile.layout, tile.skip!, tile.side),
+    ];
     var total = 0;
-    for (final layout in layouts) {
-      total += layout.length;
+    for (var l = 0; l < layouts.length; l++) {
+      final keep = kept[l];
+      if (keep == null) {
+        total += layouts[l].length;
+      } else {
+        for (final k in keep) {
+          total += k;
+        }
+      }
     }
     const buckets = 1 << 16;
     final counts = Int32List(buckets + 1);
@@ -554,10 +590,11 @@ class _LayerOrder {
       return key < 0 ? 0 : (key >= buckets ? buckets - 1 : key);
     }
 
-    for (final layout in layouts) {
-      final heights = layout.heights;
+    for (var l = 0; l < layouts.length; l++) {
+      final heights = layouts[l].heights;
+      final keep = kept[l];
       for (var i = 0; i < heights.length; i++) {
-        counts[keyOf(heights[i]) + 1]++;
+        if (keep == null || keep[i] == 1) counts[keyOf(heights[i]) + 1]++;
       }
     }
     for (var i = 1; i <= buckets; i++) {
@@ -567,12 +604,30 @@ class _LayerOrder {
     final buildingOf = Int32List(total);
     for (var l = 0; l < layouts.length; l++) {
       final heights = layouts[l].heights;
+      final keep = kept[l];
       for (var i = 0; i < heights.length; i++) {
+        if (keep != null && keep[i] == 0) continue;
         final slot = counts[keyOf(heights[i])]++;
         layoutOf[slot] = l;
         buildingOf[slot] = i;
       }
     }
     return _LayerOrder._(layer, layouts, layoutOf, buildingOf);
+  }
+
+  /// Per building of [layout], 1 unless its footprint centre lies in a
+  /// cell [skip] marks.
+  static Uint8List _kept(ExtrusionLayout layout, Uint8List skip, int side) {
+    final kept = Uint8List(layout.length);
+    final bounds = layout.bounds;
+    final cell = layout.extent / side;
+    for (var i = 0; i < layout.length; i++) {
+      final cx = (bounds[i * 4] + bounds[i * 4 + 2]) / 2;
+      final cy = (bounds[i * 4 + 1] + bounds[i * 4 + 3]) / 2;
+      final col = (cx / cell).floor().clamp(0, side - 1);
+      final row = (cy / cell).floor().clamp(0, side - 1);
+      kept[i] = skip[row * side + col] == 1 ? 0 : 1;
+    }
+    return kept;
   }
 }

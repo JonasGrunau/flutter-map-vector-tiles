@@ -297,6 +297,11 @@ class FillThemeLayer extends ThemeLayer {
   @internal
   bool extrusionBaseReadsZoom = false;
 
+  /// Whether `fill-extrusion-color` reads the zoom. Assigned by the
+  /// theme reader.
+  @internal
+  bool extrusionColorReadsZoom = false;
+
   /// `fill-extrusion-vertical-gradient`: whether walls darken towards
   /// their foot. Null on a plain fill.
   final BoolProp? extrusionVerticalGradient;

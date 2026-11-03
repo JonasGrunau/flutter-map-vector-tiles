@@ -152,6 +152,8 @@ class ThemeReader {
         final base = extrusion
             ? _doubleReadingZoom(parser, paint['fill-extrusion-base'], 0)
             : null;
+        final color = _colorReadingZoom(
+            parser, paint['$prefix-color'], const Color(0xff000000));
         layer = FillThemeLayer(
           id: id,
           source: source,
@@ -159,8 +161,7 @@ class ThemeReader {
           minzoom: minzoom,
           maxzoom: maxzoom,
           filter: filter,
-          color:
-              _color(parser, paint['$prefix-color'], const Color(0xff000000)),
+          color: color.prop,
           opacity: _double(parser, paint['$prefix-opacity'], 1),
           // An extrusion has no outline property.
           outlineColor: extrusion || paint['fill-outline-color'] == null
@@ -182,7 +183,8 @@ class ThemeReader {
               : null,
         )
           ..extrusionHeightReadsZoom = height?.readsZoom ?? false
-          ..extrusionBaseReadsZoom = base?.readsZoom ?? false;
+          ..extrusionBaseReadsZoom = base?.readsZoom ?? false
+          ..extrusionColorReadsZoom = extrusion && color.readsZoom;
       case 'line':
         layer = LineThemeLayer(
           id: id,
@@ -532,6 +534,19 @@ class ThemeReader {
     final p = parser.parseForProperty(json, accepts: _isNumber);
     return (
       prop: DoubleProp(p.expr, fallback, zoomOnly: p.zoomOnly),
+      readsZoom: p.readsZoom,
+    );
+  }
+
+  /// [_color], also reporting whether the property reads the zoom.
+  static ({ColorProp prop, bool readsZoom}) _colorReadingZoom(
+      ExpressionParser parser, Object? json, Color fallback) {
+    if (json == null || (json is String && toColor(json) != null)) {
+      return (prop: _color(parser, json, fallback), readsZoom: false);
+    }
+    final p = parser.parseForProperty(json, accepts: _isColor);
+    return (
+      prop: ColorProp(p.expr, fallback, zoomOnly: p.zoomOnly),
       readsZoom: p.readsZoom,
     );
   }

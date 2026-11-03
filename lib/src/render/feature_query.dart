@@ -2,11 +2,14 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import '../core/tile_key.dart';
+import '../grid/grid_layout.dart';
 import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/feature_state.dart';
 import '../style/theme.dart';
 import 'display_tile_data.dart';
+import 'extrusion_layouter.dart';
+import 'extrusion_painter.dart';
 import 'hit_test.dart';
 import 'matched_features.dart';
 import 'tile_rasterizer.dart';
@@ -38,12 +41,16 @@ abstract final class FeatureQuery {
   /// [data]'s display tile at [styleZoom] that [area] — in the display
   /// tile's logical pixels, already clipped to it — touches, in draw
   /// order. Only layers in [layerIds] count when it is given.
+  ///
+  /// With [perspectiveExtrusions] the layers drawn as 3D buildings are
+  /// left out: they are not in the tile image (see [hitExtrusions]).
   static List<GeometryHit> hitTile({
     required Theme theme,
     required DisplayTileData data,
     required double styleZoom,
     required HitArea area,
     Set<String>? layerIds,
+    bool perspectiveExtrusions = false,
   }) {
     final hits = <GeometryHit>[];
     final layers = theme.layers;
@@ -52,6 +59,12 @@ abstract final class FeatureQuery {
       if (layer is! FillThemeLayer &&
           layer is! LineThemeLayer &&
           layer is! CircleThemeLayer) {
+        continue;
+      }
+      if (perspectiveExtrusions &&
+          layer is FillThemeLayer &&
+          layer.extrusion &&
+          layer.pattern == null) {
         continue;
       }
       if (layerIds != null && !layerIds.contains(layer.id)) continue;
@@ -70,6 +83,122 @@ abstract final class FeatureQuery {
       }
     }
     return hits;
+  }
+
+  /// The 3D buildings of [layouts] that [area] touches as
+  /// `ExtrusionPainter` draws them — roof, walls and all — topmost
+  /// first: the higher style layer, then the taller building. [area] is
+  /// in the painter's canvas pixels: world pixels at [cameraZoom],
+  /// relative to [worldCenter], unrotated. Only layers in [layerIds]
+  /// count when it is given.
+  ///
+  /// A building's points at altitude z are its footprint scaled about
+  /// the origin by `k(z)`, so it covers the screen point p wherever
+  /// `p / k` lies in its footprint for a k between its foot's and its
+  /// roof's: the query, scaled back by every such k, sweeps the convex
+  /// hull of its two ends — a segment, for a point query.
+  static List<GeometryHit> hitExtrusions({
+    required Theme theme,
+    required Iterable<ExtrusionLayout> layouts,
+    required HitArea area,
+    required double cameraZoom,
+    required double styleZoom,
+    required Offset worldCenter,
+    required double latitude,
+    required double viewportHeight,
+    Set<String>? layerIds,
+  }) {
+    final found = <(int, double, int, GeometryHit)>[];
+    final layerIndex = <ThemeLayer, int>{
+      for (var i = 0; i < theme.layers.length; i++) theme.layers[i]: i,
+    };
+    final ppm = ExtrusionPainter.pixelsPerMetre(cameraZoom, latitude);
+    final box = area.bounds;
+    for (final layout in layouts) {
+      final layer = layout.layer;
+      final index = layerIndex[layer];
+      if (index == null || !layer.coversZoom(styleZoom)) continue;
+      if (layerIds != null && !layerIds.contains(layer.id)) continue;
+      final rect = displayTileRect(layout.tile, cameraZoom);
+      final tx = rect.left - worldCenter.dx, ty = rect.top - worldCenter.dy;
+      final s = rect.width / layout.extent;
+      final features = layout.source.features;
+      final bounds = layout.bounds;
+      PreparedFeature? last;
+      for (var b = 0; b < layout.length; b++) {
+        final feature = features[layout.mesh.feature[layout.buildings[b]]];
+        // A feature's polygons share its height: one test answers for
+        // all of them.
+        if (identical(feature, last)) continue;
+        final kt = ExtrusionPainter.scaleAt(
+            layout.heightAt(b, styleZoom) * ppm, viewportHeight);
+        final kb = ExtrusionPainter.scaleAt(
+            layout.baseAt(b, styleZoom) * ppm, viewportHeight);
+        final x0 = tx + bounds[b * 4] * s, x1 = tx + bounds[b * 4 + 2] * s;
+        final y0 = ty + bounds[b * 4 + 1] * s, y1 = ty + bounds[b * 4 + 3] * s;
+        if (math.max(x1 * kb, x1 * kt) < box.left ||
+            math.min(x0 * kb, x0 * kt) > box.right ||
+            math.max(y1 * kb, y1 * kt) < box.top ||
+            math.min(y0 * kb, y0 * kt) > box.bottom) {
+          continue;
+        }
+        Offset back(Offset p, double k) =>
+            Offset((p.dx / k - tx) / s, (p.dy / k - ty) / s);
+        final bool hit;
+        if (area.isPoint) {
+          final top = back(area.points.first, kt);
+          final foot = back(area.points.first, kb);
+          final sweep = HitArea([top, foot]);
+          hit = sweep.hitsPolygon(feature.parts) ||
+              (top != foot && sweep.hitsLine(feature.parts, 0, close: true));
+        } else {
+          hit = HitArea(_hull([
+            for (final p in area.points) back(p, kt),
+            for (final p in area.points) back(p, kb),
+          ])).hitsPolygon(feature.parts);
+        }
+        if (!hit) continue;
+        last = feature;
+        found.add((
+          index,
+          layout.heights[b],
+          found.length,
+          (layerIndex: index, layer: layer, feature: feature),
+        ));
+      }
+    }
+    found.sort((a, b) => a.$1 != b.$1
+        ? b.$1 - a.$1
+        : (a.$2 != b.$2 ? b.$2.compareTo(a.$2) : a.$3 - b.$3));
+    return [for (final f in found) f.$4];
+  }
+
+  /// The convex hull of [points], counter-clockwise (Andrew's monotone
+  /// chain).
+  static List<Offset> _hull(List<Offset> points) {
+    final sorted = [...points]..sort(
+        (a, b) => a.dx != b.dx ? a.dx.compareTo(b.dx) : a.dy.compareTo(b.dy));
+    if (sorted.length < 3) return sorted;
+    double cross(Offset o, Offset a, Offset b) =>
+        (a.dx - o.dx) * (b.dy - o.dy) - (a.dy - o.dy) * (b.dx - o.dx);
+    final lower = <Offset>[];
+    for (final p in sorted) {
+      while (lower.length >= 2 &&
+          cross(lower[lower.length - 2], lower.last, p) <= 0) {
+        lower.removeLast();
+      }
+      lower.add(p);
+    }
+    final upper = <Offset>[];
+    for (final p in sorted.reversed) {
+      while (upper.length >= 2 &&
+          cross(upper[upper.length - 2], upper.last, p) <= 0) {
+        upper.removeLast();
+      }
+      upper.add(p);
+    }
+    final hull = [...lower..removeLast(), ...upper..removeLast()];
+    return hull.isEmpty ? [sorted.first] : hull;
   }
 
   /// The `*-translate` the rasterizer draws [layer] shifted by at

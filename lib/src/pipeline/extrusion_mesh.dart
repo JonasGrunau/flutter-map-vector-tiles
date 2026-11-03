@@ -56,6 +56,17 @@ class ExtrusionMesh {
   /// instead of normalizing every wall's normal.
   final Uint8List wallAngle;
 
+  /// Per wall, the polygon on its other side — another building whose
+  /// ring runs the same edge the other way, as terraced houses and
+  /// building parts share walls — or [noTwin]. Painter's order cannot hide
+  /// the lower part of the taller one's wall behind the lower one's
+  /// roof, which a depth buffer would: the layout raises its foot to the
+  /// neighbour's roof instead (`ExtrusionLayout.wallFloors`).
+  final Uint16List wallTwin;
+
+  /// [wallTwin] of a wall no other polygon shares.
+  static const int noTwin = 0xffff;
+
   const ExtrusionMesh({
     required this.feature,
     required this.bounds,
@@ -66,6 +77,7 @@ class ExtrusionMesh {
     required this.wallStart,
     required this.walls,
     required this.wallAngle,
+    required this.wallTwin,
   });
 
   /// The number of polygons.
@@ -81,6 +93,7 @@ class ExtrusionMesh {
       wallStart.lengthInBytes +
       walls.lengthInBytes +
       wallAngle.lengthInBytes +
+      wallTwin.lengthInBytes +
       64;
 }
 
@@ -205,17 +218,71 @@ class ExtrusionMeshBuilder {
 
   bool get isEmpty => _feature.length == 0;
 
-  ExtrusionMesh build() => ExtrusionMesh(
-        feature: _feature.toInt32List(),
-        bounds: _bounds.toFloat32List(),
-        vertexStart: _vertexStart.toInt32List(),
-        xy: _xy.toFloat32List(),
-        roofStart: _roofStart.toInt32List(),
-        roof: _roof.toUint16List(),
-        wallStart: _wallStart.toInt32List(),
-        walls: _walls.toUint16List(),
-        wallAngle: _wallAngle.toUint8List(),
-      );
+  ExtrusionMesh build() {
+    final vertexStart = _vertexStart.toInt32List();
+    final xy = _xy.toFloat32List();
+    final wallStart = _wallStart.toInt32List();
+    final walls = _walls.toUint16List();
+    return ExtrusionMesh(
+      feature: _feature.toInt32List(),
+      bounds: _bounds.toFloat32List(),
+      vertexStart: vertexStart,
+      xy: xy,
+      roofStart: _roofStart.toInt32List(),
+      roof: _roof.toUint16List(),
+      wallStart: wallStart,
+      walls: walls,
+      wallAngle: _wallAngle.toUint8List(),
+      wallTwin: _twins(vertexStart, xy, wallStart, walls),
+    );
+  }
+
+  /// [ExtrusionMesh.wallTwin]: the walls whose edge another polygon
+  /// runs the other way, found by an exact endpoint hash.
+  Uint16List _twins(Int32List vertexStart, Float32List xy, Int32List wallStart,
+      Uint16List walls) {
+    final count = walls.length >> 1;
+    final twins = Uint16List(count)..fillRange(0, count, ExtrusionMesh.noTwin);
+    // Polygon indices must fit beside the marker.
+    if (wallStart.length > ExtrusionMesh.noTwin) return twins;
+    // An endpoint as 26 bits — 13 per axis, over the extent and half of
+    // it either side, which covers any buffer — and an edge as two:
+    // under 2^53, so exact on the web too, built without bit operations.
+    final half = extent / 2, unit = 4096 / extent;
+    int? pointKey(double x, double y) {
+      final qx = ((x + half) * unit).round(), qy = ((y + half) * unit).round();
+      if (qx < 0 || qx >= 8192 || qy < 0 || qy >= 8192) return null;
+      return qx * 8192 + qy;
+    }
+
+    final edges = <int, int>{};
+    final keys = List<int?>.filled(count, null);
+    final from = Int32List(count), to = Int32List(count);
+    final polygonOf = Int32List(count);
+    for (var p = 0; p + 1 < wallStart.length; p++) {
+      final v0 = vertexStart[p];
+      for (var w = wallStart[p]; w < wallStart[p + 1]; w += 2) {
+        final a = (v0 + walls[w]) * 2, b = (v0 + walls[w + 1]) * 2;
+        final ka = pointKey(xy[a], xy[a + 1]), kb = pointKey(xy[b], xy[b + 1]);
+        final i = w >> 1;
+        polygonOf[i] = p;
+        if (ka == null || kb == null) continue;
+        from[i] = ka;
+        to[i] = kb;
+        final key = ka * 67108864 + kb;
+        keys[i] = key;
+        edges[key] = i;
+      }
+    }
+    for (var i = 0; i < count; i++) {
+      if (keys[i] == null) continue;
+      final twin = edges[to[i] * 67108864 + from[i]];
+      if (twin != null && polygonOf[twin] != polygonOf[i]) {
+        twins[i] = polygonOf[twin];
+      }
+    }
+    return twins;
+  }
 }
 
 class _IntBuffer {

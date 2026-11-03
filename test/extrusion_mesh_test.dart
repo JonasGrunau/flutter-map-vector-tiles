@@ -180,6 +180,28 @@ void main() {
         meshed.layers['building']!.mesh!.byteSize);
   });
 
+  test('terraced houses know the neighbour behind a shared wall', () {
+    // Two houses side by side: the first's east wall runs the second's
+    // west wall the other way. A third stands apart.
+    final mesh = _mesh([
+      [_square(0, 0, 100, 100)],
+      [_square(100, 0, 200, 100)],
+      [_square(500, 0, 600, 100)],
+    ]);
+    expect(mesh.wallTwin.length, 12);
+    final linked = <(int, int)>[];
+    for (var p = 0; p < 3; p++) {
+      for (var w = mesh.wallStart[p]; w < mesh.wallStart[p + 1]; w += 2) {
+        final twin = mesh.wallTwin[w >> 1];
+        if (twin == ExtrusionMesh.noTwin) continue;
+        linked.add((p, twin));
+        // The shared edge is x = 100.
+        expect(_wall(mesh, p, w).mx, 100);
+      }
+    }
+    expect(linked, unorderedEquals([(0, 1), (1, 0)]));
+  });
+
   test('lines and points build no mesh', () {
     final tile = MvtTileBuilder()
         .layer('building')

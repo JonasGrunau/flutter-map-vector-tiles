@@ -2516,22 +2516,86 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         layers: _extrusionLayers, data: data, styleZoom: styleZoom);
   }
 
-  /// The buildings on offer to the extrusion painter: every current and
-  /// retained tile's, each data tile's once — display tiles over the
-  /// same data tile share its layouts.
-  Iterable<ExtrusionLayout> _extrusionLayouts() {
+  /// The buildings on offer to the extrusion painter: every current
+  /// tile's, each data tile's once — display tiles over the same data
+  /// tile share its layouts — and, while a zoom crossing is in flight,
+  /// the retained level's, but only where the current level offers none
+  /// from the same place. Data tiles of one level are shared across
+  /// display levels up to the source's deepest, so for most crossings
+  /// that is no building at all; past a source's deepest level the two
+  /// levels hold the same buildings, and drawing both would draw them
+  /// twice. Only the retained level nearest the current one takes part,
+  /// as for [_heatmapTiles].
+  Iterable<ExtrusionTile> _extrusionLayouts() {
     final seen = HashSet<ExtrusionLayout>.identity();
-    final out = <ExtrusionLayout>[];
-    void add(_DisplayTile tile) {
-      final extrusions = tile.extrusions;
-      if (extrusions == null) return;
-      for (final layout in extrusions) {
-        if (seen.add(layout)) out.add(layout);
+    final out = <ExtrusionTile>[];
+    // Per layer, the data tiles the current level draws.
+    final current = <FillThemeLayer, Set<TileKey>>{};
+    for (final tile in _tiles.values) {
+      for (final layout in tile.extrusions ?? const <ExtrusionLayout>[]) {
+        if (!seen.add(layout)) continue;
+        out.add((layout: layout, skip: null, side: 1));
+        (current[layout.layer] ??= {}).add(layout.tile);
       }
     }
-
-    _tiles.values.forEach(add);
-    _retained.values.forEach(add);
+    final level = _currentZoom;
+    if (_retained.isEmpty || level == null) return out;
+    int? nearest;
+    for (final key in _retained.keys) {
+      final d = (key.z - level).abs();
+      if (nearest == null ||
+          d < (nearest - level).abs() ||
+          (d == (nearest - level).abs() && key.z > nearest)) {
+        nearest = key.z;
+      }
+    }
+    for (final tile in _retained.values) {
+      if (tile.key.z != nearest) continue;
+      for (final layout in tile.extrusions ?? const <ExtrusionLayout>[]) {
+        if (!seen.add(layout)) continue;
+        final drawn = current[layout.layer] ?? const <TileKey>{};
+        final key = layout.tile;
+        if (drawn.contains(key)) continue;
+        // The current level's data tiles over this one: an ancestor
+        // (a zoom-out) covers it whole, descendants (a zoom-in) cut it
+        // into a side × side grid.
+        int? depth;
+        for (final other in drawn) {
+          final shift = other.z - key.z;
+          if (shift < 0 &&
+              other.x == key.x >> -shift &&
+              other.y == key.y >> -shift) {
+            depth = shift;
+            break;
+          }
+          if (shift > 0 &&
+              shift <= 3 &&
+              other.x >> shift == key.x &&
+              other.y >> shift == key.y) {
+            depth = shift;
+          }
+        }
+        if (depth == null) {
+          out.add((layout: layout, skip: null, side: 1));
+          continue;
+        }
+        if (depth < 0) continue;
+        final side = 1 << depth;
+        final skip = Uint8List(side * side);
+        var covered = 0;
+        for (var dy = 0; dy < side; dy++) {
+          for (var dx = 0; dx < side; dx++) {
+            if (drawn.contains(TileKey(
+                key.z + depth, (key.x << depth) + dx, (key.y << depth) + dy))) {
+              skip[dy * side + dx] = 1;
+              covered++;
+            }
+          }
+        }
+        if (covered == side * side) continue;
+        out.add((layout: layout, skip: skip, side: side));
+      }
+    }
     return out;
   }
 
@@ -2728,6 +2792,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     if (!mounted) return;
     var geometry = false;
     var labels = false;
+    var buildings = false;
+    final perspective = _perspectiveExtrusions;
     for (final layer in widget.theme.layers) {
       if (!layer.readsFeatureState ||
           layer.source != source ||
@@ -2736,10 +2802,15 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
       if (layer is SymbolThemeLayer) {
         labels = true;
+      } else if (perspective && _extrusionLayers.contains(layer)) {
+        buildings = true;
       } else {
         geometry = true;
       }
     }
+    // 3D buildings are not in the tile images: their layouts are redone
+    // under the new state, once per data tile, and drawn next frame.
+    if (buildings) _relayoutExtrusions();
     // Screen-space labels evaluate their paint every frame, against a
     // style memo the state version invalidates, so a shown label follows
     // on the next frame. Whether a label shows at all — its opacity may
@@ -2799,6 +2870,23 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         _renderForFeatureState(tile);
       }
     }
+  }
+
+  /// Lays the 3D buildings of every current and retained tile out again
+  /// from the data they were drawn from, under the current feature
+  /// state.
+  void _relayoutExtrusions() {
+    final states = _featureStates;
+    for (final tile in [..._tiles.values, ..._retained.values]) {
+      final sources = tile.sources;
+      if (tile.extrusions == null || sources == null) continue;
+      tile.extrusions = _layoutExtrusions(
+          DisplayTileData(
+              displayKey: tile.key, sources: sources, featureStates: states),
+          _styleZoomOf(tile.key.z.toDouble()));
+    }
+    _extrusionGeneration++;
+    _repaint.trigger();
   }
 
   /// Ahead of everything queued: a state change answers a tap.
@@ -2876,6 +2964,22 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       return Offset(worldCenter.dx + d.dx * cosR - d.dy * sinR,
           worldCenter.dy + d.dx * sinR + d.dy * cosR);
     });
+
+    // 3D buildings draw over every tile image, below the labels.
+    final perspective = _perspectiveExtrusions;
+    final buildings = perspective
+        ? FeatureQuery.hitExtrusions(
+            theme: widget.theme,
+            layouts: [for (final t in _extrusionLayouts()) t.layout],
+            area: world.map((p) => p - worldCenter),
+            cameraZoom: camera.zoom,
+            styleZoom: _styleZoomOf(camera.zoom),
+            worldCenter: worldCenter,
+            latitude: camera.center.latitude,
+            viewportHeight: camera.nonRotatedSize.height,
+            layerIds: layerIds,
+          )
+        : const <GeometryHit>[];
     const tileSquare = Rect.fromLTWH(
         0, 0, TileRasterizer.logicalTileSize, TileRasterizer.logicalTileSize);
     final offset = widget.tileOffset.zoomOffset;
@@ -2911,6 +3015,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         styleZoom: _styleZoomOf(tile.key.z.toDouble()),
         area: local,
         layerIds: layerIds,
+        perspectiveExtrusions: perspective,
       )) {
         geometry.add((hit.layerIndex, geometry.length, hit));
       }
@@ -2922,6 +3027,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     for (final (_, _, instance) in tileLabels..sort(topmostFirst)) {
       add(instance.layer, instance.featureId, instance.properties,
           instance.geometryType);
+    }
+    for (final hit in buildings) {
+      add(hit.layer, hit.feature.id, hit.feature.properties,
+          hit.feature.geometryType);
     }
     for (final (_, _, hit) in geometry..sort(topmostFirst)) {
       add(hit.layer, hit.feature.id, hit.feature.properties,
