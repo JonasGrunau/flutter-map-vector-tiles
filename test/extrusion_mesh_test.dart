@@ -204,8 +204,10 @@ void main() {
       [_square(100, 0, 200, 100)],
       [_square(500, 0, 600, 100)],
     ]);
-    expect(covered(mesh).map((f) => '${f.$1} <- ${f.$2} at x = ${f.$3}'),
-        unorderedEquals(['0 <- [1] at x = 100.0', '1 <- [0] at x = 100.0']));
+    // Rounded: dart2js prints 100.0 as 100.
+    expect(
+        covered(mesh).map((f) => '${f.$1} <- ${f.$2} at x = ${f.$3.round()}'),
+        unorderedEquals(['0 <- [1] at x = 100', '1 <- [0] at x = 100']));
   });
 
   test('a part rising out of its outline stands inside it', () {
