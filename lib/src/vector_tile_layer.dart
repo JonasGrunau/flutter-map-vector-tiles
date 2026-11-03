@@ -14,6 +14,7 @@ import 'cache/cache_resolver.dart';
 import 'core/cancellation.dart';
 import 'core/tile_key.dart';
 import 'core/tile_zoom.dart';
+import 'extrusion_mode.dart';
 import 'grid/grid_layout.dart';
 import 'grid/raster_tile_store.dart';
 import 'grid/render_job_queue.dart';
@@ -179,6 +180,13 @@ class VectorTileLayer extends StatefulWidget {
   /// are dropped where they would cross a tile edge — see [LabelMode].
   final LabelMode labelMode;
 
+  /// How `fill-extrusion` layers are drawn: as 3D buildings leaning with
+  /// the camera ([ExtrusionMode.perspective], the default) or as flat
+  /// footprints in the tile images ([ExtrusionMode.flat], no per-frame
+  /// cost) — see [ExtrusionMode]. With [LabelMode.tile] they are always
+  /// flat.
+  final ExtrusionMode extrusions;
+
   /// Queries this layer's rendered features and sets the feature state
   /// its style reads — see [VectorTileLayerController]. Optional: a layer
   /// without one pays nothing for either.
@@ -217,6 +225,7 @@ class VectorTileLayer extends StatefulWidget {
     this.rasterCacheMaxBytes = autoRasterCacheBytes,
     this.showLabels = true,
     this.labelMode = LabelMode.screen,
+    this.extrusions = ExtrusionMode.perspective,
     this.controller,
     this.retainAllProperties = false,
     this.logger = const Logger.noop(),
@@ -399,10 +408,15 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   var _extrusionLayersMemo = const <FillThemeLayer>[];
 
   /// Whether `fill-extrusion` layers are drawn as 3D buildings over the
-  /// tiles rather than flat into them — not with the labels in the tile
-  /// images, which the buildings would cover.
+  /// tiles rather than flat into them.
   bool get _perspectiveExtrusions =>
-      !_tileLabels && _extrusionLayers.isNotEmpty;
+      _extrusionLayers.isNotEmpty && _perspectiveFor(widget);
+
+  /// Whether [widget] asks for 3D buildings — not with the labels in the
+  /// tile images, which the buildings would cover.
+  static bool _perspectiveFor(VectorTileLayer widget) =>
+      widget.extrusions == ExtrusionMode.perspective &&
+      !(widget.showLabels && widget.labelMode == LabelMode.tile);
 
   /// The label ids of every symbol on offer — current, retained and
   /// parked tiles alike. Each holder takes its ids when it publishes
@@ -833,9 +847,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         layerProperties: layerProperties,
         promoteIds: promoteIds,
         extrusionLayers: {
-          for (final layer in _extrusionLayers)
-            if (layer.source == sourceId && layer.sourceLayer != null)
-              layer.sourceLayer!,
+          if (_perspectiveExtrusions)
+            for (final layer in _extrusionLayers)
+              if (layer.source == sourceId && layer.sourceLayer != null)
+                layer.sourceLayer!,
         },
         filterPlan: TileFilterPlan(
           widget.theme.layers.where((layer) => layer.source == sourceId),
@@ -1059,6 +1074,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       _installLabelWorker();
     }
     if ((themeChanged && !siblingTheme) ||
+        // Meshes are built while tiles are decoded, for 3D buildings only.
+        _perspectiveFor(oldWidget) != _perspectiveFor(widget) ||
         oldWidget.tileProviders != widget.tileProviders ||
         oldWidget.rasterSources != widget.rasterSources ||
         oldWidget.tileOffset.zoomOffset != widget.tileOffset.zoomOffset ||
@@ -1178,7 +1195,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     return '${widget.theme.id}|${widget.tileOffset.zoomOffset}|'
         '$devicePixelRatio|${widget.showLabels}|${widget.labelMode.name}|'
         // Tiles under 3D buildings are drawn without them.
-        '${widget.showLabels && widget.labelMode == LabelMode.tile ? '' : '3d|'}'
+        '${_perspectiveFor(widget) && ExtrusionLayouter.layersOf(widget.theme).isNotEmpty ? '3d|' : ''}'
         '${widget.sprites?.signature}|${widget.glyphs?.signature}|'
         '${providers.join(',')}'
         '${promoteIds.isEmpty ? '' : '|promoteId:${promoteIds.join(',')}'}'
