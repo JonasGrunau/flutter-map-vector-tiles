@@ -109,14 +109,15 @@ abstract final class FeatureQuery {
     Set<String>? layerIds,
   }) {
     final found = <(int, double, int, GeometryHit)>[];
-    final layerIndex = <ThemeLayer, int>{
-      for (var i = 0; i < theme.layers.length; i++) theme.layers[i]: i,
+    // By id: a cached result may carry an earlier reading's layers.
+    final layerIndex = <String, int>{
+      for (var i = 0; i < theme.layers.length; i++) theme.layers[i].id: i,
     };
     final ppm = ExtrusionPainter.pixelsPerMetre(cameraZoom, latitude);
     final box = area.bounds;
     for (final layout in layouts) {
       final layer = layout.layer;
-      final index = layerIndex[layer];
+      final index = layerIndex[layer.id];
       if (index == null || !layer.coversZoom(styleZoom)) continue;
       if (layerIds != null && !layerIds.contains(layer.id)) continue;
       final rect = displayTileRect(layout.tile, cameraZoom);
@@ -163,7 +164,7 @@ abstract final class FeatureQuery {
           index,
           layout.heights[b],
           found.length,
-          (layerIndex: index, layer: layer, feature: feature),
+          (layerIndex: index, layer: theme.layers[index], feature: feature),
         ));
       }
     }

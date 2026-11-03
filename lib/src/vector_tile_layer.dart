@@ -2529,13 +2529,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   Iterable<ExtrusionTile> _extrusionLayouts() {
     final seen = HashSet<ExtrusionLayout>.identity();
     final out = <ExtrusionTile>[];
-    // Per layer, the data tiles the current level draws.
-    final current = <FillThemeLayer, Set<TileKey>>{};
+    // Per layer id, the data tiles the current level draws.
+    final current = <String, Set<TileKey>>{};
     for (final tile in _tiles.values) {
       for (final layout in tile.extrusions ?? const <ExtrusionLayout>[]) {
         if (!seen.add(layout)) continue;
         out.add((layout: layout, skip: null, side: 1));
-        (current[layout.layer] ??= {}).add(layout.tile);
+        (current[layout.layer.id] ??= {}).add(layout.tile);
       }
     }
     final level = _currentZoom;
@@ -2553,7 +2553,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       if (tile.key.z != nearest) continue;
       for (final layout in tile.extrusions ?? const <ExtrusionLayout>[]) {
         if (!seen.add(layout)) continue;
-        final drawn = current[layout.layer] ?? const <TileKey>{};
+        final drawn = current[layout.layer.id] ?? const <TileKey>{};
         final key = layout.tile;
         if (drawn.contains(key)) continue;
         // The current level's data tiles over this one: an ancestor

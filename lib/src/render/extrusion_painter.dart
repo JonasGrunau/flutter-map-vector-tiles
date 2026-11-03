@@ -413,14 +413,19 @@ class ExtrusionPainter {
 
   /// Every building of [layouts], per layer in theme order, lowest roof
   /// first.
+  ///
+  /// Layers are told apart by id: a result cached for a style read
+  /// again carries the earlier reading's layer objects — the same style,
+  /// so the same layers — and its buildings must sort, and composite,
+  /// with the fresh tiles' as one layer.
   static List<_LayerOrder> _order(Iterable<ExtrusionTile> layouts) {
-    final byLayer = <FillThemeLayer, List<ExtrusionTile>>{};
+    final byLayer = <String, List<ExtrusionTile>>{};
     for (final tile in layouts) {
-      (byLayer[tile.layout.layer] ??= []).add(tile);
+      (byLayer[tile.layout.layer.id] ??= []).add(tile);
     }
     return [
-      for (final entry in byLayer.entries)
-        _LayerOrder.sorted(entry.key, entry.value),
+      for (final tiles in byLayer.values)
+        _LayerOrder.sorted(tiles.first.layout.layer, tiles),
     ];
   }
 }
