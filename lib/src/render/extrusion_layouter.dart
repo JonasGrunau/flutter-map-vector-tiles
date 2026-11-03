@@ -7,6 +7,7 @@ import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
 import 'display_tile_data.dart';
+import 'extrusion_shading.dart';
 import 'matched_features.dart';
 
 /// One `fill-extrusion` layer's buildings in one data tile, ready for
@@ -34,8 +35,15 @@ class ExtrusionLayout {
   final Float32List heights;
   final Float32List bases;
 
-  /// Per drawn building: its colour, opaque ARGB.
-  final Int32List colors;
+  /// Per drawn building: its colour class, an index into [classes].
+  final Uint16List classOf;
+
+  /// The colour classes, three ints each: the layer colour (ARGB, alpha
+  /// kept — the shading premultiplies it), and the vertical-gradient
+  /// keys at the walls' foot and top (`ExtrusionShading.gradientKey`).
+  /// The painter turns each into a roof colour and a wall colour per
+  /// light level.
+  final Int32List classes;
 
   /// Per drawn building: its footprint's bounds in extent units,
   /// `minX, minY, maxX, maxY` — copied out of [mesh] so the painter's
@@ -53,7 +61,8 @@ class ExtrusionLayout {
     required this.buildings,
     required this.heights,
     required this.bases,
-    required this.colors,
+    required this.classOf,
+    required this.classes,
     required this.bounds,
     required this.maxHeight,
   });
@@ -64,7 +73,8 @@ class ExtrusionLayout {
       buildings.lengthInBytes +
       heights.lengthInBytes +
       bases.lengthInBytes +
-      colors.lengthInBytes +
+      classOf.lengthInBytes +
+      classes.lengthInBytes +
       bounds.lengthInBytes +
       64;
 }
@@ -131,14 +141,19 @@ abstract final class ExtrusionLayouter {
     final buildings = Int32List(n);
     final heights = Float32List(n);
     final bases = Float32List(n);
-    final colors = Int32List(n);
+    final classOf = Uint16List(n);
+    final classes = <int>[];
+    final classIndex = <int, Map<int, int>>{};
     final bounds = Float32List(n * 4);
+    final gradient =
+        layer.extrusionVerticalGradient?.eval(EvalContext(zoom: styleZoom)) ??
+            true;
     var count = 0;
     var maxHeight = 0.0;
     var last = -1;
     var drawn = false;
     var height = 0.0, base = 0.0;
-    var color = 0;
+    var colorClass = 0;
     final meshBounds = mesh.bounds;
     for (var p = 0; p < n; p++) {
       // A feature's polygons are consecutive and share its evaluation.
@@ -160,14 +175,28 @@ abstract final class ExtrusionLayouter {
         base = baseProp.eval(ctx);
         if (!(base >= 0)) base = 0;
         if (base > height) base = height;
-        color = layer.color.eval(ctx).toARGB32() | 0xff000000;
-        drawn = true;
+        final argb = layer.color.eval(ctx).toARGB32();
+        final bottom = gradient
+            ? ExtrusionShading.gradientKey(0, base, height)
+            : ExtrusionShading.noGradient;
+        final top = gradient
+            ? ExtrusionShading.gradientKey(1, base, height)
+            : ExtrusionShading.noGradient;
+        final byGradient = classIndex[argb] ??= {};
+        colorClass = byGradient[bottom << 8 | top] ??= () {
+          classes
+            ..add(argb)
+            ..add(bottom)
+            ..add(top);
+          return classes.length ~/ 3 - 1;
+        }();
+        drawn = colorClass < 0x10000;
       }
       if (!drawn) continue;
       buildings[count] = p;
       heights[count] = height;
       bases[count] = base;
-      colors[count] = color;
+      classOf[count] = colorClass;
       bounds[count * 4] = meshBounds[p * 4];
       bounds[count * 4 + 1] = meshBounds[p * 4 + 1];
       bounds[count * 4 + 2] = meshBounds[p * 4 + 2];
@@ -183,7 +212,8 @@ abstract final class ExtrusionLayouter {
       buildings: Int32List.fromList(Int32List.sublistView(buildings, 0, count)),
       heights: Float32List.fromList(Float32List.sublistView(heights, 0, count)),
       bases: Float32List.fromList(Float32List.sublistView(bases, 0, count)),
-      colors: Int32List.fromList(Int32List.sublistView(colors, 0, count)),
+      classOf: Uint16List.fromList(Uint16List.sublistView(classOf, 0, count)),
+      classes: Int32List.fromList(classes),
       bounds:
           Float32List.fromList(Float32List.sublistView(bounds, 0, count * 4)),
       maxHeight: maxHeight,

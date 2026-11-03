@@ -21,7 +21,11 @@ class Theme {
   /// reads any; null otherwise.
   final GlobalStateFamily? _family;
 
-  const Theme({required this.id, required this.layers})
+  /// The style's root `light`, which shades `fill-extrusion` layers drawn
+  /// as 3D buildings; null for the spec's default light.
+  final StyleLight? light;
+
+  const Theme({required this.id, required this.layers, this.light})
       : globalState = const {},
         _family = null;
 
@@ -32,6 +36,7 @@ class Theme {
     required this.layers,
     required this.globalState,
     required GlobalStateFamily family,
+    this.light,
   }) : _family = family;
 
   /// This style under another global state: [state] overrides the
@@ -100,6 +105,43 @@ class Theme {
     }
     return result;
   }
+}
+
+/// A style's root `light`: the one light that shades `fill-extrusion`
+/// layers, as MapLibre's extrusion shader does — roofs by how high the
+/// light stands, walls by how squarely they face it.
+class StyleLight {
+  /// `anchor`: `viewport` (the default) keeps the light where it is on
+  /// screen while the map turns; `map` turns it with the map.
+  final StringProp anchor;
+
+  /// `position`: `[radial, azimuthal, polar]`, the angles in degrees —
+  /// the azimuth clockwise from the top of the viewport (from north,
+  /// anchored to the map), the polar angle down from straight overhead.
+  final NumListProp position;
+
+  /// `color`: tints the lit surfaces, and the shaded ones towards its
+  /// complement.
+  final ColorProp color;
+
+  /// `intensity`: from 0, every surface equally lit, to 1, the most
+  /// contrast between lit and shaded ones.
+  final DoubleProp intensity;
+
+  StyleLight({
+    required this.anchor,
+    required this.position,
+    required this.color,
+    required this.intensity,
+  });
+
+  /// The spec's light, for a style without one.
+  static final standard = StyleLight(
+    anchor: StringProp.constant('viewport'),
+    position: NumListProp.constant(const [1.15, 210, 30]),
+    color: ColorProp.constant(const Color(0xffffffff)),
+    intensity: DoubleProp.constant(0.5),
+  );
 }
 
 /// The themes one style compiles to under different global states —

@@ -3383,6 +3383,7 @@ class _VectorMapPainter extends CustomPainter {
         latitude: camera.center.latitude,
         viewport: size,
         rotation: camera.rotationRad,
+        light: state.widget.theme.light,
       );
     }
 

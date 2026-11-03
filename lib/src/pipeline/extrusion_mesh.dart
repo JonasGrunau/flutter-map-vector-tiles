@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../render/earcut.dart';
@@ -49,6 +50,12 @@ class ExtrusionMesh {
   final Int32List wallStart;
   final Uint16List walls;
 
+  /// Per wall, the direction of its outward normal in 256ths of a turn,
+  /// clockwise from +x in y-down terms: what the wall's shading depends
+  /// on, quantized so that a frame maps 256 directions to light levels
+  /// instead of normalizing every wall's normal.
+  final Uint8List wallAngle;
+
   const ExtrusionMesh({
     required this.feature,
     required this.bounds,
@@ -58,6 +65,7 @@ class ExtrusionMesh {
     required this.roof,
     required this.wallStart,
     required this.walls,
+    required this.wallAngle,
   });
 
   /// The number of polygons.
@@ -72,6 +80,7 @@ class ExtrusionMesh {
       roof.lengthInBytes +
       wallStart.lengthInBytes +
       walls.lengthInBytes +
+      wallAngle.lengthInBytes +
       64;
 }
 
@@ -89,6 +98,7 @@ class ExtrusionMeshBuilder {
   final _roof = _IntBuffer();
   final _wallStart = _IntBuffer()..add(0);
   final _walls = _IntBuffer();
+  final _wallAngle = _IntBuffer();
 
   // Scratch for the polygon being added, handed to earcut.
   var _coords = Float64List(256);
@@ -165,9 +175,14 @@ class ExtrusionMeshBuilder {
         _walls
           ..add(k)
           ..add(j);
+        // The outward normal (dy, -dx).
+        final turn = math.atan2(-(x2 - x1), y2 - y1) / (2 * math.pi);
+        _wallAngle.add((turn * 256).round() & 255);
       }
     }
     if (_roof.length == roofBefore && _walls.length == wallsBefore) return;
+    // (A polygon with walls but no roof keeps them: its roof is
+    // degenerate, its walls are not.)
     for (var i = 0; i < coordCount; i++) {
       _xy.add(_coords[i]);
     }
@@ -199,6 +214,7 @@ class ExtrusionMeshBuilder {
         roof: _roof.toUint16List(),
         wallStart: _wallStart.toInt32List(),
         walls: _walls.toUint16List(),
+        wallAngle: _wallAngle.toUint8List(),
       );
 }
 
@@ -215,6 +231,14 @@ class _IntBuffer {
 
   Int32List toInt32List() => Int32List.fromList(
       Int32List.sublistView(_data, 0, length)); // a trimmed copy
+
+  Uint8List toUint8List() {
+    final out = Uint8List(length);
+    for (var i = 0; i < length; i++) {
+      out[i] = _data[i];
+    }
+    return out;
+  }
 
   Uint16List toUint16List() {
     final out = Uint16List(length);

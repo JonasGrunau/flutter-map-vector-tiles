@@ -27,11 +27,35 @@ class ThemeReader {
     final themeId = id ?? idOf(style);
     final defaults = _stateDefaults(style['state']);
     final compiled = _compile(style, defaults, logger);
+    final light = _light(style['light'], logger);
     if (compiled.globalStateNames.isEmpty) {
-      return Theme(id: themeId, layers: compiled.layers);
+      return Theme(id: themeId, layers: compiled.layers, light: light);
     }
-    return _GlobalStates(style, themeId, defaults, compiled.globalStateNames)
+    return _GlobalStates(
+            style, themeId, defaults, compiled.globalStateNames, light)
         .adopt(compiled.layers);
+  }
+
+  /// The root `light`, null when the style has none. Its properties may
+  /// read the zoom, nothing else.
+  static StyleLight? _light(Object? json, Logger logger) {
+    if (json is! Map) return null;
+    final light = json.cast<String, Object?>();
+    final parser = ExpressionParser();
+    final standard = StyleLight.standard;
+    final result = StyleLight(
+      anchor: _enum(parser, light['anchor'], 'viewport', _viewAnchors),
+      position: light['position'] == null
+          ? standard.position
+          : _numList(parser, light['position'], const [1.15, 210, 30],
+              length: 3),
+      color: _color(parser, light['color'], const Color(0xffffffff)),
+      intensity: _double(parser, light['intensity'], 0.5),
+    );
+    for (final warning in parser.warnings) {
+      logger.warn('light: $warning');
+    }
+    return result;
   }
 
   /// The id [read] gives [style] when the caller names none.
@@ -789,9 +813,14 @@ class ThemeReader {
 /// does an override no expression reads: a sibling is keyed on the
 /// names [_reads] alone.
 final class _GlobalStates implements GlobalStateFamily {
-  _GlobalStates(this._style, this._baseId, this._defaults, this._reads);
+  _GlobalStates(
+      this._style, this._baseId, this._defaults, this._reads, this._light);
 
   final Map<String, Object?> _style;
+
+  /// The style's light, the same under every state: it reads no global
+  /// state.
+  final StyleLight? _light;
   final String _baseId;
   final Map<String, Object?> _defaults;
 
@@ -812,6 +841,7 @@ final class _GlobalStates implements GlobalStateFamily {
       layers: layers,
       globalState: Map.unmodifiable(_defaults),
       family: this,
+      light: _light,
     );
   }
 
@@ -834,6 +864,7 @@ final class _GlobalStates implements GlobalStateFamily {
       layers: compiled.layers,
       globalState: Map.unmodifiable(state),
       family: this,
+      light: _light,
     );
     _themes[key] = theme;
     if (_themes.length > _keep) _themes.remove(_themes.keys.first);

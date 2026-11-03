@@ -9,6 +9,7 @@ import '../grid/grid_layout.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
 import 'extrusion_layouter.dart';
+import 'extrusion_shading.dart';
 
 /// Draws `fill-extrusion` layers as 3D buildings, the way MapLibre GL
 /// draws them with the camera looking straight down (pitch 0): through a
@@ -48,8 +49,34 @@ class ExtrusionPainter {
   /// Walls leaning less than this many logical pixels are not drawn.
   static const double minWallLean = 0.5;
 
+  /// Logical pixels per metre on the ground at [latitude], with the
+  /// camera at [cameraZoom] (flutter_map's: 256-pixel tiles).
+  static double pixelsPerMetre(double cameraZoom, double latitude) =>
+      256 *
+      math.pow(2.0, cameraZoom) /
+      (2 * math.pi * _earthRadius * math.cos(latitude * math.pi / 180));
+
+  /// How much a point [lift] pixels above the ground (altitude times
+  /// [pixelsPerMetre]) scales about the screen centre, for a viewport
+  /// [height] pixels tall: `D / (D - lift)` with the camera `D` above the
+  /// map, lifts past MapLibre's near plane held at it.
+  static double scaleAt(double lift, double height) {
+    final d = cameraDistance * height;
+    final maxLift = d - height / 50;
+    return d / (d - (lift > maxLift ? maxLift : lift));
+  }
+
   int? _generation;
   List<_LayerOrder> _orders = const [];
+
+  /// The light the colour tables were filled under, and the light and
+  /// rotation [_levels] were worked out for.
+  ExtrusionLight? _tableLight;
+  ExtrusionLight? _levelsLight;
+  double? _levelsRotation;
+
+  /// Per wall direction, its light level this frame.
+  final _levels = Uint8List(256);
 
   final _paint = Paint();
   final _positions = Float32List(_maxVertices * 2);
@@ -61,6 +88,8 @@ class ExtrusionPainter {
   void reset() {
     _generation = null;
     _orders = const [];
+    _tableLight = null;
+    _levelsLight = null;
   }
 
   void paint(
@@ -73,19 +102,31 @@ class ExtrusionPainter {
     required double latitude,
     required Size viewport,
     required double rotation,
+    StyleLight? light,
   }) {
     final stopwatch = Stopwatch()..start();
     if (_generation != generation) {
       _generation = generation;
       _orders = _order(layouts());
+      _tableLight = null;
     }
     if (_orders.isEmpty) return;
+    final evaluated = ExtrusionLight.of(light, styleZoom);
+    if (evaluated != _tableLight) {
+      _tableLight = evaluated;
+      for (final order in _orders) {
+        order.fillTables(evaluated);
+      }
+    }
+    if (evaluated != _levelsLight || rotation != _levelsRotation) {
+      _levelsLight = evaluated;
+      _levelsRotation = rotation;
+      ExtrusionShading.levelsOf(evaluated, rotation, _levels);
+    }
     developer.Timeline.startSync('VT extrusion');
 
     final d = cameraDistance * viewport.height;
-    final ppm = 256 *
-        math.pow(2.0, cameraZoom) /
-        (2 * math.pi * _earthRadius * math.cos(latitude * math.pi / 180));
+    final ppm = pixelsPerMetre(cameraZoom, latitude);
     // MapLibre's near plane sits a fiftieth of the viewport height in
     // front of the camera: nothing gets closer.
     final maxLift = d - viewport.height / 50;
@@ -126,6 +167,8 @@ class ExtrusionPainter {
   void _drawLayer(Canvas canvas, _LayerOrder order, double d, double ppm,
       double maxLift, double hx, double hy) {
     final layouts = order.layouts;
+    final tables = order.tables;
+    final levels = _levels;
     final tx = order.tx, ty = order.ty, ts = order.scale;
     final entryLayout = order.layout, entryBuilding = order.building;
     final pos = _positions;
@@ -183,12 +226,14 @@ class ExtrusionPainter {
       }
 
       final xy = mesh.xy;
-      final roofColor = layout.colors[bi];
-      final wallColor = _shade(roofColor, 0.8);
+      final table = tables[li];
+      final colorAt = layout.classOf[bi] * ExtrusionShading.stride;
 
       // Walls first: the roof covers whatever of them lies beneath it.
       if (wallCount > 0) {
         final walls = mesh.walls;
+        final angles = mesh.wallAngle;
+        const top = 1 + ExtrusionShading.levels;
         for (var w = w0; w < w1; w += 2) {
           final a = (v0 + walls[w]) * 2;
           final c = (v0 + walls[w + 1]) * 2;
@@ -207,10 +252,13 @@ class ExtrusionPainter {
           pos[o + 5] = cy * kt;
           pos[o + 6] = ax * kt;
           pos[o + 7] = ay * kt;
-          col[v] = wallColor;
-          col[v + 1] = wallColor;
-          col[v + 2] = wallColor;
-          col[v + 3] = wallColor;
+          final level = colorAt + levels[angles[w >> 1]];
+          final foot = table[level + 1];
+          final head = table[level + top];
+          col[v] = foot;
+          col[v + 1] = foot;
+          col[v + 2] = head;
+          col[v + 3] = head;
           final k = _indexCount;
           idx[k] = v;
           idx[k + 1] = v + 1;
@@ -225,6 +273,7 @@ class ExtrusionPainter {
 
       // The roof.
       final ax = x0 * kt, ay = y0 * kt, as = s * kt;
+      final roofColor = table[colorAt];
       final base = _vertexCount;
       var o = base * 2;
       var p = v0 * 2;
@@ -264,13 +313,6 @@ class ExtrusionPainter {
     _indexCount = 0;
   }
 
-  static int _shade(int argb, double f) {
-    final r = (((argb >> 16) & 0xff) * f).round();
-    final g = (((argb >> 8) & 0xff) * f).round();
-    final b = ((argb & 0xff) * f).round();
-    return (0xff << 24) | (r << 16) | (g << 8) | b;
-  }
-
   /// Every building of [layouts], per layer in theme order, lowest roof
   /// first.
   static List<_LayerOrder> _order(Iterable<ExtrusionLayout> layouts) {
@@ -297,10 +339,29 @@ class _LayerOrder {
   /// Per layout, scratch for the frame's tile transform.
   final Float64List tx, ty, scale;
 
+  /// Per layout, its colour classes' colours under the current light
+  /// (`ExtrusionShading.fill`).
+  final List<Int32List> tables;
+
   _LayerOrder._(this.layer, this.layouts, this.layout, this.building)
       : tx = Float64List(layouts.length),
         ty = Float64List(layouts.length),
-        scale = Float64List(layouts.length);
+        scale = Float64List(layouts.length),
+        tables = [
+          for (final layout in layouts)
+            Int32List(layout.classes.length ~/ 3 * ExtrusionShading.stride),
+        ];
+
+  void fillTables(ExtrusionLight light) {
+    for (var l = 0; l < layouts.length; l++) {
+      final classes = layouts[l].classes;
+      final table = tables[l];
+      for (var c = 0; c * 3 < classes.length; c++) {
+        ExtrusionShading.fill(table, c * ExtrusionShading.stride,
+            classes[c * 3], classes[c * 3 + 1], classes[c * 3 + 2], light);
+      }
+    }
+  }
 
   /// A counting sort on the roof height in decimetres: linear in the
   /// buildings, and stable, so equal heights keep tile order.
