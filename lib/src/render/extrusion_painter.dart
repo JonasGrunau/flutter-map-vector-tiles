@@ -31,6 +31,10 @@ class ExtrusionPainter {
   static int debugMicros = 0;
   static int debugVertices = 0;
 
+  /// When set, every painted frame appends its UI-thread microseconds
+  /// here. For benchmarks; null otherwise, so nothing accumulates.
+  static List<int>? debugFrameLog;
+
   /// MapLibre's camera: a 36.87° vertical field of view puts the camera
   /// 1.5 viewport heights above the map.
   static const double cameraDistance = 1.5;
@@ -70,12 +74,12 @@ class ExtrusionPainter {
     required Size viewport,
     required double rotation,
   }) {
+    final stopwatch = Stopwatch()..start();
     if (_generation != generation) {
       _generation = generation;
       _orders = _order(layouts());
     }
     if (_orders.isEmpty) return;
-    final stopwatch = Stopwatch()..start();
     developer.Timeline.startSync('VT extrusion');
 
     final d = cameraDistance * viewport.height;
@@ -113,8 +117,10 @@ class ExtrusionPainter {
     }
 
     developer.Timeline.finishSync();
+    final micros = stopwatch.elapsedMicroseconds;
     debugFrames++;
-    debugMicros += stopwatch.elapsedMicroseconds;
+    debugMicros += micros;
+    debugFrameLog?.add(micros);
   }
 
   void _drawLayer(Canvas canvas, _LayerOrder order, double d, double ppm,

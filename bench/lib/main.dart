@@ -36,6 +36,8 @@ import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart' as vt;
 // "served from cache" from "re-rendered the whole screen". See AGENTS.md.
 import 'package:flutter_map_vector_tiles/src/pipeline/tile_processor.dart'
     show PrepareInput, prepareTileSync;
+import 'package:flutter_map_vector_tiles/src/render/extrusion_painter.dart'
+    show ExtrusionPainter;
 import 'package:flutter_map_vector_tiles/src/render/label_painter.dart'
     show DrawnLabelRecord, LabelPainter;
 import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart'
@@ -192,6 +194,7 @@ class _BenchPageState extends State<BenchPage>
 
   var _build = <int>[];
   var _raster = <int>[];
+  var _extrusionVertices0 = 0;
 
   // BUILD split by whether the frame ran a label placement pass, matched
   // to its FrameTiming by engine frame number — placing frames are where
@@ -1258,6 +1261,8 @@ class _BenchPageState extends State<BenchPage>
     final placing0 = LabelPainter.debugPlacingFrames;
     _zoom.duration = Duration(milliseconds: phase.ms);
     _zoom.value = 0;
+    ExtrusionPainter.debugFrameLog = <int>[];
+    _extrusionVertices0 = ExtrusionPainter.debugVertices;
     _recordStart = DateTime.now();
     _recording = true;
     unawaited(_zoom.repeat(reverse: true));
@@ -1382,6 +1387,13 @@ class _BenchPageState extends State<BenchPage>
     String ms(int us) => (us / 1000).toStringAsFixed(1);
     debugPrint('BENCH[$_label]   WORK   rasterize=${ms(rasterUs)}ms '
         'layout=${ms(layoutUs)}ms labels=${ms(labelUs)}ms');
+    // The 3D-building pass, per frame that drew one.
+    final extrusion = ExtrusionPainter.debugFrameLog;
+    if (extrusion != null && extrusion.isNotEmpty) {
+      final vertices = ExtrusionPainter.debugVertices - _extrusionVertices0;
+      debugPrint('BENCH[$_label]   ${stats("EXTRUDE", extrusion)} '
+          'vertices/frame=${vertices ~/ extrusion.length}');
+    }
     // The label pass split: full placement passes (and how many frames ran
     // one), replayed frames, the per-frame candidate sort, and paragraph
     // shaping on cache misses. Whatever `labels` holds beyond these is
