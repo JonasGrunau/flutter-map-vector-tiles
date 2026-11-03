@@ -145,6 +145,7 @@ class TileRasterizer {
     PatternResolver? patterns,
     int from = 0,
     bool Function()? outOfBudget,
+    bool flatExtrusions = true,
   }) {
     if (from == 0) debugRasterizeCount++;
     debugSliceCount++;
@@ -167,6 +168,7 @@ class TileRasterizer {
         patterns: patterns,
         from: from,
         outOfBudget: outOfBudget,
+        flatExtrusions: flatExtrusions,
       );
 
       final picture = recorder.endRecording();
@@ -251,6 +253,7 @@ class TileRasterizer {
     PatternResolver? patterns,
     int from = 0,
     bool Function()? outOfBudget,
+    bool flatExtrusions = true,
   }) {
     var painted = false;
     var drewLayer = false;
@@ -264,6 +267,10 @@ class TileRasterizer {
       // and the next one never starts with — a layer that draws nothing.
       if (layer is SymbolThemeLayer ||
           layer is HeatmapThemeLayer ||
+          (!flatExtrusions &&
+              layer is FillThemeLayer &&
+              layer.extrusion &&
+              layer.pattern == null) ||
           !layer.coversZoom(styleZoom)) {
         continue;
       }

@@ -242,6 +242,23 @@ class FillThemeLayer extends ThemeLayer {
   /// with a lower one. Null when unset, which keeps source order.
   final DoubleProp? sortKey;
 
+  /// `fill-extrusion-height` and `fill-extrusion-base`, in metres: where
+  /// an extrusion's roof and its floor are. Null on a plain fill.
+  final DoubleProp? extrusionHeight;
+  final DoubleProp? extrusionBase;
+
+  /// Whether [extrusionHeight] / [extrusionBase] read the zoom. One that
+  /// reads both the zoom and the feature is laid out per integer zoom.
+  /// Assigned by the theme reader.
+  @internal
+  bool extrusionHeightReadsZoom = false;
+  @internal
+  bool extrusionBaseReadsZoom = false;
+
+  /// `fill-extrusion-vertical-gradient`: whether walls darken towards
+  /// their foot. Null on a plain fill.
+  final BoolProp? extrusionVerticalGradient;
+
   FillThemeLayer({
     required super.id,
     required super.source,
@@ -257,6 +274,9 @@ class FillThemeLayer extends ThemeLayer {
     this.extrusion = false,
     this.translate,
     this.sortKey,
+    this.extrusionHeight,
+    this.extrusionBase,
+    this.extrusionVerticalGradient,
   });
 }
 

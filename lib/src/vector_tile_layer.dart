@@ -27,6 +27,8 @@ import 'pipeline/executor/executor.dart';
 import 'pipeline/prepared_tile.dart';
 import 'pipeline/tile_filters.dart';
 import 'render/display_tile_data.dart';
+import 'render/extrusion_layouter.dart';
+import 'render/extrusion_painter.dart';
 import 'render/fade.dart';
 import 'render/feature_query.dart';
 import 'render/heatmap_layouter.dart';
@@ -377,6 +379,31 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// density pass on it; camera motion alone does not touch it.
   var _heatmapGeneration = 0;
 
+  final _extrusionPainter = ExtrusionPainter();
+
+  /// Bumped with [_heatmapGeneration], for the same tile events: the
+  /// extrusion painter re-sorts its buildings on it.
+  var _extrusionGeneration = 0;
+
+  /// The theme's layers drawn as 3D buildings, memoized per theme.
+  List<FillThemeLayer> get _extrusionLayers {
+    final theme = widget.theme;
+    if (!identical(_extrusionTheme, theme)) {
+      _extrusionTheme = theme;
+      _extrusionLayersMemo = ExtrusionLayouter.layersOf(theme);
+    }
+    return _extrusionLayersMemo;
+  }
+
+  Theme? _extrusionTheme;
+  var _extrusionLayersMemo = const <FillThemeLayer>[];
+
+  /// Whether `fill-extrusion` layers are drawn as 3D buildings over the
+  /// tiles rather than flat into them — not with the labels in the tile
+  /// images, which the buildings would cover.
+  bool get _perspectiveExtrusions =>
+      !_tileLabels && _extrusionLayers.isNotEmpty;
+
   /// The label ids of every symbol on offer — current, retained and
   /// parked tiles alike. Each holder takes its ids when it publishes
   /// ([_setTileSymbols]) and hands them back when it stops offering
@@ -421,6 +448,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _retainedSymbolKeys = null;
     _labelGeneration++;
     _heatmapGeneration++;
+    _extrusionGeneration++;
   }
 
   void _updateLabelCamera(MapCamera camera) {
@@ -804,6 +832,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         executor: _executor,
         layerProperties: layerProperties,
         promoteIds: promoteIds,
+        extrusionLayers: {
+          for (final layer in _extrusionLayers)
+            if (layer.source == sourceId && layer.sourceLayer != null)
+              layer.sourceLayer!,
+        },
         filterPlan: TileFilterPlan(
           widget.theme.layers.where((layer) => layer.source == sourceId),
           minimumZoom: provider.minimumZoom,
@@ -919,6 +952,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // expression graphs.
     _labelPainter.reset();
     _heatmapPainter.reset();
+    _extrusionPainter.reset();
     _drawnLastFrame.clear();
     _currentZoom = null;
     // Without this the next _updateGrid would see an unchanged grid and
@@ -1143,6 +1177,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     ]..sort();
     return '${widget.theme.id}|${widget.tileOffset.zoomOffset}|'
         '$devicePixelRatio|${widget.showLabels}|${widget.labelMode.name}|'
+        // Tiles under 3D buildings are drawn without them.
+        '${widget.showLabels && widget.labelMode == LabelMode.tile ? '' : '3d|'}'
         '${widget.sprites?.signature}|${widget.glyphs?.signature}|'
         '${providers.join(',')}'
         '${promoteIds.isEmpty ? '' : '|promoteId:${promoteIds.join(',')}'}'
@@ -1514,6 +1550,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       if (cached != null) {
         tile.renderedWith = cached.renderedWith;
         tile.heatmap = cached.heatmap;
+        tile.extrusions = cached.extrusions;
         tile.labelHits = cached.labelHits ?? const [];
         if (widget.controller != null) _adoptSources(tile);
         final owesShaping = cached.symbols.isNotEmpty;
@@ -2097,6 +2134,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       patterns: _patternResolver,
       from: job.layerCursor,
       outOfBudget: () => tick.elapsedMicroseconds >= _pumpBudget,
+      flatExtrusions: !_perspectiveExtrusions,
     );
     if (slice.picture case final picture?) job.geometryParts.add(picture);
     job.layerCursor = slice.next;
@@ -2145,6 +2183,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       symbolsPending: symbolsFollow,
     );
     tile.heatmap = _layoutHeatmap(data, styleZoom);
+    tile.extrusions = _layoutExtrusions(data, styleZoom);
     tile.labelHits = const [];
     tile.sources = widget.controller == null ? null : job.sources;
     if (job.keepSymbols) {
@@ -2275,6 +2314,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       tile.heatmap = _layoutHeatmap(
           DisplayTileData(displayKey: tile.key, sources: job.sources),
           styleZoom);
+      tile.extrusions = const [];
       tile.labelHits = labelHits ?? const [];
       tile.sources = widget.controller == null ? null : job.sources;
       _setTileSymbols(tile, const [], provisional: job.provisional);
@@ -2429,6 +2469,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       image: tile.image?.clone(),
       symbols: symbols,
       heatmap: tile.heatmap ?? const [],
+      extrusions: tile.extrusions ?? const [],
       renderedWith: tile.renderedWith ?? const {},
       labelHits: labelHits,
     );
@@ -2444,6 +2485,36 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     if (!HeatmapLayouter.hasSource(widget.theme, data)) return null;
     return HeatmapLayouter.layout(
         theme: widget.theme, data: data, styleZoom: styleZoom);
+  }
+
+  /// The 3D buildings of a tile whose image is being published — none
+  /// for a style without extrusion layers, and none in
+  /// [LabelMode.tile], which draws them flat. Null when the tile has
+  /// none of their sources yet, like [_layoutHeatmap].
+  List<ExtrusionLayout>? _layoutExtrusions(
+      DisplayTileData data, double styleZoom) {
+    if (!_perspectiveExtrusions) return const [];
+    return ExtrusionLayouter.layout(
+        layers: _extrusionLayers, data: data, styleZoom: styleZoom);
+  }
+
+  /// The buildings on offer to the extrusion painter: every current and
+  /// retained tile's, each data tile's once — display tiles over the
+  /// same data tile share its layouts.
+  Iterable<ExtrusionLayout> _extrusionLayouts() {
+    final seen = HashSet<ExtrusionLayout>.identity();
+    final out = <ExtrusionLayout>[];
+    void add(_DisplayTile tile) {
+      final extrusions = tile.extrusions;
+      if (extrusions == null) return;
+      for (final layout in extrusions) {
+        if (seen.add(layout)) out.add(layout);
+      }
+    }
+
+    _tiles.values.forEach(add);
+    _retained.values.forEach(add);
+    return out;
   }
 
   /// The tiles offering points to a heatmap density pass: every current tile that has its points, and — while
@@ -3109,6 +3180,10 @@ class _DisplayTile {
   /// image is first published (empty for a style without a heatmap).
   List<HeatmapPoints>? heatmap;
 
+  /// The tile's 3D buildings, per extrusion layer — null until its
+  /// image is first published.
+  List<ExtrusionLayout>? extrusions;
+
   /// [LabelMode.tile] only: the labels drawn into [image], for
   /// rendered-feature queries — the per-frame pass has none to offer.
   List<LabelHit> labelHits = const [];
@@ -3236,6 +3311,7 @@ class _DisplayTile {
     underlay = null;
     symbols = const [];
     heatmap = null;
+    extrusions = null;
     labelHits = const [];
     sources = null;
     labelIds = _noIds;
@@ -3294,7 +3370,23 @@ class _VectorMapPainter extends CustomPainter {
           tile.fadeProgress(now, state.widget.tileFadeDuration), worldCenter);
     }
 
-    // 3. Heatmap layers, over all the geometry: their density spans
+    // 3. 3D buildings, over the geometry: they lean with the camera, so
+    // they cannot be drawn into the tile images.
+    if (state._perspectiveExtrusions) {
+      state._extrusionPainter.paint(
+        canvas,
+        generation: state._extrusionGeneration,
+        layouts: state._extrusionLayouts,
+        cameraZoom: camera.zoom,
+        styleZoom: styleZoom,
+        worldCenter: worldCenter,
+        latitude: camera.center.latitude,
+        viewport: size,
+        rotation: camera.rotationRad,
+      );
+    }
+
+    // 4. Heatmap layers, over all the geometry: their density spans
     // tiles, so it cannot be drawn into the tile images.
     if (HeatmapLayouter.any(state.widget.theme)) {
       state._heatmapPainter.paint(
@@ -3312,7 +3404,7 @@ class _VectorMapPainter extends CustomPainter {
     }
     canvas.restore();
 
-    // 4. Labels in screen space (upright, globally collision-checked) —
+    // 5. Labels in screen space (upright, globally collision-checked) —
     // unless they are already in the tile images.
     if (state._screenLabels) {
       _paintLabels(canvas, size, screenCenter, worldCenter, styleZoom);

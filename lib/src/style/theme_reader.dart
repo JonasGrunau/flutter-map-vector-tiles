@@ -122,6 +122,12 @@ class ThemeReader {
       case 'fill-extrusion':
         final extrusion = type == 'fill-extrusion';
         final prefix = extrusion ? 'fill-extrusion' : 'fill';
+        final height = extrusion
+            ? _doubleReadingZoom(parser, paint['fill-extrusion-height'], 0)
+            : null;
+        final base = extrusion
+            ? _doubleReadingZoom(parser, paint['fill-extrusion-base'], 0)
+            : null;
         layer = FillThemeLayer(
           id: id,
           source: source,
@@ -145,7 +151,14 @@ class ThemeReader {
           translate: _optionalNumList(parser, paint['$prefix-translate']),
           // An extrusion has no sort key.
           sortKey: extrusion ? null : _sortKey(parser, layout['fill-sort-key']),
-        );
+          extrusionHeight: height?.prop,
+          extrusionBase: base?.prop,
+          extrusionVerticalGradient: extrusion
+              ? _bool(parser, paint['fill-extrusion-vertical-gradient'], true)
+              : null,
+        )
+          ..extrusionHeightReadsZoom = height?.readsZoom ?? false
+          ..extrusionBaseReadsZoom = base?.readsZoom ?? false;
       case 'line':
         layer = LineThemeLayer(
           id: id,

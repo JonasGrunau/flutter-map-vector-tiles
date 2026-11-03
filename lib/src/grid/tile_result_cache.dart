@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import '../cache/lru_cache.dart';
 import '../core/tile_key.dart';
+import '../render/extrusion_layouter.dart';
 import '../render/heatmap_layouter.dart';
 import '../render/hit_test.dart';
 import '../render/symbol_layouter.dart';
@@ -23,6 +24,10 @@ class TileResult {
   /// idempotent too.
   final List<HeatmapPoints> heatmap;
 
+  /// The tile's 3D buildings, shared by reference like [heatmap]: the
+  /// layouts belong to the data tiles, which many results share.
+  final List<ExtrusionLayout> extrusions;
+
   /// The source ids baked into the raster — restored onto the display
   /// tile so refresh logic can tell recovered sources apart.
   final Set<String> renderedWith;
@@ -36,6 +41,7 @@ class TileResult {
     required this.image,
     required this.symbols,
     this.heatmap = const [],
+    this.extrusions = const [],
     required this.renderedWith,
     this.labelHits,
   });
@@ -148,6 +154,7 @@ class TileResultCache {
     required ui.Image? image,
     required List<SymbolInstance> symbols,
     List<HeatmapPoints> heatmap = const [],
+    List<ExtrusionLayout> extrusions = const [],
     required Set<String> renderedWith,
     List<LabelHit>? labelHits,
   }) {
@@ -157,6 +164,7 @@ class TileResultCache {
           image: image,
           symbols: symbols,
           heatmap: heatmap,
+          extrusions: extrusions,
           renderedWith: renderedWith,
           labelHits: labelHits),
     );
