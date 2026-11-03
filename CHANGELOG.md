@@ -2,11 +2,14 @@
 
 ## Unreleased
 
-3D buildings: `fill-extrusion` layers drawn with their height, the way
-MapLibre GL draws them when the camera looks straight down, and street names drawn straight or on a smooth curve, no longer crooked.
+Opt-in 3D buildings: `fill-extrusion` layers drawn with their height, the
+way MapLibre GL draws them when the camera looks straight down, and street names drawn straight or on a smooth curve, no longer crooked.
 
-- ✨ **3D buildings**: `fill-extrusion` layers draw as MapLibre GL draws
-  them at pitch 0, through its perspective camera. Each roof sits
+
+
+- ✨ **3D buildings**, opt-in with `VectorTileLayer.extrusionMode:
+  ExtrusionMode.perspective`: `fill-extrusion` layers draw as MapLibre
+  GL draws them at pitch 0, through its perspective camera. Each roof sits
   further from the screen centre than its foot, in proportion to
   `fill-extrusion-height` (and `-base`), and the walls facing the
   centre show, so buildings lean outward, more towards the screen edges
@@ -20,14 +23,14 @@ MapLibre GL draws them when the camera looks straight down, and street names dra
   a terraced neighbour, the outline a taller building part rises out
   of — shows only above that building's roof, as MapLibre's depth
   buffer would have it. An extrusion colour that reads `feature-state`
-  follows the state. Before, extrusions were flat footprints in the tile
-  images. On a Nothing Phone (1) the pass adds about a millisecond to
-  the 90th-percentile UI frame at style zoom 14 and nothing measurable
-  from 16 on; a map without labels pays more at 14 (see the README's
-  *3D buildings*). `VectorTileLayer.extrusions: ExtrusionMode.flat`
-  keeps them flat, at no per-frame cost; patterned extrusions, and every
-  extrusion under `LabelMode.tile`, stay flat. flutter_map has no
-  pitch, so the map itself never tilts.
+  follows the state. On a Nothing Phone (1) the pass adds about a
+  millisecond to the 90th-percentile UI frame at style zoom 14 and
+  nothing measurable from 16 on; a map without labels pays more at 14
+  (see the README's *3D buildings*). The default, `ExtrusionMode.flat`,
+  draws them as before — flat footprints in the tile images, at no
+  per-frame cost — so updating changes no map; patterned extrusions,
+  and every extrusion under `LabelMode.tile`, stay flat in either mode.
+  flutter_map has no pitch, so the map itself never tilts.
 - ✨ `Theme.light` holds the style's root `light` (`anchor`,
   `position`, `color`, `intensity`); `FillThemeLayer` gains
   `extrusionHeight`, `extrusionBase` and `extrusionVerticalGradient`.

@@ -40,6 +40,7 @@ Every run measures exactly one arm, in a fresh process.
 | `vmt-vector` | `vector_map_tiles` in vector mode, which its docs recommend for sharpness |
 | `fmvt-none` | control: `flutter_map_vector_tiles` with `TileOffset.none` |
 | `fmvt-raster-none` | control: `fmvt-raster` with `TileOffset.none` |
+| `fmvt-3d` | `fmvt` with `extrusionMode: ExtrusionMode.perspective`: `fill-extrusion` layers as 3D buildings, which the package leaves off by default. For fidelity next to MapLibre GL, which draws them in 3D; `vector_map_tiles` draws them flat, as `fmvt` does |
 
 The packages draw labels in different ways, so the arms pair up by
 strategy rather than by default. `vector_map_tiles`' raster mode bakes

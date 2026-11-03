@@ -74,7 +74,7 @@ Theme _theme({double opacity = 1}) => const ThemeReader().read({
 Widget _app(
   VectorTileProvider provider, {
   Theme? theme,
-  ExtrusionMode extrusions = ExtrusionMode.perspective,
+  ExtrusionMode extrusionMode = ExtrusionMode.perspective,
   LabelMode labelMode = LabelMode.screen,
   VectorTileLayerController? controller,
   double rotation = 0,
@@ -96,7 +96,7 @@ Widget _app(
               tileFadeDuration: Duration.zero,
               concurrency: 1,
               diskCacheMaximumSizeInBytes: 0,
-              extrusions: extrusions,
+              extrusionMode: extrusionMode,
               labelMode: labelMode,
               controller: controller,
             ),
@@ -164,11 +164,21 @@ void main() {
   testWidgets('flat: the footprint in the tile image, no lean', (tester) async {
     final px = await open(
         tester,
-        _app(_OneTile(), extrusions: ExtrusionMode.flat),
+        _app(_OneTile(), extrusionMode: ExtrusionMode.flat),
         (px) => _white(_rgb(px, 105, 70)));
     expect(_white(_rgb(px, 105, 70)), isTrue);
     expect(_blue(_rgb(px, 140, 85)), isTrue);
     await tester.pumpWidget(const SizedBox());
+  });
+
+  test('3D buildings are opt-in: a layer left at its defaults draws flat', () {
+    // An update must not change how an app's existing style looks.
+    expect(
+        VectorTileLayer(
+          theme: _theme(),
+          tileProviders: TileProviders({'s': _OneTile()}),
+        ).extrusionMode,
+        ExtrusionMode.flat);
   });
 
   testWidgets('LabelMode.tile draws them flat', (tester) async {

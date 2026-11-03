@@ -111,11 +111,11 @@ const _setup = String.fromEnvironment('BENCH_SETUP', defaultValue: 'default');
 /// number on the blur's cost (A/B against the default).
 const _haloBlur = bool.fromEnvironment('BENCH_HALO_BLUR', defaultValue: true);
 
-/// How `fill-extrusion` layers are drawn: `perspective` (the default),
-/// `flat`, or `opaque` — perspective without the layer's `saveLayer`,
-/// to cost that on the raster thread.
-const _extrude =
-    String.fromEnvironment('BENCH_EXTRUDE', defaultValue: 'perspective');
+/// How `fill-extrusion` layers are drawn: `flat` (the package's
+/// default), `perspective` (3D buildings, opt-in), or `opaque` —
+/// perspective without the layer's `saveLayer`, to cost that on the
+/// raster thread.
+const _extrude = String.fromEnvironment('BENCH_EXTRUDE', defaultValue: 'flat');
 const _safenow = _setup == 'safenow';
 
 /// Reporting cadence for `manual` mode.
@@ -1490,7 +1490,7 @@ class _BenchPageState extends State<BenchPage>
                     sprites: style.sprites,
                     glyphs: style.glyphs,
                     showLabels: _showLabels,
-                    extrusions: _extrude == 'flat'
+                    extrusionMode: _extrude == 'flat'
                         ? vt.ExtrusionMode.flat
                         : vt.ExtrusionMode.perspective,
                     memoryCacheMaxBytes: (_safenow ? 16 : 24) * 1024 * 1024,

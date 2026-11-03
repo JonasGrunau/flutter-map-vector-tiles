@@ -137,7 +137,7 @@ vt.VectorTileLayer(
   labelFadeDuration: const Duration(milliseconds: 150),
   showLabels: true,
   labelMode: vt.LabelMode.screen,              // or .tile: labels baked into tiles
-  extrusions: vt.ExtrusionMode.perspective,    // or .flat: buildings without height
+  extrusionMode: vt.ExtrusionMode.flat,        // or .perspective: 3D buildings
   controller: myController,                    // queries + feature state, optional
   retainAllProperties: false,                  // keep properties the style never reads
   logger: const vt.Logger.console(),           // see style warnings in debug
@@ -158,7 +158,7 @@ vt.VectorTileLayer(
 | `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress; on a Nothing Phone (1) that took the peak GPU memory from 391–409 to 317–320 MB and cost frames ([compare/RESULTS.md](compare/RESULTS.md)). No effect with `LabelMode.tile`, where labels fade in with their tile |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 | `labelMode` | `LabelMode.screen` | where labels and icons are drawn: every frame in screen space, or once into each tile's image (`LabelMode.tile`, what `vector_map_tiles` calls raster mode). Changing it re-renders the tiles already on screen. See [Choosing a label mode](#choosing-a-label-mode) |
-| `extrusions` | `ExtrusionMode.perspective` | how `fill-extrusion` layers are drawn: as 3D buildings leaning away from the screen centre, as MapLibre draws them looking straight down, or flat in the tile images (`ExtrusionMode.flat`, no per-frame cost). Always flat with `LabelMode.tile`. See [3D buildings](#3d-buildings) |
+| `extrusionMode` | `ExtrusionMode.flat` | how `fill-extrusion` layers are drawn: flat in the tile images, as every release before 3D buildings drew them, or opted into with `ExtrusionMode.perspective`, as 3D buildings leaning away from the screen centre, the way MapLibre draws them looking straight down (UI-thread time every frame the map moves). Always flat with `LabelMode.tile`. See [3D buildings](#3d-buildings) |
 | `controller` | none | a `VectorTileLayerController` to ask what is drawn where and to set feature state. See [Querying features and feature state](#-querying-features-and-feature-state) |
 | `retainAllProperties` | `false` | decode every feature property, not only those the style reads, so query results carry them all. Costs memory and decode time, see below |
 
@@ -257,7 +257,7 @@ native:
   matched against a tile's features when it is first drawn, not while it
   is decoded, a heatmap layer's density is computed on the event loop
   too, after the frame that asked for it, and so are the meshes of a
-  style's 3D buildings, cut while a tile is decoded.
+  style's 3D buildings, when they are on, cut while a tile is decoded.
 - **Label collision runs in the frame.** The placement pass that runs on
   an isolate of its own elsewhere costs the frame it is due in.
 - **CORS.** The browser fetches style.json, TileJSON, sprites, glyphs and
@@ -469,7 +469,7 @@ would.
 | `symbol` | every layout and paint property but `text-writing-mode` and the pitch alignments (flutter_map has no pitch), including curved line text, variable anchors and `icon-text-fit`; see *Symbol properties* and [Labels](#-labels) below |
 | `hillshade` | terrain shading computed from a `raster-dem` source (`terrarium`, `mapbox` or `custom` encoding), drawn at its layer position with every paint property: all five `hillshade-method`s (`standard`, `basic`, `combined`, `igor`, `multidirectional`, up to four lights), illumination direction, altitude and anchor, exaggeration, shadow/highlight/accent colours and `resampling`. Slopes are read across tile edges from the neighbouring elevation tiles, so the shading has no seams. One difference: tiles are shaded once and turn with the map, so `hillshade-illumination-anchor: viewport` (the default) is drawn as if the map were not rotated; with `map` it matches MapLibre at every bearing |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity`, brightness/contrast/saturation/hue-rotate matching MapLibre's shader math, and `resampling` / `raster-resampling` |
-| `fill-extrusion` | 3D buildings, as MapLibre draws them with the camera looking straight down: `fill-extrusion-height`, `-base`, `-color`, `-opacity` (applied to the whole layer, as MapLibre does), `-vertical-gradient` and `-translate`, shaded by the style's root `light`; see **3D buildings** below. Patterned ones (`fill-extrusion-pattern`), and all of them with `LabelMode.tile` or `extrusions: ExtrusionMode.flat`, draw as flat footprints. The alpha of `fill-extrusion-color` darkens the colour rather than making it translucent, as in MapLibre |
+| `fill-extrusion` | flat footprints in `fill-extrusion-color` and `-opacity` by default; with `extrusionMode: ExtrusionMode.perspective`, 3D buildings, as MapLibre draws them with the camera looking straight down: `fill-extrusion-height`, `-base`, `-color`, `-opacity` (applied to the whole layer, as MapLibre does), `-vertical-gradient` and `-translate`, shaded by the style's root `light`; see **3D buildings** below. Patterned ones (`fill-extrusion-pattern`), and all of them with `LabelMode.tile`, draw as flat footprints in either mode. The alpha of `fill-extrusion-color` darkens the colour rather than making it translucent, as in MapLibre |
 | `heatmap` | the kernel density MapLibre draws over a source layer's points, with `heatmap-radius`, `-weight`, `-intensity`, `-opacity` and a `heatmap-color` ramp over `["heatmap-density"]`, data-driven weight and radius included; drawn over all the tile geometry, see **Heatmaps** below |
 | `color-relief`, `sky` | skipped, with a log line |
 
@@ -552,8 +552,10 @@ from MapLibre:
 - only point features count. MapLibre also takes every vertex of a line
   or polygon as a point.
 
-<a id="3d-buildings"></a>**3D buildings.** flutter_map's camera has no pitch, so the map
-never tilts; what MapLibre shows of a building with the camera looking
+<a id="3d-buildings"></a>**3D buildings.** Off by default: `fill-extrusion` layers draw as
+flat footprints, as in every release before, so updating the package
+changes no map. `extrusionMode: ExtrusionMode.perspective` turns them
+on. flutter_map's camera has no pitch, so the map never tilts; what MapLibre shows of a building with the camera looking
 straight down is drawn instead. Its camera is a perspective one, 1.5
 viewport heights above the map, so a roof `h` metres up is drawn
 scaled away from the screen centre by `D / (D − h · pixels per
@@ -604,9 +606,9 @@ frames delivered stayed at 99–100 %. The buildings' meshes are cut
 while a tile is decoded and kept with it — 65–550 KB a tile in
 central Munich, counted against `memoryCacheMaxBytes`, so the same
 budget holds fewer decoded tiles; on the iPhone the app's memory at
-the first screen rose by about 20 MB. `extrusions:
-ExtrusionMode.flat` draws them flat in the tile images instead, at no
-per-frame cost and without the meshes.
+the first screen rose by about 20 MB. The default,
+`ExtrusionMode.flat`, draws them flat in the tile images instead, at
+no per-frame cost and without the meshes.
 
 **Expressions.** Every operator of the current MapLibre style spec
 compiles, as do legacy filters, legacy `{stops}` functions (zoom,
@@ -1022,8 +1024,8 @@ saw them.
 counts each URL once; on macOS, with a smaller window and no HTTP
 cache, `vector_map_tiles` fetched some tiles again.
 
-These sessions predate 3D buildings, which the default now draws for
-Liberty; [3D buildings](#3d-buildings) has what they cost on the
+These sessions predate 3D buildings, which are off by default;
+[3D buildings](#3d-buildings) has what they cost, switched on, on the
 Nothing Phone and the iPhone.
 
 To check these numbers on your own devices, follow

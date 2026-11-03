@@ -15,10 +15,11 @@ The design commitments that shape almost every file: geometry is rasterized
 are **not** baked into those rasters but drawn per frame in screen space with
 one global collision pass, decided on a placement isolate where isolates
 exist (`LabelMode.tile` opts into baking them, through the same label
-painter); `fill-extrusion` layers are the other per-frame pass — 3D
-buildings projected through MapLibre's pitch-0 camera from meshes cut
-on the worker, since their lean changes with every pan
-(`ExtrusionMode.flat` puts them back in the rasters); cancellation is a
+painter); opted into with `ExtrusionMode.perspective`, `fill-extrusion`
+layers are the other per-frame pass — 3D buildings projected through
+MapLibre's pitch-0 camera from meshes cut on the worker, since their
+lean changes with every pan (by default, `ExtrusionMode.flat`, they
+stay flat in the rasters, as before); cancellation is a
 **state**, never an exception;
 every `ui.Image` has exactly one owner and is disposed on eviction.
 

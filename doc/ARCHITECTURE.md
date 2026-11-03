@@ -20,6 +20,7 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │              └─ IsolatePool: decode MVT, trim to what the theme reads,
      │                             resolve the zoom-free layer filters,
      │                             cut extrusions' polygons into meshes
+     │                             (ExtrusionMode.perspective only)
      │                             └─ PreparedTile (compact, transferable)
      │
      ├─ RasterTileStore (raster + raster-dem sources): bytes ─► image codec
@@ -40,7 +41,8 @@ display tile (z,x,y) ─► data tile key (clamped to source maxZoom)
      │       └─ or, LabelMode.tile: LabelPainter.paintTile places them once
      │          per tile and draws them into the tile's own image
      │
-     ├─ 3D buildings: ExtrusionLayouter, per *data* tile, when an image
+     ├─ 3D buildings (opt-in, ExtrusionMode.perspective):
+     │       ExtrusionLayouter, per *data* tile, when an image
      │       │  over it publishes: which buildings, how tall, what colour
      │       └─ ExtrusionPainter: every frame, the buildings on screen
      │          projected through MapLibre's pitch-0 camera into vertex
@@ -1111,6 +1113,13 @@ covers them. Only point features count, as for circle layers;
 MapLibre takes the vertices of lines and polygons as points too.
 
 ### 3D buildings
+
+Opt-in: with `ExtrusionMode.flat`, the default, the rasterizer draws
+`fill-extrusion` layers into the tile images as footprints, as every
+release before did, and none of what follows runs — no meshes on the
+worker, no layouts, no per-frame pass, and the tile store's memory and
+raster signatures stay those of a style without 3D buildings.
+`ExtrusionMode.perspective` turns it on.
 
 flutter_map's camera has no pitch, so a tilted map is out of reach of a
 layer: it would take a new camera, new tile-range maths, new gestures

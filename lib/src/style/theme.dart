@@ -291,16 +291,17 @@ class FillThemeLayer extends ThemeLayer {
 
   /// Whether [extrusionHeight] / [extrusionBase] read the zoom. One that
   /// reads both the zoom and the feature is laid out per integer zoom.
-  /// Assigned by the theme reader.
+  /// Assigned by the theme reader; unknown means true, so a hand-built
+  /// layer is laid out again at every zoom level.
   @internal
-  bool extrusionHeightReadsZoom = false;
+  bool extrusionHeightReadsZoom = true;
   @internal
-  bool extrusionBaseReadsZoom = false;
+  bool extrusionBaseReadsZoom = true;
 
   /// Whether `fill-extrusion-color` reads the zoom. Assigned by the
-  /// theme reader.
+  /// theme reader; unknown means true, as above.
   @internal
-  bool extrusionColorReadsZoom = false;
+  bool extrusionColorReadsZoom = true;
 
   /// `fill-extrusion-vertical-gradient`: whether walls darken towards
   /// their foot. Null on a plain fill.

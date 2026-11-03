@@ -180,12 +180,12 @@ class VectorTileLayer extends StatefulWidget {
   /// are dropped where they would cross a tile edge — see [LabelMode].
   final LabelMode labelMode;
 
-  /// How `fill-extrusion` layers are drawn: as 3D buildings leaning with
-  /// the camera ([ExtrusionMode.perspective], the default) or as flat
-  /// footprints in the tile images ([ExtrusionMode.flat], no per-frame
-  /// cost) — see [ExtrusionMode]. With [LabelMode.tile] they are always
-  /// flat.
-  final ExtrusionMode extrusions;
+  /// How `fill-extrusion` layers are drawn: as flat footprints in the
+  /// tile images ([ExtrusionMode.flat], the default, no per-frame cost)
+  /// or, opted into, as 3D buildings leaning with the camera
+  /// ([ExtrusionMode.perspective]) — see [ExtrusionMode]. With
+  /// [LabelMode.tile] they are always flat.
+  final ExtrusionMode extrusionMode;
 
   /// Queries this layer's rendered features and sets the feature state
   /// its style reads — see [VectorTileLayerController]. Optional: a layer
@@ -225,7 +225,7 @@ class VectorTileLayer extends StatefulWidget {
     this.rasterCacheMaxBytes = autoRasterCacheBytes,
     this.showLabels = true,
     this.labelMode = LabelMode.screen,
-    this.extrusions = ExtrusionMode.perspective,
+    this.extrusionMode = ExtrusionMode.flat,
     this.controller,
     this.retainAllProperties = false,
     this.logger = const Logger.noop(),
@@ -415,7 +415,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// Whether [widget] asks for 3D buildings — not with the labels in the
   /// tile images, which the buildings would cover.
   static bool _perspectiveFor(VectorTileLayer widget) =>
-      widget.extrusions == ExtrusionMode.perspective &&
+      widget.extrusionMode == ExtrusionMode.perspective &&
       !(widget.showLabels && widget.labelMode == LabelMode.tile);
 
   /// The label ids of every symbol on offer — current, retained and
