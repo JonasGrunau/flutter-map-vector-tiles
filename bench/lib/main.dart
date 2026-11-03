@@ -1271,6 +1271,8 @@ class _BenchPageState extends State<BenchPage>
     _zoom.duration = Duration(milliseconds: phase.ms);
     _zoom.value = 0;
     ExtrusionPainter.debugFrameLog = <int>[];
+    ExtrusionPainter.debugFrameVertices = <int>[];
+    ExtrusionPainter.debugFrameCullMicros = <int>[];
     _extrusionVertices0 = ExtrusionPainter.debugVertices;
     _extrusionRebuilds0 = ExtrusionPainter.debugRebuilds;
     _extrusionRebuildUs0 = ExtrusionPainter.debugRebuildMicros;
@@ -1408,6 +1410,46 @@ class _BenchPageState extends State<BenchPage>
       debugPrint('BENCH[$_label]   ${stats("EXTRUDE", extrusion)} '
           'vertices/frame=${vertices ~/ extrusion.length} '
           'rebuilds=$rebuilds (${ms(rebuildUs)}ms)');
+      // The slowest 1 % of those frames: their vertices and candidate
+      // gathering against every frame's, to tell a frame that drew more
+      // from one that gathered the candidates again.
+      final verts = ExtrusionPainter.debugFrameVertices!;
+      final culls = ExtrusionPainter.debugFrameCullMicros!;
+      if (verts.length == extrusion.length) {
+        final order = [for (var i = 0; i < extrusion.length; i++) i]
+          ..sort((a, b) => extrusion[b] - extrusion[a]);
+        final slow = order.take(math.max(1, extrusion.length ~/ 100));
+        double mean(Iterable<int> xs) =>
+            xs.isEmpty ? 0 : xs.reduce((a, b) => a + b) / xs.length;
+        final culled = [
+          for (final c in culls)
+            if (c > 0) c
+        ];
+        // Microseconds per vertex: the frames that built vertices (the
+        // rest redrew the last frame's), median against the slow ones.
+        final built = [
+          for (var i = 0; i < extrusion.length; i++)
+            if (verts[i] > 0) extrusion[i] / verts[i],
+        ]..sort();
+        final slowRate = [
+          for (final i in slow)
+            if (verts[i] > 0) extrusion[i] / verts[i],
+        ];
+        String at(double q) => built.isEmpty
+            ? '0'
+            : built[(built.length * q).floor().clamp(0, built.length - 1)]
+                .toStringAsFixed(3);
+        debugPrint('BENCH[$_label]   EXTRUDE-RATE built=${built.length}/'
+            '${extrusion.length} us/vertex p50=${at(0.5)} p90=${at(0.9)} '
+            'slow=${slowRate.isEmpty ? 0 : (slowRate.reduce((a, b) => a + b) / slowRate.length).toStringAsFixed(3)}');
+        debugPrint('BENCH[$_label]   EXTRUDE-SLOW n=${slow.length} '
+            'ms=${ms(mean([for (final i in slow) extrusion[i]]).round())} '
+            'verts=${mean([for (final i in slow) verts[i]]).round()} '
+            '(all ${mean(verts).round()}) '
+            'culled=${slow.where((i) => culls[i] > 0).length}/${slow.length} '
+            'cullMs=${ms(mean([for (final i in slow) culls[i]]).round())} '
+            'culls=${culled.length} (mean ${ms(mean(culled).round())}ms)');
+      }
     }
     // The label pass split: full placement passes (and how many frames ran
     // one), replayed frames, the per-frame candidate sort, and paragraph

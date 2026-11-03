@@ -50,6 +50,12 @@ class ExtrusionPainter {
   /// here. For benchmarks; null otherwise, so nothing accumulates.
   static List<int>? debugFrameLog;
 
+  /// With [debugFrameLog]: per frame, the vertices it drew, and the
+  /// microseconds it spent gathering candidates again (0 when it kept
+  /// the last window) — what a slow frame was busy with.
+  static List<int>? debugFrameVertices;
+  static List<int>? debugFrameCullMicros;
+
   /// Draws every layer opaque, without its `saveLayer` — for a
   /// benchmark to put a number on the layer's raster-thread cost.
   static bool debugForceOpaque = false;
@@ -144,6 +150,8 @@ class ExtrusionPainter {
     StyleLight? light,
   }) {
     final stopwatch = Stopwatch()..start();
+    final vertices0 = debugVertices;
+    _cullMicros = 0;
     if (_generation != generation) {
       _generation = generation;
       // The generation moves with every label publish and every display
@@ -181,7 +189,7 @@ class ExtrusionPainter {
       for (final order in _orders) {
         order.redraw(canvas);
       }
-      _count(stopwatch);
+      _count(stopwatch, vertices0);
       return;
     }
     _disposeLast();
@@ -226,14 +234,17 @@ class ExtrusionPainter {
         ty[i] = rect.top - worldCenter.dy + translate.dy;
         ts[i] = rect.width / layout.extent;
       }
-      order.cull(cameraZoom, worldCenter, hx, hy);
+      final culled = stopwatch.elapsedMicroseconds;
+      if (order.cull(cameraZoom, worldCenter, hx, hy)) {
+        _cullMicros += stopwatch.elapsedMicroseconds - culled;
+      }
       order.opacity = debugForceOpaque ? 1 : opacity;
       _drawLayer(order, styleZoom, d, ppm, maxLift, hx, hy);
       order.redraw(canvas);
     }
 
     developer.Timeline.finishSync();
-    _count(stopwatch);
+    _count(stopwatch, vertices0);
   }
 
   static int _byTile(ExtrusionTile a, ExtrusionTile b) {
@@ -322,11 +333,16 @@ class ExtrusionPainter {
     return true;
   }
 
-  void _count(Stopwatch stopwatch) {
+  /// This frame's candidate gathering, for [debugFrameCullMicros].
+  var _cullMicros = 0;
+
+  void _count(Stopwatch stopwatch, int vertices0) {
     final micros = stopwatch.elapsedMicroseconds;
     debugFrames++;
     debugMicros += micros;
     debugFrameLog?.add(micros);
+    debugFrameVertices?.add(debugVertices - vertices0);
+    debugFrameCullMicros?.add(_cullMicros);
   }
 
   /// What the last built frame was built for.
@@ -654,7 +670,9 @@ class _LayerOrder {
   /// viewport inside it, so that only goes on for half a level, until
   /// the window holds too much more than the screen; zooming out leaves
   /// it soon enough.
-  void cull(double cameraZoom, Offset worldCenter, double hx, double hy) {
+  ///
+  /// Returns whether it gathered them again.
+  bool cull(double cameraZoom, Offset worldCenter, double hx, double hy) {
     final window = _window;
     if (window != null && cameraZoom - window.zoom < 0.5) {
       final f = math.pow(2.0, window.zoom - cameraZoom).toDouble();
@@ -663,7 +681,7 @@ class _LayerOrder {
           cx + hx * f <= window.right &&
           cy - hy * f >= window.top &&
           cy + hy * f <= window.bottom) {
-        return;
+        return false;
       }
     }
     final pad = _margin * math.max(hx, hy);
@@ -697,6 +715,7 @@ class _LayerOrder {
       candidates[n++] = e;
     }
     candidateCount = n;
+    return true;
   }
 
   void add(ui.Vertices? vertices) {
