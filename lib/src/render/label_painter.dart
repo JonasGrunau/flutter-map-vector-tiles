@@ -2876,7 +2876,10 @@ class LabelPainter {
       final height = text.size.height * textScale;
       final textRect =
           Rect.fromCenter(center: anchor, width: total, height: height);
-      final pieces = math.max(1, (total / (2 * height)).ceil());
+      // At least an em per line: `text-line-height` 0 makes a glyph
+      // run 0 px high.
+      final pieces =
+          math.max(1, (total / (2 * math.max(height, fontSize))).ceil());
       final piece = total / pieces;
       if (debugLineGlyphsProbe != null) {
         debugLineGlyphsProbe!(instance.text, [
@@ -5055,10 +5058,10 @@ class _DrawableSymbol {
             size.height * textScale, glyph.angle));
       }
     } else if (text != null) {
-      quads.add(textAngle == 0
-          ? rotatedRect(textRect, textRect.center, 0)
-          : rotatedBox(symbol.screenAnchor, text.size.width * textScale,
-              text.size.height * textScale, textAngle));
+      // Turned about [textAnchor], as [draw] turns it: a box offset from
+      // the anchor (a straight line label recentred on its road, or
+      // moved by `text-offset` or `text-translate`) keeps that offset.
+      quads.add(rotatedRect(textRect, textAnchor, textAngle));
     }
     return quads;
   }

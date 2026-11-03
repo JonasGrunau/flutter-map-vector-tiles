@@ -267,6 +267,49 @@ void main() {
     glyphs.dispose();
   });
 
+  test('a line label with text-line-height 0 is placed', () async {
+    // Its glyph run is 0 px high, and cutting the straight label's
+    // collision boxes into pieces two lines long divided by that.
+    final glyphs = _source();
+    final painter = LabelPainter()..glyphs = glyphs;
+    final layer = _layer(layout: {
+      'symbol-placement': 'line',
+      'text-line-height': 0,
+    });
+    final path = SymbolPath(Float32List.fromList([10, 50, 190, 50]),
+        Float32List.fromList([0, 180]));
+    final transform = TileTransform(origin: Offset.zero, scale: 1, rotation: 0);
+    final symbols = [
+      PlacedSymbol(
+        instance: SymbolInstance(
+          layer: layer,
+          layerIndex: 0,
+          anchor: const Offset(100, 50),
+          angle: 0,
+          alongLine: true,
+          path: path,
+          pathDistance: 90,
+          text: 'ABCD',
+          iconName: null,
+          sortKey: 0,
+          properties: const {},
+          geometryType: 'LineString',
+          featureId: null,
+        ),
+        id: labelIdOf('ABCD'),
+        screenAnchor: const Offset(100, 50),
+        screenAngle: 0,
+        transform: transform,
+      ),
+    ];
+    await _load(painter, symbols);
+    final (drawn, _) = await _paint(painter, symbols);
+    expect(drawn, hasLength(1));
+    expect(painter.debugGlyphShapedTextCount, 1);
+    painter.dispose();
+    glyphs.dispose();
+  });
+
   test('text-justify auto aligns glyph lines to the variable anchor', () async {
     final glyphs = _source();
     final painter = LabelPainter()..glyphs = glyphs;

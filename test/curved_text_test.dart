@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
+import 'package:flutter_map_vector_tiles/src/render/hit_test.dart';
 import 'package:flutter_map_vector_tiles/src/render/label_painter.dart';
 import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart';
 import 'package:flutter_map_vector_tiles/src/style/expression.dart';
@@ -475,6 +476,28 @@ void main() {
         _lineSymbol(layer, street, 'Nebenweg'),
       ]);
       expect(placed, hasLength(2));
+    });
+
+    test('a query finds a straight label where it is drawn', () {
+      // Offset 2 em off a diagonal road, the text is drawn 28 px from
+      // its anchor: a query box turned about the anchor tested the
+      // empty road and missed the text.
+      final layer = _lineLayer(layout: {
+        'text-offset': [0, 2]
+      });
+      final diagonal = _path(const [Offset(0, 0), Offset(300, 300)]);
+      final symbol = _lineSymbol(layer, diagonal, 'Diagonalstraße');
+      final painter = LabelPainter();
+      addTearDown(painter.dispose);
+      expect(_paint([symbol], painter: painter), hasLength(1));
+      final glyphs = glyphsOf('Diagonalstraße');
+      var drawn = Offset.zero;
+      for (final (position, _) in glyphs) {
+        drawn += position / glyphs.length.toDouble();
+      }
+      expect((drawn - symbol.screenAnchor).distance, closeTo(28, 1));
+      expect(painter.hitTestLabels(HitArea([drawn])), [symbol.instance]);
+      expect(painter.hitTestLabels(HitArea([symbol.screenAnchor])), isEmpty);
     });
   });
 
