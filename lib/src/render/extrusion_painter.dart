@@ -40,6 +40,11 @@ class ExtrusionPainter {
   static int debugMicros = 0;
   static int debugVertices = 0;
 
+  /// Re-sorts of the buildings on offer (a new set of data tiles), and
+  /// the time they took, counted in [debugMicros] too.
+  static int debugRebuilds = 0;
+  static int debugRebuildMicros = 0;
+
   /// When set, every painted frame appends its UI-thread microseconds
   /// here. For benchmarks; null otherwise, so nothing accumulates.
   static List<int>? debugFrameLog;
@@ -132,10 +137,13 @@ class ExtrusionPainter {
       // in any order, and the same buildings must compare equal.
       final tiles = layouts().toList(growable: false)..sort(_byTile);
       if (!_sameTiles(tiles, _tiles)) {
+        final since = stopwatch.elapsedMicroseconds;
         _disposeLast();
         _tiles = tiles;
         _orders = _order(tiles);
         _tableLight = null;
+        debugRebuilds++;
+        debugRebuildMicros += stopwatch.elapsedMicroseconds - since;
       }
     }
     if (_orders.isEmpty) return;

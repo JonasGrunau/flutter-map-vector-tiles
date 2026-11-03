@@ -202,6 +202,8 @@ class _BenchPageState extends State<BenchPage>
   var _build = <int>[];
   var _raster = <int>[];
   var _extrusionVertices0 = 0;
+  var _extrusionRebuilds0 = 0;
+  var _extrusionRebuildUs0 = 0;
 
   // BUILD split by whether the frame ran a label placement pass, matched
   // to its FrameTiming by engine frame number — placing frames are where
@@ -1270,6 +1272,8 @@ class _BenchPageState extends State<BenchPage>
     _zoom.value = 0;
     ExtrusionPainter.debugFrameLog = <int>[];
     _extrusionVertices0 = ExtrusionPainter.debugVertices;
+    _extrusionRebuilds0 = ExtrusionPainter.debugRebuilds;
+    _extrusionRebuildUs0 = ExtrusionPainter.debugRebuildMicros;
     _recordStart = DateTime.now();
     _recording = true;
     unawaited(_zoom.repeat(reverse: true));
@@ -1398,8 +1402,12 @@ class _BenchPageState extends State<BenchPage>
     final extrusion = ExtrusionPainter.debugFrameLog;
     if (extrusion != null && extrusion.isNotEmpty) {
       final vertices = ExtrusionPainter.debugVertices - _extrusionVertices0;
+      final rebuilds = ExtrusionPainter.debugRebuilds - _extrusionRebuilds0;
+      final rebuildUs =
+          ExtrusionPainter.debugRebuildMicros - _extrusionRebuildUs0;
       debugPrint('BENCH[$_label]   ${stats("EXTRUDE", extrusion)} '
-          'vertices/frame=${vertices ~/ extrusion.length}');
+          'vertices/frame=${vertices ~/ extrusion.length} '
+          'rebuilds=$rebuilds (${ms(rebuildUs)}ms)');
     }
     // The label pass split: full placement passes (and how many frames ran
     // one), replayed frames, the per-frame candidate sort, and paragraph
