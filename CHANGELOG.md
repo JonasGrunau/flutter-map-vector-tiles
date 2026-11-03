@@ -2,10 +2,9 @@
 
 ## Unreleased
 
-Opt-in 3D buildings: `fill-extrusion` layers drawn with their height, the
-way MapLibre GL draws them when the camera looks straight down, and street names drawn straight or on a smooth curve, no longer crooked.
-
-
+Opt-in 3D buildings, drawn the way MapLibre GL draws them when the
+camera looks straight down, and street names drawn straight or on a
+smooth curve, no longer crooked.
 
 - ✨ **3D buildings**, opt-in with `VectorTileLayer.extrusionMode:
   ExtrusionMode.perspective`: `fill-extrusion` layers draw as MapLibre
