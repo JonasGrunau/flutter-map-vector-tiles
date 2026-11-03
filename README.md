@@ -587,8 +587,16 @@ from MapLibre:
 
 The per-frame cost is UI-thread time in proportion to the buildings on
 screen: most at style zoom 14, where a phone screen shows the most of
-them. `extrusions: ExtrusionMode.flat` draws them flat in the tile
-images instead, at no per-frame cost.
+them. On a Nothing Phone (1), Liberty over central Munich, zoom sweeps
+against the flat drawing of the release before: at style zoom 14 the
+pass takes 2.4–4.0 ms a frame (median, 33k vertices) and puts 0.5–1.2
+ms on the 90th-percentile UI frame; at 16 it takes 0.9 ms and at 18
+0.3 ms, and the frames get no slower, as the tiles no longer draw the
+buildings. With labels off the phone runs the UI thread at lower
+clocks, and the same pass at zoom 14 takes 8.8 ms: fast sweeps there
+fell from 59.5 to 43.6 frames a second. `extrusions:
+ExtrusionMode.flat` draws them flat in the tile images instead, at no
+per-frame cost.
 
 **Expressions.** Every operator of the current MapLibre style spec
 compiles, as do legacy filters, legacy `{stops}` functions (zoom,

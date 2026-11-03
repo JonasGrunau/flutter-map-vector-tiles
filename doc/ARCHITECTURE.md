@@ -1208,7 +1208,14 @@ shared with a neighbour, the common case of terraced houses and
 building parts, is handled by its raised floor.
 
 On a Nothing Phone (1) the pass costs most at style zoom 14, where the
-screen holds the most buildings (see `bench/`'s `EXTRUDE` line). Patterned
+screen holds the most buildings: 2.4–4.0 ms a frame (median, 33k
+vertices, Liberty over central Munich), 0.5–1.2 ms on the 90th
+percentile UI frame against flat buildings; 0.9 ms at 16, 0.3 ms at 18,
+where cheaper tile rasters make up for it (`bench/`'s `EXTRUDE` line).
+With labels off it costs 2–4× as much: the UI thread runs at lower
+clocks when the rest of the frame is light. The first version re-sorted
+every building on every label publish — most frames of a fast sweep —
+and cost 9 ms a frame; the set of layouts is compared first now. Patterned
 extrusions stay flat in the tile images (a pattern on a wall would need
 texture coordinates per face), and so does everything under
 `LabelMode.tile`, whose labels would end up under the buildings.
