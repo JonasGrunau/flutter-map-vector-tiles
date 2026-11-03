@@ -594,9 +594,14 @@ ms on the 90th-percentile UI frame; at 16 it takes 0.9 ms and at 18
 0.3 ms, and the frames get no slower, as the tiles no longer draw the
 buildings. With labels off the phone runs the UI thread at lower
 clocks, and the same pass at zoom 14 takes 8.8 ms: fast sweeps there
-fell from 59.5 to 43.6 frames a second. `extrusions:
+fell from 59.5 to 43.6 frames a second. On an iPhone 15 Pro Max
+frames delivered stayed at 99–100 %. The buildings' meshes are cut
+while a tile is decoded and kept with it — 65–550 KB a tile in
+central Munich, counted against `memoryCacheMaxBytes`, so the same
+budget holds fewer decoded tiles; on the iPhone the app's memory at
+the first screen rose by about 20 MB. `extrusions:
 ExtrusionMode.flat` draws them flat in the tile images instead, at no
-per-frame cost.
+per-frame cost and without the meshes.
 
 **Expressions.** Every operator of the current MapLibre style spec
 compiles, as do legacy filters, legacy `{stops}` functions (zoom,
