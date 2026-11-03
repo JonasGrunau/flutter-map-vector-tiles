@@ -11,7 +11,7 @@
 /// | Look | footprints in the extrusion colour, no height | roofs lean away from the screen centre, walls show on the side facing it, shaded by the style's `light` |
 /// | Where | drawn into the tile images | drawn over the tile images, every frame the map moves |
 /// | Per-frame cost | none | UI-thread work in proportion to the buildings on screen |
-/// | Above them | the style's own order | labels only — every other layer over an extrusion in the style draws beneath it |
+/// | Above them | the style's own order | the style's own order, as MapLibre has it: every layer above the first extrusion layer draws over the buildings, roofs included, and the ones below it beneath them |
 ///
 /// Patterned extrusions (`fill-extrusion-pattern`) are drawn flat in
 /// either mode, and so is everything in `LabelMode.tile`, whose labels

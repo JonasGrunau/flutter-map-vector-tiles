@@ -1138,7 +1138,23 @@ near plane, `H / 50` in front of the camera, caps the lift.
 The lean changes with every pan and zoom, so the buildings cannot be
 baked into the tile images; they are drawn after them every frame, in
 the heatmap's slot, by `ExtrusionPainter`, and the rasterizer leaves
-those layers out of the images (`flatExtrusions: false`). Three stages:
+those layers out of the images (`flatExtrusions: false`). What the
+style puts above them has to come after them too: MapLibre draws every
+layer above its first 3D layer without a depth test, over the
+buildings (`opaquePassCutoff` in its painter). So a tile's recording
+splits at the first 3D layer (`_overCut`): the layers before it into
+the tile's image, the ones after it — bar labels and heatmaps — into a
+second one, `_DisplayTile.over`, drawn after the buildings
+(`recordSlice(end:)`, then a second recording from there). Only tiles
+where those layers draw anything get one: in Liberty, three boundary
+layers. The result cache keeps it beside the image and counts its
+bytes; a retained level's over image is clipped out wherever a current
+tile has faded in, because unlike the geometry beneath it it is mostly
+transparent and the previous level's lines would show through.
+Queries follow the same order. Google Maps draws its buildings over
+all map geometry and lets an overlay ask to be drawn over them
+instead; following the style is MapLibre's answer, and the one a
+style can control. Three stages:
 
 - **Mesh, on the worker** (`pipeline/extrusion_mesh.dart`). For every
   source layer an extrusion layer reads (`PrepareInput.extrusionLayers`),

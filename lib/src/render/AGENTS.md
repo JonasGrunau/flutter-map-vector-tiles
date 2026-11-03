@@ -63,7 +63,10 @@ for frames with no per-frame label work in them.
   (`ExtrusionMode.perspective` with screen labels): the lean changes
   with every pan, so `ExtrusionPainter` draws them every frame and the
   rasterizer skips non-patterned extrusion layers (`flatExtrusions:
-  false`). Three things keep them right: the mesh is cut on the worker
+  false`). The layer splits each tile's recording at the first 3D
+  layer (`recordSlice(end:)`): what the style puts above it goes into a
+  second image, `_DisplayTile.over`, drawn over the buildings as
+  MapLibre draws it. Three things keep them right: the mesh is cut on the worker
   (no triangulation on the UI isolate), a layout is shared per *data*
   tile by identity (so overzoomed display tiles never draw a building
   twice), and a retained level offers buildings only where the current

@@ -23,53 +23,82 @@ const _mid = _size ~/ 2;
 
 /// One building, 100..130 px right of the centre and 50..80 px below
 /// it, `height` 200: its roof lands at 112..146 × 56..90.
-Uint8List _buildingTile() => MvtTileBuilder()
-    .layer('building', extent: extent)
-    .feature(type: 3, id: 7, properties: {
-      'height': 200,
-    }, geometry: [
-      cmd(1, 1), zig(1600), zig(800), //
-      cmd(2, 3), zig(480), zig(0), zig(0), zig(480), zig(-480), zig(0),
-      cmd(7, 1),
-    ])
-    .done()
-    .build();
+///
+/// With [road], also a road (id 9) running from the screen centre 200
+/// px right, 85 px below it: across the roof where it leans past the
+/// footprint, and across open ground on either side.
+Uint8List _buildingTile({bool road = false}) {
+  final builder = MvtTileBuilder()
+      .layer('building', extent: extent)
+      .feature(type: 3, id: 7, properties: {
+    'height': 200,
+  }, geometry: [
+    cmd(1, 1), zig(1600), zig(800), //
+    cmd(2, 3), zig(480), zig(0), zig(0), zig(480), zig(-480), zig(0),
+    cmd(7, 1),
+  ]).done();
+  if (road) {
+    builder.layer('road', extent: extent).feature(type: 2, id: 9, geometry: [
+      cmd(1, 1), zig(0), zig(1360), //
+      cmd(2, 1), zig(3200), zig(0),
+    ]).done();
+  }
+  return builder.build();
+}
 
 class _OneTile extends CountingProvider {
+  _OneTile({this.road = false});
+
+  final bool road;
+
   @override
-  String get cacheKey => 'extrusion-one-tile';
+  String get cacheKey =>
+      road ? 'extrusion-one-tile-road' : 'extrusion-one-tile';
 
   @override
   Future<TileResponse> load(TileKey tile,
       {CancellationToken? cancellation}) async {
     note(tile);
     return tile == _key
-        ? TileResponseData(_buildingTile())
+        ? TileResponseData(_buildingTile(road: road))
         : TileResponseData(
             MvtTileBuilder().layer('building', extent: extent).done().build());
   }
 }
 
-Theme _theme({double opacity = 1}) => const ThemeReader().read({
-      'layers': [
-        {
-          'id': 'bg',
-          'type': 'background',
-          'paint': {'background-color': '#0000ff'},
+/// The building in white over blue; with [road] `'above'` or
+/// `'below'`, a 4 px red road layer over or under the building layer.
+Theme _theme({double opacity = 1, String? road}) {
+  const roadLayer = {
+    'id': 'road',
+    'type': 'line',
+    'source': 's',
+    'source-layer': 'road',
+    'paint': {'line-color': '#ff0000', 'line-width': 4},
+  };
+  return const ThemeReader().read({
+    'layers': [
+      {
+        'id': 'bg',
+        'type': 'background',
+        'paint': {'background-color': '#0000ff'},
+      },
+      if (road == 'below') roadLayer,
+      {
+        'id': 'b3d',
+        'type': 'fill-extrusion',
+        'source': 's',
+        'source-layer': 'building',
+        'paint': {
+          'fill-extrusion-color': '#ffffff',
+          'fill-extrusion-height': ['get', 'height'],
+          'fill-extrusion-opacity': opacity,
         },
-        {
-          'id': 'b3d',
-          'type': 'fill-extrusion',
-          'source': 's',
-          'source-layer': 'building',
-          'paint': {
-            'fill-extrusion-color': '#ffffff',
-            'fill-extrusion-height': ['get', 'height'],
-            'fill-extrusion-opacity': opacity,
-          },
-        },
-      ],
-    });
+      },
+      if (road == 'above') roadLayer,
+    ],
+  });
+}
 
 Widget _app(
   VectorTileProvider provider, {
@@ -120,6 +149,7 @@ Future<Uint8List> _shot(WidgetTester tester) async {
 }
 
 bool _blue((int, int, int) c) => c.$1 < 30 && c.$2 < 30 && c.$3 > 220;
+bool _red((int, int, int) c) => c.$1 > 220 && c.$2 < 30 && c.$3 < 30;
 bool _white((int, int, int) c) => c.$1 > 245 && c.$2 > 245 && c.$3 > 245;
 
 /// A shaded wall: grey, well below the roof's white.
@@ -207,6 +237,52 @@ void main() {
         (px) => _white(_rgb(px, -85, 140)));
     expect(_white(_rgb(px, -85, 140)), isTrue);
     expect(_blue(_rgb(px, -45, 99)), isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a layer above the 3D one draws over the buildings',
+      (tester) async {
+    // As in MapLibre: everything the style puts above its first 3D
+    // layer is drawn over the buildings, roofs included.
+    final controller = VectorTileLayerController();
+    final px = await open(
+        tester,
+        _app(_OneTile(road: true),
+            theme: _theme(road: 'above'), controller: controller),
+        (px) => _white(_rgb(px, 120, 70)) && _red(_rgb(px, 140, 85)));
+    expect(_red(_rgb(px, 140, 85)), isTrue, reason: 'over the roof');
+    expect(_red(_rgb(px, 60, 85)), isTrue, reason: 'over the ground');
+    expect(_white(_rgb(px, 140, 75)), isTrue, reason: 'the roof beside it');
+    // And a query names it first, the building it lies on after it.
+    expect([
+      for (final f in controller
+          .queryRenderedFeatures(const Offset(_mid + 140.5, _mid + 85.5)))
+        f.id,
+    ], [
+      9,
+      7
+    ]);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a layer below the 3D one goes under the buildings',
+      (tester) async {
+    final controller = VectorTileLayerController();
+    final px = await open(
+        tester,
+        _app(_OneTile(road: true),
+            theme: _theme(road: 'below'), controller: controller),
+        (px) => _white(_rgb(px, 140, 85)) && _red(_rgb(px, 60, 85)));
+    expect(_white(_rgb(px, 140, 85)), isTrue, reason: 'covered by the roof');
+    expect(_red(_rgb(px, 60, 85)), isTrue, reason: 'on the ground');
+    expect([
+      for (final f in controller
+          .queryRenderedFeatures(const Offset(_mid + 140.5, _mid + 85.5)))
+        f.id,
+    ], [
+      7,
+      9
+    ]);
     await tester.pumpWidget(const SizedBox());
   });
 

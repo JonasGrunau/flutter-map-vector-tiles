@@ -400,12 +400,27 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     if (!identical(_extrusionTheme, theme)) {
       _extrusionTheme = theme;
       _extrusionLayersMemo = ExtrusionLayouter.layersOf(theme);
+      _firstExtrusionIndex = _extrusionLayersMemo.isEmpty
+          ? theme.layers.length
+          : theme.layers.indexOf(_extrusionLayersMemo.first);
     }
     return _extrusionLayersMemo;
   }
 
   Theme? _extrusionTheme;
   var _extrusionLayersMemo = const <FillThemeLayer>[];
+  var _firstExtrusionIndex = 0;
+
+  /// Where a tile's recording splits, as a layer index: the first 3D
+  /// layer when the buildings are 3D, the layer count (no split) when
+  /// they are flat. What the style puts from there on — bar labels and
+  /// heatmaps, which have passes of their own — goes into the tile's
+  /// [_DisplayTile.over] image and is drawn over the buildings, as
+  /// MapLibre draws every layer above its first 3D layer (painter's
+  /// order, no depth test).
+  int get _overCut => _perspectiveExtrusions
+      ? _firstExtrusionIndex
+      : widget.theme.layers.length;
 
   /// Whether `fill-extrusion` layers are drawn as 3D buildings over the
   /// tiles rather than flat into them.
@@ -1410,7 +1425,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     final toRemove = <TileKey>[];
     _retained.forEach((key, tile) {
       if (allReady ||
-          tile.image == null ||
+          !tile.hasImagery ||
           !displayTileRect(key, camera.zoom).overlaps(viewport)) {
         toRemove.add(key);
       }
@@ -1453,7 +1468,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// decides if a cache-served tile has anything to cross-fade over.
   bool _coveredByRetained(TileKey key) {
     for (final entry in _retained.entries) {
-      if (entry.value.image != null && tilesOverlap(entry.key, key)) {
+      if (entry.value.hasImagery && tilesOverlap(entry.key, key)) {
         return true;
       }
     }
@@ -1577,6 +1592,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         final owesShaping = cached.symbols.isNotEmpty;
         tile.setImage(
           image: cached.image?.clone(),
+          over: cached.over?.clone(),
           provisional: false,
           // A cached result fades in only when retained imagery lies
           // beneath it to cross-fade over. With nothing beneath, the
@@ -1972,7 +1988,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           (queuedSymbols != null && !queuedSymbols.provisional) ||
           (parked != null && !parked.provisional) ||
           (!tile.isProvisional &&
-              (tile.image != null ||
+              (tile.hasImagery ||
                   (tile.symbols.isNotEmpty && !tile.symbolsProvisional)))) {
         job.dispose();
         return;
@@ -2147,27 +2163,43 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       job.resetRecording();
       job.recordedPixelRatio = _devicePixelRatio;
     }
-    final slice = TileRasterizer.recordSlice(
-      theme: widget.theme,
-      data: data,
-      styleZoom: styleZoom,
-      devicePixelRatio: _devicePixelRatio,
-      patterns: _patternResolver,
-      from: job.layerCursor,
-      outOfBudget: () => tick.elapsedMicroseconds >= _pumpBudget,
-      flatExtrusions: !_perspectiveExtrusions,
-    );
-    if (slice.picture case final picture?) job.geometryParts.add(picture);
-    job.layerCursor = slice.next;
-    if (slice.next < widget.theme.layers.length) {
-      developer.Timeline.finishSync();
-      return false;
+    // Up to the cut into the tile's image, from there on into its over
+    // image (see [_overCut]); one tick may record across the cut.
+    final layerCount = widget.theme.layers.length;
+    final cut = _overCut;
+    while (true) {
+      final over = job.layerCursor >= cut;
+      final slice = TileRasterizer.recordSlice(
+        theme: widget.theme,
+        data: data,
+        styleZoom: styleZoom,
+        devicePixelRatio: _devicePixelRatio,
+        patterns: _patternResolver,
+        from: job.layerCursor,
+        end: over ? layerCount : cut,
+        outOfBudget: () => tick.elapsedMicroseconds >= _pumpBudget,
+        flatExtrusions: !_perspectiveExtrusions,
+      );
+      if (slice.picture case final picture?) {
+        (over ? job.overParts : job.geometryParts).add(picture);
+      }
+      job.layerCursor = slice.next;
+      if (slice.next >= layerCount) break;
+      if (slice.next < cut || tick.elapsedMicroseconds >= _pumpBudget) {
+        developer.Timeline.finishSync();
+        return false;
+      }
     }
     final geometry = TileRasterizer.compose([...job.geometryParts]);
     job.geometryParts.clear();
+    final overGeometry = TileRasterizer.compose([...job.overParts]);
+    job.overParts.clear();
 
     final symbolsFollow = !job.keepSymbols && _symbolsFollow(tile, job.sources);
     if (symbolsFollow && _tileLabels) {
+      // Never split: tile labels draw the buildings flat (see
+      // [_perspectiveFor]).
+      overGeometry?.dispose();
       // The labels go into the same image, so nothing is published
       // until they are drawn: the geometry is only recorded here, and
       // the symbol phase rasterizes it together with them — one
@@ -2193,10 +2225,14 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     final image = geometry == null
         ? null
         : TileRasterizer.toImage(geometry, _devicePixelRatio);
+    final over = overGeometry == null
+        ? null
+        : TileRasterizer.toImage(overGeometry, _devicePixelRatio);
     developer.Timeline.finishSync();
 
     tile.setImage(
       image: image,
+      over: over,
       provisional: job.provisional,
       // With fades disabled no ticker runs to release an underlay, so
       // never create one — the swap is instant either way.
@@ -2329,6 +2365,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       final labelHits = widget.controller == null ? null : <LabelHit>[];
       tile.setImage(
         image: _rasterizeWithLabels(job, symbols, styleZoom, labelHits),
+        // Tile labels draw the buildings flat: nothing goes over them.
+        over: null,
         provisional: job.provisional,
         fadeIn: job.fadeIn && widget.tileFadeDuration > Duration.zero,
         symbolsPending: false,
@@ -2489,6 +2527,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _resultCache?.put(
       tile.key,
       image: tile.image?.clone(),
+      over: tile.over?.clone(),
       symbols: symbols,
       heatmap: tile.heatmap ?? const [],
       extrusions: tile.extrusions ?? const [],
@@ -2969,7 +3008,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           worldCenter.dy + d.dx * sinR + d.dy * cosR);
     });
 
-    // 3D buildings draw over every tile image, below the labels.
+    // 3D buildings draw over the tile images, below the labels and the
+    // layers the style puts above them (see [_overCut]).
     final perspective = _perspectiveExtrusions;
     final buildings = perspective
         ? FeatureQuery.hitExtrusions(
@@ -3032,13 +3072,23 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       add(instance.layer, instance.featureId, instance.properties,
           instance.geometryType);
     }
+    geometry.sort(topmostFirst);
+    final cut = _overCut;
+    for (final (index, _, hit) in geometry) {
+      if (index >= cut) {
+        add(hit.layer, hit.feature.id, hit.feature.properties,
+            hit.feature.geometryType);
+      }
+    }
     for (final hit in buildings) {
       add(hit.layer, hit.feature.id, hit.feature.properties,
           hit.feature.geometryType);
     }
-    for (final (_, _, hit) in geometry..sort(topmostFirst)) {
-      add(hit.layer, hit.feature.id, hit.feature.properties,
-          hit.feature.geometryType);
+    for (final (index, _, hit) in geometry) {
+      if (index < cut) {
+        add(hit.layer, hit.feature.id, hit.feature.properties,
+            hit.feature.geometryType);
+      }
     }
     return results;
   }
@@ -3230,6 +3280,10 @@ class _RenderJob {
   int layerCursor = 0;
   final List<ui.Picture> geometryParts = [];
 
+  /// The slices recorded past [_VectorTileLayerState._overCut], for the
+  /// tile's over image; owned like [geometryParts].
+  final List<ui.Picture> overParts = [];
+
   /// The pixel ratio the recorded slices were drawn at. A later slice at
   /// a different one would not stack onto them, so the recording starts
   /// over instead. The symbol phase inherits it: [LabelMode.tile]
@@ -3240,10 +3294,11 @@ class _RenderJob {
   /// Drops the slices recorded so far, for a recording that has to
   /// start over.
   void resetRecording() {
-    for (final part in geometryParts) {
+    for (final part in [...geometryParts, ...overParts]) {
       part.dispose();
     }
     geometryParts.clear();
+    overParts.clear();
     layerCursor = 0;
   }
 
@@ -3305,6 +3360,19 @@ class _DisplayTile {
   /// swap (background refresh, recovered source) cross-fades instead of
   /// dipping to the background colour.
   ui.Image? underlay;
+
+  /// With 3D buildings only: what the style puts above its first 3D
+  /// layer, drawn over the buildings (see `_overCut`). Null when that
+  /// draws nothing on this tile — Liberty's boundary lines are all it
+  /// has there — so most tiles have none.
+  ui.Image? over;
+
+  /// [underlay]'s counterpart for [over], under the same fade.
+  ui.Image? overUnderlay;
+
+  /// Whether the tile has rasterized imagery, below the buildings or
+  /// over them.
+  bool get hasImagery => image != null || over != null;
   List<SymbolInstance> symbols = const [];
 
   /// The tile's heatmap points, per heatmap layer — null until its
@@ -3370,28 +3438,35 @@ class _DisplayTile {
 
   void setImage({
     required ui.Image? image,
+    required ui.Image? over,
     required bool provisional,
     required bool fadeIn,
     required bool symbolsPending,
   }) {
     final previous = this.image;
+    final previousOver = this.over;
     underlay?.dispose();
+    overUnderlay?.dispose();
     if (!provisional && fadeIn && previous != null && image != null) {
       // A fading raster is replacing visible imagery: keep the old
       // pixels underneath for the duration of the fade.
       underlay = previous;
+      overUnderlay = previousOver;
     } else {
       underlay = null;
       previous?.dispose();
+      overUnderlay = null;
+      previousOver?.dispose();
     }
     this.image = image;
+    this.over = over;
     isProvisional = provisional;
     this.symbolsPending = symbolsPending;
     // A final tile with no image cannot be classified until its symbol
     // phase reports back — see [setSymbols].
     state = provisional
         ? _TileState.loading
-        : (image != null
+        : (hasImagery
             ? _TileState.ready
             : (symbolsPending
                 ? _TileState.loading
@@ -3418,7 +3493,7 @@ class _DisplayTile {
     symbolsPending = false;
     if (!isProvisional && state == _TileState.loading) {
       // Deferred classification of a final, image-less tile.
-      state = (image == null && symbols.isEmpty)
+      state = (!hasImagery && symbols.isEmpty)
           ? _TileState.empty
           : _TileState.ready;
     }
@@ -3428,6 +3503,8 @@ class _DisplayTile {
   void disposeUnderlay() {
     underlay?.dispose();
     underlay = null;
+    overUnderlay?.dispose();
+    overUnderlay = null;
   }
 
   double fadeProgress(DateTime now, Duration duration) =>
@@ -3440,6 +3517,10 @@ class _DisplayTile {
     image = null;
     underlay?.dispose();
     underlay = null;
+    over?.dispose();
+    over = null;
+    overUnderlay?.dispose();
+    overUnderlay = null;
     symbols = const [];
     heatmap = null;
     extrusions = null;
@@ -3502,7 +3583,8 @@ class _VectorMapPainter extends CustomPainter {
     }
 
     // 3. 3D buildings, over the geometry: they lean with the camera, so
-    // they cannot be drawn into the tile images.
+    // they cannot be drawn into the tile images. Then what the style
+    // puts above them, each tile's over image.
     if (state._perspectiveExtrusions) {
       state._extrusionPainter.paint(
         canvas,
@@ -3516,6 +3598,7 @@ class _VectorMapPainter extends CustomPainter {
         rotation: camera.rotationRad,
         light: state.widget.theme.light,
       );
+      _drawOverImages(canvas, now, worldCenter);
     }
 
     // 4. Heatmap layers, over all the geometry: their density spans
@@ -3549,12 +3632,51 @@ class _VectorMapPainter extends CustomPainter {
     ..filterQuality = FilterQuality.medium
     ..isAntiAlias = false;
 
+  /// The tiles' over images (see [_DisplayTile.over]), in the order
+  /// their geometry was drawn: retained levels, then the current one.
+  /// The geometry beneath is opaque where a style has a background, so
+  /// a current tile covers the retained ones under it; over images are
+  /// mostly transparent, so a retained tile's is cut out wherever a
+  /// current tile has faded in — the previous level's boundary lines
+  /// would otherwise stay on screen beside the new ones.
+  void _drawOverImages(Canvas canvas, DateTime now, Offset worldCenter) {
+    final fade = state.widget.tileFadeDuration;
+    if (state._retained.isNotEmpty) {
+      final retained = state._retained.entries.toList()
+        ..sort((a, b) => a.key.z.compareTo(b.key.z));
+      for (final MapEntry(:key, value: tile) in retained) {
+        if (tile.over == null) continue;
+        canvas.save();
+        for (final current in state._tiles.values) {
+          if (current.hasImagery &&
+              tilesOverlap(key, current.key) &&
+              current.fadeProgress(now, fade) >= 1) {
+            canvas.clipRect(
+                displayTileRect(current.key, camera.zoom).shift(-worldCenter),
+                clipOp: ui.ClipOp.difference,
+                doAntiAlias: false);
+          }
+        }
+        _drawTileImage(canvas, tile, 1, worldCenter, over: true);
+        canvas.restore();
+      }
+    }
+    for (final tile in state._tiles.values) {
+      if (tile.over == null) continue;
+      _drawTileImage(canvas, tile, tile.fadeProgress(now, fade), worldCenter,
+          over: true);
+    }
+  }
+
+  /// Draws [tile]'s image — or, with [over], its over image — at
+  /// [opacity], over its underlay while it fades in.
   void _drawTileImage(
-      Canvas canvas, _DisplayTile tile, double opacity, Offset worldCenter) {
-    final image = tile.image;
+      Canvas canvas, _DisplayTile tile, double opacity, Offset worldCenter,
+      {bool over = false}) {
+    final image = over ? tile.over : tile.image;
     if (image == null) return;
     final rect = displayTileRect(tile.key, camera.zoom).shift(-worldCenter);
-    final underlay = tile.underlay;
+    final underlay = over ? tile.overUnderlay : tile.underlay;
     if (underlay != null && opacity < 1) {
       // The previous raster keeps covering the tile while its
       // replacement fades in — a swap never dips to the background.

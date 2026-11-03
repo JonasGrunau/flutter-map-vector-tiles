@@ -576,9 +576,12 @@ JS over central Munich at style zoom 15–17, the screenshots differ by
 ([compare/RESULTS.md](compare/RESULTS.md#3d-buildings)). Where it
 differs from MapLibre:
 
-- the buildings draw above every other geometry layer, wherever the
-  style puts them, and below the labels. In most styles only boundary
-  lines sit above them;
+- what the style puts above its first extrusion layer draws over the
+  buildings, roofs included, as in MapLibre: Liberty's boundary lines,
+  or a route or highlight an app adds on top. The difference is in
+  between: the buildings of all extrusion layers are drawn together,
+  so a layer between two of them draws over both, and a heatmap draws
+  over the buildings wherever the style puts it;
 - painter's order stands in for MapLibre's depth buffer: where a lower
   roof leans over a detached taller building through a gap narrower
   than the lean, or one part of a concave building over another, the

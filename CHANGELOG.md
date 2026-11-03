@@ -17,9 +17,11 @@ way MapLibre GL draws them when the camera looks straight down, and street names
   root `light` (MapLibre's default when the style has none), with
   `fill-extrusion-vertical-gradient`, and `fill-extrusion-opacity`
   composites the layer once, as MapLibre does. The buildings are drawn
-  over the tile images on every frame the map moves, below the labels;
-  rendered-feature queries find a building where it is drawn, roof and
-  walls included. A wall with another building right in front of it —
+  over the tile images on every frame the map moves, and what the style
+  puts above them — boundary lines, a route or highlight an app adds on
+  top — over the buildings, as MapLibre has it; rendered-feature
+  queries find a building where it is drawn, roof and walls included,
+  and in that order. A wall with another building right in front of it —
   a terraced neighbour, the outline a taller building part rises out
   of — shows only above that building's roof, as MapLibre's depth
   buffer would have it. An extrusion colour that reads `feature-state`
