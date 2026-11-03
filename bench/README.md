@@ -216,6 +216,7 @@ All via `--dart-define`. Zooms and coordinates are integers because
 | `BENCH_WATCH` | — | stability/manual: regexp over continuity keys whose every rejection is printed as a `WATCH` line |
 | `BENCH_LOG_GONE` | `false` | stability/manual: print a `GONE` line for every on-screen label that stops drawing |
 | `BENCH_HALO_BLUR` | `true` | `false` draws text halos crisp, ignoring `text-halo-blur` (`LabelPainter.debugHaloBlur`), so an A/B against the default puts a number on the blur's raster cost |
+| `BENCH_EXTRUDE` | `perspective` | `flat` draws `fill-extrusion` layers flat into the tiles (`ExtrusionMode.flat`); `opaque` draws the 3D buildings without their opacity `saveLayer` (`ExtrusionPainter.debugForceOpaque`). An A/B against the default costs the per-frame 3D pass, or the layer's raster-thread share |
 
 The phase matrix (speed × labels on/off × cache budget × cold/warm) is the
 `_phases` list in `lib/main.dart`. The labels-off arm is a control, not filler:
