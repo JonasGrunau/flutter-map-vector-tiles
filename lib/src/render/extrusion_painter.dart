@@ -77,6 +77,9 @@ class ExtrusionPainter {
   int? _generation;
   List<_LayerOrder> _orders = const [];
 
+  /// What [_orders] were sorted from.
+  List<ExtrusionTile> _tiles = const [];
+
   /// The light the colour tables were filled under, and the light and
   /// rotation [_levels] were worked out for.
   ExtrusionLight? _tableLight;
@@ -98,6 +101,7 @@ class ExtrusionPainter {
     _disposeLast();
     _generation = null;
     _orders = const [];
+    _tiles = const [];
     _tableLight = null;
     _levelsLight = null;
   }
@@ -117,9 +121,18 @@ class ExtrusionPainter {
     final stopwatch = Stopwatch()..start();
     if (_generation != generation) {
       _generation = generation;
-      _disposeLast();
-      _orders = _order(layouts());
-      _tableLight = null;
+      // The generation moves with every label publish and every display
+      // tile, most of which leave the data tiles — and so the buildings
+      // — as they were: sort only when they changed.
+      // In a fixed order: the display tiles they come from come and go
+      // in any order, and the same buildings must compare equal.
+      final tiles = layouts().toList(growable: false)..sort(_byTile);
+      if (!_sameTiles(tiles, _tiles)) {
+        _disposeLast();
+        _tiles = tiles;
+        _orders = _order(tiles);
+        _tableLight = null;
+      }
     }
     if (_orders.isEmpty) return;
     final evaluated = ExtrusionLight.of(light, styleZoom);
@@ -191,6 +204,34 @@ class ExtrusionPainter {
 
     developer.Timeline.finishSync();
     _count(stopwatch);
+  }
+
+  static int _byTile(ExtrusionTile a, ExtrusionTile b) {
+    final x = a.layout, y = b.layout;
+    if (x.tile.z != y.tile.z) return x.tile.z - y.tile.z;
+    if (x.tile.x != y.tile.x) return x.tile.x - y.tile.x;
+    if (x.tile.y != y.tile.y) return x.tile.y - y.tile.y;
+    final byLayer = x.layer.id.compareTo(y.layer.id);
+    if (byLayer != 0) return byLayer;
+    // The same data tile and layer twice: two zooms' layouts.
+    return (x.zoom ?? -1) - (y.zoom ?? -1);
+  }
+
+  static bool _sameTiles(List<ExtrusionTile> a, List<ExtrusionTile> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      final x = a[i], y = b[i];
+      if (!identical(x.layout, y.layout) || x.side != y.side) return false;
+      final xs = x.skip, ys = y.skip;
+      if (xs == null || ys == null) {
+        if (!identical(xs, ys)) return false;
+        continue;
+      }
+      for (var j = 0; j < xs.length; j++) {
+        if (xs[j] != ys[j]) return false;
+      }
+    }
+    return true;
   }
 
   void _count(Stopwatch stopwatch) {
@@ -447,7 +488,7 @@ class _LayerOrder {
   final Float64List tx, ty, scale;
 
   /// Per layout, its colour classes' colours under the current light
-  /// (`ExtrusionShading.fill`).
+  /// (`ExtrusionLayout.tableFor`).
   final List<Int32List> tables;
 
   /// The entries whose footprints lie in [_window], ascending — so in
@@ -477,10 +518,7 @@ class _LayerOrder {
       : tx = Float64List(layouts.length),
         ty = Float64List(layouts.length),
         scale = Float64List(layouts.length),
-        tables = [
-          for (final layout in layouts)
-            Int32List(layout.classes.length ~/ 3 * ExtrusionShading.stride),
-        ],
+        tables = List.filled(layouts.length, _noTable),
         candidates = Int32List(layout.length);
 
   /// The window a gathering covers beyond the viewport, as a share of
@@ -489,11 +527,13 @@ class _LayerOrder {
 
   /// Gathers [candidates] again unless the viewport — [hx] by [hy]
   /// logical pixels either side of [worldCenter], at [cameraZoom] — lies
-  /// within the window of the last gathering, at a zoom less than a
-  /// quarter level from it.
+  /// within the window of the last gathering. Zooming in shrinks the
+  /// viewport inside it, so that only goes on for half a level, until
+  /// the window holds too much more than the screen; zooming out leaves
+  /// it soon enough.
   void cull(double cameraZoom, Offset worldCenter, double hx, double hy) {
     final window = _window;
-    if (window != null && (cameraZoom - window.zoom).abs() < 0.25) {
+    if (window != null && cameraZoom - window.zoom < 0.5) {
       final f = math.pow(2.0, window.zoom - cameraZoom).toDouble();
       final cx = worldCenter.dx * f, cy = worldCenter.dy * f;
       if (cx - hx * f >= window.left &&
@@ -560,14 +600,11 @@ class _LayerOrder {
     _vertices.clear();
   }
 
+  static final _noTable = Int32List(0);
+
   void fillTables(ExtrusionLight light) {
     for (var l = 0; l < layouts.length; l++) {
-      final classes = layouts[l].classes;
-      final table = tables[l];
-      for (var c = 0; c * 3 < classes.length; c++) {
-        ExtrusionShading.fill(table, c * ExtrusionShading.stride,
-            classes[c * 3], classes[c * 3 + 1], classes[c * 3 + 2], light);
-      }
+      tables[l] = layouts[l].tableFor(light);
     }
   }
 
@@ -593,7 +630,7 @@ class _LayerOrder {
       }
     }
     const buckets = 1 << 16;
-    final counts = Int32List(buckets + 1);
+    final counts = _counts..fillRange(0, buckets + 1, 0);
     int keyOf(double height) {
       final key = (height * 10).round();
       return key < 0 ? 0 : (key >= buckets ? buckets - 1 : key);
@@ -623,6 +660,10 @@ class _LayerOrder {
     }
     return _LayerOrder._(layer, layouts, layoutOf, buildingOf);
   }
+
+  /// The counting sort's buckets, reused: 256 KB is not worth
+  /// allocating per tile event.
+  static final _counts = Int32List((1 << 16) + 1);
 
   /// Per building of [layout], 1 unless its footprint centre lies in a
   /// cell [skip] marks.

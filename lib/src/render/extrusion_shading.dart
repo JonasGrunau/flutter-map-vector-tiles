@@ -91,11 +91,17 @@ abstract final class ExtrusionShading {
 
   /// The vertical gradient's input at one end of a wall, `(t + base) ·
   /// sqrt(height / 150)` for t = 0 at the foot and 1 at the top,
-  /// quantized for a colour class key: 0..127 for 0..1.
+  /// quantized for a colour class key: 0..127 for 0..1. MapLibre clamps
+  /// it to at least `0.7 + 0.28 · (1 − intensity)`, never under 0.7, so
+  /// every value below that is one key: most buildings of a tile share
+  /// a class instead of one per height.
   static int gradientKey(double t, double base, double height) {
     final v = (t + base) * math.sqrt(height / 150);
-    return v >= 1 ? 127 : (v <= 0 ? 0 : (v * 127).round());
+    return v >= 1 ? 127 : math.max((v * 127).round(), _lowestKey);
   }
+
+  /// The largest key under 0.7: below every floor the shader clamps to.
+  static const int _lowestKey = 88;
 
   /// The colours of one class — layer colour [argb], gradient keys
   /// [bottom] and [top] — under [light], written into [out] at

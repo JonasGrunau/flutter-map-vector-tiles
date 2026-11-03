@@ -104,6 +104,25 @@ class ExtrusionLayout {
 
   int get length => buildings.length;
 
+  ExtrusionLight? _tableLight;
+  Int32List? _table;
+
+  /// [classes] under [light]: per class, `ExtrusionShading.stride`
+  /// colours — kept with the layout, so a new tile set or a new frame
+  /// fills it again only when the light changed.
+  Int32List tableFor(ExtrusionLight light) {
+    final table = _table;
+    if (table != null && light == _tableLight) return table;
+    final filled = table ??
+        (_table = Int32List(classes.length ~/ 3 * ExtrusionShading.stride));
+    for (var c = 0; c * 3 < classes.length; c++) {
+      ExtrusionShading.fill(filled, c * ExtrusionShading.stride, classes[c * 3],
+          classes[c * 3 + 1], classes[c * 3 + 2], light);
+    }
+    _tableLight = light;
+    return filled;
+  }
+
   int get byteSize =>
       buildings.lengthInBytes +
       heights.lengthInBytes +
