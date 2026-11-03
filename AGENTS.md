@@ -32,7 +32,7 @@ every `ui.Image` has exactly one owner and is disposed on eviction.
 | `CLAUDE.md` | Agent working agreements — doc-sync rules, README/version rules, release gate. Imports this file via `@AGENTS.md` |
 | `analysis_options.yaml` | `flutter_lints` + strict casts/inference/raw-types, plus `prefer_final_locals`, `unawaited_futures`, `avoid_print`, `directives_ordering` |
 | `.gitignore` | Repo exclusions |
-| `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs, `bench/`, `compare/`, the script suite's fonts and goldens (`test/scripts/`) and the extrusion painter's goldens (`test/goldens/`) |
+| `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs, `bench/`, `compare/` and the script suite's fonts and goldens (`test/scripts/`) |
 | `.tool-versions` | Pinned Flutter version — also the one the publish workflow installs |
 | `.github/workflows/checks.yml` | Reusable check suite: format, analyze, VM + Chrome tests, publish dry run, optional pana. Called by the two below |
 | `.github/workflows/ci.yml` | Runs `checks.yml` on every push to `main` and every PR into it |
