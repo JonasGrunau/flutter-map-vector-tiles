@@ -1,6 +1,7 @@
 @TestOn('vm')
 library;
 
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
@@ -42,19 +43,25 @@ List<int> _polygon(List<List<List<int>>> rings) {
 
 const _tile = TileKey(16, 32768, 32768);
 
+/// The tile east of [_tile].
+const _east = TileKey(16, 32769, 32768);
+
+/// The tile south of [_tile].
+const _south = TileKey(16, 32768, 32769);
+
 /// Lays [features] — `(rings, height)` in tile-extent units, MVT winding
-/// — out as one `fill-extrusion` layer over tile [_tile].
+/// — out as one `fill-extrusion` layer over [tile].
 List<ExtrusionTile> _layout(List<(List<List<List<int>>>, num)> features,
-    {String color = '#e0d8cc'}) {
+    {String color = '#e0d8cc', TileKey tile = _tile}) {
   final layer = MvtTileBuilder().layer('building');
   for (final (rings, height) in features) {
     layer
         .feature(type: 3, geometry: _polygon(rings), properties: {'h': height});
   }
   final prepared = prepareTileSync(PrepareInput(
-    z: _tile.z,
-    x: _tile.x,
-    y: _tile.y,
+    z: tile.z,
+    x: tile.x,
+    y: tile.y,
     bytes: layer.done().build(),
     layerProperties: const {'building': null},
     extrusionLayers: const {'building'},
@@ -77,7 +84,7 @@ List<ExtrusionTile> _layout(List<(List<List<List<int>>>, num)> features,
     for (final layout in ExtrusionLayouter.layout(
       layers: ExtrusionLayouter.layersOf(theme),
       data: DisplayTileData(
-          displayKey: _tile, sources: <String, PreparedTile>{'s': prepared}),
+          displayKey: tile, sources: <String, PreparedTile>{'s': prepared}),
       styleZoom: 16,
     )!)
       (layout: layout, skip: null, side: 1),
@@ -87,7 +94,11 @@ List<ExtrusionTile> _layout(List<(List<List<List<int>>>, num)> features,
 /// [tiles] painted on a [size]² canvas over blue, the camera at zoom
 /// 16 on the tile's centre turned by [rotation] degrees.
 Future<ui.Image> _paint(List<ExtrusionTile> tiles,
-    {int size = 256, double rotation = 0, ExtrusionPainter? painter}) async {
+    {int size = 256,
+    double rotation = 0,
+    ExtrusionPainter? painter,
+    int generation = 1,
+    Offset? center}) async {
   final recorder = ui.PictureRecorder();
   final canvas = Canvas(recorder);
   canvas.drawColor(const Color(0xff2040a0), BlendMode.src);
@@ -96,11 +107,11 @@ Future<ui.Image> _paint(List<ExtrusionTile> tiles,
   canvas.rotate(radians);
   (painter ?? ExtrusionPainter()).paint(
     canvas,
-    generation: 1,
+    generation: generation,
     layouts: () => tiles,
     cameraZoom: 16,
     styleZoom: 16,
-    worldCenter: displayTileRect(_tile, 16).center,
+    worldCenter: center ?? displayTileRect(_tile, 16).center,
     latitude: 0,
     viewport: Size(size.toDouble(), size.toDouble()),
     rotation: radians,
@@ -194,6 +205,79 @@ void main() {
     (await _paint(tiles, size: 512)).dispose();
     // The roof's four corners and the one wall's four.
     expect(ExtrusionPainter.debugVertices - before, 8);
+  });
+
+  group('tiles taken off offer and put back', () {
+    // The street on three tiles, the camera on the corner [_tile],
+    // [_east] and [_south] share, so all three are on screen.
+    final a = _layout(_street);
+    final b = _layout(_street, tile: _east);
+    final c = _layout(_street, tile: _south);
+    final corner = displayTileRect(_tile, 16).bottomRight;
+
+    Future<Uint8List> pixels(List<ExtrusionTile> tiles,
+        {ExtrusionPainter? painter, int generation = 1}) async {
+      final image = await _paint(tiles,
+          size: 512, painter: painter, generation: generation, center: corner);
+      final bytes = await image.toByteData();
+      image.dispose();
+      return bytes!.buffer.asUint8List();
+    }
+
+    test(
+        'drawing fewer of them sorts nothing, and draws them as a fresh '
+        'painter would', () async {
+      // What fresh painters draw (their sorts count too, so first).
+      final freshA = await pixels(a);
+      final freshBoth = await pixels([...a, ...b]);
+      final painter = ExtrusionPainter();
+      await pixels([...a, ...b], painter: painter);
+      final sorts = ExtrusionPainter.debugRebuilds;
+      final onlyA = await pixels(a, painter: painter, generation: 2);
+      final both = await pixels([...a, ...b], painter: painter, generation: 3);
+      expect(ExtrusionPainter.debugRebuilds, sorts);
+      expect(onlyA, freshA);
+      expect(both, freshBoth);
+      expect(onlyA, isNot(freshBoth), reason: 'b is on screen');
+      painter.reset();
+    });
+
+    test('a skip mask applies without a sort', () async {
+      final freshA = await pixels(a);
+      final painter = ExtrusionPainter();
+      await pixels([...a, ...b], painter: painter);
+      final sorts = ExtrusionPainter.debugRebuilds;
+      // One cell over the whole tile, marked: none of b's buildings.
+      final skipped = [
+        for (final t in b)
+          (layout: t.layout, skip: Uint8List.fromList([1]), side: 1),
+      ];
+      final masked =
+          await pixels([...a, ...skipped], painter: painter, generation: 2);
+      expect(ExtrusionPainter.debugRebuilds, sorts);
+      expect(masked, freshA);
+      painter.reset();
+    });
+
+    test(
+        'a tile not seen before sorts; one off offer past the grace '
+        'period is left out of that sort', () async {
+      ExtrusionPainter.keepInactiveFor = Duration.zero;
+      addTearDown(
+          () => ExtrusionPainter.keepInactiveFor = const Duration(seconds: 2));
+      final freshAC = await pixels([...a, ...c]);
+      final painter = ExtrusionPainter();
+      await pixels([...a, ...b], painter: painter);
+      await pixels(a, painter: painter, generation: 2);
+      final sorts = ExtrusionPainter.debugRebuilds;
+      final ac = await pixels([...a, ...c], painter: painter, generation: 3);
+      expect(ExtrusionPainter.debugRebuilds, sorts + 1, reason: 'c is new');
+      expect(ac, freshAC);
+      await pixels([...a, ...b], painter: painter, generation: 4);
+      expect(ExtrusionPainter.debugRebuilds, sorts + 2,
+          reason: 'b was left out of the sort for c');
+      painter.reset();
+    });
   });
 
   test('a frame that changed nothing redraws the last one', () async {

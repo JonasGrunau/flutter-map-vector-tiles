@@ -1197,13 +1197,20 @@ style can control. Three stages:
   each new state version: a state change re-lays out the tiles'
   buildings rather than re-rasterizing their images. A wall shared
   with a drawn neighbour gets the neighbour's roof as its floor.
-- **Painter, every frame** (`ExtrusionPainter`). When the tile set
-  changes, every building on offer is sorted by roof height (a counting
-  sort in decimetres, stable). The current tiles' layouts are on offer,
-  and during a zoom crossing the nearest retained level's only where
-  the current level draws nothing from the same place — a data tile
-  the current level also draws is skipped, one it cuts into descendants
-  offers only the buildings outside them. Each frame then culls the
+- **Painter, every frame** (`ExtrusionPainter`). The current tiles'
+  layouts are on offer, and during a zoom crossing the nearest
+  retained level's only where the current level draws nothing from the
+  same place — a data tile the current level also draws is skipped,
+  one it cuts into descendants offers only the buildings outside them
+  (a skip mask). Every building of the layouts on offer is sorted by
+  roof height (a counting sort in decimetres, stable), and so are
+  those of the layouts taken off offer in the last 2 seconds: which
+  are on offer, and what their masks leave out, is marked on the
+  order and checked per building as it is drawn. A zoom sweep takes
+  data tiles off and puts them back at every level crossing; sorting
+  again for each change cost 2.2 ms a time on the phone, twenty times
+  a second in a fast sweep, so only a layout the order does not hold
+  sorts it again, and that sort leaves out the ones off for longer. Each frame then culls the
   candidates — the buildings in a window half a viewport larger than
   the screen, gathered again when the view leaves it or the zoom moves
   a quarter level — against the viewport by footprint alone: leaning is
@@ -1249,7 +1256,8 @@ where cheaper tile rasters make up for it (`bench/`'s `EXTRUDE` line).
 With labels off it costs 2–4× as much: the UI thread runs at lower
 clocks when the rest of the frame is light. The first version re-sorted
 every building on every label publish — most frames of a fast sweep —
-and cost 9 ms a frame; the set of layouts is compared first now. Patterned
+and cost 9 ms a frame; the set of layouts is compared first now, and
+the set the order holds outlasts what is on offer (above). Patterned
 extrusions stay flat in the tile images (a pattern on a wall would need
 texture coordinates per face), and so does everything under
 `LabelMode.tile`, whose labels would end up under the buildings.
