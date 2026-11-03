@@ -44,6 +44,10 @@ class ExtrusionPainter {
   /// here. For benchmarks; null otherwise, so nothing accumulates.
   static List<int>? debugFrameLog;
 
+  /// Draws every layer opaque, without its `saveLayer` — for a
+  /// benchmark to put a number on the layer's raster-thread cost.
+  static bool debugForceOpaque = false;
+
   /// MapLibre's camera: a 36.87° vertical field of view puts the camera
   /// 1.5 viewport heights above the map.
   static const double cameraDistance = 1.5;
@@ -197,7 +201,7 @@ class ExtrusionPainter {
         ts[i] = rect.width / layout.extent;
       }
       order.cull(cameraZoom, worldCenter, hx, hy);
-      order.opacity = opacity;
+      order.opacity = debugForceOpaque ? 1 : opacity;
       _drawLayer(order, styleZoom, d, ppm, maxLift, hx, hy);
       order.redraw(canvas);
     }

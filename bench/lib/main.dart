@@ -110,6 +110,12 @@ const _setup = String.fromEnvironment('BENCH_SETUP', defaultValue: 'default');
 /// `false` draws text halos crisp, ignoring `text-halo-blur`, to put a
 /// number on the blur's cost (A/B against the default).
 const _haloBlur = bool.fromEnvironment('BENCH_HALO_BLUR', defaultValue: true);
+
+/// How `fill-extrusion` layers are drawn: `perspective` (the default),
+/// `flat`, or `opaque` — perspective without the layer's `saveLayer`,
+/// to cost that on the raster thread.
+const _extrude =
+    String.fromEnvironment('BENCH_EXTRUDE', defaultValue: 'perspective');
 const _safenow = _setup == 'safenow';
 
 /// Reporting cadence for `manual` mode.
@@ -140,6 +146,7 @@ const _lat = int.fromEnvironment('BENCH_LAT_E5', defaultValue: 4813720) / 1e5;
 const _lon = int.fromEnvironment('BENCH_LON_E5', defaultValue: 1157550) / 1e5;
 
 void main() {
+  ExtrusionPainter.debugForceOpaque = _extrude == 'opaque';
   LabelPainter.debugHaloBlur = _haloBlur;
   runApp(const BenchApp());
 }
@@ -1475,6 +1482,9 @@ class _BenchPageState extends State<BenchPage>
                     sprites: style.sprites,
                     glyphs: style.glyphs,
                     showLabels: _showLabels,
+                    extrusions: _extrude == 'flat'
+                        ? vt.ExtrusionMode.flat
+                        : vt.ExtrusionMode.perspective,
                     memoryCacheMaxBytes: (_safenow ? 16 : 24) * 1024 * 1024,
                     diskCacheMaximumSizeInBytes:
                         (_safenow ? 150 : 50) * 1024 * 1024,
