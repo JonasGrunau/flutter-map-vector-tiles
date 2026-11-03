@@ -228,7 +228,39 @@ same style from the same tiles at the same cameras.
   screenshots on this page predate the fixes.
 - MapLibre draws Liberty's `building-3d` layer as extrusions, so even
   looking straight down the walls show around the edge of the screen.
-  Both Flutter packages draw buildings flat (root README, Style support).
+  `vector_map_tiles` draws buildings flat, and so did this package in
+  the build measured here; since 3D buildings (CHANGELOG, Unreleased) it
+  draws them as MapLibre does — see *3D buildings* below.
+
+### 3D buildings
+
+Session `2026-11-03-3d-buildings-web`: Chrome on the M4 Pro, the web
+runs' 1000×800 viewport at dpr 2, Liberty through the lab, compared with
+MapLibre GL JS at the same cameras (`tool/reference_shots.mjs`). Each
+cell is the mean absolute difference per colour channel against MapLibre
+over the whole 2000×1600 screenshot (labels included, so never zero),
+then how well the wall pixels agree (grey pixels of 100–185, intersection
+over union). `munich-z14` is style zoom 13, under `building-3d`'s
+minzoom, where all three draw the same.
+
+| camera | flat (2.11.0) | 3D, first build (83951ca) | 3D (6435766) |
+|---|---|---|---|
+| `munich-z16` | 12.9 · 0.10 | 4.9 · 0.73 | 4.5 · 0.77 |
+| `munich-z16-rot45` | 12.5 · 0.10 | 4.6 · 0.74 | 4.1 · 0.79 |
+| `munich-z17.5` | 15.0 · 0.03 | 4.3 · 0.81 | 3.1 · 0.90 |
+| `munich-z18` | 16.6 · 0.07 | 6.6 · 0.75 | 5.8 · 0.80 |
+
+The second build hides the stretch of a wall that stands inside another
+building — a taller building part rising out of its outline, both
+starting on the ground — which the first drew over the lower roof.
+
+| camera | MapLibre GL JS (reference) | flutter_map_vector_tiles |
+|---|:---:|:---:|
+| `munich-z16` | [![MapLibre GL JS (reference), munich-z16](results/shots/2026-11-03-3d-buildings-web/munich-z16-maplibre.webp)](results/shots/2026-11-03-3d-buildings-web/munich-z16-maplibre.webp) | [![flutter_map_vector_tiles, munich-z16](results/shots/2026-11-03-3d-buildings-web/munich-z16-fmvt.webp)](results/shots/2026-11-03-3d-buildings-web/munich-z16-fmvt.webp) |
+| `munich-z16-rot45` | [![MapLibre GL JS (reference), munich-z16-rot45](results/shots/2026-11-03-3d-buildings-web/munich-z16-rot45-maplibre.webp)](results/shots/2026-11-03-3d-buildings-web/munich-z16-rot45-maplibre.webp) | [![flutter_map_vector_tiles, munich-z16-rot45](results/shots/2026-11-03-3d-buildings-web/munich-z16-rot45-fmvt.webp)](results/shots/2026-11-03-3d-buildings-web/munich-z16-rot45-fmvt.webp) |
+| `munich-z17.5` | [![MapLibre GL JS (reference), munich-z17.5](results/shots/2026-11-03-3d-buildings-web/munich-z17.5-maplibre.webp)](results/shots/2026-11-03-3d-buildings-web/munich-z17.5-maplibre.webp) | [![flutter_map_vector_tiles, munich-z17.5](results/shots/2026-11-03-3d-buildings-web/munich-z17.5-fmvt.webp)](results/shots/2026-11-03-3d-buildings-web/munich-z17.5-fmvt.webp) |
+| `munich-z18` | [![MapLibre GL JS (reference), munich-z18](results/shots/2026-11-03-3d-buildings-web/munich-z18-maplibre.webp)](results/shots/2026-11-03-3d-buildings-web/munich-z18-maplibre.webp) | [![flutter_map_vector_tiles, munich-z18](results/shots/2026-11-03-3d-buildings-web/munich-z18-fmvt.webp)](results/shots/2026-11-03-3d-buildings-web/munich-z18-fmvt.webp) |
+
 
 ## Android · Nothing Phone (1)
 

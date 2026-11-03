@@ -567,8 +567,12 @@ lowest roof first, each building's walls before its roof. Roofs and
 walls are shaded as MapLibre's shader does, by the style's root
 `light` (MapLibre's default when the style has none) and
 `fill-extrusion-vertical-gradient`. Rendered-feature queries find a
-building where it is drawn, its roof and its walls. Where it differs
-from MapLibre:
+building where it is drawn, its roof and its walls. Next to MapLibre GL
+JS over central Munich at style zoom 15–17, the screenshots differ by
+3–6 per colour channel on average, from 13–17 with flat buildings, and
+78–90 % of the wall pixels coincide
+([compare/RESULTS.md](compare/RESULTS.md#3d-buildings)). Where it
+differs from MapLibre:
 
 - the buildings draw above every other geometry layer, wherever the
   style puts them, and below the labels. In most styles only boundary
@@ -1017,6 +1021,10 @@ saw them.
 ² In the browser the HTTP cache answers a repeated request, so this
 counts each URL once; on macOS, with a smaller window and no HTTP
 cache, `vector_map_tiles` fetched some tiles again.
+
+These sessions predate 3D buildings, which the default now draws for
+Liberty; [3D buildings](#3d-buildings) has what they cost on the
+Nothing Phone and the iPhone.
 
 To check these numbers on your own devices, follow
 [Reproducing the results](compare/README.md#reproducing-the-results):
