@@ -605,7 +605,13 @@ ms on the 90th-percentile UI frame; at 16 it takes 0.9 ms and at 18
 buildings. With labels off the phone runs the UI thread at lower
 clocks, and the same pass at zoom 14 takes 8.8 ms: fast sweeps there
 fell from 59.5 to 43.6 frames a second. On an iPhone 15 Pro Max
-frames delivered stayed at 99–100 %. The buildings' meshes are cut
+frames delivered stayed at 99–100 %. Over the comparison's scripted
+zooms, pans, rotations and flings
+([compare/RESULTS.md](compare/RESULTS.md)), the Nothing Phone got
+84–92 % of frames with 3D buildings against 91–96 % without, 3 to 9
+points less, most while panning and flinging; the iPhone and the Mac
+stayed within 1 point, and Chrome within 2.3 except on the first fling
+(5.8 points). The buildings' meshes are cut
 while a tile is decoded and kept with it — 65–550 KB a tile in
 central Munich, counted against `memoryCacheMaxBytes`, so the same
 budget holds fewer decoded tiles; on the iPhone the app's memory at
@@ -1001,7 +1007,7 @@ Measured with [`compare/`](compare) on a Nothing Phone (1) (Android,
 60 Hz), an iPhone 15 Pro Max (iOS, 120 Hz), a MacBook Pro with an M4 Pro
 (macOS, 120 Hz) and Chrome on that Mac: the same style and the same
 recorded tiles, a fresh process per run, three runs each (four on the
-iPhone, measured a week later on a newer build). "Frames" is the share
+iPhone), all from one build of 2.11.0 with 3D buildings. "Frames" is the share
 of display refreshes that got a frame while the camera zoomed, panned,
 rotated or flung. Each cell reads this package / `vector_map_tiles`.
 [compare/SUMMARY.md](compare/SUMMARY.md) explains the results in plain
@@ -1010,25 +1016,22 @@ words; the full tables, and screenshots next to MapLibre GL JS, are in
 
 | this package / vector_map_tiles | Android | iOS | macOS | Chrome |
 |---|---:|---:|---:|---:|
-| Labels baked into the tiles (`LabelMode.tile` / raster mode): frames | 94–98% / 74–99% | 99–100% / 96.8–100% | 97.5–100% / 99–100% | 94–100% / 39–100% |
-| … worst frame gap | 67–84 / 67–251 ms | 8–29 / 8–45 ms | 8–50 / 8–33 ms | 10–34 / 10–159 ms |
-| Labels drawn every frame (default / vector mode): frames | 78–86% / 20–40% | 99–100% / 65–99.8% | 97–100% / 57–100% | 91–100% / 3–68% |
-| … worst frame gap | 50–134 / 100–1373 ms | 8–18 / 17–182 ms | 8–42 / 8–167 ms | 10–42 / 100–858 ms |
-| First complete map (baked / raster) | 0.95 / 3.0 s | 0.36 / 1.74 s | 0.34 / 0.98 s | 1.25 / 2.6 s |
-| Downloaded per run (default / raster) | 12.8 / 20.4 MB¹ | 26.7 / 50.3–55.0 MB | 26.6 / 51.2–51.6 MB | 29.3 / 32.6 MB² |
+| Labels baked into the tiles (`LabelMode.tile` / raster mode): frames | 94–98% / 75–98% | 99.6–100% / 97–100% | 98–100% / 99–100% | 95.5–99.9% / 41–100% |
+| … worst frame gap | 50–117 / 67–251 ms | 8–18 / 8–38 ms | 8–25 / 8–42 ms | 13–117 / 11–158 ms |
+| Labels drawn every frame (default / vector mode): frames | 91–96% / 20–40% | 99.5–100% / 67–99.8% | 97–100% / 64–99.9% | 95–100% / 3–76% |
+| … worst frame gap | 50–100 / 100–1304 ms | 8–17 / 17–133 ms | 8–33 / 14–183 ms | 10–42 / 100–833 ms |
+| First complete map (baked / raster) | 0.68 / 2.75 s | 0.35 / 1.74 s | 0.28 / 0.93 s | 1.12 / 2.49 s |
+| Downloaded per run (default / raster) | 27.3 / 53.1 MB | 27.3 / 53.2 MB | 27.2 / 51.3 MB | 29.9 / 32.6 MB¹ |
 
-¹ Only while opening the map and during the measured passes: Android's
-whole-run counts were not kept, and the jumps between scenarios are
-left out. iOS, macOS and Chrome count whole runs, as the lab server
-saw them.
-
-² In the browser the HTTP cache answers a repeated request, so this
+¹ In the browser the HTTP cache answers a repeated request, so this
 counts each URL once; on macOS, with a smaller window and no HTTP
 cache, `vector_map_tiles` fetched some tiles again.
 
-These sessions predate 3D buildings, which are off by default;
-[3D buildings](#3d-buildings) has what they cost, switched on, on the
-Nothing Phone and the iPhone.
+With 3D buildings switched on (`ExtrusionMode.perspective`, labels drawn
+every frame) this package got 84–92% of frames on Android, 3 to 9
+points under its default, 89–100% in Chrome, and 98–100% on iOS and
+macOS, where they cost nothing measurable;
+[3D buildings](#3d-buildings) has the details.
 
 To check these numbers on your own devices, follow
 [Reproducing the results](compare/README.md#reproducing-the-results):

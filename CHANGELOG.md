@@ -55,6 +55,11 @@ smooth curve, no longer crooked.
   `text-rotate` and a `text-offset` or `text-anchor`, was tested turned
   about its unmoved anchor, so a tap on the label could miss it and a
   tap beside it could hit it.
+- 📚 The README's comparison with `vector_map_tiles` is measured again,
+  on all four platforms from one build with 3D buildings, and with 3D
+  buildings switched on as well: on the Nothing Phone (1) this
+  package's default now gets 91–96 % of frames while the camera moves,
+  where 2.9.1 got 78–86 %, and 84–92 % with 3D buildings.
 
 ## 2.11.0
 
