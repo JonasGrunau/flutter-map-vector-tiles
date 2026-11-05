@@ -42,9 +42,12 @@ jobs:
 
       - run: flutter pub get
 
-      # compare/ (the vector_map_tiles benchmark and demo) has dependencies
-      # of its own; the root analyze below covers it too.
+      # compare/ (the vector_map_tiles benchmark and demo) and bench/ (the
+      # frame-timing harness) have dependencies of their own; the root
+      # analyze below covers them too, and bench/'s tests import it by its
+      # own package name, which only its own package config resolves.
       - run: flutter pub get --directory compare
+      - run: flutter pub get --directory bench
 
       - name: dart format
         run: dart format --output=none --set-exit-if-changed .

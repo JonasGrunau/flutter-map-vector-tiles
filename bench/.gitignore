@@ -5,10 +5,13 @@
 # against this app) — delete both if you regenerate.
 analysis_options.yaml
 # test/* rather than test/: an ignored *directory* cannot have files
-# re-included from inside it, and the anchor-jump evidence test below
-# is ours, not scaffold droppings.
+# re-included from inside it, and the tests below are ours, not
+# scaffold droppings.
 test/*
 !test/anchor_continuity_test.dart
+!test/label_stability_test.dart
+!test/report_test.dart
+!test/extrusion_stats_test.dart
 
 android/
 ios/
