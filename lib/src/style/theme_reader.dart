@@ -27,11 +27,35 @@ class ThemeReader {
     final themeId = id ?? idOf(style);
     final defaults = _stateDefaults(style['state']);
     final compiled = _compile(style, defaults, logger);
+    final light = _light(style['light'], logger);
     if (compiled.globalStateNames.isEmpty) {
-      return Theme(id: themeId, layers: compiled.layers);
+      return Theme(id: themeId, layers: compiled.layers, light: light);
     }
-    return _GlobalStates(style, themeId, defaults, compiled.globalStateNames)
+    return _GlobalStates(
+            style, themeId, defaults, compiled.globalStateNames, light)
         .adopt(compiled.layers);
+  }
+
+  /// The root `light`, null when the style has none. Its properties may
+  /// read the zoom, nothing else.
+  static StyleLight? _light(Object? json, Logger logger) {
+    if (json is! Map) return null;
+    final light = json.cast<String, Object?>();
+    final parser = ExpressionParser();
+    final standard = StyleLight.standard;
+    final result = StyleLight(
+      anchor: _enum(parser, light['anchor'], 'viewport', _viewAnchors),
+      position: light['position'] == null
+          ? standard.position
+          : _numList(parser, light['position'], const [1.15, 210, 30],
+              length: 3),
+      color: _color(parser, light['color'], const Color(0xffffffff)),
+      intensity: _double(parser, light['intensity'], 0.5),
+    );
+    for (final warning in parser.warnings) {
+      logger.warn('light: $warning');
+    }
+    return result;
   }
 
   /// The id [read] gives [style] when the caller names none.
@@ -122,6 +146,14 @@ class ThemeReader {
       case 'fill-extrusion':
         final extrusion = type == 'fill-extrusion';
         final prefix = extrusion ? 'fill-extrusion' : 'fill';
+        final height = extrusion
+            ? _doubleReadingZoom(parser, paint['fill-extrusion-height'], 0)
+            : null;
+        final base = extrusion
+            ? _doubleReadingZoom(parser, paint['fill-extrusion-base'], 0)
+            : null;
+        final color = _colorReadingZoom(
+            parser, paint['$prefix-color'], const Color(0xff000000));
         layer = FillThemeLayer(
           id: id,
           source: source,
@@ -129,8 +161,7 @@ class ThemeReader {
           minzoom: minzoom,
           maxzoom: maxzoom,
           filter: filter,
-          color:
-              _color(parser, paint['$prefix-color'], const Color(0xff000000)),
+          color: color.prop,
           opacity: _double(parser, paint['$prefix-opacity'], 1),
           // An extrusion has no outline property.
           outlineColor: extrusion || paint['fill-outline-color'] == null
@@ -145,7 +176,15 @@ class ThemeReader {
           translate: _optionalNumList(parser, paint['$prefix-translate']),
           // An extrusion has no sort key.
           sortKey: extrusion ? null : _sortKey(parser, layout['fill-sort-key']),
-        );
+          extrusionHeight: height?.prop,
+          extrusionBase: base?.prop,
+          extrusionVerticalGradient: extrusion
+              ? _bool(parser, paint['fill-extrusion-vertical-gradient'], true)
+              : null,
+        )
+          ..extrusionHeightReadsZoom = height?.readsZoom ?? false
+          ..extrusionBaseReadsZoom = base?.readsZoom ?? false
+          ..extrusionColorReadsZoom = extrusion && color.readsZoom;
       case 'line':
         layer = LineThemeLayer(
           id: id,
@@ -499,6 +538,19 @@ class ThemeReader {
     );
   }
 
+  /// [_color], also reporting whether the property reads the zoom.
+  static ({ColorProp prop, bool readsZoom}) _colorReadingZoom(
+      ExpressionParser parser, Object? json, Color fallback) {
+    if (json == null || (json is String && toColor(json) != null)) {
+      return (prop: _color(parser, json, fallback), readsZoom: false);
+    }
+    final p = parser.parseForProperty(json, accepts: _isColor);
+    return (
+      prop: ColorProp(p.expr, fallback, zoomOnly: p.zoomOnly),
+      readsZoom: p.readsZoom,
+    );
+  }
+
   /// The spec's default `heatmap-color`: transparent blue through
   /// royal blue, cyan, lime and yellow to red.
   static const _defaultHeatmapColor = [
@@ -776,9 +828,14 @@ class ThemeReader {
 /// does an override no expression reads: a sibling is keyed on the
 /// names [_reads] alone.
 final class _GlobalStates implements GlobalStateFamily {
-  _GlobalStates(this._style, this._baseId, this._defaults, this._reads);
+  _GlobalStates(
+      this._style, this._baseId, this._defaults, this._reads, this._light);
 
   final Map<String, Object?> _style;
+
+  /// The style's light, the same under every state: it reads no global
+  /// state.
+  final StyleLight? _light;
   final String _baseId;
   final Map<String, Object?> _defaults;
 
@@ -799,6 +856,7 @@ final class _GlobalStates implements GlobalStateFamily {
       layers: layers,
       globalState: Map.unmodifiable(_defaults),
       family: this,
+      light: _light,
     );
   }
 
@@ -821,6 +879,7 @@ final class _GlobalStates implements GlobalStateFamily {
       layers: compiled.layers,
       globalState: Map.unmodifiable(state),
       family: this,
+      light: _light,
     );
     _themes[key] = theme;
     if (_themes.length > _keep) _themes.remove(_themes.keys.first);

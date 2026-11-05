@@ -133,10 +133,13 @@ class TileRasterizer {
   /// layers: each one is drawn whole, in order, with its own paints.
   ///
   /// Returns the slice's picture (null when it drew nothing) and the
-  /// index to resume from, which is `theme.layers.length` once the tile
-  /// is done. Each slice is clipped and scaled like [record]'s picture,
-  /// so [compose] stacks them into exactly the picture [record] would
-  /// have made.
+  /// index to resume from, which is [end] (`theme.layers.length` unless
+  /// given) once the layers up to it are done. Each slice is clipped and
+  /// scaled like [record]'s picture, so [compose] stacks them into
+  /// exactly the picture [record] would have made. A recording cut at
+  /// [end] and resumed from there into a second picture splits the tile
+  /// in two, as 3D buildings need: what the style puts above them is
+  /// drawn after them.
   static ({ui.Picture? picture, int next}) recordSlice({
     required Theme theme,
     required DisplayTileData data,
@@ -144,7 +147,9 @@ class TileRasterizer {
     required double devicePixelRatio,
     PatternResolver? patterns,
     int from = 0,
+    int? end,
     bool Function()? outOfBudget,
+    bool flatExtrusions = true,
   }) {
     if (from == 0) debugRasterizeCount++;
     debugSliceCount++;
@@ -166,7 +171,9 @@ class TileRasterizer {
         pixelScale: pixelScale,
         patterns: patterns,
         from: from,
+        end: end,
         outOfBudget: outOfBudget,
+        flatExtrusions: flatExtrusions,
       );
 
       final picture = recorder.endRecording();
@@ -238,10 +245,11 @@ class TileRasterizer {
         patterns: patterns,
       ).painted;
 
-  /// [paint] from layer [from] on, stopping before the next layer that
-  /// would draw once [outOfBudget] says so — after at least one such
-  /// layer. Returns whether anything was drawn, and where to resume:
-  /// `theme.layers.length` when every layer is done.
+  /// [paint] from layer [from] up to [end] (every layer when null),
+  /// stopping before the next layer that would draw once [outOfBudget]
+  /// says so — after at least one such layer. Returns whether anything
+  /// was drawn, and where to resume: the end once every layer up to it
+  /// is done.
   static ({bool painted, int next}) _paintLayers({
     required Canvas canvas,
     required Theme theme,
@@ -250,20 +258,27 @@ class TileRasterizer {
     required double pixelScale,
     PatternResolver? patterns,
     int from = 0,
+    int? end,
     bool Function()? outOfBudget,
+    bool flatExtrusions = true,
   }) {
     var painted = false;
     var drewLayer = false;
     final zoomCtx = EvalContext(zoom: styleZoom);
 
     final layers = theme.layers;
+    final until = end ?? layers.length;
     final layerStopwatch = Stopwatch();
-    for (var i = from; i < layers.length; i++) {
+    for (var i = from; i < until; i++) {
       final layer = layers[i];
       // Skipped before the budget check, so that a slice never ends on —
       // and the next one never starts with — a layer that draws nothing.
       if (layer is SymbolThemeLayer ||
           layer is HeatmapThemeLayer ||
+          (!flatExtrusions &&
+              layer is FillThemeLayer &&
+              layer.extrusion &&
+              layer.pattern == null) ||
           !layer.coversZoom(styleZoom)) {
         continue;
       }
@@ -298,7 +313,7 @@ class TileRasterizer {
       debugLayerMicros[layer.id] = (debugLayerMicros[layer.id] ?? 0) +
           layerStopwatch.elapsedMicroseconds;
     }
-    return (painted: painted, next: layers.length);
+    return (painted: painted, next: until);
   }
 
   /// The tile-extent → logical-pixel transform features of data tile

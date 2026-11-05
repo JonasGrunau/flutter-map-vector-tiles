@@ -40,6 +40,7 @@ Every run measures exactly one arm, in a fresh process.
 | `vmt-vector` | `vector_map_tiles` in vector mode, which its docs recommend for sharpness |
 | `fmvt-none` | control: `flutter_map_vector_tiles` with `TileOffset.none` |
 | `fmvt-raster-none` | control: `fmvt-raster` with `TileOffset.none` |
+| `fmvt-3d` | `fmvt` with `extrusionMode: ExtrusionMode.perspective`: `fill-extrusion` layers as 3D buildings, which the package leaves off by default. For fidelity next to MapLibre GL, which draws them in 3D; `vector_map_tiles` draws them flat, as `fmvt` does |
 
 The packages draw labels in different ways, so the arms pair up by
 strategy rather than by default. `vector_map_tiles`' raster mode bakes
@@ -247,14 +248,23 @@ numbers to vary more than a lab session's.
    ./tool/run_web.sh 4 --offline
    ```
 
-   The quoted Android, macOS and Chrome sessions ran 3 rounds, before the
-   scripts' default became 4. Keep a phone plugged in, unlocked and
-   untouched; the scripts keep its screen on and lock it to portrait. For
-   macOS and Chrome, run on mains power with other apps closed and the
-   window in front, and leave the Mac alone: the quoted sessions waited
-   until nobody had touched it for 10 minutes. `run_android.sh` also
-   writes the GPU memory samples (`gpu-memory.txt`, see
-   `tool/gpu_sampler.sh`).
+   The quoted Android, macOS and Chrome sessions ran 3 rounds, the
+   iPhone's 4. Keep a phone plugged in, unlocked and untouched; the
+   scripts keep its screen on and lock it to portrait. For macOS and
+   Chrome, run on mains power with other apps closed and the window in
+   front, and leave the Mac alone: the quoted sessions waited until
+   nobody had touched it for 10 minutes (an app that keeps the Mac awake
+   by faking input defeats that wait). `run_web.mjs` moves every Chrome
+   window onto the main display, as one opened on a 50 Hz external
+   monitor measures 50 Hz frames: check that the tables' header names
+   the display rate you expect. `run_android.sh` also writes the GPU
+   memory samples (`gpu-memory.txt`, see `tool/gpu_sampler.sh`).
+
+   With `--offline`, check the lab log afterwards
+   (`grep 'offline miss' .lab-<platform>.log`): a cache without Liberty's
+   Noto Sans glyph ranges answers them 404, and this package then draws
+   those labels with the platform's text instead of the style's glyphs.
+   The quoted sessions had no misses.
 4. **The label-fades A/B** is two Android sessions of the `fmvt` arm, 2
    rounds each. Run the first as is. For the second, add
    `labelFadeDuration: Duration.zero,` to the `VectorTileLayer` in
@@ -268,9 +278,9 @@ numbers to vary more than a lab session's.
 
 5. **MapLibre's screenshots** in the Chrome grid come from
    `tool/reference_shots.mjs`, which fetches through a lab server of its
-   own and drives the Playwright that `run_web.sh` installs. Glyphs reach
-   the cache only once MapLibre has fetched them (neither Flutter package
-   reads them), so start that lab without `--offline` the first time:
+   own and drives the Playwright that `run_web.sh` installs. MapLibre
+   asks for glyph ranges this package's labels may not have needed, so
+   start that lab without `--offline` the first time:
 
    ```sh
    dart run tool/lab_server.dart --platform maplibre --rounds 1 --session refs --out /tmp/refs-lab &
@@ -293,9 +303,10 @@ numbers to vary more than a lab session's.
 What should hold is the order within each pair (`fmvt-raster` against
 `vmt-raster`, `fmvt` against `vmt-vector`) and roughly the size of the
 gap. For scale: from one round to the next, the same arm and pass in
-the quoted sessions moved by up to 7.3 points of frames delivered on
-Android (1.8 at the median), 4.2 on the iPhone (0.4), 3.7 in Chrome
-(0.5) and 1.1 on macOS (0.1).
+the quoted sessions moved by up to 5.2 points of frames delivered on
+Android (1.5 at the median), 13.4 on the iPhone (0.2; vector mode's
+first fling, every other arm within 2.1), 7.6 in Chrome (0.4) and 3.2
+on macOS (0.2).
 If yours disagree, open an issue and attach the session's directory:
 its `results.jsonl` holds everything the tables are made from.
 

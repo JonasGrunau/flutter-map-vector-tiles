@@ -2,8 +2,39 @@
 
 ## Unreleased
 
-Street names drawn straight or on a smooth curve, no longer crooked.
+Opt-in 3D buildings, drawn the way MapLibre GL draws them when the
+camera looks straight down, and street names drawn straight or on a
+smooth curve, no longer crooked.
 
+- ✨ **3D buildings**, opt-in with `VectorTileLayer.extrusionMode:
+  ExtrusionMode.perspective`: `fill-extrusion` layers draw as MapLibre
+  GL draws them at pitch 0, through its perspective camera. Each roof sits
+  further from the screen centre than its foot, in proportion to
+  `fill-extrusion-height` (and `-base`), and the walls facing the
+  centre show, so buildings lean outward, more towards the screen edges
+  and the closer the zoom. Roofs and walls are shaded by the style's
+  root `light` (MapLibre's default when the style has none), with
+  `fill-extrusion-vertical-gradient`, and `fill-extrusion-opacity`
+  composites the layer once, as MapLibre does. The buildings are drawn
+  over the tile images on every frame the map moves, and what the style
+  puts above them — boundary lines, a route or highlight an app adds on
+  top — over the buildings, as MapLibre has it; rendered-feature
+  queries find a building where it is drawn, roof and walls included,
+  and in that order. A wall with another building right in front of it —
+  a terraced neighbour, the outline a taller building part rises out
+  of — shows only above that building's roof, as MapLibre's depth
+  buffer would have it. An extrusion colour that reads `feature-state`
+  follows the state. On a Nothing Phone (1) the pass adds about a
+  millisecond to the 90th-percentile UI frame at style zoom 14 and
+  nothing measurable from 16 on; a map without labels pays more at 14
+  (see the README's *3D buildings*). The default, `ExtrusionMode.flat`,
+  draws them as before — flat footprints in the tile images, at no
+  per-frame cost — so updating changes no map; patterned extrusions,
+  and every extrusion under `LabelMode.tile`, stay flat in either mode.
+  flutter_map has no pitch, so the map itself never tilts.
+- ✨ `Theme.light` holds the style's root `light` (`anchor`,
+  `position`, `color`, `intensity`); `FillThemeLayer` gains
+  `extrusionHeight`, `extrusionBase` and `extrusionVerticalGradient`.
 - 🎨 **Street names follow their road smoothly**: a label along a line
   is drawn straight where its road is straight at the label's scale,
   and otherwise on one smooth curve through the road, turning glyph by
@@ -24,6 +55,11 @@ Street names drawn straight or on a smooth curve, no longer crooked.
   `text-rotate` and a `text-offset` or `text-anchor`, was tested turned
   about its unmoved anchor, so a tap on the label could miss it and a
   tap beside it could hit it.
+- 📚 The README's comparison with `vector_map_tiles` is measured again,
+  on all four platforms from one build with 3D buildings, and with 3D
+  buildings switched on as well: on the Nothing Phone (1) this
+  package's default now gets 91–96 % of frames while the camera moves,
+  where 2.9.1 got 78–86 %, and 84–92 % with 3D buildings.
 
 ## 2.11.0
 

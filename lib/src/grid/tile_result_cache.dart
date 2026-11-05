@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import '../cache/lru_cache.dart';
 import '../core/tile_key.dart';
+import '../render/extrusion_layouter.dart';
 import '../render/heatmap_layouter.dart';
 import '../render/hit_test.dart';
 import '../render/symbol_layouter.dart';
@@ -17,11 +18,19 @@ import '../render/symbol_layouter.dart';
 /// idempotent, so concurrent holders are safe.
 class TileResult {
   final ui.Image? image;
+
+  /// With 3D buildings: what the style puts above its first 3D layer,
+  /// drawn over the buildings — a master like [image], usually null.
+  final ui.Image? over;
   final List<SymbolInstance> symbols;
 
   /// Shared by reference like [symbols]; its per-zoom memo is
   /// idempotent too.
   final List<HeatmapPoints> heatmap;
+
+  /// The tile's 3D buildings, shared by reference like [heatmap]: the
+  /// layouts belong to the data tiles, which many results share.
+  final List<ExtrusionLayout> extrusions;
 
   /// The source ids baked into the raster — restored onto the display
   /// tile so refresh logic can tell recovered sources apart.
@@ -34,8 +43,10 @@ class TileResult {
 
   TileResult({
     required this.image,
+    this.over,
     required this.symbols,
     this.heatmap = const [],
+    this.extrusions = const [],
     required this.renderedWith,
     this.labelHits,
   });
@@ -70,15 +81,19 @@ class TileResultCache {
           maxEntries: 256,
           maxCost: maxBytes,
           costOf: (result) {
-            final image = result.image;
-            var cost =
-                (image == null ? 0 : image.width * image.height * 4) + 64;
+            var cost = 64;
+            for (final image in [result.image, result.over]) {
+              if (image != null) cost += image.width * image.height * 4;
+            }
             for (final points in result.heatmap) {
               cost += points.byteSize;
             }
             return cost;
           },
-          onEvict: (_, result) => result.image?.dispose(),
+          onEvict: (_, result) {
+            result.image?.dispose();
+            result.over?.dispose();
+          },
         );
 
   factory TileResultCache.forSignature(String signature, int maxBytes) {
@@ -141,13 +156,16 @@ class TileResultCache {
   /// clones [TileResult.image] before handing it to an owner.
   TileResult? get(TileKey key) => _cache.get(key);
 
-  /// Stores a finished tile. Takes ownership of [image] — pass a clone
-  /// dedicated to the cache, never the display tile's own handle.
+  /// Stores a finished tile. Takes ownership of [image] and [over] —
+  /// pass clones dedicated to the cache, never the display tile's own
+  /// handles.
   void put(
     TileKey key, {
     required ui.Image? image,
+    ui.Image? over,
     required List<SymbolInstance> symbols,
     List<HeatmapPoints> heatmap = const [],
+    List<ExtrusionLayout> extrusions = const [],
     required Set<String> renderedWith,
     List<LabelHit>? labelHits,
   }) {
@@ -155,8 +173,10 @@ class TileResultCache {
       key,
       TileResult(
           image: image,
+          over: over,
           symbols: symbols,
           heatmap: heatmap,
+          extrusions: extrusions,
           renderedWith: renderedWith,
           labelHits: labelHits),
     );

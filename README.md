@@ -137,6 +137,7 @@ vt.VectorTileLayer(
   labelFadeDuration: const Duration(milliseconds: 150),
   showLabels: true,
   labelMode: vt.LabelMode.screen,              // or .tile: labels baked into tiles
+  extrusionMode: vt.ExtrusionMode.flat,        // or .perspective: 3D buildings
   controller: myController,                    // queries + feature state, optional
   retainAllProperties: false,                  // keep properties the style never reads
   logger: const vt.Logger.console(),           // see style warnings in debug
@@ -157,6 +158,7 @@ vt.VectorTileLayer(
 | `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress; on a Nothing Phone (1) that took the peak GPU memory from 391–409 to 317–320 MB and cost frames ([compare/RESULTS.md](compare/RESULTS.md)). No effect with `LabelMode.tile`, where labels fade in with their tile |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
 | `labelMode` | `LabelMode.screen` | where labels and icons are drawn: every frame in screen space, or once into each tile's image (`LabelMode.tile`, what `vector_map_tiles` calls raster mode). Changing it re-renders the tiles already on screen. See [Choosing a label mode](#choosing-a-label-mode) |
+| `extrusionMode` | `ExtrusionMode.flat` | how `fill-extrusion` layers are drawn: flat in the tile images, as every release before 3D buildings drew them, or opted into with `ExtrusionMode.perspective`, as 3D buildings leaning away from the screen centre, the way MapLibre draws them looking straight down (UI-thread time every frame the map moves). Always flat with `LabelMode.tile`. See [3D buildings](#3d-buildings) |
 | `controller` | none | a `VectorTileLayerController` to ask what is drawn where and to set feature state. See [Querying features and feature state](#-querying-features-and-feature-state) |
 | `retainAllProperties` | `false` | decode every feature property, not only those the style reads, so query results carry them all. Costs memory and decode time, see below |
 
@@ -253,8 +255,9 @@ native:
 - **Decoding runs on the event loop.** A yielding queue replaces the
   worker-isolate pool, and `concurrency` is ignored. Layer filters are
   matched against a tile's features when it is first drawn, not while it
-  is decoded, and a heatmap layer's density is computed on the event loop
-  too, after the frame that asked for it.
+  is decoded, a heatmap layer's density is computed on the event loop
+  too, after the frame that asked for it, and so are the meshes of a
+  style's 3D buildings, when they are on, cut while a tile is decoded.
 - **Label collision runs in the frame.** The placement pass that runs on
   an isolate of its own elsewhere costs the frame it is due in.
 - **CORS.** The browser fetches style.json, TileJSON, sprites, glyphs and
@@ -466,7 +469,7 @@ would.
 | `symbol` | every layout and paint property but `text-writing-mode` and the pitch alignments (flutter_map has no pitch), including curved line text, variable anchors and `icon-text-fit`; see *Symbol properties* and [Labels](#-labels) below |
 | `hillshade` | terrain shading computed from a `raster-dem` source (`terrarium`, `mapbox` or `custom` encoding), drawn at its layer position with every paint property: all five `hillshade-method`s (`standard`, `basic`, `combined`, `igor`, `multidirectional`, up to four lights), illumination direction, altitude and anchor, exaggeration, shadow/highlight/accent colours and `resampling`. Slopes are read across tile edges from the neighbouring elevation tiles, so the shading has no seams. One difference: tiles are shaded once and turn with the map, so `hillshade-illumination-anchor: viewport` (the default) is drawn as if the map were not rotated; with `map` it matches MapLibre at every bearing |
 | `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity`, brightness/contrast/saturation/hue-rotate matching MapLibre's shader math, and `resampling` / `raster-resampling` |
-| `fill-extrusion` | renders as a flat fill, with `fill-extrusion-opacity` applied to the whole layer as MapLibre does, patterned ones included, so a building part over its outline does not draw darker; the alpha of `fill-extrusion-color` is ignored, as the spec says |
+| `fill-extrusion` | flat footprints in `fill-extrusion-color` and `-opacity` by default; with `extrusionMode: ExtrusionMode.perspective`, 3D buildings, as MapLibre draws them with the camera looking straight down: `fill-extrusion-height`, `-base`, `-color`, `-opacity` (applied to the whole layer, as MapLibre does), `-vertical-gradient` and `-translate`, shaded by the style's root `light`; see **3D buildings** below. Patterned ones (`fill-extrusion-pattern`), and all of them with `LabelMode.tile`, draw as flat footprints in either mode. The alpha of `fill-extrusion-color` darkens the colour rather than making it translucent, as in MapLibre |
 | `heatmap` | the kernel density MapLibre draws over a source layer's points, with `heatmap-radius`, `-weight`, `-intensity`, `-opacity` and a `heatmap-color` ramp over `["heatmap-density"]`, data-driven weight and radius included; drawn over all the tile geometry, see **Heatmaps** below |
 | `color-relief`, `sky` | skipped, with a log line |
 
@@ -548,6 +551,73 @@ from MapLibre:
   heatmap covers them too;
 - only point features count. MapLibre also takes every vertex of a line
   or polygon as a point.
+
+<a id="3d-buildings"></a>**3D buildings.** Off by default: `fill-extrusion` layers draw as
+flat footprints, as in every release before, so updating the package
+changes no map. `extrusionMode: ExtrusionMode.perspective` turns them
+on. flutter_map's camera has no pitch, so the map never tilts; what MapLibre shows of a building with the camera looking
+straight down is drawn instead. Its camera is a perspective one, 1.5
+viewport heights above the map, so a roof `h` metres up is drawn
+scaled away from the screen centre by `D / (D − h · pixels per
+metre)`: buildings lean outward, more the further they are from the
+centre, the taller they are and the closer the zoom, and the walls
+facing the centre show — a 50 m building 300 px from the centre of an
+800 px tall map leans 16.6 px at style zoom 16. Because that changes
+with every pan and zoom, the buildings are not in the tile images: each
+frame projects the ones on screen and draws them over the tiles, the
+lowest roof first, each building's walls before its roof. Roofs and
+walls are shaded as MapLibre's shader does, by the style's root
+`light` (MapLibre's default when the style has none) and
+`fill-extrusion-vertical-gradient`. Rendered-feature queries find a
+building where it is drawn, its roof and its walls. Next to MapLibre GL
+JS over central Munich at style zoom 15–17, the screenshots differ by
+3–6 per colour channel on average, from 13–17 with flat buildings, and
+78–90 % of the wall pixels coincide
+([compare/RESULTS.md](compare/RESULTS.md#3d-buildings)). Where it
+differs from MapLibre:
+
+- what the style puts above its first extrusion layer draws over the
+  buildings, roofs included, as in MapLibre: Liberty's boundary lines,
+  or a route or highlight an app adds on top. The difference is in
+  between: the buildings of all extrusion layers are drawn together,
+  so a layer between two of them draws over both, and a heatmap draws
+  over the buildings wherever the style puts it;
+- painter's order stands in for MapLibre's depth buffer: where a lower
+  roof leans over a detached taller building through a gap narrower
+  than the lean, or one part of a concave building over another, the
+  overlap can be drawn the wrong way round. A wall with another
+  building right in front of it — a terraced neighbour, the outline a
+  taller building part rises out of — starts at that building's roof,
+  as the depth buffer would show it;
+- a wall leaning less than half a pixel is left out, and walls leaning
+  under 3 px share their corners, so their colour runs into the next
+  wall's instead of changing at the corner;
+- a height reading both the zoom and the feature is blended linearly
+  between whole zoom levels.
+
+The per-frame cost is UI-thread time in proportion to the buildings on
+screen: most at style zoom 14, where a phone screen shows the most of
+them. On a Nothing Phone (1), Liberty over central Munich, zoom sweeps
+against the flat drawing of the release before: at style zoom 14 the
+pass takes 2.4–4.0 ms a frame (median, 33k vertices) and puts 0.5–1.2
+ms on the 90th-percentile UI frame; at 16 it takes 0.9 ms and at 18
+0.3 ms, and the frames get no slower, as the tiles no longer draw the
+buildings. With labels off the phone runs the UI thread at lower
+clocks, and the same pass at zoom 14 takes 8.8 ms: fast sweeps there
+fell from 59.5 to 43.6 frames a second. On an iPhone 15 Pro Max
+frames delivered stayed at 99–100 %. Over the comparison's scripted
+zooms, pans, rotations and flings
+([compare/RESULTS.md](compare/RESULTS.md)), the Nothing Phone got
+84–92 % of frames with 3D buildings against 91–96 % without, 3 to 9
+points less, most while panning and flinging; the iPhone and the Mac
+stayed within 1 point, and Chrome within 2.3 except on the first fling
+(5.8 points). The buildings' meshes are cut
+while a tile is decoded and kept with it — 65–550 KB a tile in
+central Munich, counted against `memoryCacheMaxBytes`, so the same
+budget holds fewer decoded tiles; on the iPhone the app's memory at
+the first screen rose by about 20 MB. The default,
+`ExtrusionMode.flat`, draws them flat in the tile images instead, at
+no per-frame cost and without the meshes.
 
 **Expressions.** Every operator of the current MapLibre style spec
 compiles, as do legacy filters, legacy `{stops}` functions (zoom,
@@ -881,6 +951,7 @@ camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
    symbols ─────► per-frame screen-space label pass (global collision,
                   decided on its own isolate)
            └────► or, LabelMode.tile: drawn into that GPU image, once
+   building meshes (worker) ─► per-frame 3D pass over the tiles
    heatmap points ─► worker: density + colour ramp ─► one screen image
    finished tiles (image + symbols) ─► shared LRU ─► instant re-crossings
 ```
@@ -901,17 +972,17 @@ they are in.
 
 For profiling, the render pipeline emits DevTools timeline events:
 `VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`, `VT
-heatmap` (a heatmap pass's UI-thread part), and with `LabelMode.tile`
+extrusion` (a frame's 3D buildings), `VT heatmap` (a heatmap pass's
+UI-thread part), and with `LabelMode.tile`
 `VT rasterize with labels` and `VT tile labels`. A
 dense tile's `VT rasterize` and `VT symbols` repeat over several
 frames, one slice per frame.
 
-On web the disk cache tier is absent, and decoding and heatmap
-densities run on the event loop instead of isolates. Everything else
-is identical.
-On web the disk cache tier is absent and decoding runs on a yielding
-event-loop queue instead of isolates, which leaves layer filters to be
-matched when a tile is first drawn. Everything else is identical.
+On web the disk cache tier is absent, and decoding (with the meshes
+of 3D buildings, when they are on) and heatmap densities run on a
+yielding event-loop queue instead of isolates, which leaves layer
+filters to be matched when a tile is first drawn. Everything else is
+identical.
 
 The full rendering model, and the reasoning behind each departure from
 [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles), is in
@@ -936,7 +1007,7 @@ Measured with [`compare/`](compare) on a Nothing Phone (1) (Android,
 60 Hz), an iPhone 15 Pro Max (iOS, 120 Hz), a MacBook Pro with an M4 Pro
 (macOS, 120 Hz) and Chrome on that Mac: the same style and the same
 recorded tiles, a fresh process per run, three runs each (four on the
-iPhone, measured a week later on a newer build). "Frames" is the share
+iPhone), all from one build of 2.11.0 with 3D buildings. "Frames" is the share
 of display refreshes that got a frame while the camera zoomed, panned,
 rotated or flung. Each cell reads this package / `vector_map_tiles`.
 [compare/SUMMARY.md](compare/SUMMARY.md) explains the results in plain
@@ -945,21 +1016,22 @@ words; the full tables, and screenshots next to MapLibre GL JS, are in
 
 | this package / vector_map_tiles | Android | iOS | macOS | Chrome |
 |---|---:|---:|---:|---:|
-| Labels baked into the tiles (`LabelMode.tile` / raster mode): frames | 94–98% / 74–99% | 99–100% / 96.8–100% | 97.5–100% / 99–100% | 94–100% / 39–100% |
-| … worst frame gap | 67–84 / 67–251 ms | 8–29 / 8–45 ms | 8–50 / 8–33 ms | 10–34 / 10–159 ms |
-| Labels drawn every frame (default / vector mode): frames | 78–86% / 20–40% | 99–100% / 65–99.8% | 97–100% / 57–100% | 91–100% / 3–68% |
-| … worst frame gap | 50–134 / 100–1373 ms | 8–18 / 17–182 ms | 8–42 / 8–167 ms | 10–42 / 100–858 ms |
-| First complete map (baked / raster) | 0.95 / 3.0 s | 0.36 / 1.74 s | 0.34 / 0.98 s | 1.25 / 2.6 s |
-| Downloaded per run (default / raster) | 12.8 / 20.4 MB¹ | 26.7 / 50.3–55.0 MB | 26.6 / 51.2–51.6 MB | 29.3 / 32.6 MB² |
+| Labels baked into the tiles (`LabelMode.tile` / raster mode): frames | 94–98% / 75–98% | 99.6–100% / 97–100% | 98–100% / 99–100% | 95.5–99.9% / 41–100% |
+| … worst frame gap | 50–117 / 67–251 ms | 8–18 / 8–38 ms | 8–25 / 8–42 ms | 13–117 / 11–158 ms |
+| Labels drawn every frame (default / vector mode): frames | 91–96% / 20–40% | 99.5–100% / 67–99.8% | 97–100% / 64–99.9% | 95–100% / 3–76% |
+| … worst frame gap | 50–100 / 100–1304 ms | 8–17 / 17–133 ms | 8–33 / 14–183 ms | 10–42 / 100–833 ms |
+| First complete map (baked / raster) | 0.68 / 2.75 s | 0.35 / 1.74 s | 0.28 / 0.93 s | 1.12 / 2.49 s |
+| Downloaded per run (default / raster) | 27.3 / 53.1 MB | 27.3 / 53.2 MB | 27.2 / 51.3 MB | 29.9 / 32.6 MB¹ |
 
-¹ Only while opening the map and during the measured passes: Android's
-whole-run counts were not kept, and the jumps between scenarios are
-left out. iOS, macOS and Chrome count whole runs, as the lab server
-saw them.
-
-² In the browser the HTTP cache answers a repeated request, so this
+¹ In the browser the HTTP cache answers a repeated request, so this
 counts each URL once; on macOS, with a smaller window and no HTTP
 cache, `vector_map_tiles` fetched some tiles again.
+
+With 3D buildings switched on (`ExtrusionMode.perspective`, labels drawn
+every frame) this package got 84–92% of frames on Android, 3 to 9
+points under its default, 89–100% in Chrome, and 98–100% on iOS and
+macOS, where they cost nothing measurable;
+[3D buildings](#3d-buildings) has the details.
 
 To check these numbers on your own devices, follow
 [Reproducing the results](compare/README.md#reproducing-the-results):

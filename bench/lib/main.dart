@@ -36,6 +36,8 @@ import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart' as vt;
 // "served from cache" from "re-rendered the whole screen". See AGENTS.md.
 import 'package:flutter_map_vector_tiles/src/pipeline/tile_processor.dart'
     show PrepareInput, prepareTileSync;
+import 'package:flutter_map_vector_tiles/src/render/extrusion_painter.dart'
+    show ExtrusionPainter;
 import 'package:flutter_map_vector_tiles/src/render/label_painter.dart'
     show DrawnLabelRecord, LabelPainter;
 import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart'
@@ -108,6 +110,12 @@ const _setup = String.fromEnvironment('BENCH_SETUP', defaultValue: 'default');
 /// `false` draws text halos crisp, ignoring `text-halo-blur`, to put a
 /// number on the blur's cost (A/B against the default).
 const _haloBlur = bool.fromEnvironment('BENCH_HALO_BLUR', defaultValue: true);
+
+/// How `fill-extrusion` layers are drawn: `flat` (the package's
+/// default), `perspective` (3D buildings, opt-in), or `opaque` —
+/// perspective without the layer's `saveLayer`, to cost that on the
+/// raster thread.
+const _extrude = String.fromEnvironment('BENCH_EXTRUDE', defaultValue: 'flat');
 const _safenow = _setup == 'safenow';
 
 /// Reporting cadence for `manual` mode.
@@ -138,6 +146,7 @@ const _lat = int.fromEnvironment('BENCH_LAT_E5', defaultValue: 4813720) / 1e5;
 const _lon = int.fromEnvironment('BENCH_LON_E5', defaultValue: 1157550) / 1e5;
 
 void main() {
+  ExtrusionPainter.debugForceOpaque = _extrude == 'opaque';
   LabelPainter.debugHaloBlur = _haloBlur;
   runApp(const BenchApp());
 }
@@ -192,6 +201,9 @@ class _BenchPageState extends State<BenchPage>
 
   var _build = <int>[];
   var _raster = <int>[];
+  var _extrusionVertices0 = 0;
+  var _extrusionRebuilds0 = 0;
+  var _extrusionRebuildUs0 = 0;
 
   // BUILD split by whether the frame ran a label placement pass, matched
   // to its FrameTiming by engine frame number — placing frames are where
@@ -1258,6 +1270,12 @@ class _BenchPageState extends State<BenchPage>
     final placing0 = LabelPainter.debugPlacingFrames;
     _zoom.duration = Duration(milliseconds: phase.ms);
     _zoom.value = 0;
+    ExtrusionPainter.debugFrameLog = <int>[];
+    ExtrusionPainter.debugFrameVertices = <int>[];
+    ExtrusionPainter.debugFrameCullMicros = <int>[];
+    _extrusionVertices0 = ExtrusionPainter.debugVertices;
+    _extrusionRebuilds0 = ExtrusionPainter.debugRebuilds;
+    _extrusionRebuildUs0 = ExtrusionPainter.debugRebuildMicros;
     _recordStart = DateTime.now();
     _recording = true;
     unawaited(_zoom.repeat(reverse: true));
@@ -1382,6 +1400,57 @@ class _BenchPageState extends State<BenchPage>
     String ms(int us) => (us / 1000).toStringAsFixed(1);
     debugPrint('BENCH[$_label]   WORK   rasterize=${ms(rasterUs)}ms '
         'layout=${ms(layoutUs)}ms labels=${ms(labelUs)}ms');
+    // The 3D-building pass, per frame that drew one.
+    final extrusion = ExtrusionPainter.debugFrameLog;
+    if (extrusion != null && extrusion.isNotEmpty) {
+      final vertices = ExtrusionPainter.debugVertices - _extrusionVertices0;
+      final rebuilds = ExtrusionPainter.debugRebuilds - _extrusionRebuilds0;
+      final rebuildUs =
+          ExtrusionPainter.debugRebuildMicros - _extrusionRebuildUs0;
+      debugPrint('BENCH[$_label]   ${stats("EXTRUDE", extrusion)} '
+          'vertices/frame=${vertices ~/ extrusion.length} '
+          'rebuilds=$rebuilds (${ms(rebuildUs)}ms)');
+      // The slowest 1 % of those frames: their vertices and candidate
+      // gathering against every frame's, to tell a frame that drew more
+      // from one that gathered the candidates again.
+      final verts = ExtrusionPainter.debugFrameVertices!;
+      final culls = ExtrusionPainter.debugFrameCullMicros!;
+      if (verts.length == extrusion.length) {
+        final order = [for (var i = 0; i < extrusion.length; i++) i]
+          ..sort((a, b) => extrusion[b] - extrusion[a]);
+        final slow = order.take(math.max(1, extrusion.length ~/ 100));
+        double mean(Iterable<int> xs) =>
+            xs.isEmpty ? 0 : xs.reduce((a, b) => a + b) / xs.length;
+        final culled = [
+          for (final c in culls)
+            if (c > 0) c
+        ];
+        // Microseconds per vertex: the frames that built vertices (the
+        // rest redrew the last frame's), median against the slow ones.
+        final built = [
+          for (var i = 0; i < extrusion.length; i++)
+            if (verts[i] > 0) extrusion[i] / verts[i],
+        ]..sort();
+        final slowRate = [
+          for (final i in slow)
+            if (verts[i] > 0) extrusion[i] / verts[i],
+        ];
+        String at(double q) => built.isEmpty
+            ? '0'
+            : built[(built.length * q).floor().clamp(0, built.length - 1)]
+                .toStringAsFixed(3);
+        debugPrint('BENCH[$_label]   EXTRUDE-RATE built=${built.length}/'
+            '${extrusion.length} us/vertex p50=${at(0.5)} p90=${at(0.9)} '
+            'slow=${slowRate.isEmpty ? 0 : (slowRate.reduce((a, b) => a + b) / slowRate.length).toStringAsFixed(3)}');
+        debugPrint('BENCH[$_label]   EXTRUDE-SLOW n=${slow.length} '
+            'ms=${ms(mean([for (final i in slow) extrusion[i]]).round())} '
+            'verts=${mean([for (final i in slow) verts[i]]).round()} '
+            '(all ${mean(verts).round()}) '
+            'culled=${slow.where((i) => culls[i] > 0).length}/${slow.length} '
+            'cullMs=${ms(mean([for (final i in slow) culls[i]]).round())} '
+            'culls=${culled.length} (mean ${ms(mean(culled).round())}ms)');
+      }
+    }
     // The label pass split: full placement passes (and how many frames ran
     // one), replayed frames, the per-frame candidate sort, and paragraph
     // shaping on cache misses. Whatever `labels` holds beyond these is
@@ -1463,6 +1532,9 @@ class _BenchPageState extends State<BenchPage>
                     sprites: style.sprites,
                     glyphs: style.glyphs,
                     showLabels: _showLabels,
+                    extrusionMode: _extrude == 'flat'
+                        ? vt.ExtrusionMode.flat
+                        : vt.ExtrusionMode.perspective,
                     memoryCacheMaxBytes: (_safenow ? 16 : 24) * 1024 * 1024,
                     diskCacheMaximumSizeInBytes:
                         (_safenow ? 150 : 50) * 1024 * 1024,

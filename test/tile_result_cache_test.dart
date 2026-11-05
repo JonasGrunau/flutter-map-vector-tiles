@@ -57,6 +57,24 @@ void main() {
       expect(cache.get(const TileKey(2, 2, 0)), isNotNull);
     });
 
+    test('an over image counts towards the budget and is evicted with it', () {
+      // The layers above 3D buildings: a second image of a tile.
+      final cache = TileResultCache.forSignature('t-over', 10 * 1024 * 1024);
+      addTearDown(cache.clear);
+      final over = _image(8);
+      cache.put(const TileKey(2, 0, 0),
+          image: _image(8),
+          over: over,
+          symbols: const [],
+          renderedWith: const {});
+      expect(cache.totalCost, 2 * 256 + 64);
+      final kept = cache.get(const TileKey(2, 0, 0))!.over!.clone();
+      cache.clear();
+      expect(over.debugDisposed, isTrue);
+      expect(kept.debugDisposed, isFalse);
+      kept.dispose();
+    });
+
     test('releaseSignature frees a signature without creating one', () {
       final cache = TileResultCache.forSignature('t-release', 10 * 1024 * 1024);
       cache.put(const TileKey(1, 1, 1),

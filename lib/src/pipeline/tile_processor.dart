@@ -4,6 +4,7 @@ import '../core/tile_key.dart';
 import '../mvt/mvt_decoder.dart';
 import '../mvt/mvt_tile.dart';
 import '../style/expression.dart';
+import 'extrusion_mesh.dart';
 import 'prepare_gunzip_web.dart' if (dart.library.io) 'prepare_gunzip_io.dart';
 import 'prepared_tile.dart';
 import 'tile_filters.dart';
@@ -30,6 +31,10 @@ class PrepareInput {
   /// them; the rest leave every filter to the UI isolate.
   final Map<String, Int32List>? filterIds;
 
+  /// The source layers a `fill-extrusion` layer reads, whose polygons
+  /// are built into an [ExtrusionMesh] here.
+  final Set<String> extrusionLayers;
+
   const PrepareInput({
     required this.z,
     required this.x,
@@ -38,6 +43,7 @@ class PrepareInput {
     required this.layerProperties,
     this.promoteIds = const {},
     this.filterIds,
+    this.extrusionLayers = const {},
   });
 }
 
@@ -62,6 +68,9 @@ PreparedTile prepareTileSync(PrepareInput input, {CompiledFilters? filters}) {
     final promoteId = input.promoteIds[layer.name];
 
     final features = <PreparedFeature>[];
+    final mesh = input.extrusionLayers.contains(layer.name)
+        ? ExtrusionMeshBuilder(layer.extent)
+        : null;
     for (final feature in layer.features) {
       final type = switch (feature.type) {
         MvtGeomType.point => PreparedGeomType.point,
@@ -83,6 +92,9 @@ PreparedTile prepareTileSync(PrepareInput input, {CompiledFilters? filters}) {
       }
       byteSize += properties.length * 48 + 32; // +32: the four bound doubles
 
+      if (mesh != null && type == PreparedGeomType.polygon) {
+        mesh.add(features.length, feature.parts, feature.ringAreas);
+      }
       features.add(PreparedFeature(
         id: promoteId != null
             ? _promotedId(properties[promoteId])
@@ -104,10 +116,13 @@ PreparedTile prepareTileSync(PrepareInput input, {CompiledFilters? filters}) {
     for (final indices in matches.values) {
       byteSize += 16 + (indices?.lengthInBytes ?? 0);
     }
+    final built = mesh == null || mesh.isEmpty ? null : mesh.build();
+    byteSize += built?.byteSize ?? 0;
     layers[layer.name] = PreparedSourceLayer(
       extent: layer.extent,
       features: features,
       matches: matches,
+      mesh: built,
     );
   }
 
