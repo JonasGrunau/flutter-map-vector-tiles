@@ -182,7 +182,7 @@ has already shaped, and shown from the frame after it was asked for.
 
 ## Fonts
 
-![Tbilisi with Georgian and Latin labels](../screenshots/readme/scripts.webp)
+![Plovdiv with Cyrillic and Latin labels](../screenshots/readme/scripts.webp)
 
 Pass `glyphs: style.glyphs` and labels are drawn in the style's own
 fonts, from the glyph PBFs its `glyphs` URL serves, as MapLibre draws

@@ -29,10 +29,10 @@ Every image the package shows of itself, and the pipeline that makes them.
 | `munich-dark-framed.webp` | Munich old town + Isar, OpenFreeMap Fiord (dark), zoom 15 |
 | `readme/3d-flat.webp`, `readme/3d-perspective.webp` | The same Manhattan view with `ExtrusionMode.flat` and `.perspective` |
 | `readme/heatmap.webp` | Munich with a heatmap of the OpenMapTiles `poi` points |
-| `readme/query.webp` | The Frauenkirche selected through feature state after a tap |
-| `readme/scripts.webp` | Tbilisi: Georgian and Latin labels from the style's glyphs |
+| `readme/query.webp` | St. Joseph in Munich, zoom 17.5, after a tap on its icon: the church selected through feature state (blue fill, darker outline), the query's top hit (`poi_r7 · St. Joseph`) in a pill |
+| `readme/scripts.webp` | Plovdiv, zoom 15: Cyrillic and Latin labels from the style's glyphs |
 | `readme/label-screen.webp`, `readme/label-tile.webp` | Munich turned by 30° with `LabelMode.screen` and `.tile` |
-| `tool/shot_app.dart` | The app the shots are taken of: one map configured from the page URL (`style`, `lat`, `lon`, `zoom`, `rot`, `extrusion`, `labels`, `lang`); a tap selects a building. Outside `example/` to keep the example small, but built with the example's package configuration, and analysed as part of the root package |
+| `tool/shot_app.dart` | The app the shots are taken of: one map configured from the page URL (`style`, `lat`, `lon`, `zoom`, `rot`, `extrusion`, `labels`, `lang`); a tap selects the building under it and shows the query's top hit in a pill. Outside `example/` to keep the example small, but built with the example's package configuration, and analysed as part of the root package |
 | `tool/capture.mjs` | The shot list, the styles (OpenFreeMap's, with compact attribution and per-shot additions), a static server for the web build, and the Playwright capture in headless Chrome. Plain shots are converted straight into `readme/` |
 | `tool/frame.py` | Puts a 1206×2622 capture into the bezel, clipped to the bezel's own screen cutout |
 | `tool/contact.py` | Contact sheet of the raw captures (`tool/out/contact.png`), for reviewing them at a glance |
@@ -65,7 +65,23 @@ writes a contact sheet. Needs network (OpenFreeMap tiles and glyphs), node,
   these captures** (seen with Japanese over Tokyo, 2026-11-18): Flutter
   web downloads the fallback fonts, but labels already shaped keep their
   boxes. Pick places whose scripts the glyphs cover (Latin, Greek,
-  Cyrillic, Armenian, Georgian) until that is fixed.
+  Cyrillic, Armenian, Georgian) until that is fixed. That goes for what
+  `text-transform: uppercase` makes of a script, too: Liberty's
+  `label_other` uppercases district names, and Tbilisi's Georgian ones
+  came out as boxes (2026-11-18), probably because Georgian uppercases
+  to Mtavruli (U+1C90–U+1CBF), outside the glyphs' Georgian range.
+  Check the uppercase district labels as closely as the rest.
+- **Capitals** label themselves in Liberty's Bold `label_city_capital`,
+  which towers over the street labels at street zooms; the `scripts`
+  shot is of a city that is not a capital for that reason.
+- **A tap selects one feature, and in OpenFreeMap's tiles that is often
+  not one building.** Landmarks are split into `building:part`
+  features (the Frauenkirche into nave and towers, so selecting the nave
+  left the towers out), and buildings that share their attributes
+  (height, colour) are merged into one multipolygon per tile, so
+  selecting one lights up many at once. The `query` shot taps a
+  building that is one feature on its own; check a new one with the
+  tile before using it.
 - **The bezel** is Apple's official product bezel (Apple Design Resources,
   direct download
   `https://devimages-cdn.apple.com/design/resources/download/Bezel-iPhone-17.dmg`;

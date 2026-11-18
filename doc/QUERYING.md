@@ -2,7 +2,7 @@
 
 Ask what is drawn at a point, and restyle single features at runtime. Part of the [flutter_map_vector_tiles](../README.md) documentation.
 
-![A tapped building highlighted in red](../screenshots/readme/query.webp)
+![St. Joseph in Munich after a tap: the church highlighted in blue, and a pill naming the query's top hit, poi_r7 · St. Joseph](../screenshots/readme/query.webp)
 
 - [Example](#example)
 - [Queries](#queries)

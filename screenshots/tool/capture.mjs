@@ -16,7 +16,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const web = join(here, '../../example/build/web');
 const out = join(here, 'out');
 const readme = join(here, '../readme');
-const port = 8123;
 
 // Portrait shots are the iPhone 17 screen at 2x (1206x2622), the size of
 // the bezel's cutout; plain ones are landscape crops for the README.
@@ -51,15 +50,23 @@ const shots = [
   {
     name: 'scripts',
     view: plain,
-    // Tbilisi: Georgian is one of the scripts the style's glyphs cover.
-    query: { style: 'liberty', lat: 41.6925, lon: 44.8075, zoom: 15.6 },
+    // Plovdiv: Cyrillic and Latin, both from the style's glyphs. Not a
+    // capital, so the city name is Liberty's Regular `label_city`, not
+    // the Bold `label_city_capital` that towers over streets at this zoom.
+    query: { style: 'liberty', lat: 42.147, lon: 24.75, zoom: 15 },
   },
   {
     name: 'query',
     view: plain,
-    query: { style: 'liberty', lat: 48.1386, lon: 11.5733, zoom: 17 },
-    // The Frauenkirche, at the centre of the view.
-    click: { x: 400, y: 250 },
+    query: { style: 'liberty', lat: 48.155371, lon: 11.567606, zoom: 17.5 },
+    // St. Joseph in Maxvorstadt, Munich: the click lands on its POI icon,
+    // so the query's top hit is the label (shown in the pill) and the
+    // building under it is selected. The church is one feature in
+    // OpenFreeMap's tiles; most buildings are not (the Frauenkirche is
+    // split into nave and towers, buildings that share height and colour
+    // are merged into one multipolygon per tile), and a tap selects only
+    // that one feature.
+    click: { x: 400, y: 234 },
   },
   {
     name: 'label-screen',
@@ -128,8 +135,10 @@ const types = {
   '.otf': 'font/otf', '.ttf': 'font/ttf', '.frag': 'application/octet-stream',
 };
 
-function serve() {
-  return createServer((request, response) => {
+/// Serves the web build on a free port; resolves to the server once it
+/// listens.
+async function serve() {
+  const server = createServer((request, response) => {
     let path = normalize(decodeURIComponent(new URL(request.url, 'http://x').pathname));
     if (path.endsWith('/')) path += 'index.html';
     const file = join(web, path);
@@ -141,7 +150,9 @@ function serve() {
       'Content-Type': types[extname(file)] ?? 'application/octet-stream',
     });
     response.end(readFileSync(file));
-  }).listen(port);
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  return server;
 }
 
 // ---- capture
@@ -163,7 +174,7 @@ function networkQuiet(page, quiet, timeout) {
   });
 }
 
-async function capture(browser, shot) {
+async function capture(browser, port, shot) {
   const context = await browser.newContext({
     viewport: shot.view,
     deviceScaleFactor: 2,
@@ -200,10 +211,11 @@ const selected = wanted.length ? shots.filter((s) => wanted.includes(s.name)) : 
 mkdirSync(out, { recursive: true });
 mkdirSync(readme, { recursive: true });
 await writeStyles();
-const server = serve();
+const server = await serve();
+const { port } = server.address();
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 try {
-  for (const shot of selected) await capture(browser, shot);
+  for (const shot of selected) await capture(browser, port, shot);
 } finally {
   await browser.close();
   server.close();

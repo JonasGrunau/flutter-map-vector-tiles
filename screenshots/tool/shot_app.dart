@@ -15,7 +15,7 @@
 // - `lang`: label language
 //
 // A tap selects the building under it through feature state, as the
-// example does.
+// example does, and shows what the query returned on top in a pill.
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart' as vt;
@@ -38,6 +38,7 @@ class _ShotMapState extends State<ShotMap> {
   final _features = vt.VectorTileLayerController();
   late final Future<vt.Style> _style;
   vt.RenderedFeature? _selected;
+  vt.RenderedFeature? _hit;
   vt.Theme? _theme;
 
   double _number(String name, double fallback) =>
@@ -60,12 +61,23 @@ class _ShotMapState extends State<ShotMap> {
     super.dispose();
   }
 
-  /// The style's layers plus one that paints the selected building.
+  /// The style's layers plus two that paint the selected building: a
+  /// translucent blue fill and a darker outline.
   vt.Theme _withSelection(vt.Theme theme) {
     final buildings = theme.layers
         .where((layer) => layer.sourceLayer == 'building')
         .firstOrNull;
     if (buildings == null) return theme;
+    List<Object> whenSelected(num value) => [
+          'case',
+          [
+            'boolean',
+            ['feature-state', 'selected'],
+            false
+          ],
+          value,
+          0,
+        ];
     final selection = const vt.ThemeReader().read({
       'layers': [
         {
@@ -74,17 +86,20 @@ class _ShotMapState extends State<ShotMap> {
           'source': buildings.source,
           'source-layer': 'building',
           'paint': {
-            'fill-color': '#e53935',
-            'fill-opacity': [
-              'case',
-              [
-                'boolean',
-                ['feature-state', 'selected'],
-                false
-              ],
-              0.75,
-              0,
-            ],
+            'fill-color': '#1e88e5',
+            'fill-opacity': whenSelected(0.45),
+          },
+        },
+        {
+          'id': 'selection-outline',
+          'type': 'line',
+          'source': buildings.source,
+          'source-layer': 'building',
+          'layout': {'line-join': 'round'},
+          'paint': {
+            'line-color': '#0d47a1',
+            'line-width': 2,
+            'line-opacity': whenSelected(1),
           },
         },
       ],
@@ -98,6 +113,10 @@ class _ShotMapState extends State<ShotMap> {
   void _onTap(TapPosition tap, LatLng _) {
     final point = tap.relative;
     if (point == null) return;
+    final hits = _features
+        .queryRenderedFeatures(point)
+        .where((f) => !f.layerId.startsWith('selection'))
+        .toList();
     final previous = _selected;
     if (previous != null) {
       _features.removeFeatureState(
@@ -107,21 +126,73 @@ class _ShotMapState extends State<ShotMap> {
       );
       _selected = null;
     }
-    final building = _features
-        .queryRenderedFeatures(point)
-        .where((f) =>
-            f.layerId != 'selection' &&
-            f.sourceLayer == 'building' &&
-            f.id != null)
+    final building = hits
+        .where((f) => f.sourceLayer == 'building' && f.id != null)
         .firstOrNull;
-    if (building == null) return;
-    _features.setFeatureState(
-      source: building.source,
-      sourceLayer: building.sourceLayer,
-      id: building.id!,
-      state: {'selected': true},
+    if (building != null) {
+      _features.setFeatureState(
+        source: building.source,
+        sourceLayer: building.sourceLayer,
+        id: building.id!,
+        state: {'selected': true},
+      );
+      _selected = building;
+    }
+    setState(() => _hit = hits.firstOrNull);
+  }
+
+  /// What the last tap's query returned on top, as the example's snackbar
+  /// shows it: the style layer that drew it and its name.
+  Widget _hitPill(vt.RenderedFeature hit) {
+    final name =
+        hit.properties['name'] ?? hit.properties['class'] ?? hit.geometryType;
+    return Align(
+      alignment: Alignment.topCenter,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.92),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: const [
+              BoxShadow(color: Color(0x33000000), blurRadius: 6),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Color(0xff1e88e5),
+                    shape: BoxShape.circle,
+                  ),
+                  child: SizedBox.square(dimension: 8),
+                ),
+                const SizedBox(width: 8),
+                Text.rich(
+                  TextSpan(
+                    style: const TextStyle(fontSize: 13, color: Colors.black87),
+                    children: [
+                      TextSpan(
+                        text: hit.layerId,
+                        style: const TextStyle(color: Colors.black54),
+                      ),
+                      const TextSpan(text: ' · '),
+                      TextSpan(
+                        text: '$name',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
-    _selected = building;
   }
 
   @override
@@ -159,6 +230,7 @@ class _ShotMapState extends State<ShotMap> {
                     : vt.ExtrusionMode.flat,
                 logger: const vt.Logger.console(),
               ),
+              if (_hit case final hit?) _hitPill(hit),
               if (style.attributions.isNotEmpty)
                 Align(
                   alignment: Alignment.bottomCenter,

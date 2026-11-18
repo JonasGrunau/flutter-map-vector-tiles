@@ -143,13 +143,13 @@ flutter run --dart-define=MAPTILER_KEY=yourKey
       <a href="doc/STYLE_SUPPORT.md#heatmaps">Heatmap</a> layers
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="screenshots/readme/query.webp" alt="A tapped building highlighted in red"><br>
-      A tapped building, highlighted through <a href="doc/QUERYING.md">feature state</a>
+      <img src="screenshots/readme/query.webp" alt="St. Joseph in Munich after a tap: the church highlighted in blue, and a pill naming the query's top hit, poi_r7 · St. Joseph"><br>
+      A tap, <a href="doc/QUERYING.md">queried</a>: the top hit in the pill, the building under it highlighted through feature state
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="screenshots/readme/scripts.webp" alt="Tbilisi with Georgian and Latin labels"><br>
+      <img src="screenshots/readme/scripts.webp" alt="Plovdiv with Cyrillic and Latin labels"><br>
       Labels in the style's own <a href="doc/LABELS.md#fonts">fonts</a>
     </td>
     <td width="50%" align="center" valign="top">
