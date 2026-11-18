@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.11.1
 
 Full pub points again on Flutter 3.50.
 
