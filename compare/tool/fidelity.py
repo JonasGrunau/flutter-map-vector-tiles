@@ -15,7 +15,7 @@ import sys
 from PIL import Image
 
 ARMS = ['maplibre', 'fmvt', 'fmvt-raster', 'vmt-raster', 'vmt-vector',
-        'fmvt-none', 'fmvt-raster-none']
+        'fmvt-none', 'fmvt-raster-none', 'fmvt-3d']
 TITLES = {
     'maplibre': 'MapLibre GL JS (reference)',
     'fmvt': 'flutter_map_vector_tiles',
@@ -25,6 +25,7 @@ TITLES = {
     'vmt-raster': 'vector_map_tiles · raster',
     'vmt-vector': 'vector_map_tiles · vector',
     'fmvt-none': 'flutter_map_vector_tiles · TileOffset.none',
+    'fmvt-3d': 'flutter_map_vector_tiles · ExtrusionMode.perspective',
 }
 CAMERAS = ['munich-z14', 'munich-z16', 'munich-z16-rot45', 'munich-z17.5', 'munich-z18']
 

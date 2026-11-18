@@ -24,6 +24,12 @@ try {
       deviceScaleFactor: 2,
     });
     const page = await context.newPage();
+    // Onto the main display, the one at 0,0: macOS opens a window on
+    // whichever display is active, and a run in a window on a 50 Hz
+    // external monitor measures 50 Hz frames, not the Mac's 120 Hz.
+    const cdp = await context.newCDPSession(page);
+    const { windowId } = await cdp.send('Browser.getWindowForTarget');
+    await cdp.send('Browser.setWindowBounds', { windowId, bounds: { left: 0, top: 0 } });
     page.on('pageerror', (e) => console.error('pageerror:', e.message));
     await page.goto(`${lab}/app/?lab=${encodeURIComponent(lab)}`);
     // One page load is one run: wait until it is reported done, rather

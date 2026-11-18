@@ -42,6 +42,12 @@ class TileStore {
   /// fall back to the UI isolate.
   final TileFilterPlan? filterPlan;
 
+  /// Which source layers' polygons are built into extrusion meshes, by
+  /// data tile zoom (see `PrepareInput.extrusionLayers`); null for none.
+  /// Part of the memory cache's signature: a tile prepared without a mesh
+  /// cannot serve a theme that draws buildings from it.
+  final TileMeshPlan? meshPlan;
+
   /// Decoded tiles, shared process-wide between every store built on the
   /// same source *and* the same property keep-lists.
   ///
@@ -73,12 +79,13 @@ class TileStore {
     required this.layerProperties,
     this.promoteIds = const {},
     this.filterPlan,
+    this.meshPlan,
     Future<ByteCache?>? diskCache,
     int memoryCacheMaxBytes = 32 * 1024 * 1024,
     this.logger = const Logger.noop(),
   })  : _bytes = TileByteLoader(provider, diskCache ?? Future.value()),
         _memory = _memoryCaches.putIfAbsent(
-          _memorySignature(provider, layerProperties, promoteIds),
+          _memorySignature(provider, layerProperties, promoteIds, meshPlan),
           () => LruCache(
             maxEntries: 256,
             maxCost: memoryCacheMaxBytes,
@@ -97,6 +104,7 @@ class TileStore {
     VectorTileProvider provider,
     Map<String, Set<String>?> layerProperties,
     Map<String, String> promoteIds,
+    TileMeshPlan? meshPlan,
   ) {
     final buffer = StringBuffer(provider.cacheKey);
     for (final sourceLayer in layerProperties.keys.toList()..sort()) {
@@ -106,6 +114,8 @@ class TileStore {
           properties == null ? '*' : (properties.toList()..sort()).join(','));
       final promoteId = promoteIds[sourceLayer];
       if (promoteId != null) buffer.write('#id=$promoteId');
+      final mesh = meshPlan?.signatureOf(sourceLayer);
+      if (mesh != null) buffer.write('#mesh=$mesh');
     }
     return buffer.toString();
   }
@@ -196,6 +206,7 @@ class TileStore {
             layerProperties: layerProperties,
             promoteIds: promoteIds,
             filterIds: filterPlan?.idsAt(dataKey.z),
+            extrusionLayers: meshPlan?.at(dataKey.z) ?? const {},
           ),
           priority: priority,
           cancellation: cancellation,
@@ -293,6 +304,7 @@ class TileStore {
             layerProperties: layerProperties,
             promoteIds: promoteIds,
             filterIds: filterPlan?.idsAt(dataKey.z),
+            extrusionLayers: meshPlan?.at(dataKey.z) ?? const {},
           ),
           priority: priority,
           cancellation: _lifetime,

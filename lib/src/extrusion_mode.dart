@@ -1,0 +1,34 @@
+/// How `VectorTileLayer` draws `fill-extrusion` layers: flat, as every
+/// version before 3D buildings did (the default), or as 3D buildings
+/// ([perspective], opt-in).
+///
+/// flutter_map's camera has no pitch, so neither mode tilts the map. The
+/// difference is the one MapLibre GL shows with the camera looking
+/// straight down:
+///
+/// | | [flat] (default) | [perspective] |
+/// |---|---|---|
+/// | Look | footprints in the extrusion colour, no height | roofs lean away from the screen centre, walls show on the side facing it, shaded by the style's `light` |
+/// | Where | drawn into the tile images | drawn over the tile images, every frame the map moves |
+/// | Per-frame cost | none | UI-thread work in proportion to the buildings on screen |
+/// | Above them | the style's own order | the style's own order, as MapLibre has it: every layer above the first extrusion layer draws over the buildings, roofs included, and the ones below it beneath them |
+///
+/// Patterned extrusions (`fill-extrusion-pattern`) are drawn flat in
+/// either mode, and so is everything in `LabelMode.tile`, whose labels
+/// are in the tile images the buildings would cover.
+enum ExtrusionMode {
+  /// Flat footprints drawn into the tile images, as before 3D buildings
+  /// existed: no per-frame cost. The default, so a style with
+  /// `fill-extrusion` layers looks as it always has until the app opts
+  /// into [perspective].
+  flat,
+
+  /// 3D buildings, as MapLibre GL draws them at pitch 0: each frame
+  /// projects every building on screen through MapLibre's perspective
+  /// camera — a roof scales away from the screen centre by
+  /// `D / (D − height · pixels per metre)`, `D` being 1.5 viewport
+  /// heights — so the lean grows towards the screen edges and with the
+  /// zoom, and changes as the map pans. Walls and roofs are shaded with
+  /// the style's `light` (MapLibre's default when it has none).
+  perspective,
+}

@@ -5,6 +5,71 @@ import '../style/expression.dart';
 import '../style/expression_parser.dart';
 import '../style/theme.dart';
 
+/// Whether a layer drawn from style zoom [minzoom] up to [maxzoom]
+/// draws a data tile at [z] of a source spanning [minimumZoom] to
+/// [maximumZoom]: the tile is drawn at style zoom z — at and past z when
+/// it is the source's deepest level, at and before it when it is the
+/// shallowest.
+bool drawsDataZoom(double minzoom, double maxzoom, int z,
+    {required int minimumZoom, required int maximumZoom}) {
+  final lo = z <= minimumZoom ? double.negativeInfinity : z.toDouble();
+  final hi = z >= maximumZoom ? double.infinity : z + 1.0;
+  return minzoom < hi && maxzoom > lo;
+}
+
+/// Which source layers of one source a data tile gets building meshes
+/// for (`PrepareInput.extrusionLayers`), by its zoom: those a 3D layer
+/// draws at that zoom, in the band [drawsDataZoom] gives. A tile seen at
+/// other zooms only as a stand-in gets none — MapLibre builds no 3D
+/// bucket for a layer its tile's zoom hides either — so browsing below
+/// the buildings' zooms cuts no meshes, and a tile drawn from such an
+/// ancestor while its own data loads shows its buildings when it does.
+class TileMeshPlan {
+  final int minimumZoom;
+  final int maximumZoom;
+
+  final List<({String sourceLayer, double minzoom, double maxzoom})> _layers;
+
+  final _byZoom = <int, Set<String>>{};
+
+  /// The plan for [layers], one source's layers drawn in 3D.
+  TileMeshPlan(
+    Iterable<ThemeLayer> layers, {
+    required this.minimumZoom,
+    required this.maximumZoom,
+  }) : _layers = [
+          for (final layer in layers)
+            if (layer.sourceLayer case final sourceLayer?)
+              (
+                sourceLayer: sourceLayer,
+                minzoom: layer.minzoom,
+                maxzoom: layer.maxzoom,
+              ),
+        ];
+
+  /// The source layers a data tile at [z] builds meshes for.
+  Set<String> at(int z) => _byZoom.putIfAbsent(
+      z,
+      () => {
+            for (final layer in _layers)
+              if (drawsDataZoom(layer.minzoom, layer.maxzoom, z,
+                  minimumZoom: minimumZoom, maximumZoom: maximumZoom))
+                layer.sourceLayer,
+          });
+
+  /// [sourceLayer]'s part of the plan, for a decoded-tile cache's
+  /// signature: the zoom ranges of the layers drawing it in 3D; null
+  /// when it gets no mesh at any zoom.
+  String? signatureOf(String sourceLayer) {
+    final ranges = [
+      for (final layer in _layers)
+        if (layer.sourceLayer == sourceLayer)
+          '${layer.minzoom}-${layer.maxzoom}',
+    ]..sort();
+    return ranges.isEmpty ? null : ranges.join(',');
+  }
+}
+
 /// Which zoom-free layer filters a data tile of one source has resolved
 /// on the worker, by source layer.
 ///
@@ -45,11 +110,10 @@ class TileFilterPlan {
   /// null when there are none. A filter several layers share is
   /// resolved when any one of them draws in the band.
   Map<String, Int32List>? idsAt(int z) => _byZoom.putIfAbsent(z, () {
-        final lo = z <= minimumZoom ? double.negativeInfinity : z.toDouble();
-        final hi = z >= maximumZoom ? double.infinity : z + 1.0;
         final ids = <String, Set<int>>{};
         for (final layer in _layers) {
-          if (layer.minzoom < hi && layer.maxzoom > lo) {
+          if (drawsDataZoom(layer.minzoom, layer.maxzoom, z,
+              minimumZoom: minimumZoom, maximumZoom: maximumZoom)) {
             (ids[layer.sourceLayer] ??= {}).add(layer.id);
           }
         }

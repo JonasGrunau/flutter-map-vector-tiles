@@ -16,6 +16,7 @@ const _armOrder = [
   'fmvt-none',
   'fmvt-raster',
   'fmvt-raster-none',
+  'fmvt-3d',
   'vmt-raster',
   'vmt-vector',
 ];
@@ -25,6 +26,7 @@ const _armTitle = {
   'fmvt-raster': 'flutter_map_vector_tiles · LabelMode.tile',
   'fmvt-raster-none':
       'flutter_map_vector_tiles · LabelMode.tile · TileOffset.none',
+  'fmvt-3d': 'flutter_map_vector_tiles · ExtrusionMode.perspective',
   'vmt-raster': 'vector_map_tiles · raster',
   'vmt-vector': 'vector_map_tiles · vector',
 };

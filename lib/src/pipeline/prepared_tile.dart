@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import '../core/tile_key.dart';
+import 'extrusion_mesh.dart';
 
 /// A decoded, trimmed vector tile ready for rendering.
 ///
@@ -50,10 +51,16 @@ class PreparedSourceLayer {
   /// resolved on the UI isolate instead.
   final Map<int, Int32List?> matches;
 
+  /// The layer's polygons as buildings, for a source layer a
+  /// `fill-extrusion` layer reads (`PrepareInput.extrusionLayers`); null
+  /// for every other one, and where no feature is a polygon.
+  final ExtrusionMesh? mesh;
+
   const PreparedSourceLayer({
     required this.extent,
     required this.features,
     this.matches = const {},
+    this.mesh,
   });
 }
 

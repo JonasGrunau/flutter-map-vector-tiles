@@ -4,6 +4,10 @@ import 'package:flutter/material.dart' hide Theme;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart';
 import 'package:flutter_map_vector_tiles/src/grid/tile_result_cache.dart';
+import 'package:flutter_map_vector_tiles/src/pipeline/prepared_tile.dart';
+import 'package:flutter_map_vector_tiles/src/pipeline/tile_processor.dart';
+import 'package:flutter_map_vector_tiles/src/render/display_tile_data.dart';
+import 'package:flutter_map_vector_tiles/src/render/extrusion_layouter.dart';
 import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart'
     hide SymbolInstance;
 import 'package:flutter_map_vector_tiles/src/render/tile_rasterizer.dart';
@@ -11,8 +15,54 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 
 import 'fixtures/lifecycle_harness.dart';
+import 'fixtures/mvt_builder.dart';
 import 'show_labels_test.dart'
     show hasColor, labelApp, labelColor, labelledTile;
+
+/// The 3D buildings of a data tile of 40 × 40 houses, as a display tile
+/// over it lays them out.
+List<ExtrusionLayout> _buildings(TileKey tile) {
+  final layer = MvtTileBuilder().layer('building');
+  for (var i = 0; i < 40; i++) {
+    for (var j = 0; j < 40; j++) {
+      layer.feature(type: 3, properties: {
+        'h': 10 + i + j,
+      }, geometry: [
+        cmd(1, 1), zig(i * 100 + 10), zig(j * 100 + 10), //
+        cmd(2, 3), zig(70), zig(0), zig(0), zig(70), zig(-70), zig(0),
+        cmd(7, 1),
+      ]);
+    }
+  }
+  final prepared = prepareTileSync(PrepareInput(
+    z: tile.z,
+    x: tile.x,
+    y: tile.y,
+    bytes: layer.done().build(),
+    layerProperties: const {'building': null},
+    extrusionLayers: const {'building'},
+  ));
+  final theme = const ThemeReader().read({
+    'layers': [
+      {
+        'id': 'b',
+        'type': 'fill-extrusion',
+        'source': 's',
+        'source-layer': 'building',
+        'paint': {
+          'fill-extrusion-color': '#e0d8cc',
+          'fill-extrusion-height': ['get', 'h'],
+        },
+      },
+    ],
+  });
+  return ExtrusionLayouter.layout(
+    layers: ExtrusionLayouter.layersOf(theme),
+    data: DisplayTileData(
+        displayKey: tile, sources: <String, PreparedTile>{'s': prepared}),
+    styleZoom: tile.z.toDouble(),
+  )!;
+}
 
 ui.Image _image(int size) {
   final recorder = ui.PictureRecorder();
@@ -55,6 +105,66 @@ void main() {
       expect(cache.length, 2);
       expect(cache.get(const TileKey(2, 0, 0)), isNull, reason: 'evicted');
       expect(cache.get(const TileKey(2, 2, 0)), isNotNull);
+    });
+
+    test('an over image counts towards the budget and is evicted with it', () {
+      // The layers above 3D buildings: a second image of a tile.
+      final cache = TileResultCache.forSignature('t-over', 10 * 1024 * 1024);
+      addTearDown(cache.clear);
+      final over = _image(8);
+      cache.put(const TileKey(2, 0, 0),
+          image: _image(8),
+          over: over,
+          symbols: const [],
+          renderedWith: const {});
+      expect(cache.totalCost, 2 * 256 + 64);
+      final kept = cache.get(const TileKey(2, 0, 0))!.over!.clone();
+      cache.clear();
+      expect(over.debugDisposed, isTrue);
+      expect(kept.debugDisposed, isFalse);
+      kept.dispose();
+    });
+
+    test('3D buildings count towards the budget, mesh and all', () {
+      // They outlive the decoded tile they come from: what they keep
+      // reachable is the cache's to account for.
+      const key = TileKey(14, 8192, 8192);
+      final buildings = _buildings(key);
+      final layout = buildings.single;
+      final cache =
+          TileResultCache.forSignature('t-extrusions', 10 * 1024 * 1024);
+      addTearDown(cache.clear);
+      cache.put(key,
+          image: _image(4),
+          symbols: const [],
+          extrusions: buildings,
+          renderedWith: const {'s'});
+      expect(cache.totalCost,
+          4 * 4 * 4 + 64 + layout.byteSize + layout.mesh.byteSize);
+    });
+
+    test('tiles whose 3D buildings are past the budget are evicted', () {
+      // Each tile's image is 64 bytes, its buildings tens of KB: by the
+      // images alone a 4 KB budget holds all four tiles.
+      final cache = TileResultCache.forSignature('t-extrusions-budget', 4096);
+      addTearDown(cache.clear);
+      for (var x = 0; x < 4; x++) {
+        final key = TileKey(14, 8192 + x, 8192);
+        cache.put(key,
+            image: _image(4),
+            symbols: const [],
+            extrusions: _buildings(key),
+            renderedWith: const {'s'});
+      }
+      // The newest is kept, past the budget or not.
+      expect(cache.length, 1);
+      final kept = cache.get(const TileKey(14, 8195, 8192))!;
+      var pinned = 0;
+      for (final layout in kept.extrusions) {
+        pinned += layout.byteSize + layout.mesh.byteSize;
+      }
+      expect(pinned, greaterThan(4096));
+      expect(cache.totalCost, greaterThanOrEqualTo(pinned));
     });
 
     test('releaseSignature frees a signature without creating one', () {

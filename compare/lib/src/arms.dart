@@ -28,6 +28,11 @@ enum Arm {
   fmvtRasterNone('fmvt-raster-none', 'flutter_map_vector_tiles',
       'LabelMode.tile · TileOffset.none'),
 
+  /// [fmvt] with 3D buildings (`ExtrusionMode.perspective`, which the
+  /// package leaves off by default): the arm to set beside MapLibre GL,
+  /// which draws `fill-extrusion` layers in 3D.
+  fmvt3d('fmvt-3d', 'flutter_map_vector_tiles', 'ExtrusionMode.perspective'),
+
   /// `vector_map_tiles` at its defaults — raster mode — plus
   /// `maximumZoom: 22`, without which its layer goes blank past z18.
   vmtRaster('vmt-raster', 'vector_map_tiles', 'raster mode (default)'),
@@ -61,6 +66,7 @@ enum Arm {
         fmvtNone => 'TileOffset.none',
         fmvtRaster => 'LabelMode.tile',
         fmvtRasterNone => 'LabelMode.tile and TileOffset.none',
+        fmvt3d => 'ExtrusionMode.perspective',
         vmtRaster => 'raster mode, its default',
         vmtVector => 'vector mode',
       };
@@ -131,6 +137,9 @@ Future<LoadedArm> loadArm(
         labelMode: arm == Arm.fmvtRaster || arm == Arm.fmvtRasterNone
             ? vt.LabelMode.tile
             : vt.LabelMode.screen,
+        extrusionMode: arm == Arm.fmvt3d
+            ? vt.ExtrusionMode.perspective
+            : vt.ExtrusionMode.flat,
         cachePath: cacheDir == null ? null : () async => '$cacheDir/fmvt',
       ),
       vt.VectorTileLayer.clearMemoryCache,
