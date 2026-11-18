@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
 import 'package:flutter_map_vector_tiles/src/logger.dart';
+import 'package:flutter_map_vector_tiles/src/render/hit_test.dart';
 import 'package:flutter_map_vector_tiles/src/render/label_painter.dart';
 import 'package:flutter_map_vector_tiles/src/render/symbol_layouter.dart';
 import 'package:flutter_map_vector_tiles/src/style/expression.dart';
@@ -1241,6 +1242,49 @@ void main() {
 
       expect(place(0), hasLength(1));
       expect(place(90), hasLength(2));
+    });
+
+    test('a query finds turned text where it is drawn', () async {
+      // Moved off its anchor by text-offset or text-translate, turned
+      // text was tested as a box turned about the unmoved anchor: a tap
+      // on the label missed it and a tap on the empty anchor hit it.
+      for (final (layout, paint) in [
+        (
+          const <String, Object?>{
+            'text-offset': [0, 3]
+          },
+          const <String, Object?>{}
+        ),
+        (
+          const <String, Object?>{},
+          const <String, Object?>{
+            'text-translate': [60, 0]
+          }
+        ),
+      ]) {
+        PlacedSymbol symbol() => _symbol(
+            _layer({
+              'text-field': 'x',
+              'text-size': 20,
+              'text-rotate': 90,
+              ...layout,
+            }, paint: paint),
+            const Offset(200, 200),
+            text: 'WWWWW');
+        final (left, right) = _span(await _render([symbol()]), 200, _black)!;
+        final drawn = Offset((left + right) / 2, 200);
+        expect((drawn.dx - 200).abs(), greaterThan(40),
+            reason: 'drawn off its anchor');
+        final placed = symbol();
+        final painter = LabelPainter();
+        addTearDown(painter.dispose);
+        expect(_paint([placed], painter: painter), hasLength(1));
+        expect(painter.hitTestLabels(HitArea([drawn])), [placed.instance],
+            reason: '$layout $paint');
+        expect(
+            painter.hitTestLabels(HitArea(const [Offset(200, 200)])), isEmpty,
+            reason: '$layout $paint');
+      }
     });
 
     test('map-aligned point text turns with the map', () async {

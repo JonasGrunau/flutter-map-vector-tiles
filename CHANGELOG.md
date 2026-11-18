@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+Taps on turned labels find them where they are drawn.
+
+- 🐛 `queryRenderedFeatures` finds turned label text where it is
+  drawn. Text moved by `text-translate`, and point text with
+  `text-rotate` and a `text-offset` or `text-anchor`, was tested turned
+  about its unmoved anchor, so a tap on the label could miss it and a
+  tap beside it could hit it.
+
 ## 2.11.1
 
 Full pub points again on Flutter 3.50.
