@@ -60,10 +60,7 @@ abstract final class FeatureQuery {
           layer is! CircleThemeLayer) {
         continue;
       }
-      if (perspectiveExtrusions &&
-          layer is FillThemeLayer &&
-          layer.extrusion &&
-          layer.pattern == null) {
+      if (perspectiveExtrusions && layer is FillThemeLayer && layer.drawnIn3D) {
         continue;
       }
       if (layerIds != null && !layerIds.contains(layer.id)) continue;

@@ -275,10 +275,7 @@ class TileRasterizer {
       // and the next one never starts with — a layer that draws nothing.
       if (layer is SymbolThemeLayer ||
           layer is HeatmapThemeLayer ||
-          (!flatExtrusions &&
-              layer is FillThemeLayer &&
-              layer.extrusion &&
-              layer.pattern == null) ||
+          (!flatExtrusions && layer is FillThemeLayer && layer.drawnIn3D) ||
           !layer.coversZoom(styleZoom)) {
         continue;
       }

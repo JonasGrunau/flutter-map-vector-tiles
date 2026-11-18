@@ -613,7 +613,8 @@ zooms, pans, rotations and flings
 points less, most while panning and flinging; the iPhone and the Mac
 stayed within 1 point, and Chrome within 2.3 except on the first fling
 (5.8 points). The buildings' meshes are cut
-while a tile is decoded and kept with it — 65–550 KB a tile in
+while a tile is decoded, only for tiles at zooms where a 3D layer
+draws, and kept with it — 65–550 KB a tile in
 central Munich, counted against `memoryCacheMaxBytes`, so the same
 budget holds fewer decoded tiles, and, for as long as a finished tile
 in the raster cache holds them, against `rasterCacheMaxBytes` too; on the iPhone the app's memory at

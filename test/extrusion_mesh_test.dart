@@ -1,5 +1,7 @@
 import 'package:flutter_map_vector_tiles/src/pipeline/extrusion_mesh.dart';
+import 'package:flutter_map_vector_tiles/src/pipeline/tile_filters.dart';
 import 'package:flutter_map_vector_tiles/src/pipeline/tile_processor.dart';
+import 'package:flutter_map_vector_tiles/src/style/theme_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fixtures/mvt_builder.dart';
@@ -256,5 +258,44 @@ void main() {
       extrusionLayers: const {'building'},
     ));
     expect(prepared.layers['building']!.mesh, isNull);
+  });
+
+  group('mesh plan', () {
+    TileMeshPlan plan({double minzoom = 14, double maxzoom = 24}) =>
+        TileMeshPlan(
+          const ThemeReader().read({
+            'layers': [
+              {
+                'id': 'b',
+                'type': 'fill-extrusion',
+                'source': 's',
+                'source-layer': 'building',
+                'minzoom': minzoom,
+                'maxzoom': maxzoom,
+              },
+            ],
+          }).layers,
+          minimumZoom: 0,
+          maximumZoom: 14,
+        );
+
+    test('a data tile gets a mesh only at a zoom its 3D layer draws', () {
+      final p = plan();
+      expect(p.at(13), isEmpty, reason: 'below the layer: a stand-in only');
+      expect(p.at(14), {'building'});
+      expect(plan(minzoom: 13.5).at(13), {'building'},
+          reason: 'the layer draws within the band 13 to 14');
+      expect(plan(maxzoom: 14).at(14), isEmpty);
+    });
+
+    test("the source's deepest level serves every zoom past it", () {
+      expect(plan(minzoom: 16).at(14), {'building'});
+    });
+
+    test('plans for other zooms decode into other caches', () {
+      expect(plan().signatureOf('building'),
+          isNot(plan(minzoom: 15).signatureOf('building')));
+      expect(plan().signatureOf('road'), isNull);
+    });
   });
 }

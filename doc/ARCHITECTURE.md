@@ -1120,7 +1120,11 @@ instead; following the style is MapLibre's answer, and the one a
 style can control. Three stages:
 
 - **Mesh, on the worker** (`pipeline/extrusion_mesh.dart`). For every
-  source layer an extrusion layer reads (`PrepareInput.extrusionLayers`),
+  source layer an extrusion layer reads at the tile's zoom
+  (`PrepareInput.extrusionLayers`, from the store's `TileMeshPlan`: the
+  band a data tile is drawn in, as for the worker's filters — a tile
+  only ever a stand-in for a zoom where the layer draws gets none, as
+  MapLibre builds no 3D bucket for a layer its tile's zoom hides),
   `prepareTileSync` cuts each polygon — an exterior ring and its holes —
   into roof triangles with a port of MapLibre's earcut
   (`render/earcut.dart`) and lists its ring edges as walls, without the
@@ -1144,7 +1148,8 @@ style can control. Three stages:
   only this package drew. It is geometry only, so it serves every
   extrusion layer over the source layer at every zoom, and it counts in
   `PreparedTile.byteSize` (65–580 KB a Munich tile); the store's memory
-  signature records which source layers carry one.
+  signature records which source layers carry one, and at which
+  zooms.
 - **Layout, on the UI isolate, per data tile** (`ExtrusionLayouter`).
   Which polygons the layer's filter selects, their heights and bases,
   and colour classes (the colour with the vertical-gradient inputs at
@@ -1168,13 +1173,18 @@ style can control. Three stages:
   costs the painter a sort. A wall shared with a drawn neighbour notes
   the neighbour, whose roof at the frame's zoom is its floor. A
   building of height 0 stays, a roof on the ground, as MapLibre draws
-  it: nothing else draws the layer.
+  it: nothing else draws the layer. Heights are held under 100 km, past
+  which the `Float32` they are stored in would hold infinity.
 - **Painter, every frame** (`ExtrusionPainter`). The current tiles'
   layouts are on offer, and during a zoom crossing the nearest
   retained level's only where the current level draws nothing from the
   same place — a data tile the current level also draws is skipped,
   one it cuts into descendants offers only the buildings outside them
-  (a skip mask). Every building of the layouts on offer is sorted by
+  (a skip mask). A current tile drawn from an ancestor while its own
+  data loads is masked the same way against the finished tiles beside
+  it: the ancestor's copy of a building a sibling draws from its own
+  data is the same building again. The heatmap's retained level is cut
+  by the same rule (`_uncovered`). Every building of the layouts on offer is sorted by
   roof height halfway through the layout's zoom band (a counting sort
   in decimetres, stable — a height ramping from 0 over the level would
   sort every building at 0 at its start), per layer in style order,

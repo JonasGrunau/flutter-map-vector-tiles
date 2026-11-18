@@ -81,9 +81,6 @@ class ExtrusionLayout {
   /// cull reads one list in drawing order.
   final Float32List bounds;
 
-  /// The tallest [heights] entry.
-  final double maxHeight;
-
   ExtrusionLayout._({
     required this.layer,
     required this.stateVersion,
@@ -101,7 +98,6 @@ class ExtrusionLayout {
     required this.classes,
     required this.wallCoveredBy,
     required this.bounds,
-    required this.maxHeight,
   });
 
   int get length => buildings.length;
@@ -200,10 +196,7 @@ abstract final class ExtrusionLayouter {
   /// layer without a pattern.
   static List<FillThemeLayer> layersOf(Theme theme) => [
         for (final layer in theme.layers)
-          if (layer is FillThemeLayer &&
-              layer.extrusion &&
-              layer.pattern == null)
-            layer,
+          if (layer is FillThemeLayer && layer.drawnIn3D) layer,
       ];
 
   /// The buildings of every layer in [layers] visible somewhere in the
@@ -245,6 +238,16 @@ abstract final class ExtrusionLayouter {
     return any ? out : null;
   }
 
+  /// The most a height or base is taken to be, in metres: far past the
+  /// near plane at every zoom, and a finite `Float32` — a larger value
+  /// stored would turn into infinity, which no sort key rounds.
+  static const double _maxMetres = 100000;
+
+  /// [value] as a height or base: 0 when negative or not a number,
+  /// [_maxMetres] at most.
+  static double _metres(double value) =>
+      value >= 0 ? (value > _maxMetres ? _maxMetres : value) : 0;
+
   static ExtrusionLayout _layoutLayer(
     FillThemeLayer layer,
     TileKey tile,
@@ -284,7 +287,6 @@ abstract final class ExtrusionLayouter {
         layer.extrusionVerticalGradient?.eval(EvalContext(zoom: styleZoom)) ??
             true;
     var count = 0;
-    var maxHeight = 0.0;
     var last = -1;
     var drawn = false;
     var height = 0.0, base = 0.0;
@@ -318,12 +320,12 @@ abstract final class ExtrusionLayouter {
           );
           nextHeight = heightNext != null ? heightProp.eval(next) : height;
           nextBase = baseNext != null ? baseProp.eval(next) : base;
-          if (!(nextHeight >= 0)) nextHeight = 0;
-          if (!(nextBase >= 0)) nextBase = 0;
+          nextHeight = _metres(nextHeight);
+          nextBase = _metres(nextBase);
           if (nextBase > nextHeight) nextBase = nextHeight;
         }
-        if (!(height >= 0)) height = 0;
-        if (!(base >= 0)) base = 0;
+        height = _metres(height);
+        base = _metres(base);
         if (base > height) base = height;
         // A building of height 0 stays: MapLibre draws its roof on the
         // ground, roof-shaded — and nothing else draws it, the layer is
@@ -356,7 +358,6 @@ abstract final class ExtrusionLayouter {
       bounds[count * 4 + 1] = meshBounds[p * 4 + 1];
       bounds[count * 4 + 2] = meshBounds[p * 4 + 2];
       bounds[count * 4 + 3] = meshBounds[p * 4 + 3];
-      if (height > maxHeight) maxHeight = height;
       count++;
     }
     // A wall another drawn building stands in front of starts at that
@@ -417,7 +418,6 @@ abstract final class ExtrusionLayouter {
       wallCoveredBy: coveredBy,
       bounds:
           Float32List.fromList(Float32List.sublistView(bounds, 0, count * 4)),
-      maxHeight: maxHeight,
     );
   }
 }

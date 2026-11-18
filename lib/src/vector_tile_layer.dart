@@ -878,12 +878,13 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         executor: _executor,
         layerProperties: layerProperties,
         promoteIds: promoteIds,
-        extrusionLayers: {
-          if (_perspectiveExtrusions)
-            for (final layer in _extrusionLayers)
-              if (layer.source == sourceId && layer.sourceLayer != null)
-                layer.sourceLayer!,
-        },
+        meshPlan: _perspectiveExtrusions
+            ? TileMeshPlan(
+                _extrusionLayers.where((layer) => layer.source == sourceId),
+                minimumZoom: provider.minimumZoom,
+                maximumZoom: provider.maximumZoom,
+              )
+            : null,
         filterPlan: TileFilterPlan(
           widget.theme.layers.where((layer) => layer.source == sourceId),
           minimumZoom: provider.minimumZoom,
@@ -2576,16 +2577,18 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         layers: _extrusionLayers, data: data, styleZoom: styleZoom);
   }
 
-  /// The buildings on offer to the extrusion painter: every current
-  /// tile's, each data tile's once — display tiles over the same data
-  /// tile share its layouts — and, while a zoom crossing is in flight,
-  /// the retained level's, but only where the current level offers none
-  /// from the same place. Data tiles of one level are shared across
-  /// display levels up to the source's deepest, so for most crossings
-  /// that is no building at all; past a source's deepest level the two
-  /// levels hold the same buildings, and drawing both would draw them
-  /// twice. Only the retained level nearest the current one takes part,
-  /// as for [_heatmapTiles].
+  /// The buildings on offer to the extrusion painter: every finished
+  /// current tile's, each data tile's once — display tiles over the same
+  /// data tile share its layouts — then, where those draw nothing from
+  /// the same place, a current tile's drawn from an ancestor while its
+  /// own data loads, and, while a zoom crossing is in flight, the
+  /// retained level's. Data tiles of one level are shared across display
+  /// levels up to the source's deepest, so for most crossings that is no
+  /// building at all; past a source's deepest level the two levels hold
+  /// the same buildings, and drawing both would draw them twice. An
+  /// ancestor's copy of a building another tile draws from its own data
+  /// is the same building again. Only the retained level nearest the
+  /// current one takes part, as for [_heatmapTiles].
   ///
   /// Each data tile's buildings are offered once per layer and zoom,
   /// whichever display tiles hold them: two of them can hold different
@@ -2594,12 +2597,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// tile decoded again — and the painter would draw both.
   Iterable<ExtrusionTile> _extrusionLayouts() {
     final layers = _extrusionLayers;
-    final chosen = <(String, TileKey, int?), ExtrusionLayout>{};
+    final finished = <(String, TileKey, int?), ExtrusionLayout>{};
     void choose(
         Map<(String, TileKey, int?), ExtrusionLayout> into, _DisplayTile tile) {
       for (final layout in tile.extrusions ?? const <ExtrusionLayout>[]) {
         final key = (layout.layer.id, layout.tile, layout.zoom);
-        if (!identical(into, chosen) && chosen.containsKey(key)) continue;
         final held = into[key];
         if (held == null || _preferLayout(layout, held, layers)) {
           into[key] = layout;
@@ -2607,19 +2609,78 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
     }
 
+    final provisional = <(String, TileKey, int?), ExtrusionLayout>{};
     for (final tile in _tiles.values) {
-      choose(chosen, tile);
+      choose(tile.isProvisional ? provisional : finished, tile);
     }
     final out = <ExtrusionTile>[
-      for (final layout in chosen.values) (layout: layout, skip: null, side: 1),
+      for (final layout in finished.values)
+        (layout: layout, skip: null, side: 1),
     ];
+    // Per layer id, the data tiles drawn so far.
+    final drawn = <String, Set<TileKey>>{};
+    for (final layout in finished.values) {
+      (drawn[layout.layer.id] ??= {}).add(layout.tile);
+    }
+    final offered = <ExtrusionTile>[];
+    void offer(Iterable<ExtrusionLayout> layouts) {
+      offered.clear();
+      for (final layout in layouts) {
+        final tile = _uncoveredLayout(
+            layout, drawn[layout.layer.id] ?? const <TileKey>{});
+        if (tile != null) offered.add(tile);
+      }
+      out.addAll(offered);
+      // What is offered now counts as drawn for the next round: a
+      // retained tile under it is drawn already.
+      for (final tile in offered) {
+        (drawn[tile.layout.layer.id] ??= {}).add(tile.layout.tile);
+      }
+    }
+
+    offer(provisional.values);
     final level = _currentZoom;
     if (_retained.isEmpty || level == null) return out;
-    // Per layer id, the data tiles the current level draws.
-    final current = <String, Set<TileKey>>{};
-    for (final layout in chosen.values) {
-      (current[layout.layer.id] ??= {}).add(layout.tile);
+    final nearest = _nearestRetainedLevel(level);
+    final retained = <(String, TileKey, int?), ExtrusionLayout>{};
+    for (final tile in _retained.values) {
+      if (tile.key.z == nearest) choose(retained, tile);
     }
+    offer(retained.values);
+    return out;
+  }
+
+  /// [layout] as offered under the data tiles [drawn] already draws: not
+  /// at all when one of them is its own data tile or an ancestor of it;
+  /// with a skip mask where its descendants up to three levels deeper
+  /// are drawn; whole otherwise.
+  static ExtrusionTile? _uncoveredLayout(
+      ExtrusionLayout layout, Set<TileKey> drawn) {
+    final key = layout.tile;
+    if (drawn.contains(key)) return null;
+    int? depth;
+    for (final other in drawn) {
+      final shift = other.z - key.z;
+      if (shift < 0 &&
+          other.x == key.x >> -shift &&
+          other.y == key.y >> -shift) {
+        return null;
+      }
+      if (shift > 0 &&
+          shift <= 3 &&
+          other.x >> shift == key.x &&
+          other.y >> shift == key.y) {
+        depth = shift;
+      }
+    }
+    if (depth == null) return (layout: layout, skip: null, side: 1);
+    final mask = _uncovered(key, depth, drawn.contains);
+    if (mask == null) return null;
+    return (layout: layout, skip: mask.skip, side: mask.side);
+  }
+
+  /// The retained level nearest [level] — the deeper of two as near.
+  int? _nearestRetainedLevel(int level) {
     int? nearest;
     for (final key in _retained.keys) {
       final d = (key.z - level).abs();
@@ -2629,54 +2690,34 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         nearest = key.z;
       }
     }
-    final retained = <(String, TileKey, int?), ExtrusionLayout>{};
-    for (final tile in _retained.values) {
-      if (tile.key.z == nearest) choose(retained, tile);
+    return nearest;
+  }
+
+  /// What of [key]'s tile shows past the tiles [shift] levels deeper —
+  /// or, at a shift of 0 or less, the one over it — that [covers] says
+  /// are drawn: null when they cover it whole; otherwise a `side × side`
+  /// grid over it marking the covered cells, a null mask when none is.
+  static ({Uint8List? skip, int side})? _uncovered(
+      TileKey key, int shift, bool Function(TileKey key) covers) {
+    if (shift <= 0) {
+      return covers(TileKey(key.z + shift, key.x >> -shift, key.y >> -shift))
+          ? null
+          : (skip: null, side: 1);
     }
-    for (final layout in retained.values) {
-      final drawn = current[layout.layer.id] ?? const <TileKey>{};
-      final key = layout.tile;
-      if (drawn.contains(key)) continue;
-      // The current level's data tiles over this one: an ancestor
-      // (a zoom-out) covers it whole, descendants (a zoom-in) cut it
-      // into a side × side grid.
-      int? depth;
-      for (final other in drawn) {
-        final shift = other.z - key.z;
-        if (shift < 0 &&
-            other.x == key.x >> -shift &&
-            other.y == key.y >> -shift) {
-          depth = shift;
-          break;
-        }
-        if (shift > 0 &&
-            shift <= 3 &&
-            other.x >> shift == key.x &&
-            other.y >> shift == key.y) {
-          depth = shift;
+    final side = 1 << shift;
+    final skip = Uint8List(side * side);
+    var covered = 0;
+    for (var dy = 0; dy < side; dy++) {
+      for (var dx = 0; dx < side; dx++) {
+        if (covers(TileKey(
+            key.z + shift, (key.x << shift) + dx, (key.y << shift) + dy))) {
+          skip[dy * side + dx] = 1;
+          covered++;
         }
       }
-      if (depth == null) {
-        out.add((layout: layout, skip: null, side: 1));
-        continue;
-      }
-      if (depth < 0) continue;
-      final side = 1 << depth;
-      final skip = Uint8List(side * side);
-      var covered = 0;
-      for (var dy = 0; dy < side; dy++) {
-        for (var dx = 0; dx < side; dx++) {
-          if (drawn.contains(TileKey(
-              key.z + depth, (key.x << depth) + dx, (key.y << depth) + dy))) {
-            skip[dy * side + dx] = 1;
-            covered++;
-          }
-        }
-      }
-      if (covered == side * side) continue;
-      out.add((layout: layout, skip: skip, side: side));
     }
-    return out;
+    if (covered == side * side) return null;
+    return covered == 0 ? (skip: null, side: 1) : (skip: skip, side: side);
   }
 
   /// Whether [a] is the layout to offer over [b], of the same buildings:
@@ -2708,46 +2749,20 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
     final level = _currentZoom;
     if (_retained.isEmpty || level == null) return;
-    int? nearest;
-    for (final key in _retained.keys) {
-      final d = (key.z - level).abs();
-      if (nearest == null ||
-          d < (nearest - level).abs() ||
-          (d == (nearest - level).abs() && key.z > nearest)) {
-        nearest = key.z;
-      }
-    }
+    final nearest = _nearestRetainedLevel(level);
     bool covers(TileKey key) => _tiles[key]?.heatmap != null;
     for (final tile in _retained.values) {
       final heatmap = tile.heatmap;
       final key = tile.key;
       if (heatmap == null || key.z != nearest) continue;
+      // A zoom-out: one current tile lies over this one, whole. A
+      // zoom-in: the current tiles over this one cut it into a
+      // side × side grid; past three levels at once there is no
+      // fallback, the arriving tiles cover what they can.
       final shift = level - key.z;
-      if (shift <= 0) {
-        // A zoom-out: one current tile lies over this one, whole.
-        if (!covers(TileKey(level, key.x >> -shift, key.y >> -shift))) {
-          yield (key: key, heatmap: heatmap, skip: null);
-        }
-        continue;
-      }
-      // A zoom-in: the current tiles over this one cut it into a
-      // side × side grid. Past three levels at once there is no
-      // fallback; the arriving tiles cover what they can.
       if (shift > 3) continue;
-      final side = 1 << shift;
-      final skip = Uint8List(side * side);
-      var covered = 0;
-      for (var dy = 0; dy < side; dy++) {
-        for (var dx = 0; dx < side; dx++) {
-          if (covers(
-              TileKey(level, (key.x << shift) + dx, (key.y << shift) + dy))) {
-            skip[dy * side + dx] = 1;
-            covered++;
-          }
-        }
-      }
-      if (covered == side * side) continue;
-      yield (key: key, heatmap: heatmap, skip: covered == 0 ? null : skip);
+      final mask = _uncovered(key, shift, covers);
+      if (mask != null) yield (key: key, heatmap: heatmap, skip: mask.skip);
     }
   }
 

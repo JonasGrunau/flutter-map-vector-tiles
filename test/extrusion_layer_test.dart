@@ -19,6 +19,9 @@ import 'fixtures/mvt_builder.dart';
 // the screen centre.
 const _zoom = 16.0;
 const _key = TileKey(16, 32768, 32768);
+
+/// The tile below [_key], under the same parent.
+const _below = TileKey(16, 32768, 32769);
 const _size = 512;
 const _mid = _size ~/ 2;
 
@@ -90,6 +93,12 @@ Uint8List _levelTile(int level) {
 /// The building on [_key] and on its parent; every other tile empty,
 /// and the z16 ones left of the centre held until [release].
 class _ZoomingIn extends CountingProvider {
+  _ZoomingIn({bool Function(TileKey tile)? holds})
+      : holds = holds ?? ((tile) => tile.z == 16 && tile.x < _key.x);
+
+  /// The tiles held until [release].
+  final bool Function(TileKey tile) holds;
+
   final _held = Completer<void>();
 
   void release() {
@@ -108,7 +117,7 @@ class _ZoomingIn extends CountingProvider {
     note(tile);
     if (tile == _key) return TileResponseData(_levelTile(16));
     if (tile == _key.parent) return TileResponseData(_levelTile(15));
-    if (tile.z == 16 && tile.x < _key.x) await _held.future;
+    if (holds(tile)) await _held.future;
     return TileResponseData(
         MvtTileBuilder().layer('building', extent: extent).done().build());
   }
@@ -500,6 +509,45 @@ void main() {
     // The loads let through finish after the map is gone; on the web
     // their preparation yields through a timer, which must run before
     // the test ends.
+    await tester.pump(const Duration(milliseconds: 16));
+  });
+
+  testWidgets(
+      'during a zoom-in a tile drawn from its parent leaves out what its '
+      'arrived siblings draw', (tester) async {
+    // The tile below the building's is held: until it arrives it is
+    // drawn from their common parent, whose copy of the building lies
+    // in the cell of the building's own tile, which has arrived.
+    final provider = _ZoomingIn(holds: (tile) => tile == _below);
+    addTearDown(provider.release);
+    final controller = VectorTileLayerController();
+    final mapController = MapController();
+    await open(
+        tester,
+        _app(provider,
+            zoom: 15,
+            controller: controller,
+            mapController: mapController,
+            concurrency: 3,
+            retainAllProperties: true),
+        (px) => _white(_rgb(px, 57, 32)));
+    List<String> levelsAt(Offset p) => [
+          for (final f in controller.queryRenderedFeatures(p))
+            '${f.properties['level']}',
+        ];
+    mapController.move(const LatLng(0, 0), 16);
+    const tap = Offset(_mid + 115.5, _mid + 65.5);
+    expect(
+        await pumpUntil(tester, () async => levelsAt(tap).contains('z16'),
+            timeout: const Duration(seconds: 10)),
+        isTrue,
+        reason: 'the z16 building never arrived: at the tap ${levelsAt(tap)}');
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(levelsAt(tap), ['z16']);
+    provider.release();
+    await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(milliseconds: 16));
   });
 

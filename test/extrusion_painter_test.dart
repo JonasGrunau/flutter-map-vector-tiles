@@ -596,6 +596,15 @@ void main() {
         reason: "the main map drew in the inset map's light");
   });
 
+  test('an absurd height draws, held at the near plane', () async {
+    // Past what a Float32 holds: stored as such it would be infinite.
+    final tiles = _layout([
+      ([_box(3328, 1808, 3808, 2288)], 1e39),
+    ]);
+    expect(tiles.single.layout.heights.single.isFinite, isTrue);
+    (await _paint(tiles, size: 512)).dispose();
+  });
+
   group('tiles taken off offer and put back', () {
     // The street on three tiles, the camera on the corner [_tile],
     // [_east] and [_south] share, so all three are on screen.

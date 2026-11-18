@@ -310,6 +310,13 @@ class FillThemeLayer extends ThemeLayer {
   @internal
   Set<String>? extrusionReferencedProperties;
 
+  /// Whether `ExtrusionMode.perspective` draws this layer as 3D
+  /// buildings: an extrusion without a pattern, which would need
+  /// texture coordinates per wall. The rest draw flat in the tile
+  /// images in either mode.
+  @internal
+  bool get drawnIn3D => extrusion && pattern == null;
+
   /// `fill-extrusion-vertical-gradient`: whether walls darken towards
   /// their foot. Null on a plain fill.
   final BoolProp? extrusionVerticalGradient;
