@@ -28,7 +28,7 @@ only visible by driving a real map.
   default style URL keeps `{key}` as a placeholder that `StyleReader`
   substitutes.
 - Keep it small. This is a demonstration of the layer, not a feature showcase —
-  new options belong in the README's configuration section first.
+  new options belong in `doc/CONFIGURATION.md` first.
 - Use MapTiler style URLs for testing (this is the provider this package is
   developed against).
 

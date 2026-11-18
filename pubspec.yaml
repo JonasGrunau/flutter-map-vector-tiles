@@ -19,6 +19,10 @@ screenshots:
       Liberty vector style.
     path: screenshots/munich-liberty-framed.webp
   - description: >-
+      Midtown Manhattan with 3D buildings — fill-extrusion layers drawn in
+      perspective with ExtrusionMode.perspective.
+    path: screenshots/buildings-3d-framed.webp
+  - description: >-
       Zermatt in the Alps — an Esri hillshade raster source blended into the
       vector style shows the terrain.
     path: screenshots/zermatt-hillshade-framed.webp
