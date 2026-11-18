@@ -3,15 +3,17 @@
 ///
 /// Georgian is written in one case, Mkhedruli. Since Unicode 11 its
 /// letters have upper-case forms, Mtavruli (U+1C90–U+1CBF), used only
-/// for emphasis, and next to no font carries them: not the glyph PBFs
-/// that styles are served with (OpenFreeMap's range 7168–7423 holds the
-/// Vedic extensions and nothing else), and not the fonts Flutter web
-/// falls back to. JavaScript's `toUpperCase`, which `String.toUpperCase`
-/// is on the web, maps Mkhedruli to Mtavruli all the same, so an
-/// upper-cased Georgian name drew as `.notdef` boxes there — and as
-/// nothing at all in MapLibre GL JS, which skips glyphs its ranges lack.
-/// The Dart VM's mapping predates Mtavruli and leaves Georgian alone;
-/// this does the same on every platform.
+/// for emphasis, and the glyph PBFs styles are served with do not carry
+/// them (OpenFreeMap's range 7168–7423 holds the Vedic extensions and
+/// nothing else). JavaScript's `toUpperCase`, which `String.toUpperCase`
+/// is on the web, maps Mkhedruli to Mtavruli all the same, so there an
+/// upper-cased Georgian name left the style's font for the platform's:
+/// boxes until Flutter had fetched a fallback font, and a different
+/// font from every other label after — while MapLibre GL JS, which
+/// skips the glyphs its ranges lack, draws nothing at all. The Dart
+/// VM's mapping predates Mtavruli and leaves Georgian alone; this does
+/// the same on every platform, so the name is drawn as written, from
+/// the style's glyphs.
 String upperCaseLabel(String text) {
   var georgian = -1;
   for (var i = 0; i < text.length; i++) {

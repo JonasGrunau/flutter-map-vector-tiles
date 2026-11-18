@@ -393,8 +393,8 @@ void main() {
 
     test('text-transform uppercase leaves Georgian in Mkhedruli', () {
       // Liberty's district labels in Tbilisi. JavaScript, and so Dart
-      // on the web, upper-cases Georgian into Mtavruli, which neither
-      // the glyph ranges nor the fallback fonts draw: boxes.
+      // on the web, upper-cases Georgian into Mtavruli, which the glyph
+      // ranges lack: the label left the style's font for the platform's.
       final instances = _layout(
         _theme(layout: {'text-transform': 'uppercase'}),
         _data(

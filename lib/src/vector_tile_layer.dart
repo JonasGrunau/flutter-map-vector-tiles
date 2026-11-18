@@ -531,6 +531,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// cache it went into — the label painter's, and with
   /// [LabelMode.tile] the tile images.
   ///
+  /// The shaping is the render pump's: the painter goes on drawing the
+  /// old shaping until [LabelPainter.prewarm] has replaced it, rather
+  /// than shape every label on screen in one frame.
+  ///
   /// Web only: elsewhere the fallback fonts are the ones installed,
   /// found while a paragraph is laid out, and a font change — an app
   /// loading a font of its own — never reaches the default family
@@ -538,20 +542,54 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   void _fontsChanged() {
     if (!mounted || !_labelPainter.fontsChanged()) return;
     // A tile shaping its labels when the fonts changed has some of them
-    // shaped with the old ones; it starts over, within the pump's
-    // budget, as after a trim.
+    // shaped with the old ones; it starts over, as after a trim.
     for (final job in _renderQueue.symbolJobs) {
       job.shapeCursor = 0;
     }
     if (_screenLabels) {
-      // Sizes changed with the fonts; the next pass places by the new.
-      _labelGeneration++;
-      _repaint.trigger();
+      _reshape = [
+        for (final tile in [..._tiles.values, ..._retained.values])
+          if (tile.symbols.isNotEmpty)
+            (tile.symbols, _styleZoomOf(tile.key.z.toDouble())),
+      ];
+      _reshapeBatch = 0;
+      _reshapeCursor = 0;
+      if (!_renderTicker.isActive) _renderTicker.start();
     }
     if (_tileLabels) {
+      // The tiles' symbol jobs shape again what they draw.
       _resultCache?.clear();
       _refreshTiles();
     }
+  }
+
+  /// The published labels still to be shaped for new fonts (see
+  /// [_fontsChanged]), per tile with its style zoom, and how far the
+  /// pump has got through them.
+  List<(List<SymbolInstance>, double)>? _reshape;
+  var _reshapeBatch = 0;
+  var _reshapeCursor = 0;
+
+  /// One slice of [_reshape], within the pump's [tick]. Once it is
+  /// through, the next label pass places by the new sizes.
+  void _reshapeLabels(Stopwatch tick) {
+    final batches = _reshape!;
+    while (_reshapeBatch < batches.length) {
+      final (symbols, styleZoom) = batches[_reshapeBatch];
+      _reshapeCursor = _labelPainter.prewarm(
+        symbols,
+        styleZoom,
+        from: _reshapeCursor,
+        outOfBudget: () => tick.elapsedMicroseconds >= _pumpBudget,
+      );
+      if (_reshapeCursor < symbols.length) return;
+      _reshapeBatch++;
+      _reshapeCursor = 0;
+      if (tick.elapsedMicroseconds >= _pumpBudget) return;
+    }
+    _reshape = null;
+    _labelGeneration++;
+    _repaint.trigger();
   }
 
   /// Restarts the clock behind [_cameraStill].
@@ -775,7 +813,8 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     _recoverIfSuspect();
     // The pump stops its own ticker when it is asked to run while the
     // app is away; whatever it left queued is still queued.
-    if (!_renderQueue.isEmpty && !_renderTicker.isActive) {
+    if ((!_renderQueue.isEmpty || _reshape != null) &&
+        !_renderTicker.isActive) {
       _renderTicker.start();
     }
   }
@@ -1011,6 +1050,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   void _clearTiles() {
     _renderQueue.clear();
+    _reshape = null;
     _dropParkedJobs();
     for (final tile in _tiles.values) {
       tile.dispose();
@@ -2184,7 +2224,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
       job.dispose();
     }
-    if (_renderQueue.isEmpty) _renderTicker.stop();
+    if (_reshape != null &&
+        (processed == 0 || stopwatch.elapsedMicroseconds < _pumpBudget)) {
+      _reshapeLabels(stopwatch);
+    }
+    if (_renderQueue.isEmpty && _reshape == null) _renderTicker.stop();
     developer.Timeline.finishSync();
   }
 

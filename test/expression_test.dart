@@ -234,7 +234,7 @@ void main() {
 
     test('upcase leaves Georgian alone and upper-cases the rest', () {
       // Mkhedruli has no case in use; its Mtavruli capitals, which
-      // JavaScript maps it to, are in next to no font.
+      // JavaScript maps it to, are not in the style's glyph ranges.
       expect(eval(['upcase', 'Rike რიყე']), 'RIKE რიყე');
       expect(eval(['upcase', 'რიყე park ქალა']), 'რიყე PARK ქალა');
       expect(eval(['upcase', 'тбилиси']), 'ТБИЛИСИ');

@@ -43,16 +43,18 @@ than boxes.
   that covers it, and the layer kept the boxed layout (with
   `LabelMode.tile`, the tiles drawn with it) after the font had
   arrived, for as long as the label was on the map. It now shapes
-  those labels again as soon as Flutter reports the new fonts, a
-  second or two after they first show. Native platforms were not
-  affected.
-- 🐛 Georgian names in upper-cased labels draw again on the web, such
-  as the district names under `KALA` or `RIKE` in OpenFreeMap's Liberty
-  over Tbilisi, which were boxes. JavaScript upper-cases Georgian into
-  Mtavruli, capitals that neither the style's glyphs nor the web's
-  fallback fonts have; `text-transform: uppercase` and `upcase` now
-  leave Georgian as written on every platform, as they already did on
-  native ones. (MapLibre GL JS converts it and draws nothing there.)
+  those labels again once Flutter reports the new fonts, a second or
+  two after they first show, spread over frames within the render
+  budget like a new tile's labels. Native platforms were not affected.
+- 🐛 Georgian in upper-cased labels is drawn in the style's font on
+  the web too, such as the district names under `KALA` or `RIKE` in
+  OpenFreeMap's Liberty over Tbilisi. JavaScript upper-cases Georgian
+  into Mtavruli, capitals the style's glyphs don't have, so the label
+  went to the platform's fonts: boxes (see above), and a font unlike
+  every other label's once the boxes were gone. `text-transform:
+  uppercase` and `upcase` now leave Georgian as written on every
+  platform, as they already did on native ones. (MapLibre GL JS
+  converts it and draws nothing there.)
 - 🐛 `queryRenderedFeatures` finds turned label text where it is
   drawn. Text moved by `text-translate`, and point text with
   `text-rotate` and a `text-offset` or `text-anchor`, was tested turned

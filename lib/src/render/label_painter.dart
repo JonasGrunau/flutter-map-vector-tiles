@@ -485,33 +485,39 @@ class LabelPainter {
     _disposeRetired();
   }
 
-  /// Releases everything the platform shaped, for fonts that changed
-  /// under it — on the web, a fallback font that finished downloading.
-  /// Flutter web lays a paragraph out with the fonts it has at that
-  /// moment, draws what none of them covers as `.notdef` boxes, and
-  /// starts fetching a font that does; the paragraph keeps its boxes
-  /// for good. Text drawn from the style's glyphs does not depend on
-  /// the platform's fonts and stays.
+  /// Marks everything the platform shaped as shaped with old fonts —
+  /// on the web, before a fallback font finished downloading. Flutter
+  /// web lays a paragraph out with the fonts it has at that moment,
+  /// draws what none of them covers as `.notdef` boxes, and starts
+  /// fetching a font that does; the paragraph keeps its boxes for good.
+  /// Text drawn from the style's glyphs does not depend on the
+  /// platform's fonts.
   ///
-  /// The curved-text atlas goes too: its cells are rasterized from the
-  /// per-grapheme paragraphs.
+  /// Nothing is dropped: [prewarm] shapes such text again, within the
+  /// render pump's budget, and until it has the label pass goes on
+  /// drawing the old shaping. Dropping it would have the next frame
+  /// shape every label on screen at once: 117 ms over Tokyo in Chrome
+  /// on an M4 Pro Mac, where that frame takes 33–50 ms without the
+  /// re-shaping and 50–67 ms with it spread over the pump.
   ///
-  /// Returns whether anything went, so that the layer knows whether
-  /// the labels on screen, or drawn into tiles, need shaping again.
-  /// Disposes at once, as [trimCaches] does: this runs between frames.
+  /// Returns whether any text was shaped by the platform, so that the
+  /// layer knows whether the labels need shaping again.
   bool fontsChanged() {
-    var dropped = _glyphCache.length;
-    _lastDrawn = const [];
-    _textCache.removeWhere((_, text) {
-      if (text.glyphRun != null) return false;
-      dropped++;
-      return true;
-    });
-    _glyphCache.clear();
-    _glyphAtlas.clear();
-    _disposeRetired();
-    return dropped > 0;
+    _fonts++;
+    if (_glyphCache.length > 0) return true;
+    for (final key in _textCache.keys) {
+      if (_textCache.peek(key)!.glyphRun == null) return true;
+    }
+    return false;
   }
+
+  /// Counts [fontsChanged] calls: text and grapheme painters shaped by
+  /// the platform carry the count they were shaped under.
+  var _fonts = 0;
+
+  /// Set while [prewarm] runs, the one place that shapes text again
+  /// for new fonts.
+  var _refreshing = false;
 
   /// Curved-text glyphs rasterized once per style, grapheme and device
   /// size, so a curved label draws in one call per pass.
@@ -1780,12 +1786,30 @@ class LabelPainter {
   /// before this reports completion: the label pass shapes on a cache
   /// miss, so a half-shaped tile offered to it would move the rest of
   /// the cost straight back into paint, where there is no budget at all.
+  ///
+  /// Text shaped by the platform before its fonts last changed is
+  /// shaped again here (see [fontsChanged]), so the pump is what pays
+  /// for it.
   int prewarm(
     List<SymbolInstance> symbols,
     double styleZoom, {
     int from = 0,
     bool Function()? outOfBudget,
   }) {
+    _refreshing = true;
+    try {
+      return _prewarm(symbols, styleZoom, from, outOfBudget);
+    } finally {
+      _refreshing = false;
+    }
+  }
+
+  int _prewarm(
+    List<SymbolInstance> symbols,
+    double styleZoom,
+    int from,
+    bool Function()? outOfBudget,
+  ) {
     final zoom = (styleZoom * _zoomStep).round() / _zoomStep;
     for (var i = from; i < symbols.length; i++) {
       if (i > from && (outOfBudget?.call() ?? false)) return i;
@@ -3073,17 +3097,19 @@ class LabelPainter {
   /// The cached shaping of [instance]'s text per [memo], or a fresh one
   /// — also when the cached one was shaped by the platform only because
   /// the glyphs it could have used were still loading, and are not any
-  /// more.
+  /// more, and, inside [prewarm], when the platform's fonts changed
+  /// since it was shaped (see [fontsChanged]).
   _LaidOutText _cachedOrShape(SymbolInstance instance, TextStyleMemo memo) {
     final cached = _textCache.get(memo.cacheKey);
     if (cached != null) {
       final awaited = cached.awaitedRanges;
       final glyphs = _glyphs;
-      if (awaited == null ||
-          glyphs == null ||
-          awaited.any((r) => glyphs.isLoading(r.$1, r.$2))) {
-        return cached;
-      }
+      final glyphsArrived = awaited != null &&
+          glyphs != null &&
+          !awaited.any((r) => glyphs.isLoading(r.$1, r.$2));
+      final oldFonts =
+          _refreshing && cached.glyphRun == null && cached.fonts != _fonts;
+      if (!glyphsArrived && !oldFonts) return cached;
     }
     return _shape(instance, memo);
   }
@@ -3272,7 +3298,9 @@ class LabelPainter {
       justify: memo.justify,
       maxLines: maxLines,
       layoutWidth: maxWidth,
-    ).._haloPicture;
+    )
+      ..fonts = _fonts
+      .._haloPicture;
   }
 
   /// [text] with explicit line breaks for a `text-max-width` of
@@ -3820,10 +3848,17 @@ class LabelPainter {
   /// has not been evicted (and so disposed).
   _GlyphText _glyphPainters(_Cluster cluster, _LaidOutText text) {
     final known = cluster.glyph;
-    if (known != null && known.pass == _pass && !known.evicted) return known;
+    if (known != null &&
+        known.pass == _pass &&
+        !known.evicted &&
+        !(_refreshing && known.fonts != _fonts)) {
+      return known;
+    }
     final key = known?.key ?? '${text.styleKey}#${cluster.grapheme}';
     final cached = _glyphCache.get(key);
-    if (cached != null) return (cluster.glyph = cached)..pass = _pass;
+    if (cached != null && !(_refreshing && cached.fonts != _fonts)) {
+      return (cluster.glyph = cached)..pass = _pass;
+    }
 
     final fill = TextPainter(
       text: TextSpan(text: cluster.grapheme, style: text.fillStyle),
@@ -3843,7 +3878,8 @@ class LabelPainter {
         key: key,
         fill: fill,
         halo: halo,
-        pad: 2 + stroke / 2 + 3 * text.haloBlurSigma)
+        pad: 2 + stroke / 2 + 3 * text.haloBlurSigma,
+        fonts: _fonts)
       ..pass = _pass;
     _glyphCache.put(key, glyph);
     return cluster.glyph = glyph;
@@ -4076,6 +4112,10 @@ class _LaidOutText implements _TextShape {
   /// The label pass that last used this text — see
   /// [LabelPainter.trimCaches].
   int pass = 0;
+
+  /// The font change this paragraph was shaped after — see
+  /// [LabelPainter.fontsChanged].
+  int fonts = 0;
 
   List<_Cluster>? _clusters;
 
@@ -4332,11 +4372,17 @@ class _GlyphText {
   /// it before the next frame: a cluster remembering it must look again.
   bool evicted = false;
 
+  /// The font change this glyph was shaped after — see
+  /// [LabelPainter.fontsChanged]. Part of its atlas keys, so that a
+  /// glyph shaped again for new fonts is rasterized again too.
+  final int fonts;
+
   _GlyphText({
     required this.key,
     required this.fill,
     required this.halo,
     required this.pad,
+    required this.fonts,
   });
 
   _AtlasKey? _fillKey;
@@ -4349,7 +4395,7 @@ class _GlyphText {
   _AtlasKey atlasKey(bool halo, int sizeKey) {
     final known = halo ? _haloKey : _fillKey;
     if (known != null && known.size == sizeKey) return known;
-    final made = _AtlasKey(key, halo, sizeKey);
+    final made = _AtlasKey(key, halo, sizeKey, fonts);
     return halo ? _haloKey = made : _fillKey = made;
   }
 
@@ -4360,15 +4406,17 @@ class _GlyphText {
 }
 
 /// A curved glyph's cell in the [GlyphAtlas]: style and grapheme (the
-/// glyph-cache key), halo or fill, and device size. Compared field by
-/// field, hashed once — see [_GlyphText.atlasKey].
+/// glyph-cache key), halo or fill, device size, and the fonts it was
+/// shaped with. Compared field by field, hashed once — see
+/// [_GlyphText.atlasKey].
 final class _AtlasKey {
-  _AtlasKey(this.glyph, this.halo, this.size)
-      : hashCode = Object.hash(glyph, halo, size);
+  _AtlasKey(this.glyph, this.halo, this.size, this.fonts)
+      : hashCode = Object.hash(glyph, halo, size, fonts);
 
   final String glyph;
   final bool halo;
   final int size;
+  final int fonts;
 
   @override
   final int hashCode;
@@ -4380,6 +4428,7 @@ final class _AtlasKey {
           other.hashCode == hashCode &&
           other.size == size &&
           other.halo == halo &&
+          other.fonts == fonts &&
           other.glyph == glyph;
 }
 
