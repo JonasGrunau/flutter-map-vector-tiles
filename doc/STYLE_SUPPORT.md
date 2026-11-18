@@ -114,9 +114,18 @@ from MapLibre:
 
 ## 3D buildings
 
-| `ExtrusionMode.flat` (default) | `ExtrusionMode.perspective` |
-|:---:|:---:|
-| ![Flat building footprints in Midtown Manhattan](../screenshots/readme/3d-flat.webp) | ![The same view with 3D buildings](../screenshots/readme/3d-perspective.webp) |
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="../screenshots/readme/3d-flat.webp" alt="Flat building footprints in Midtown Manhattan"><br>
+      <code>ExtrusionMode.flat</code> (default)
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="../screenshots/readme/3d-perspective.webp" alt="The same view with 3D buildings"><br>
+      <code>ExtrusionMode.perspective</code>
+    </td>
+  </tr>
+</table>
 
 Off by default: `fill-extrusion` layers draw as
 flat footprints, as in every release before, so updating the package

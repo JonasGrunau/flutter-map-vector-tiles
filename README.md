@@ -11,10 +11,15 @@ Protomaps, …) straight from vector tiles, as a plain flutter_map layer.
 flutter_map keeps the camera, the gestures and your other layers; this
 package only draws the map.
 
-| | | | |
-|:---:|:---:|:---:|:---:|
-| ![Munich in the OpenFreeMap Liberty style](screenshots/munich-liberty-framed.webp) | ![Midtown Manhattan with 3D buildings](screenshots/buildings-3d-framed.webp) | ![Zermatt with a hillshade overlay](screenshots/zermatt-hillshade-framed.webp) | ![Munich in the dark Fiord style](screenshots/munich-dark-framed.webp) |
-| Any MapLibre style | 3D buildings | Hillshade | Dark styles |
+<p align="center">
+  <img src="screenshots/munich-liberty-framed.webp" width="23%" alt="Munich in the OpenFreeMap Liberty style">
+  <img src="screenshots/buildings-3d-framed.webp" width="23%" alt="Midtown Manhattan with 3D buildings">
+  <img src="screenshots/zermatt-hillshade-framed.webp" width="23%" alt="Zermatt with a hillshade overlay">
+  <img src="screenshots/munich-dark-framed.webp" width="23%" alt="Munich in the dark Fiord style">
+</p>
+<p align="center">
+  <em>Any MapLibre style · 3D buildings · hillshade · dark styles</em>
+</p>
 
 [**Live demo**](https://jonasgrunau.github.io/flutter-map-vector-tiles/) ·
 [Documentation](#-documentation) ·
@@ -121,14 +126,38 @@ flutter run --dart-define=MAPTILER_KEY=yourKey
 
 ## 🖼️ What it draws
 
-| | |
-|:---:|:---:|
-| ![Flat building footprints in Midtown Manhattan](screenshots/readme/3d-flat.webp) | ![The same view with 3D buildings](screenshots/readme/3d-perspective.webp) |
-| Buildings as every style draws them by default … | … and with `extrusionMode: ExtrusionMode.perspective`. [3D buildings](doc/STYLE_SUPPORT.md#3d-buildings) |
-| ![A heatmap of points of interest over Munich](screenshots/readme/heatmap.webp) | ![A tapped building highlighted in red](screenshots/readme/query.webp) |
-| `heatmap` layers. [Heatmaps](doc/STYLE_SUPPORT.md#heatmaps) | A tapped building, highlighted through feature state. [Querying](doc/QUERYING.md) |
-| ![Tbilisi with Georgian and Latin labels](screenshots/readme/scripts.webp) | ![A rotated map with upright labels](screenshots/readme/label-screen.webp) |
-| Labels in the style's own fonts. [Fonts](doc/LABELS.md#fonts) | Labels stay upright when the map rotates. [Label modes](doc/LABELS.md#choosing-a-label-mode) |
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="screenshots/readme/3d-flat.webp" alt="Flat building footprints in Midtown Manhattan"><br>
+      Buildings as styles draw them by default …
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="screenshots/readme/3d-perspective.webp" alt="The same view with 3D buildings"><br>
+      … and as <a href="doc/STYLE_SUPPORT.md#3d-buildings">3D buildings</a>, with <code>ExtrusionMode.perspective</code>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="screenshots/readme/heatmap.webp" alt="A heatmap of points of interest over Munich"><br>
+      <a href="doc/STYLE_SUPPORT.md#heatmaps">Heatmap</a> layers
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="screenshots/readme/query.webp" alt="A tapped building highlighted in red"><br>
+      A tapped building, highlighted through <a href="doc/QUERYING.md">feature state</a>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="screenshots/readme/scripts.webp" alt="Tbilisi with Georgian and Latin labels"><br>
+      Labels in the style's own <a href="doc/LABELS.md#fonts">fonts</a>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="screenshots/readme/label-screen.webp" alt="A rotated map with upright labels"><br>
+      Labels stay upright when the map rotates (<a href="doc/LABELS.md#choosing-a-label-mode">label modes</a>)
+    </td>
+  </tr>
+</table>
 
 Map data © [OpenMapTiles](https://openmaptiles.org) ©
 [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors,

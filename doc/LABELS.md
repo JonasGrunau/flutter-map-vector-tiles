@@ -221,9 +221,18 @@ style was designed with. Without it every label uses the system font.
 
 ## Choosing a label mode
 
-| `LabelMode.screen` (default) | `LabelMode.tile` |
-|:---:|:---:|
-| ![A rotated map with upright labels](../screenshots/readme/label-screen.webp) | ![The same map with labels turned with it](../screenshots/readme/label-tile.webp) |
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="../screenshots/readme/label-screen.webp" alt="A rotated map with upright labels"><br>
+      <code>LabelMode.screen</code> (default)
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="../screenshots/readme/label-tile.webp" alt="The same map with labels turned with it"><br>
+      <code>LabelMode.tile</code>
+    </td>
+  </tr>
+</table>
 
 The same map turned by 30°: labels drawn in screen space stay upright, labels baked into the tiles turn with them.
 
