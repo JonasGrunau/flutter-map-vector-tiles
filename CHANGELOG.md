@@ -41,8 +41,9 @@ where they are drawn.
   about its unmoved anchor, so a tap on the label could miss it and a
   tap beside it could hit it.
 - 📚 The README's comparison with `vector_map_tiles` is measured again,
-  on all four platforms from one build with 3D buildings, and with 3D
-  buildings switched on as well: on the Nothing Phone (1) this
+  on all four platforms from one build with 3D buildings (and an
+  experiment in drawing curved street names, taken out again before
+  2.11.1), and with 3D buildings switched on as well: on the Nothing Phone (1) this
   package's default now gets 91–96 % of frames while the camera moves,
   where 2.9.1 got 78–86 %, and 84–92 % with 3D buildings.
 

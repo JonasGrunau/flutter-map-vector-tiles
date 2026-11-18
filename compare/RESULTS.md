@@ -4,7 +4,9 @@ How `flutter_map_vector_tiles` and `vector_map_tiles` 9.0.0-beta.13 compare,
 measured with this directory's harness (method and arms: [README.md](README.md)).
 
 **Status, 2026-11-04:** complete sessions on Android, iOS, macOS and
-Chrome, all built from 7dd024a (2.11.0 with 3D buildings) and measured
+Chrome, all built from 7dd024a (2.11.0 with 3D buildings, and with an
+experiment in drawing curved street names that was reverted before
+2.11.1 — the labels-every-frame arms are not yet measured without it) and measured
 on 2026-11-03 and -04, each with the six arms of October plus a
 seventh, `fmvt-3d` (`ExtrusionMode.perspective`), and with MapLibre GL
 JS rendering the same cameras next to the Chrome screenshots. Every

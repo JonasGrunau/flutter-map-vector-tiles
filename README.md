@@ -1001,7 +1001,10 @@ Measured with [`compare/`](compare) on a Nothing Phone (1) (Android,
 60 Hz), an iPhone 15 Pro Max (iOS, 120 Hz), a MacBook Pro with an M4 Pro
 (macOS, 120 Hz) and Chrome on that Mac: the same style and the same
 recorded tiles, a fresh process per run, three runs each (four on the
-iPhone), all from one build of 2.11.0 with 3D buildings. "Frames" is the share
+iPhone), all from one build: 2.11.0 with 3D buildings and an experiment
+in drawing curved street names that was taken out again before 2.11.1,
+so the frames with labels drawn every frame are not yet measured on the
+code as it ships. "Frames" is the share
 of display refreshes that got a frame while the camera zoomed, panned,
 rotated or flung. Each cell reads this package / `vector_map_tiles`.
 [compare/SUMMARY.md](compare/SUMMARY.md) explains the results in plain
