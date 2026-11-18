@@ -24,6 +24,12 @@ Street names drawn straight or on a smooth curve, no longer crooked.
   `text-rotate` and a `text-offset` or `text-anchor`, was tested turned
   about its unmoved anchor, so a tap on the label could miss it and a
   tap beside it could hit it.
+- 📦 The layer imports `package:flutter/widgets.dart` instead of
+  `package:flutter/material.dart`, which Flutter 3.50 deprecated in
+  favour of the separate `material_ui` package. pub.dev analyses with
+  the latest stable Flutter, so 2.11.0 lost 10 of its 50 static-analysis
+  points for that one import; the package never used anything from
+  Material.
 
 ## 2.11.0
 
