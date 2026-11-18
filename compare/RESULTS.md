@@ -50,7 +50,7 @@ package's default) against `vmt-vector`.
   ahead; its UI-thread p90 is 10.5–12.8 ms instead of 3.6–9.2 ms. That
   buys text that stays upright under rotation, is sized for the exact
   zoom, is collision-checked across tile edges and fades per label
-  (root README, "Choosing a label mode").
+  (`doc/LABELS.md`, "Choosing a label mode").
 - **The content controls** (`TileOffset.none`: this package evaluating
   the style one level deeper, as `vector_map_tiles` does, so it draws the
   same extra label layers). With baked labels the extra labels cost

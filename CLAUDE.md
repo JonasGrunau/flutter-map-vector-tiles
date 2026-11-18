@@ -14,7 +14,13 @@ Keep these in sync with the code:
 | --- | --- |
 | `AGENTS.md` | files move or are added/removed, module responsibilities shift, workflows or conventions change |
 | `doc/ARCHITECTURE.md` | the data flow, rendering model, concurrency model, cache layers or style engine change |
-| `README.md` | anything user-visible changes — public API, options, defaults, supported style features, offline behaviour, limitations |
+| `README.md` | the overview changes: features, quick start, the short options table, the tile-source summary, the comparison with `vector_map_tiles`, or a screenshot no longer shows what the package draws. Keep it short — detail goes in the `doc/` pages below |
+| `doc/CONFIGURATION.md` | a `VectorTileLayer` or `StyleReader` option, a default, a cache budget, `TileOffset`, the frame budget or the timeline events change |
+| `doc/TILE_SOURCES.md` | providers, PMTiles / MBTiles / custom-provider wiring, offline behaviour or the web differences change |
+| `doc/STYLE_SUPPORT.md` | supported layer types, paint / layout properties, expressions, heatmaps, 3D buildings, global state or a difference from MapLibre change |
+| `doc/LABELS.md` | label placement, collision, fades, fonts and glyphs, `LabelMode` or label language change |
+| `doc/QUERYING.md` | rendered-feature queries or feature state change |
+| `doc/TROUBLESHOOTING.md` | a failure mode appears, is fixed, or gets a new workaround |
 | `CHANGELOG.md` | every user-visible change, under the version it ships in |
 
 Before declaring work done, re-read the sections these files have about the

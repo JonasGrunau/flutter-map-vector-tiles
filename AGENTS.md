@@ -28,12 +28,12 @@ every `ui.Image` has exactly one owner and is disposed on eviction.
 | File | Description |
 |------|-------------|
 | `pubspec.yaml` | Package manifest — name, `version:` (source of truth for the README install snippet), dependency constraints, SDK/Flutter minimums |
-| `README.md` | User-facing documentation: quick start, configuration, style support, offline behaviour, troubleshooting |
+| `README.md` | The short user-facing overview: features, screenshots, quick start, the most-used options, tile sources, the comparison with `vector_map_tiles`, and links into `doc/`. The reference detail lives in the `doc/` pages, not here |
 | `CHANGELOG.md` | One section per released version; every user-visible change lands here. Fixed shape — heading, one-sentence summary line, emoji-prefixed bullets grouped by kind in a fixed order (see `CLAUDE.md`) |
 | `CLAUDE.md` | Agent working agreements — doc-sync rules, README/version rules, release gate. Imports this file via `@AGENTS.md` |
 | `analysis_options.yaml` | `flutter_lints` + strict casts/inference/raw-types, plus `prefer_final_locals`, `unawaited_futures`, `avoid_print`, `directives_ordering` |
 | `.gitignore` | Repo exclusions |
-| `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs, `bench/`, `compare/` and the script suite's fonts and goldens (`test/scripts/`) |
+| `.pubignore` | Publish exclusions. Pub uses this **instead of** `.gitignore`, so it repeats every entry there and adds the agent docs, `bench/`, `compare/`, the script suite's fonts and goldens (`test/scripts/`), and the README's inline images and their capture pipeline (`screenshots/readme/`, `screenshots/tool/`) |
 | `.tool-versions` | Pinned Flutter version — also the one the publish workflow installs |
 | `.github/workflows/checks.yml` | Reusable check suite: format, analyze, VM + Chrome tests, publish dry run, optional pana. Called by the two below |
 | `.github/workflows/ci.yml` | Runs `checks.yml` on every push to `main` and every PR into it |
@@ -50,16 +50,16 @@ every `ui.Image` has exactly one owner and is disposed on eviction.
 | `bench/` | On-device frame-timing and label-stability harness for zoom crossings — profile-mode app that sweeps a zoom band (or records while you zoom by hand in `manual` mode) and reports UI/raster frame-time distributions, cache-hit counters and, in `stability` mode, label pop/blink counts. Not published (see `bench/AGENTS.md`) |
 | `compare/` | Head-to-head with `vector_map_tiles` 9.0.0-beta.13: one app that is the device benchmark (driven by a record/replay lab server, fresh process per arm, frames-delivered as the headline metric, fidelity screenshots next to MapLibre GL JS) and the web demo deployed to GitHub Pages. Results in `compare/RESULTS.md`. Public API only. Not published (see `compare/AGENTS.md`) |
 | `example/` | Runnable example app driven by `--dart-define` (see `example/AGENTS.md`) |
-| `doc/` | `ARCHITECTURE.md` — the prose companion to this file; update it when the data flow, rendering model, concurrency model or cache layers change |
+| `doc/` | The user reference the README links to — `CONFIGURATION.md`, `TILE_SOURCES.md`, `STYLE_SUPPORT.md`, `LABELS.md`, `QUERYING.md`, `TROUBLESHOOTING.md` — and `ARCHITECTURE.md`, the prose companion to this file for contributors; update that one when the data flow, rendering model, concurrency model or cache layers change (see `doc/AGENTS.md`) |
 | `shaders/` | Fragment shaders that ship in the package, declared under `flutter: shaders:` in `pubspec.yaml`: `hillshade_prepare.frag` (DEM → slopes) and `hillshade.frag` (slopes → shading), loaded by `lib/src/render/hillshade_renderer.dart`. Apps load them as `packages/flutter_map_vector_tiles/shaders/…`; the package's own tests, as the root package, without the prefix |
-| `screenshots/` | pub.dev gallery images (WebP, framed in an iPhone bezel), wired up via `screenshots:` in `pubspec.yaml` — these ship in the package; regeneration recipe in `screenshots/AGENTS.md` |
+| `screenshots/` | Images: the pub.dev gallery (WebP, framed in an iPhone bezel, wired up via `screenshots:` in `pubspec.yaml`, shipped in the package and shown at the top of the README), `readme/` (plain crops the README and `doc/` pages embed; not shipped, pub.dev loads them from GitHub) and `tool/` (the headless-Chrome capture pipeline that makes them; not shipped). See `screenshots/AGENTS.md` |
 
 ## For AI Agents
 
 ### Working In This Directory
 
 - **Docs are part of the change.** Any behaviour, structure or public-API
-  change updates `README.md`, `doc/ARCHITECTURE.md`, `CHANGELOG.md` and the
+  change updates `README.md`, the `doc/` pages, `CHANGELOG.md` and the
   affected `AGENTS.md` in the *same* change. See `CLAUDE.md`.
 - **Version identity.** The install snippet in `README.md` must match
   `version:` in `pubspec.yaml`, as must the `flutter_map` constraint shown

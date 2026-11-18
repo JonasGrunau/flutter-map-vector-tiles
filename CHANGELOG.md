@@ -27,7 +27,7 @@ where they are drawn.
   follows the state. On a Nothing Phone (1) the pass adds about a
   millisecond to the 90th-percentile UI frame at style zoom 14 and
   nothing measurable from 16 on; a map without labels pays more at 14
-  (see the README's *3D buildings*). The default, `ExtrusionMode.flat`,
+  (see *3D buildings* in `doc/STYLE_SUPPORT.md`). The default, `ExtrusionMode.flat`,
   draws them as before — flat footprints in the tile images, at no
   per-frame cost — so updating changes no map; patterned extrusions,
   and every extrusion under `LabelMode.tile`, stay flat in either mode.
@@ -40,12 +40,20 @@ where they are drawn.
   `text-rotate` and a `text-offset` or `text-anchor`, was tested turned
   about its unmoved anchor, so a tap on the label could miss it and a
   tap beside it could hit it.
+- 📚 **A short README with screenshots.** It is an overview now —
+  features, quick start, the options most often touched, tile sources
+  and the comparison — a fifth of its former length. Nothing was
+  dropped: the reference moved into pages of its own under `doc/`
+  (configuration, tile sources with offline and web, style support,
+  labels, querying, troubleshooting), each with a contents list.
 - 📚 The README's comparison with `vector_map_tiles` is measured again,
   on all four platforms from one build with 3D buildings (and an
   experiment in drawing curved street names, taken out again before
   2.11.1), and with 3D buildings switched on as well: on the Nothing Phone (1) this
   package's default now gets 91–96 % of frames while the camera moves,
   where 2.9.1 got 78–86 %, and 84–92 % with 3D buildings.
+- 📦 A fourth image in the pub.dev gallery: Midtown Manhattan with 3D
+  buildings.
 
 ## 2.11.1
 

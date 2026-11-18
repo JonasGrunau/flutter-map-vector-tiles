@@ -6,32 +6,54 @@
 [![flutter_map](https://img.shields.io/badge/flutter__map-%E2%89%A5%208.2-green.svg)](https://pub.dev/packages/flutter_map)
 
 **Vector tiles for [`flutter_map`](https://pub.dev/packages/flutter_map).**
-A clean, self-contained rewrite of the ideas behind
-[`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles), built for
-flutter_map ≥ 8 and modern Flutter (Impeller).
+Renders MapLibre / Mapbox GL styles (MapTiler, OpenFreeMap, Stadia,
+Protomaps, …) straight from vector tiles, as a plain flutter_map layer.
+flutter_map keeps the camera, the gestures and your other layers; this
+package only draws the map.
 
-Render MapLibre / Mapbox GL styles (MapTiler, OpenFreeMap, OpenMapTiles,
-Stadia, Protomaps, …) straight from MVT sources, as a plain flutter_map
-layer. flutter_map keeps owning the camera, gestures and your other
-layers; this package only draws the map.
+<p align="center">
+  <img src="screenshots/munich-liberty-framed.webp" width="23%" alt="Munich in the OpenFreeMap Liberty style">
+  <img src="screenshots/buildings-3d-framed.webp" width="23%" alt="Midtown Manhattan with 3D buildings">
+  <img src="screenshots/zermatt-hillshade-framed.webp" width="23%" alt="Zermatt with a hillshade overlay">
+  <img src="screenshots/munich-dark-framed.webp" width="23%" alt="Munich in the dark Fiord style">
+</p>
+<p align="center">
+  <em>Any MapLibre style · 3D buildings · hillshade · dark styles</em>
+</p>
 
----
+[**Live demo**](https://jonasgrunau.github.io/flutter-map-vector-tiles/) ·
+[Documentation](#-documentation) ·
+[pub.dev](https://pub.dev/packages/flutter_map_vector_tiles)
 
-## ✨ Why this package?
+## ✨ Features
 
-| | |
-|---|---|
-| 📦 **One package** | MVT decoding, style engine and renderer in one dependency, with no renderer/cache/executor satellites |
-| 🚀 **Smooth interaction** | Geometry is rasterized **once** per tile into GPU-resident images (`Picture.toImageSync`), so pan, zoom and rotate are just textured quads |
-| 🔍 **Crisp labels** | Text and icons drawn per frame in screen space: upright under rotation, sharp at fractional zoom, and **one global collision pass**, so nothing is duplicated or clipped at a tile seam. Or, with `labelMode: LabelMode.tile`, drawn into the tiles once, for no per-frame label cost at all — see [Choosing a label mode](#choosing-a-label-mode) |
-| 🌫️ **No white flashes** | New tiles fade in over retained ancestor imagery. Fast zoom-ins render from already-decoded parent tiles, zoom-outs compose the decoded children until the new level arrives |
-| 🎚️ **Correct MapLibre zoom semantics** | The default `TileOffset.maplibre` renders 512px-convention styles *exactly* as their authors designed them |
-| 🧵 **Isolate pipeline** | Tiles decode, trim and match the style's layer filters on a worker-isolate pool (a yielding event-loop queue on web), viewport-centre first, and label collision is decided on an isolate of its own. Cancellation is a state, **never an exception** in your crash reporting |
-| 💾 **Deterministic caching** | LRU memory caches with byte budgets, plus a size-capped disk cache with no index files to corrupt. Every `ui.Image` is disposed on eviction |
-| ✈️ **Works offline** | The style bundle and recently viewed tiles are cached on disk (native), so places you visited keep rendering with no network |
-| 🌐 **All six platforms** | Android, iOS, macOS, Linux, Windows and web. See [Web support](#-web-support) for the browser differences |
-| 👆 **Queries and feature state** | Ask what is drawn at a tap, labels included, with the style layer that drew it, and highlight features through `feature-state` in the style; a change re-renders only the tiles that draw the feature. See [Querying features and feature state](#-querying-features-and-feature-state) |
-| 🛡️ **Tolerant style reader** | Unknown layer types and exotic expressions degrade per layer with a warning, so one weird layer never kills your map |
+- 📦 **One package.** MVT decoding, style engine and renderer in one
+  dependency, with no native code.
+- 🚀 **Smooth.** Each tile's geometry is rasterized once into a GPU image
+  (`Picture.toImageSync`), so pan, zoom and rotate only move textures.
+  Tiles decode on a pool of worker isolates, viewport-centre first.
+- 🔍 **Crisp labels.** Drawn in screen space, in the style's own fonts:
+  upright when the map rotates, sharp at any zoom, never cut at a tile
+  seam.
+- 🌫️ **No white flashes.** New tiles fade in over retained ancestor
+  imagery: zoom-ins render from the parent tiles already decoded,
+  zoom-outs from the children.
+- 🏙️ **3D buildings, hillshade, heatmaps.** Along with fills, lines,
+  patterns, symbols and raster layers, drawn as MapLibre draws them.
+- ✈️ **Works offline.** The style and the tiles you visited are cached on
+  disk, in a size-capped cache with no index files to corrupt. PMTiles
+  and MBTiles archives cover whole regions.
+- 👆 **Queries and feature state.** Ask what is drawn at a tap and
+  highlight features from the style.
+- 🛡️ **Hard to break.** Unknown layer types and exotic expressions degrade
+  per layer with a warning, and a cancelled tile load is a state, never
+  an exception in your crash reporting.
+- 🌐 **Six platforms.** Android, iOS, macOS, Linux, Windows and web.
+
+Built for flutter_map ≥ 8.2 and modern Flutter (Impeller). A clean,
+self-contained rewrite of the ideas behind
+[`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles);
+[how the two compare](#-compared-with-vector_map_tiles) is below.
 
 ## 🚀 Quick start
 
@@ -102,891 +124,88 @@ cd example
 flutter run --dart-define=MAPTILER_KEY=yourKey
 ```
 
-## 🌍 Tested style providers
+## 🖼️ What it draws
 
-| Provider | Style URL shape | Notes |
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="screenshots/readme/3d-flat.webp" alt="Flat building footprints in Midtown Manhattan"><br>
+      Buildings as styles draw them by default …
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="screenshots/readme/3d-perspective.webp" alt="The same view with 3D buildings"><br>
+      … and as <a href="doc/STYLE_SUPPORT.md#3d-buildings">3D buildings</a>, with <code>ExtrusionMode.perspective</code>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="screenshots/readme/heatmap.webp" alt="A heatmap of points of interest over Munich"><br>
+      <a href="doc/STYLE_SUPPORT.md#heatmaps">Heatmap</a> layers
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="screenshots/readme/query.webp" alt="St. Joseph in Munich after a tap: the church highlighted in blue, and a pill naming the query's top hit, poi_r7 · St. Joseph"><br>
+      A tap, <a href="doc/QUERYING.md">queried</a>: the top hit in the pill, the building under it highlighted through feature state
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="screenshots/readme/scripts.webp" alt="Plovdiv with Cyrillic and Latin labels"><br>
+      Labels in the style's own <a href="doc/LABELS.md#fonts">fonts</a>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="screenshots/readme/label-screen.webp" alt="A rotated map with upright labels"><br>
+      Labels stay upright when the map rotates (<a href="doc/LABELS.md#choosing-a-label-mode">label modes</a>)
+    </td>
+  </tr>
+</table>
+
+Map data © [OpenMapTiles](https://openmaptiles.org) ©
+[OpenStreetMap](https://www.openstreetmap.org/copyright) contributors,
+styles by [OpenFreeMap](https://openfreemap.org).
+
+## ⚙️ Options
+
+Everything has a default. The ones you are most likely to touch:
+
+| Option | Default | What it does |
 |---|---|---|
-| 🟢 [MapTiler](https://maptiler.com) | `https://api.maptiler.com/maps/<mapId>/style.json?key={key}` | works with custom map styles |
-| 🟢 [OpenFreeMap](https://openfreemap.org) | `https://tiles.openfreemap.org/styles/liberty` | free, no key needed |
-| 🟢 [Stadia Maps](https://stadiamaps.com) | `https://tiles.stadiamaps.com/styles/osm_bright.json?api_key={key}` | |
-| 🟢 ArcGIS / Esri | `https://…/VectorTileServer/resources/styles/root.json` | relative `../../` sources, `tile/{z}/{y}/{x}` templates and sprites all resolve. Verified against `World_Basemap_v2` |
-| 🟢 Self-hosted (TileServer GL, Martin, …) | any MapLibre `style.json` | relative tile templates supported. Verified against the MapLibre demo tiles |
-| 🟢 [Protomaps](https://protomaps.com) hosted API | `https://api.protomaps.com/styles/v5/light/en.json?key={key}` | verified against the v5 `light` style, which embeds the key in an absolute `…/tiles/v4/{z}/{x}/{y}.mvt?key=…` template. On web, allow-list your origin per key in the Protomaps portal; `localhost` is exempt |
-| 🟢 [PMTiles](https://docs.protomaps.com/pmtiles/) archives | `pmtiles://https://…/planet.pmtiles` source URLs in any style | single-file archives over HTTP range requests, verified against the Protomaps samples. Gzip-internal only; brotli and zstd are rejected |
-| 🟢 [MBTiles](https://github.com/mapbox/mbtiles-spec) archives | wired up in code via [`flutter_map_vector_tiles_mbtiles`](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles) | local SQLite archives from QGIS, tilemaker or TileServer GL. A companion package, so this one stays free of `dart:ffi`. Native only |
-
-## ⚙️ Configuration
-
-Everything has sensible defaults; override what you need:
-
-```dart
-vt.VectorTileLayer(
-  theme: style.theme,
-  tileProviders: style.providers,
-  rasterSources: style.rasterSources,          // imagery and hillshade elevations
-  sprites: style.sprites,
-  glyphs: style.glyphs,                        // the style's fonts
-  tileOffset: vt.TileOffset.maplibre,          // 512px style convention (default)
-  concurrency: 3,                              // decoding isolates
-  diskCacheMaximumSizeInBytes: 50 * 1024 * 1024,
-  diskCacheTtl: const Duration(days: 14),
-  memoryCacheMaxBytes: 24 * 1024 * 1024,
-  // sized for the device by default; a byte count overrides it
-  rasterCacheMaxBytes: vt.VectorTileLayer.autoRasterCacheBytes,
-  tileFadeDuration: const Duration(milliseconds: 150),
-  labelFadeDuration: const Duration(milliseconds: 150),
-  showLabels: true,
-  labelMode: vt.LabelMode.screen,              // or .tile: labels baked into tiles
-  extrusionMode: vt.ExtrusionMode.flat,        // or .perspective: 3D buildings
-  controller: myController,                    // queries + feature state, optional
-  retainAllProperties: false,                  // keep properties the style never reads
-  logger: const vt.Logger.console(),           // see style warnings in debug
-)
-```
-
-| Parameter | Default | What it does |
-|---|---|---|
-| `glyphs` | none | the style's `glyphs` (`style.glyphs`): labels drawn in the style's own fonts, laid out without the platform's text shaper. Without them every label uses the system font. See [Fonts](#fonts) |
-| `tileOffset` | `TileOffset.maplibre` | zoom relation between map and style, see below 👇 |
-| `concurrency` | `3` | worker isolates decoding tiles off the UI thread (ignored on web) |
-| `diskCacheMaximumSizeInBytes` | 50 MB | `0` disables disk caching (no effect on web) |
-| `diskCacheTtl` | 14 days | freshness window: younger tiles skip the network, older ones still paint instantly and refresh in the background. ⚠️ Respect your provider's terms |
-| `cachePath` | app support dir | your own directory, to control or clear it (ignored on web) |
-| `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source. The caches are shared process-wide, so the most recently mounted layer's value wins |
-| `rasterCacheMaxBytes` | sized for the device | finished-tile budget: zooming back to a recent level, or reopening the same style, paints instantly instead of re-rendering. These are GPU texture bytes (plus, with 3D buildings, the buildings each tile holds), roughly 1 MB per tile at devicePixelRatio 2 and 2.25 MB at 3, and a phone screenful is 25 to 35 tiles, so a *single* level costs about 80 MB on a large dpr-3 phone. The default measures your viewport and dpr and budgets 2.5 screenfuls, clamped to 64 to 256 MB, so a zoom round trip keeps the level it returns to. Pass a byte count to pin it, or `0` to disable |
-| `tileFadeDuration` | 150 ms | fade-in of newly rendered tiles. Tiles from the finished-tile cache fade only when retained imagery lies beneath to cross-fade over; with nothing beneath, as on a reopened map or in the ring a zoom-out exposes, ready imagery appears at once rather than fading over the background. `Duration.zero` disables |
-| `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress; on a Nothing Phone (1) that took the peak GPU memory from 391–409 to 317–320 MB and cost frames ([compare/RESULTS.md](compare/RESULTS.md)). No effect with `LabelMode.tile`, where labels fade in with their tile |
-| `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
-| `labelMode` | `LabelMode.screen` | where labels and icons are drawn: every frame in screen space, or once into each tile's image (`LabelMode.tile`, what `vector_map_tiles` calls raster mode). Changing it re-renders the tiles already on screen. See [Choosing a label mode](#choosing-a-label-mode) |
-| `extrusionMode` | `ExtrusionMode.flat` | how `fill-extrusion` layers are drawn: flat in the tile images, as every release before 3D buildings drew them, or opted into with `ExtrusionMode.perspective`, as 3D buildings leaning away from the screen centre, the way MapLibre draws them looking straight down (UI-thread time every frame the map moves). Always flat with `LabelMode.tile`. See [3D buildings](#3d-buildings) |
-| `controller` | none | a `VectorTileLayerController` to ask what is drawn where and to set feature state. See [Querying features and feature state](#-querying-features-and-feature-state) |
-| `retainAllProperties` | `false` | decode every feature property, not only those the style reads, so query results carry them all. Costs memory and decode time, see below |
-
-The memory caches are shared process-wide and outlive the layer, which is
-why reopening a map paints instantly. If those budgets are too generous
-under memory pressure, the static `VectorTileLayer.clearMemoryCache()`
-releases decoded tiles, raster-source images and finished tiles alike,
-leaving the disk cache untouched. It also trims the label text each open
-map keeps, which is held per map rather than shared, down to the labels
-of the tiles it is showing. Call it from a handler such as
-`WidgetsBindingObserver.didHaveMemoryPressure`: visible maps keep their
-imagery and their labels, only tiles panned to afterwards are re-read
-from disk, and only labels met again are shaped again.
-
-The layer manages those caches itself in one case. Coming back from the
-background it discards the finished tiles and re-renders, because iOS
-revokes GPU access for a backgrounded process and a tile rasterized just
-as that happens comes back solid magenta, indistinguishable from a real
-image. So it stops rasterizing on the way out and treats what it has as
-suspect on the way back in. Recovery costs no network and no decoding,
-since the decoded geometry never left memory, and on-screen imagery is
-replaced only once the new render is ready. A window that is merely
-unfocused (a desktop window behind another app, a browser window that
-lost focus, the other half of an Android split screen) keeps rendering.
-
-`StyleReader` also takes:
-
-- `apiKey`, substituted for `{key}` in the style URI and every URL the
-  style references. For `mapbox://` URIs (style ids, sprite bases and
-  tileset sources, expanded to `api.mapbox.com` automatically) it is the
-  access token.
-- `headers`, added to the style, TileJSON, sprite and glyph requests and
-  forwarded to the created tile providers, for header-authenticated
-  services such as `Authorization`.
-- `httpClient`, your own `http.Client` for proxying, certificate pinning
-  or tests. A passed client stays yours and is never closed for you.
-- `language`, to show labels in that language (`'de'`, `'fr'`,
-  `'zh-Hans'`) wherever the tiles carry a translation, and in the
-  style's own text everywhere else. See [Label language](#label-language).
-
-### 🎚️ Understanding `TileOffset`
-
-MapLibre renders 512px tiles, so at the same visual scale a MapLibre zoom
-is **one lower** than flutter_map's. Styles from MapTiler and friends are
-authored against that convention.
-
-- `TileOffset.maplibre` *(default)* matches the author's intent exactly,
-  for text sizes, road widths and layer zoom ranges.
-- `TileOffset.none` evaluates the style at flutter_map's zoom directly, so
-  everything appears one zoom earlier and larger. The legacy
-  `vector_map_tiles` default, if you need parity with it.
-
-## ✈️ Offline behaviour
-
-Everything you looked at recently keeps working without network:
-
-- **Style bundle.** `StyleReader` caches style.json, TileJSON, sprites
-  and every glyph range a map has drawn with on disk,
-  stale-while-revalidate: the cached copy is served instantly,
-  including fully offline, and refreshed in the background once older than
-  `refreshAfter` (12 h default). Opt out with `StyleReader(cache: false)`.
-- **Tiles.** Served from disk while fresh. Past `diskCacheTtl` they still
-  paint instantly and revalidate in the background: changed tiles
-  cross-fade to the new imagery, and with no network the old tile simply
-  stays. Stale tiles are deleted only by the size cap, oldest first, never
-  by age alone. Elevation tiles for a hillshade are tiles like any other;
-  one whose neighbour was never cached shades that edge without it, a
-  faint seam, until the neighbour can be fetched.
-- **Durable location.** Both caches default to the application support
-  directory, which the OS doesn't purge, unlike the temp directory.
-
-This is a *visited-places* cache, not region pre-download. For a
-guaranteed offline region, ship a tile archive: point
-`PmTilesVectorTileProvider` at a `.pmtiles` file, or
-[`flutter_map_vector_tiles_mbtiles`](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles)
-at a `.mbtiles` one, alongside an `asset://` style. Nothing on that path
-touches the network, and a local archive is excluded from the disk cache,
-being the local copy already.
-
-Disk caching, and with it everything above, is native-only. See
-[Web support](#-web-support) for the browser.
-
-## 🌐 Web support
-
-The layer runs on Flutter web with the CanvasKit/Skwasm renderer, the
-default since Flutter 3.29. (Do not force the removed HTML renderer on
-Flutter 3.27/3.28: it lacks `Picture.toImageSync`.) What differs from
-native:
-
-- **No persistent cache.** `cachePath`, `diskCacheTtl`,
-  `diskCacheMaximumSizeInBytes` and `StyleReader(cache: …)` are no-ops.
-  Tiles and the style bundle rely on the in-memory caches plus the
-  browser's HTTP cache instead.
-- **Decoding runs on the event loop.** A yielding queue replaces the
-  worker-isolate pool, and `concurrency` is ignored. Layer filters are
-  matched against a tile's features when it is first drawn, not while it
-  is decoded, a heatmap layer's density is computed on the event loop
-  too, after the frame that asked for it, and so are the meshes of a
-  style's 3D buildings, when they are on, cut while a tile is decoded.
-- **Label collision runs in the frame.** The placement pass that runs on
-  an isolate of its own elsewhere costs the frame it is due in.
-- **CORS.** The browser fetches style.json, TileJSON, sprites, glyphs and
-  tiles directly, so every host involved must send
-  `Access-Control-Allow-Origin`. MapTiler, OpenFreeMap and Stadia do;
-  self-hosted tile servers need it configured. PMTiles hosts additionally
-  need range requests to pass CORS, meaning `Range` in
-  `Access-Control-Allow-Headers` when preflighted.
-- **PMTiles gunzip** uses the browser's native `DecompressionStream`,
-  available wherever Flutter web runs.
-- **No MBTiles.** The companion package reads SQLite through `dart:ffi`,
-  which has no web implementation. PMTiles fills the same role over HTTP
-  range requests.
-- **Hillshade** draws on CanvasKit and Skwasm alike; the web engine
-  snapshots each tile's shading once more before the tile does, so a
-  hillshaded tile costs a little more to render there than on native.
-
-## 🔌 Custom tile sources
-
-No style URL? Any `{z}/{x}/{y}` MVT endpoint works. Build the theme
-yourself and wire providers manually:
-
-```dart
-vt.VectorTileLayer(
-  theme: vt.ThemeReader(logger: const vt.Logger.console()).read(myStyleJson),
-  tileProviders: vt.TileProviders({
-    'openmaptiles': vt.NetworkVectorTileProvider(
-      urlTemplate: 'https://tiles.example.com/{z}/{x}/{y}.pbf?key=$key',
-      maximumZoom: 14, // the source's max; higher zooms overzoom this data
-    ),
-  }),
-)
-```
-
-Those are the two options you'll always set.
-`NetworkVectorTileProvider` also takes `headers` for header-authenticated
-tile servers, `minimumZoom`, `maxRetries` (default 2) and an optional
-`client` if you bring your own `http.Client`, which is shared and never
-closed for you.
-
-**PMTiles** single-file archives work out of the box: styles with
-`pmtiles://https://…/planet.pmtiles` source URLs just load, or open an
-archive directly:
-
-```dart
-final provider = await vt.PmTilesVectorTileProvider.open(
-  'https://tiles.example.com/planet.pmtiles',
-);
-// → vt.TileProviders({'mySource': provider})
-```
-
-`open` likewise accepts `headers`, `maxRetries`, a shared `client`, and
-`minimumZoom`/`maximumZoom` to override the archive header, the same role
-a style source's `minzoom`/`maxzoom` plays.
-
-**MBTiles** archives live in a companion package,
-[`flutter_map_vector_tiles_mbtiles`](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles),
-separate because SQLite through `dart:ffi` would cost every app here a
-native dependency and this package its web support:
-
-```dart
-final provider = await MbTilesVectorTileProvider.open('…/bavaria.mbtiles');
-```
-
-**Anything else** you write against `VectorTileProvider`, which is four
-members; `MemoryVectorTileProvider` covers tests and tiles you already
-hold. Two hooks exist for custom providers.
-
-`resolveProvider` substitutes yours into a style by source id, so you keep
-the style's theme, sprites and attribution and replace only the tiles.
-Handy when the source lives somewhere no style document can name, like a
-device-absolute path:
-
-```dart
-final style = await vt.StyleReader(
-  uri: 'asset://styles/liberty.json',
-  resolveProvider: (id) async => id == 'openmaptiles' ? provider : null,
-).read();
-```
-
-Returning null falls through to the style's own URL, it applies to raster
-sources too, and the `Style` takes ownership of what you return, so
-`style.dispose()` disposes it.
-
-`cacheBytesToDisk => false` says your provider is already backed by local
-storage, so the disk cache is skipped in both directions instead of
-storing a second copy. Implement it on anything reading from local
-storage, and use `vt.SingleFlight` to coalesce concurrent loads, as the
-built-in providers do.
-
-Raster imagery (satellite, pre-rendered hillshade) wires up the same
-way: pass `rasterSources:` entries of `RasterTileSource(provider: …,
-tileSize: 512)`, where the provider serves encoded PNG/JPEG/WebP bytes
-instead of MVT. `NetworkVectorTileProvider` works unchanged. 256px
-sources are fetched one zoom deeper for the same visual scale. An
-elevation source for `hillshade` layers (a style's `raster-dem`) is the
-same thing with an `encoding`:
-`RasterTileSource(provider: …, tileSize: 256, encoding:
-vt.DemEncoding.terrarium)` (or `.mapbox`, or a `DemEncoding(...)` with
-the factors of a `custom` one).
-
-A source's `promoteId` comes along from the style document; built by
-hand, pass it as `TileProviders(providers, promoteIds: {'openmaptiles':
-vt.PromoteId('osm_id')})` (or `PromoteId.bySourceLayer({...})` for one
-property per source layer).
-
-## 👆 Querying features and feature state
-
-A `VectorTileLayerController` answers what the layer draws at a point
-or in a rectangle (MapLibre's `queryRenderedFeatures`) and holds feature
-state that the style reads back through `["feature-state", key]`
-(MapLibre's `setFeatureState`). Tap to highlight a building:
-
-```dart
-final features = vt.VectorTileLayerController();
-
-FlutterMap(
-  options: MapOptions(
-    onTap: (tap, _) {
-      final hit = features
-          .queryRenderedFeatures(tap.relative!)
-          .where((f) => f.sourceLayer == 'building' && f.id != null)
-          .firstOrNull;
-      if (hit == null) return;
-      features.setFeatureState(
-        source: hit.source,
-        sourceLayer: hit.sourceLayer,
-        id: hit.id!,
-        state: {'selected': true},
-      );
-    },
-  ),
-  children: [
-    vt.VectorTileLayer(
-      controller: features,
-      theme: style.theme,
-      tileProviders: style.providers,
-    ),
-  ],
-)
-```
-
-**Queries** take a point or a `Rect` in the map widget's logical pixels
-(`TapPosition.relative`), optionally limited to some style layer ids,
-and return `RenderedFeature`s topmost first: the labels and icons the
-last frame drew, then fill, line and circle features, from the topmost
-style layer down. Each carries the **style layer id** that drew it,
-`source`, `sourceLayer`, `id`, `properties`, `geometryType` and its
-current `state`. A feature is hit where it is drawn: inside a polygon
-(holes excluded), within half a line's width (casing included) of a
-line, within a circle's radius plus stroke, on a label's text or icon
-box, with the map rotated or not. Paint opacity does not matter, as in
-MapLibre, so a transparent layer can serve as a wider tap target. A
-feature with an id is returned once per layer however many tiles it
-spans; one without an id may come back once per data tile. A query is
-synchronous and reads only what is already in memory. On a Nothing
-Phone (1), on a dense z16 Liberty screen of Munich, a tap takes 1.1 ms
-(median) and a 48 px square 2.0 ms, 6.7 ms at worst in 99 of 100.
-
-Query results carry the properties the decoded tiles kept, which are
-only those the style reads. `retainAllProperties: true` keeps every
-property instead, at a cost that depends on the tiles: on OpenMapTiles
-data, which carries a name in dozens of languages for every place,
-the nine z14 tiles around central Munich decode to 20.6 MiB instead of
-16.3 MiB (+27%). Decoded tiles stay within `memoryCacheMaxBytes` either
-way, so the cost shows as fewer tiles held in memory (about a fifth
-fewer there), not as unbounded growth.
-
-**Feature state** is per feature, keyed by source, source layer and id,
-and merged like MapLibre's: `setFeatureState` adds keys,
-`removeFeatureState` takes one key, one feature or a whole source layer,
-and `getFeatureState` reads it back. A number id and its decimal string
-name the same feature. The state lives in the controller, so it outlives
-a rebuilt or remounted layer; a controller drives the layer that mounted
-last. It changes what is drawn only where a
-paint property reads it, such as
-`"fill-color": ["case", ["boolean", ["feature-state", "selected"],
-false], "#e53935", "#d6d0c4"]`; hosted styles don't, so add a layer of
-your own (the example app appends one over the style's buildings).
-A change re-renders only the display tiles that draw the feature from a
-layer that reads state, ahead of other queued work and without a fade;
-labels keep their placement, and screen-space labels whose paint reads
-state follow on the next frame — one the state shows or hides through
-its opacity is placed or dropped by the next collision pass, within one
-`labelFadeDuration`. Labels whose opacity reads state place on the UI
-thread rather than the placement isolate while a controller is
-attached, since the isolate sees no state. On the same phone and screen, selecting
-a building redraws the display tiles that draw it (all 8 on screen
-there, since the merged features described below span them) in about a
-quarter of a second: 215–250 ms median over 7–8 frames, most of them
-over a 60 Hz budget, as any tile load is. Clearing it again is served
-from the finished-tile cache. Feature ids come from the
-tiles, or from the property a source's `promoteId` names.
-
-A feature is whatever the tiles encode as one, and some tiles merge.
-OpenFreeMap's, for one, join neighbouring buildings with the same
-attributes into a single multipolygon with a single id (up to 1,563
-buildings in one feature in central Munich at z14), so a query returns
-that whole group and selecting it highlights all of it, as MapLibre
-would.
-
-## 🎨 Style support
-
-**Layer types**
-
-| Type | Support |
-|---|---|
-| `background`, `fill`, `line`, `circle` | full, including `fill-pattern`, `line-pattern`, `background-pattern`, dashes and casing, `line-offset`, `line-blur`, `line-miter-limit`, `circle-blur`, the `*-translate` and `*-sort-key` properties; see the notes below the table |
-| `symbol` | every layout and paint property but `text-writing-mode` and the pitch alignments (flutter_map has no pitch), including curved line text, variable anchors and `icon-text-fit`; see *Symbol properties* and [Labels](#-labels) below |
-| `hillshade` | terrain shading computed from a `raster-dem` source (`terrarium`, `mapbox` or `custom` encoding), drawn at its layer position with every paint property: all five `hillshade-method`s (`standard`, `basic`, `combined`, `igor`, `multidirectional`, up to four lights), illumination direction, altitude and anchor, exaggeration, shadow/highlight/accent colours and `resampling`. Slopes are read across tile edges from the neighbouring elevation tiles, so the shading has no seams. One difference: tiles are shaded once and turn with the map, so `hillshade-illumination-anchor: viewport` (the default) is drawn as if the map were not rotated; with `map` it matches MapLibre at every bearing |
-| `raster` | raster sources *inside* vector styles (satellite/hybrid imagery) draw at their layer position, with `raster-opacity`, brightness/contrast/saturation/hue-rotate matching MapLibre's shader math, and `resampling` / `raster-resampling` |
-| `fill-extrusion` | flat footprints in `fill-extrusion-color` and `-opacity` by default; with `extrusionMode: ExtrusionMode.perspective`, 3D buildings, as MapLibre draws them with the camera looking straight down: `fill-extrusion-height`, `-base`, `-color`, `-opacity` (applied to the whole layer, as MapLibre does), `-vertical-gradient` and `-translate`, shaded by the style's root `light`; see **3D buildings** below. Patterned ones (`fill-extrusion-pattern`), and all of them with `LabelMode.tile`, draw as flat footprints in either mode. The alpha of `fill-extrusion-color` darkens the colour rather than making it translucent, as in MapLibre |
-| `heatmap` | the kernel density MapLibre draws over a source layer's points, with `heatmap-radius`, `-weight`, `-intensity`, `-opacity` and a `heatmap-color` ramp over `["heatmap-density"]`, data-driven weight and radius included; drawn over all the tile geometry, see **Heatmaps** below |
-| `color-relief`, `sky` | skipped, with a log line |
-
-**Geometry properties not drawn.** `line-gradient` needs a GeoJSON
-source with `lineMetrics`, which this package does not read (MapLibre
-refuses the style when it sits on a vector source); the line keeps its
-`line-color`. `line-round-limit` is ignored: round joins stay round at
-every angle, a difference below a pixel at the default limit. A
-`*-translate-anchor` of `viewport` is drawn as `map`, which differs
-only while the map is rotated, because a tile is drawn once and rotated
-with the map. Where `line-offset` meets a sharp turn the shifted line
-is beveled on the outside, where MapLibre leaves a gap and its two
-segments cross. A `line-blur` under about 0.6 px on a 3× screen (0.9 px on
-a 2× one) only narrows the line by what the blur takes, without
-softening its edges: a blur costs GPU passes, and blurring every road of
-a style by 0.5 px cost a phone a sixth to two thirds of its frames while
-tiles were drawn. A blurred casing (`line-gap-width`) softens only its
-outer edge, and a blurred dashed line running exactly along a tile axis
-is drawn sharp: Impeller, Flutter's renderer on iOS and Android, draws
-those two wrongly when blurred.
-
-**Icons.** SDF sprite sheets (`"sdf": true`) are thresholded and tinted
-per `icon-color`, `icon-halo-color`, `icon-halo-width` and
-`icon-halo-blur`; dark MapLibre styles ship their icons this way.
-Ordinary sprites are drawn with the colours baked into the sheet. `StyleReader` repacks the sheet with a
-transparent gutter around every icon, as MapLibre does, so a scaled icon
-never picks up the edge of its neighbour in the sheet. `icon-rotate` and
-`icon-rotation-alignment` follow MapLibre's viewport/map/line semantics,
-including camera bearing, icon anchor/offset rotation and rotated collision
-bounds.
-
-**Symbol properties.** Beyond text, icons and their anchors, offsets,
-sizes and colours, the label pass reads:
-
-- `text-halo-blur`, a soft halo edge as MapLibre draws it;
-- `icon-text-fit` and `icon-text-fit-padding`, honouring a sprite's
-  `stretchX`, `stretchY` and `content`, so a road shield stretches
-  where its designer said it may and frames its text;
-- `text-variable-anchor-offset`, and `text-offset` with
-  `text-variable-anchor` (taken as distances away from each anchor, as
-  in MapLibre);
-- `text-justify` (with `auto`) and `text-line-height` for multi-line
-  labels;
-- `text-optional` and `icon-optional`, `icon-padding`, `text-overlap` /
-  `icon-overlap` (`never`, `always`, `cooperative`), the older
-  `*-allow-overlap`, and `*-ignore-placement`;
-- `symbol-sort-key`, `symbol-z-order` and `symbol-avoid-edges`;
-- `text-rotate`, `text-rotation-alignment: map` for point labels,
-  `icon-keep-upright`, and `text-translate` / `icon-translate` with their
-  anchors.
-
-`text-writing-mode` is not supported: CJK text is laid out
-horizontally, and the reader logs the property. `symbol-avoid-edges`
-keeps a symbol inside the 256 px display tile it was laid out in, which
-past a source's maxzoom is smaller than the data tile MapLibre bounds it
-by, so more labels near seams give way. `text-rotate` turns
-point labels only, and text with an icon fitted around it is drawn
-straight even along a line. Without the style's glyphs (see
-[Fonts](#fonts)), `text-font` picks the weight and style of the
-platform's fonts.
-
-**Heatmaps.** A heatmap's density spans tiles — a kernel near
-a seam reaches into the neighbour — so it is drawn in screen space, like
-MapLibre: the points of every visible tile summed into one density at a
-quarter of the device resolution, coloured through `heatmap-color` and
-drawn as one image over the tiles. The density is recomputed when the
-zoom, the tiles or the screen change, at most every 100 ms, on a worker
-isolate (on the event loop on web); in between, the last image follows
-the camera, so panning and rotating are exact while a pinch scales the
-kernels with the map until the next pass catches up. Where it differs
-from MapLibre:
-
-- a heatmap layer draws above every `fill`, `line`, `circle`, `raster`,
-  `hillshade` and `fill-extrusion` layer, wherever the style puts it, and
-  below the
-  labels and icons. Most styles put their heatmap there anyway; one
-  sitting under roads or buildings covers them here. With
-  `LabelMode.tile` the labels are part of the tile images, so the
-  heatmap covers them too;
-- only point features count. MapLibre also takes every vertex of a line
-  or polygon as a point.
-
-<a id="3d-buildings"></a>**3D buildings.** Off by default: `fill-extrusion` layers draw as
-flat footprints, as in every release before, so updating the package
-changes no map. `extrusionMode: ExtrusionMode.perspective` turns them
-on. flutter_map's camera has no pitch, so the map never tilts; what MapLibre shows of a building with the camera looking
-straight down is drawn instead. Its camera is a perspective one, 1.5
-viewport heights above the map, so a roof `h` metres up is drawn
-scaled away from the screen centre by `D / (D − h · pixels per
-metre)`: buildings lean outward, more the further they are from the
-centre, the taller they are and the closer the zoom, and the walls
-facing the centre show — a 50 m building 300 px from the centre of an
-800 px tall map leans 16.6 px at style zoom 16. Because that changes
-with every pan and zoom, the buildings are not in the tile images: each
-frame projects the ones on screen and draws them over the tiles, the
-lowest roof first, each building's walls before its roof; one of
-height 0 is a roof on the ground, as in MapLibre. Roofs and
-walls are shaded as MapLibre's shader does, by the style's root
-`light` (MapLibre's default when the style has none) and
-`fill-extrusion-vertical-gradient`. Rendered-feature queries find a
-building where it is drawn, its roof and its walls. Next to MapLibre GL
-JS over central Munich at style zoom 15–17, the screenshots differ by
-3–6 per colour channel on average, from 13–17 with flat buildings, and
-78–90 % of the wall pixels coincide
-([compare/RESULTS.md](compare/RESULTS.md#3d-buildings)). Where it
-differs from MapLibre:
-
-- what the style puts above its first extrusion layer draws over the
-  buildings, roofs included, as in MapLibre: Liberty's boundary lines,
-  or a route or highlight an app adds on top. The difference is in
-  between: the buildings of all extrusion layers are drawn together,
-  so a layer between two of them draws over both, and a heatmap draws
-  over the buildings wherever the style puts it;
-- painter's order stands in for MapLibre's depth buffer: where a lower
-  roof leans over a detached taller building through a gap narrower
-  than the lean, or one part of a concave building over another, the
-  overlap can be drawn the wrong way round. A wall with another
-  building right in front of it — a terraced neighbour, the outline a
-  taller building part rises out of — starts at that building's roof,
-  as the depth buffer would show it;
-- a wall leaning less than half a pixel is left out, and walls leaning
-  under 3 px share their corners, so their colour runs into the next
-  wall's instead of changing at the corner;
-- a height reading both the zoom and the feature is blended linearly
-  between whole zoom levels.
-
-The per-frame cost is UI-thread time in proportion to the buildings on
-screen: most at style zoom 14, where a phone screen shows the most of
-them. On a Nothing Phone (1), Liberty over central Munich, zoom sweeps
-against the flat drawing of the release before: at style zoom 14 the
-pass takes 2.4–4.0 ms a frame (median, 33k vertices) and puts 0.5–1.2
-ms on the 90th-percentile UI frame; at 16 it takes 0.9 ms and at 18
-0.3 ms, and the frames get no slower, as the tiles no longer draw the
-buildings. With labels off the phone runs the UI thread at lower
-clocks, and the same pass at zoom 14 takes 8.8 ms: fast sweeps there
-fell from 59.5 to 43.6 frames a second. On an iPhone 15 Pro Max
-frames delivered stayed at 99–100 %. Over the comparison's scripted
-zooms, pans, rotations and flings
-([compare/RESULTS.md](compare/RESULTS.md)), the Nothing Phone got
-84–92 % of frames with 3D buildings against 91–96 % without, 3 to 9
-points less, most while panning and flinging; the iPhone and the Mac
-stayed within 1 point, and Chrome within 2.3 except on the first fling
-(5.8 points). The buildings' meshes are cut
-while a tile is decoded, only for tiles at zooms where a 3D layer
-draws, and kept with it — 65–550 KB a tile in
-central Munich, counted against `memoryCacheMaxBytes`, so the same
-budget holds fewer decoded tiles, and, for as long as a finished tile
-in the raster cache holds them, against `rasterCacheMaxBytes` too; on the iPhone the app's memory at
-the first screen rose by about 20 MB. The default,
-`ExtrusionMode.flat`, draws them flat in the tile images instead, at
-no per-frame cost and without the meshes.
-
-**Expressions.** Every operator of the current MapLibre style spec
-compiles, as do legacy filters, legacy `{stops}` functions (zoom,
-property and zoom-and-property ones, with `{token}` templates in their
-`text-field` / `icon-image` outputs) and `{token}` templates. The engine
-is checked against all 583 expression fixtures of `maplibre-style-spec`:
-the 425 that MapLibre evaluates give MapLibre's results, apart from 42
-listed one by one, with the reason, in
-`test/maplibre_expression_conformance_test.dart`.
-
-Evaluation is as strict about types as MapLibre's. Where an operand has
-the wrong type — a numeric string compared with a number or fed to
-`+`, a `case` condition that is not a boolean, an array index out of
-bounds, an `rgb` channel above 255 — the property falls back to its
-default and a filter leaves the feature out, as in MapLibre. Number,
-boolean and array properties take only values of their type, so
-`["get", "size"]` with `"12"` in the tile is not a text size of 12;
-`["to-number", ["get", "size"]]` is. Math follows JavaScript's:
-`["/", 1, 0]` is Infinity, which a property then falls back on. Legacy
-functions follow the same rules: a property function needs a number,
-not a numeric string, and an identity function falls back to its
-`default` for a value of the wrong type — though `text-field`,
-`icon-image` and the patterns take any value, a number as its digits,
-as MapLibre's do. A few operators answer with a fixed value because what
-they read does not exist here:
-
-| Operator | Here |
-|---|---|
-| `within`, `distance` | the feature's geometry against the GeoJSON given; `distance` in metres, as MapLibre measures it |
-| `global-state` | see [Global state](#global-state) below |
-| `number-format` | digits, separators and currency per locale (through `intl`); `unit` symbols are the English short ones (`m`, `km/h`, `°C`) in every locale |
-| `feature-state` | the state set through a `VectorTileLayerController` (see [feature state](#-querying-features-and-feature-state)); null for a feature that has none |
-| `elevation` | always null: no `raster-dem` source or `color-relief` layer is drawn |
-| `heatmap-density` | the kernel density, in a heatmap layer's `heatmap-color`; 0 anywhere else |
-| `line-progress`, `accumulated` | always 0 |
-| `collator` | ignored: strings compare by code unit, whatever the locale, case or diacritic options |
-| `is-supported-script` | always true: every script is shaped by the platform |
-| `image` | the image name, whether or not the sprite sheet has it |
-| `format` | the text only: style overrides and inline images are left out |
-
-Sources' `promoteId` is applied, so `["id"]` and feature state see the
-promoted property.
-
-Unsupported layer types, paint properties and expressions are skipped per
-layer with a warning, so one weird layer never kills the whole style.
-
-#### Global state
-
-A style's `global-state` expressions read values the app sets, with
-defaults from the style's root `state`. `Theme.withGlobalState` gives
-the theme for other values. Keys you leave out, or set to null, keep
-their default:
-
-```dart
-VectorTileLayer(
-  theme: style.theme.withGlobalState({'showTrails': showTrails}),
-  tileProviders: style.providers,
-)
-```
-
-The values are compiled into the theme, so changing them never slows
-down drawing: each state is its own theme, and the same state returns
-the same instance, which makes the call safe in `build`. When the layer
-gets a theme that differs only in its state, it redraws its tiles from
-the data it already has, the old imagery staying until the new one is
-ready. Nothing is fetched or decoded again. Each change still redraws
-every visible tile, so drive it from a toggle or a picker, not from a
-slider that changes on every frame. Keys no expression in the style
-reads are ignored, so passing more of your app's state than the style
-needs returns the same theme and redraws nothing; a key the style reads
-without declaring it in `state` still takes effect. `theme.globalState`
-holds the values in effect. A style that reads no global state returns
-itself.
-
-### 🏷️ Labels
-
-By default text and icons are drawn per frame in screen space rather than
-baked into the tile rasters, which is what the behaviour below rests on.
-`LabelMode.tile` bakes them in instead; [Choosing a label
-mode](#choosing-a-label-mode) has what changes then.
-
-- **Curved along the road.** Glyphs are placed one by one with MapLibre
-  semantics: `text-max-angle` rejects sharp bends, `text-keep-upright`
-  flips reading direction, `text-rotation-alignment: viewport` keeps
-  shield text horizontal. Nearly straight windows are drawn as a single
-  rotated string for speed; scripts with contextual shaping (Arabic,
-  Indic, …) fall back to straight placement so glyphs are never
-  mis-joined. One deliberate difference: a kept-upright label whose road
-  turns back on itself (a hairpin) is dropped rather than drawn with
-  the letters past the turn upside down, which `text-max-angle` alone
-  lets through because each step of a smooth turn stays under it.
-- **Only where it fits.** Anything placed along a line, curved text, a
-  road shield, a one-way arrow, needs all of itself on the line,
-  centred on its anchor, as in MapLibre: a ramp or a crossing shorter
-  than its shield carries none. An icon alone at `line-center` is
-  exempt, as in MapLibre. The fit is a placement decision, so it is
-  judged when collision is (see *Collision is decided on a timer*
-  below), not on every frame.
-- **Overlap as in MapLibre.** A symbol allowed to overlap
-  (`*-allow-overlap`, `*-overlap: always`) may be drawn over others but
-  still reserves its own space, so a later label that may not overlap
-  keeps clear of it; only `*-ignore-placement` gives the space away. A
-  symbol's text and icon are tested separately, each with its own
-  overlap setting, and `text-optional` / `icon-optional` decide whether
-  one may show without the other.
-- **Words stay whole.** `text-max-width` wraps between words; a single
-  word wider than it gets a line of its own, as in MapLibre, rather
-  than breaking where the width runs out, and the lines around it
-  still break at `text-max-width`. Chinese and Japanese wrap between
-  any two characters, as in MapLibre; Thai, Lao, Khmer, Myanmar and
-  Tibetan, written without spaces, stay on one line, as they do there.
-  One difference: Korean may also break between two syllables of a
-  word, where MapLibre breaks it only at spaces.
-  Labels drawn in the style's fonts (see [Fonts](#fonts)) are also
-  balanced as MapLibre balances them.
-- **Each line reads in its own direction.** Every line of the text
-  field takes its direction from its first letter, as in MapLibre, and
-  the lines `text-max-width` wraps it into keep that direction: an
-  Arabic or Hebrew name reads from the right with any Latin word or
-  number in it on the correct side, a Latin name holding a Hebrew word
-  reads from the left, and Liberty's Latin name over the local one
-  gets each line right.
-- **Repeated road names stay spaced.** A street arrives as many features
-  (one per OSM way, sometimes one per road-class style layer), each spaced
-  on its own. For `symbol-placement: line`, a visible label therefore
-  suppresses another copy of the same text from the same source layer
-  within half of `symbol-spacing` *along the same road* — the two
-  carriageways of a motorway, neighbouring switchbacks and parallel
-  same-named roads sit beside each other and keep their labels, as in
-  MapLibre. The candidate placed first that fits wins (see the next
-  point); `point` and `line-center` labels are not affected.
-- **Collisions go the way they go in MapLibre.** Of two labels that
-  collide, the one from the higher style layer wins, then the one with
-  the lower `symbol-sort-key`. Past that, labels are placed in
-  MapLibre's order: tile by tile in a fixed order, and within a tile
-  feature by feature as the tile lists them. So the same label shows
-  as in MapLibre, and panning or rotating never swaps the winner. One
-  deliberate difference: a label already on screen keeps its spot
-  against a newcomer from its own layer, where MapLibre decides every
-  pair afresh at each placement and lets a label drop out and return
-  while zooming.
-- **Zoom ranges, with a ramp at the top.** Nothing claims label space
-  outside a symbol layer's `[minzoom, maxzoom)`, but labels ramp out over
-  the last quarter zoom level before a declared `maxzoom` instead of
-  snapping away, and ramp back in on the way out. `minzoom` gets no ramp:
-  it is inclusive, so one would leave a `minzoom: 14` layer invisible at
-  exactly zoom 14.
-- **One fade state per label identity.** Beyond that ramp, every
-  appearance and disappearance is animated per label (the same text or
-  icon on the same layer, at the same place, across tiles and zoom
-  levels), rising while the label is placed and falling once it is not,
-  whatever the reason: a feature the tileset drops at the next zoom, a
-  label crowded out by denser labelling, a whole layer cut at its
-  `minzoom`. Each eases out over `labelFadeDuration` instead of vanishing
-  in one frame. A departing label frees its space immediately, so its
-  replacement fades in over it: a crossfade, not a pop at the fade's end.
-- **A placed label always paints.** A label that has won its spot is never
-  held invisible waiting on anything; it fades in from the frame it
-  arrives. A zoom crossing delivers a screen's labels over tens of frames,
-  since tiles finish one at a time, and each starts its fade as it lands
-  rather than at some shared moment.
-- **No blink when a zoom level hands over.** A label that survives the
-  change keeps its opacity, because the two levels' copies are one label
-  with one fade state; a crossing can neither blink a label nor fade it
-  into itself, and only one of the copies draws, as only one copy of a
-  label on a tile seam does. The outgoing level also only ever *keeps*
-  labels on screen and never introduces ones that weren't already
-  visible, so a label that had been crowded out, a street name under a
-  POI say, cannot flash up just as the level departs.
-- **Street names stay put across zoom levels.** Along-line labels are
-  spaced out from the middle of their line, so the next level deeper
-  keeps every position of the current one and only adds names in
-  between: over the same data (every level past the source's maxzoom) a
-  street name you are looking at doesn't move when a level hands over.
-  Where the next level brings its own data tiles, the clipped lines
-  differ, or where the style's `symbol-spacing` changes with the zoom, a
-  name can genuinely sit elsewhere on its road; the name at its new
-  position is then a label of its own, fading in while the old position
-  eases out, instead of the name teleporting at full opacity.
-- **Placement is remembered, not re-derived.** A label drawable from more
-  than one feature, a street name on both carriageways or the same name
-  from two zoom levels, stays on the one it is already on; a label at a
-  `text-variable-anchor` stays at the anchor it took; a road label near
-  vertical keeps reading the way it was reading. A slow pan therefore
-  doesn't walk a street name across its street. Those choices are
-  remembered per label, matched across tiles by its text and position,
-  rather than per tile, so they survive a level handing over or a tile
-  re-rendering underneath a label that never left the screen.
-- **Collision is decided on a timer.** Camera motion and changed label
-  candidates are picked up at the next `labelFadeDuration` interval, at
-  most 300 ms away, and the previous decision is held in between. Zooming
-  and rotating drag labels through each other constantly, and re-deciding
-  every frame turns each of those brushes past into a label that disappears
-  and comes straight back. Between decisions neighbours are simply allowed
-  to overlap for a moment, as they are in MapLibre. A label along a line
-  accepted by a decision, a curved street name or a road shield, also
-  keeps drawing until the next one, even if zooming makes its road bend
-  too sharply under it or the label outgrow its stretch of road; it then
-  fades out instead of vanishing. An unchanged
-  repaint creates no new placement work, so the animation ticker settles
-  when the last real change has been placed. Except on web (and for
-  styles whose label expressions use `within` or `distance`, or read
-  `feature-state` while a controller is attached), the
-  decision itself is taken on a separate isolate, from the text the map
-  has already shaped, and shown from the frame after it was asked for.
-
-#### Fonts
-
-Pass `glyphs: style.glyphs` and labels are drawn in the style's own
-fonts, from the glyph PBFs its `glyphs` URL serves, as MapLibre draws
-them: Noto Sans for OpenFreeMap, whatever your MapTiler or self-hosted
-style was designed with. Without it every label uses the system font.
-
-- **Which labels.** Latin (with its accents and the letters of every
-  European language), Greek, Cyrillic, Armenian and Georgian, digits
-  and punctuation. A label with anything else keeps the system font
-  and the platform's text shaper, which handles what glyph PBFs can't:
-  right-to-left scripts, Indic and Southeast Asian scripts, combining
-  marks, emoji. So do CJK labels — MapLibre also draws those from a
-  local font by default, since their glyph ranges are large — and
-  labels whose glyphs the font lacks.
-- **Laid out like MapLibre.** Advances, `text-letter-spacing`,
-  `text-max-width` wrapping into balanced lines (a two-line name gets
-  two similar lines, not a full line and a dangling word),
-  `text-line-height` and `text-justify`, halos at MapLibre's
-  distance-field threshold, and `text-halo-blur` as a wider edge on
-  that threshold, as MapLibre blurs them.
-- **Cheaper to lay out.** The text is laid out in Dart from the glyph
-  metrics, not by the platform's text shaper, which on a dense tile
-  was the largest single cost on the UI thread: 31–32 ms for one dense
-  Munich tile on a Nothing Phone (1), against 0.7–0.8 ms now.
-- **Loading.** Ranges of 256 characters are fetched on first use, about
-  75–135 KB each for the Latin ones; `StyleReader` asks for the first
-  range of every font while the style loads. A tile's labels wait for
-  the ranges they need rather than appearing in the system font and
-  switching — for up to 5 s, after which a slow connection gets them
-  in the system font until the range arrives. Ranges go through the
-  style cache, so they are there offline wherever the map has been; a
-  range that cannot be loaded leaves its labels in the system font.
-- **Your own glyphs.** `GlyphSource(load: …)` reads ranges from
-  anywhere, assets included, for a fully offline map with the style's
-  fonts.
-
-#### Choosing a label mode
-
-The screen-space pass is what makes labels behave as above, and it is
-also the one part of a moving map that costs UI-thread time on every
-frame: every placed label laid out and drawn again. The collision pass
-over every candidate, every `labelFadeDuration` (300 ms at most), runs on
-an isolate of its own — except on web, where it runs in the frame. On a
-label-dense screen and a mid-range phone that cost decides whether
-panning, rotating and pinching hold the display's frame rate.
-
-`labelMode: LabelMode.tile` removes it. Labels and icons are placed and
-drawn once per tile, when the tile is rendered, into the same image as
-its roads and buildings, so a moving map draws nothing but tile images,
-as `vector_map_tiles` does in its default raster mode. The same text
-engine draws them (curved road names, halos, SDF icons and all), but
-they inherit the limits of any pre-rendered tile:
-
-| | `LabelMode.screen` (default) | `LabelMode.tile` |
-|---|---|---|
-| Per-frame label work | placed labels laid out and drawn every frame, a collision pass every `labelFadeDuration` (at most 300 ms) on a separate isolate (in-frame on web) | none |
-| Collision | one pass across the whole screen | within each tile |
-| At tile seams | seamless | a label that would cross a tile edge is dropped, so labels thin out along tile seams; a road name repeated along a road is thinned out only within a tile, so it can show on both sides of a seam |
-| Under rotation | text stays upright | text rotates with the map |
-| Between zoom levels | sized for the exact zoom | sized for the tile's zoom level, then scales with the map (up to twice the size) until the next level's tiles replace it |
-| `minzoom`/`maxzoom` | cut and ramped at the exact zoom | applied at the tile's zoom level: `minzoom: 12.2` shows from 13, `maxzoom: 16.5` until 17 |
-| Fades | per label, `labelFadeDuration` | with the tile, `tileFadeDuration` |
-| New tiles | geometry first: every queued tile's geometry before any tile's labels, with the previous level's labels covering the gap | each tile appears complete, labels included; the previous level covers it until then |
-
-Texture memory is the same in both modes: the labels are drawn into the
-tile's existing image, so `rasterCacheMaxBytes` needs no adjustment.
-
-Measured with [`compare/`](compare) on a Nothing Phone (1) at 60 Hz,
-same style and tiles, three runs each: with `LabelMode.tile` the map
-got a frame on 94–98% of display refreshes while zooming, panning,
-rotating and flinging, against 78–86% in the default mode, and the UI
-thread's 90th percentile fell from 15.4–21.7 ms to 3.6–9.3 ms. The first
-complete map took 0.95 s, against 1.05 s in the default mode. On an
-iPhone 15 Pro Max both modes get 99–100%, on a MacBook Pro (M4 Pro)
-they are within a point of each other at 97–100%, and in Chrome the
-default gets 91–100%, so the choice matters most on a mid-range
-phone.
-
-#### Label language
-
-`StyleReader(language: 'de')` shows labels in German wherever the tiles
-carry a German name, and in the style's own label text everywhere else:
-
-```dart
-final style = await vt.StyleReader(
-  uri: 'https://tiles.openfreemap.org/styles/liberty',
-  language: 'de',
-).read();
-```
-
-Each label looks for `name:de` first, the tag OpenMapTiles-schema tiles
-(MapTiler, OpenFreeMap) use, then for `name_de`, the one Mapbox Streets
-and Shortbread tiles use. A feature with neither keeps exactly the text
-the style gives it. So how much of the map changes language depends on
-the tiles, not on the style: OpenStreetMap-based tiles have translations
-for countries, cities and well-known places, and mostly none for
-streets.
-
-Only the name changes. Whatever the style shows beside it, a peak's
-elevation or a road's ref, stays, and a style that shows a place in two
-scripts (Liberty's `name:latin` over `name:nonlatin`) shows the
-translation once. The style's `resolved-locale` expression returns the
-language as well; without one it returns `en`.
-
-The language is fixed per `Style`. To switch, read the style again with
-the other language: the cached style document serves both, and each
-language keeps its own finished tiles.
-
-## 🏗️ Architecture
-
-```
-style.json ─► StyleReader ─► compiled Theme (expressions → closures)
-camera ─► visible display tiles ─► data tiles (shared, LRU-cached)
-   bytes ◄─ disk cache ◄─ network        ─► isolate: decode + trim + filter
-   PreparedTile ─► rasterize once ─► GPU image ─► textured quad per frame
-   symbols ─────► per-frame screen-space label pass (global collision,
-                  decided on its own isolate)
-           └────► or, LabelMode.tile: drawn into that GPU image, once
-   building meshes (worker) ─► per-frame 3D pass over the tiles
-   heatmap points ─► worker: density + colour ramp ─► one screen image
-   finished tiles (image + symbols) ─► shared LRU ─► instant re-crossings
-```
-
-New tiles are rendered by a render pump that runs on a time budget per
-frame: 4 ms while the camera moves, from the first frame of a drag or
-zoom, and 12 ms once it has stood still for 150 ms. It records a tile
-one style layer at a time and shapes its labels one at a time,
-checking the budget in between, so a dense tile is spread over several
-frames. What it never splits can still take a frame of its own: one
-very dense layer (22 ms for the densest buildings layer measured on a
-phone), and with `LabelMode.tile` one tile's label placement, drawing
-and snapshot, which wait for the next frame rather than run in one
-whose budget is already spent. The still budget takes most of a 60 Hz
-frame and more than a 120 Hz one, so an animation of your own running
-over a still map that is still loading tiles can drop frames until
-they are in.
-
-For profiling, the render pipeline emits DevTools timeline events:
-`VT render pump`, `VT rasterize`, `VT symbols`, `VT labels`, `VT
-extrusion` (a frame's 3D buildings), `VT heatmap` (a heatmap pass's
-UI-thread part), and with `LabelMode.tile`
-`VT rasterize with labels` and `VT tile labels`. A
-dense tile's `VT rasterize` and `VT symbols` repeat over several
-frames, one slice per frame.
-
-On web the disk cache tier is absent, and decoding (with the meshes
-of 3D buildings, when they are on) and heatmap densities run on a
-yielding event-loop queue instead of isolates, which leaves layer
-filters to be matched when a tile is first drawn. Everything else is
-identical.
-
-The full rendering model, and the reasoning behind each departure from
-[`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles), is in
-[doc/ARCHITECTURE.md](doc/ARCHITECTURE.md). 📖
-
-## 🆚 [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles)
-
-Compared with `9.0.0-beta.13`, the newest release that runs flutter_map 8
-on stable Flutter (the
+| `glyphs` | none | `style.glyphs`: labels in the style's own fonts instead of the system font |
+| `labelMode` | `LabelMode.screen` | `LabelMode.tile` bakes labels into the tiles: no per-frame label cost, but they turn with the map |
+| `extrusionMode` | `ExtrusionMode.flat` | `ExtrusionMode.perspective` draws `fill-extrusion` layers as 3D buildings |
+| `tileOffset` | `TileOffset.maplibre` | renders 512 px styles as their authors designed them; `TileOffset.none` shows one zoom level more detail |
+| `diskCacheMaximumSizeInBytes` | 50 MB | disk cache for tiles; `0` turns it off |
+| `diskCacheTtl` | 14 days | how long a cached tile skips the network |
+| `showLabels` | `true` | `false` turns off all text and icons |
+| `controller` | none | a `VectorTileLayerController`, for queries and feature state |
+| `logger` | none | `const vt.Logger.console()` prints style warnings |
+
+`StyleReader(language: 'de')` shows labels in one language where the
+tiles carry it. All options, cache budgets and the frame budget are in
+[Configuration](doc/CONFIGURATION.md).
+
+## 🌍 Tile sources
+
+Any MapLibre `style.json` works. Verified with
+[MapTiler](https://maptiler.com), [OpenFreeMap](https://openfreemap.org)
+(free, no key), [Stadia Maps](https://stadiamaps.com), ArcGIS / Esri,
+[Protomaps](https://protomaps.com) and self-hosted servers (TileServer
+GL, Martin, …).
+
+- **PMTiles**: `pmtiles://` source URLs in a style work out of the box.
+- **MBTiles**: through the companion package
+  [`flutter_map_vector_tiles_mbtiles`](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles).
+- **Your own**: implement `VectorTileProvider`, four methods.
+- **Web**: works, without a disk cache; the style and tile hosts must
+  send CORS headers.
+
+URL shapes per provider, offline behaviour and the browser differences
+are in [Tile sources, offline and web](doc/TILE_SOURCES.md).
+
+## 🆚 Compared with `vector_map_tiles`
+
+Against [`vector_map_tiles`](https://pub.dev/packages/vector_map_tiles)
+`9.0.0-beta.13`, the newest release that runs flutter_map 8 on stable
+Flutter (the
 [`10.0.0` betas](https://pub.dev/packages/vector_map_tiles/versions) need
 Flutter's main channel for `flutter_gpu`, per
 [their README](https://github.com/greensopinion/flutter-vector-map-tiles#version-1000-beta)):
@@ -1000,17 +219,11 @@ Flutter's main channel for `flutter_gpu`, per
 
 Measured with [`compare/`](compare) on a Nothing Phone (1) (Android,
 60 Hz), an iPhone 15 Pro Max (iOS, 120 Hz), a MacBook Pro with an M4 Pro
-(macOS, 120 Hz) and Chrome on that Mac: the same style and the same
-recorded tiles, a fresh process per run, three runs each (four on the
-iPhone), all from one build: 2.11.0 with 3D buildings and an experiment
-in drawing curved street names that was taken out again before 2.11.1,
-so the frames with labels drawn every frame are not yet measured on the
-code as it ships. "Frames" is the share
-of display refreshes that got a frame while the camera zoomed, panned,
-rotated or flung. Each cell reads this package / `vector_map_tiles`.
-[compare/SUMMARY.md](compare/SUMMARY.md) explains the results in plain
-words; the full tables, and screenshots next to MapLibre GL JS, are in
-[compare/RESULTS.md](compare/RESULTS.md).
+(macOS, 120 Hz) and Chrome on that Mac: same style, same recorded tiles,
+a fresh process per run, three runs each (four on the iPhone). "Frames"
+is the share of display refreshes that got a frame while the camera
+zoomed, panned, rotated or flung. Each cell reads this package /
+`vector_map_tiles`.
 
 | this package / vector_map_tiles | Android | iOS | macOS | Chrome |
 |---|---:|---:|---:|---:|
@@ -1025,93 +238,46 @@ words; the full tables, and screenshots next to MapLibre GL JS, are in
 counts each URL once; on macOS, with a smaller window and no HTTP
 cache, `vector_map_tiles` fetched some tiles again.
 
-With 3D buildings switched on (`ExtrusionMode.perspective`, labels drawn
-every frame) this package got 84–92% of frames on Android, 3 to 9
-points under its default, 89–100% in Chrome, and 98–100% on iOS and
-macOS, where they cost nothing measurable;
-[3D buildings](#3d-buildings) has the details.
+- All from one build: 2.11.0 with 3D buildings and an experiment in
+  drawing curved street names that was taken out again before 2.11.1,
+  so the frames with labels drawn every frame are not yet measured on
+  the code as it ships.
+- **3D buildings** (`ExtrusionMode.perspective`, labels drawn every
+  frame): 84–92% of frames on Android, 3 to 9 points under the default,
+  89–100% in Chrome, and 98–100% on iOS and macOS, where they cost
+  nothing measurable. See [3D buildings](doc/STYLE_SUPPORT.md#3d-buildings).
+- **Memory**: with baked labels a little less than `vector_map_tiles`
+  (264 against 313 MB of GPU memory at the peak on the Android phone);
+  the default needs more GPU memory than baked labels but far less RSS
+  than vector mode (393 against 892 MB). All numbers:
+  [Memory](doc/CONFIGURATION.md#memory-compared-with-vector_map_tiles).
+- **Label density**: at the same camera `vector_map_tiles` draws more
+  labels, because it evaluates the style one zoom level deeper than
+  MapLibre. `tileOffset: TileOffset.none` makes this package do the
+  same.
+- **Not covered yet**: the `10.0.0` betas.
 
-To check these numbers on your own devices, follow
+[compare/SUMMARY.md](compare/SUMMARY.md) explains the results in plain
+words; the full tables, and screenshots next to MapLibre GL JS, are in
+[compare/RESULTS.md](compare/RESULTS.md). To check the numbers on your
+own devices, follow
 [Reproducing the results](compare/README.md#reproducing-the-results):
-every session's raw data is in the repository, and the scripts
-measure each one again. With no setup at all, the
+every session's raw data is in the repository, and the scripts measure
+each one again. With no setup at all, the
 [web demo](https://jonasgrunau.github.io/flutter-map-vector-tiles/)
 runs a short version of the benchmark in your browser.
 
-### ⚖️ Trade-offs
+## 📚 Documentation
 
-- **Memory.** With baked labels this package uses a little less on the
-  Android phone: 264 against 313 MB of GPU memory at the peak, 391
-  against 401 MB RSS (336 against 387 MB on the iPhone, 495 against
-  577 MB on macOS). This package's default, which draws labels every
-  frame, needs more GPU memory than baked labels (365 MB, vector mode
-  376 MB), much of it for the label fades: in a separate A/B, turning
-  them off took its peak from 391–409 to 317–320 MB, and cost frames
-  instead. It needs far less RSS than vector mode (393 against 892 MB;
-  335 against 836 MB on the iPhone, 527 against 948 MB on macOS). Its
-  label text cache keeps up to 8000 shaped labels; after a run through
-  four dense cities that held 37–49 MB more than the 2500 it used to
-  keep, and 117–119 MB more with `TileOffset.none`.
-  `VectorTileLayer.clearMemoryCache()` gives 23–43 MB of that back (see
-  the CHANGELOG).
-- **Label density.** At the same camera `vector_map_tiles` draws more
-  labels, because it evaluates the style one zoom level deeper than
-  MapLibre. `tileOffset: TileOffset.none` makes this package do the same
-  (see [Understanding `TileOffset`](#-understanding-tileoffset)).
-- **Not covered yet:** the `10.0.0` betas.
-
-## 🐛 Troubleshooting
-
-- **Blank map, no errors.** Pass `logger: const vt.Logger.console()` to
-  both `StyleReader` and `VectorTileLayer`. Usually the style's source ids
-  don't match your `TileProviders` keys, or the API key is invalid; HTTP
-  403s are logged. Every message reaches the logger with API keys
-  redacted (`key`, `apikey`, `api_key`, `access_token` and `token` query
-  values read `***`), so warnings can be forwarded to a crash reporter
-  as they are.
-- **`read()` or `open()` throws.** The designed failure path for a broken
-  setup. `StyleReader.read()` throws `StyleReaderException` when the style
-  can't be loaded or parsed, and `PmTilesVectorTileProvider.open` throws
-  `PmTilesException` on an invalid or unsupported archive, or
-  `http.ClientException` on network failure. Catch these to show a retry
-  UI. Runtime tile fetches never throw into your code; failures are logged
-  and retried.
-- **Anything MBTiles-related.** See the companion package's own
-  [troubleshooting section](https://pub.dev/packages/flutter_map_vector_tiles_mbtiles).
-- **Some labels ignore `language`.** Those features have no
-  `name:<language>` or `name_<language>` in the tiles, so they keep the
-  style's text. That is the tile data, mostly streets and small places;
-  check a feature's tags on openstreetmap.org.
-- **Labels/roads look bigger than in MapLibre.** Probably `TileOffset.none`
-  with a 512px-convention style; use the default.
-- **A layer or property shows its default where it used to draw.** The
-  style relies on a value of the wrong type, such as a number stored as
-  a string in the tiles, which versions up to 2.10 converted and
-  MapLibre never did. Convert it in the style (`to-number`,
-  `to-string`, `to-boolean`), and the style draws the same in MapLibre
-  too.
-- **Stale data after changing styles.** The disk cache keys by URL, and a
-  changed `{key}` or map id is a different URL, so usually there is
-  nothing to do. Supply `cachePath` to wipe it yourself.
-- **A `hillshade` layer draws nothing.** Its `raster-dem` source has to
-  reach the layer: pass `style.rasterSources` as `rasterSources`. The
-  shading is a fragment shader bundled with this package; a platform
-  where it cannot load logs a warning once and leaves the layer out.
-- **Blank map on web.** Open the browser console: missing
-  `Access-Control-Allow-Origin` headers on the style or tile host block
-  every request (see [Web support](#-web-support)).
-- **Solid magenta tiles after reopening the app on iOS.** Tiles rasterized
-  while iOS had revoked the process's GPU access. The layer handles this
-  itself; on 2.6.1 and earlier the corrupted tiles are cached for the life
-  of the process, and calling `VectorTileLayer.clearMemoryCache()` on
-  `AppLifecycleState.resumed` is the workaround. The underlying engine gap
-  is [flutter#191255](https://github.com/flutter/flutter/issues/191255).
-  Magenta from *decoded* images, meaning sprites and raster sources, is
-  the same iOS bug one layer down and outside this package's reach
-  ([flutter#166668](https://github.com/flutter/flutter/issues/166668),
-  fixed in 3.32), so keep your Flutter up to date. Glyph ranges are
-  decoded images too; one hit by it shows its labels as solid blocks in
-  the text colour.
+| Page | What is in it |
+|---|---|
+| [Configuration](doc/CONFIGURATION.md) | every layer and `StyleReader` option, `TileOffset`, cache budgets, frame budget and profiling |
+| [Tile sources, offline and web](doc/TILE_SOURCES.md) | tested providers, PMTiles, MBTiles, your own provider, the disk cache, browser differences |
+| [Style support](doc/STYLE_SUPPORT.md) | layer types, expressions, icons, heatmaps, 3D buildings, global state, and where the result differs from MapLibre |
+| [Labels](doc/LABELS.md) | placement and collision, fonts, `LabelMode.screen` or `.tile`, label language |
+| [Querying](doc/QUERYING.md) | what is drawn at a point, feature state |
+| [Troubleshooting](doc/TROUBLESHOOTING.md) | blank maps, exceptions, labels, web and iOS specifics |
+| [Architecture](doc/ARCHITECTURE.md) | how it works inside, for contributors |
 
 ## 🤝 Contributing
 

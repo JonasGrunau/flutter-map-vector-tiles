@@ -72,14 +72,25 @@ class _VectorMapPageState extends State<VectorMapPage> {
     super.dispose();
   }
 
-  /// The style's layers plus one that paints the selected building.
-  /// Hosted styles do not read feature state, so the example brings its
-  /// own layer for it: transparent until a building is `selected`.
+  /// The style's layers plus two that paint the selected building: a
+  /// translucent blue fill and a darker outline. Hosted styles do not
+  /// read feature state, so the example brings its own layers for it:
+  /// transparent until a building is `selected`.
   vt.Theme _withSelection(vt.Theme theme) {
     final buildings = theme.layers
         .where((layer) => layer.sourceLayer == 'building')
         .firstOrNull;
     if (buildings == null) return theme;
+    List<Object> whenSelected(num value) => [
+          'case',
+          [
+            'boolean',
+            ['feature-state', 'selected'],
+            false
+          ],
+          value,
+          0,
+        ];
     final selection = const vt.ThemeReader().read({
       'layers': [
         {
@@ -88,17 +99,20 @@ class _VectorMapPageState extends State<VectorMapPage> {
           'source': buildings.source,
           'source-layer': 'building',
           'paint': {
-            'fill-color': '#e53935',
-            'fill-opacity': [
-              'case',
-              [
-                'boolean',
-                ['feature-state', 'selected'],
-                false
-              ],
-              0.7,
-              0,
-            ],
+            'fill-color': '#1e88e5',
+            'fill-opacity': whenSelected(0.45),
+          },
+        },
+        {
+          'id': 'selection-outline',
+          'type': 'line',
+          'source': buildings.source,
+          'source-layer': 'building',
+          'layout': {'line-join': 'round'},
+          'paint': {
+            'line-color': '#0d47a1',
+            'line-width': 2,
+            'line-opacity': whenSelected(1),
           },
         },
       ],
@@ -115,7 +129,7 @@ class _VectorMapPageState extends State<VectorMapPage> {
     if (point == null) return;
     final hits = _features
         .queryRenderedFeatures(point)
-        .where((feature) => feature.layerId != 'selection')
+        .where((feature) => !feature.layerId.startsWith('selection'))
         .toList();
     final previous = _selected;
     if (previous != null) {
