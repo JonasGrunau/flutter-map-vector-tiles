@@ -3,7 +3,8 @@
 ## Unreleased
 
 Opt-in 3D buildings, drawn the way MapLibre GL draws them when the
-camera looks straight down.
+camera looks straight down, and taps on turned labels that find them
+where they are drawn.
 
 - ✨ **3D buildings**, opt-in with `VectorTileLayer.extrusionMode:
   ExtrusionMode.perspective`: `fill-extrusion` layers draw as MapLibre
@@ -34,6 +35,11 @@ camera looks straight down.
 - ✨ `Theme.light` holds the style's root `light` (`anchor`,
   `position`, `color`, `intensity`); `FillThemeLayer` gains
   `extrusionHeight`, `extrusionBase` and `extrusionVerticalGradient`.
+- 🐛 `queryRenderedFeatures` finds turned label text where it is
+  drawn. Text moved by `text-translate`, and point text with
+  `text-rotate` and a `text-offset` or `text-anchor`, was tested turned
+  about its unmoved anchor, so a tap on the label could miss it and a
+  tap beside it could hit it.
 - 📚 The README's comparison with `vector_map_tiles` is measured again,
   on all four platforms from one build with 3D buildings, and with 3D
   buildings switched on as well: on the Nothing Phone (1) this

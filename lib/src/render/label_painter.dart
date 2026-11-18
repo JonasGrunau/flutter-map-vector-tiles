@@ -4777,10 +4777,10 @@ class _DrawableSymbol {
             size.height * textScale, glyph.angle));
       }
     } else if (text != null) {
-      quads.add(textAngle == 0
-          ? rotatedRect(textRect, textRect.center, 0)
-          : rotatedBox(symbol.screenAnchor, text.size.width * textScale,
-              text.size.height * textScale, textAngle));
+      // Turned about [textAnchor], as [draw] turns it: a box offset from
+      // the anchor (by `text-offset`, `text-anchor` or `text-translate`)
+      // keeps that offset in the turned frame.
+      quads.add(rotatedRect(textRect, textAnchor, textAngle));
     }
     return quads;
   }
