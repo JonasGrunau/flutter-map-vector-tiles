@@ -153,7 +153,7 @@ vt.VectorTileLayer(
 | `diskCacheTtl` | 14 days | freshness window: younger tiles skip the network, older ones still paint instantly and refresh in the background. ⚠️ Respect your provider's terms |
 | `cachePath` | app support dir | your own directory, to control or clear it (ignored on web) |
 | `memoryCacheMaxBytes` | 24 MB | decoded tile budget per source. The caches are shared process-wide, so the most recently mounted layer's value wins |
-| `rasterCacheMaxBytes` | sized for the device | finished-tile budget: zooming back to a recent level, or reopening the same style, paints instantly instead of re-rendering. These are GPU texture bytes, roughly 1 MB per tile at devicePixelRatio 2 and 2.25 MB at 3, and a phone screenful is 25 to 35 tiles, so a *single* level costs about 80 MB on a large dpr-3 phone. The default measures your viewport and dpr and budgets 2.5 screenfuls, clamped to 64 to 256 MB, so a zoom round trip keeps the level it returns to. Pass a byte count to pin it, or `0` to disable |
+| `rasterCacheMaxBytes` | sized for the device | finished-tile budget: zooming back to a recent level, or reopening the same style, paints instantly instead of re-rendering. These are GPU texture bytes (plus, with 3D buildings, the buildings each tile holds), roughly 1 MB per tile at devicePixelRatio 2 and 2.25 MB at 3, and a phone screenful is 25 to 35 tiles, so a *single* level costs about 80 MB on a large dpr-3 phone. The default measures your viewport and dpr and budgets 2.5 screenfuls, clamped to 64 to 256 MB, so a zoom round trip keeps the level it returns to. Pass a byte count to pin it, or `0` to disable |
 | `tileFadeDuration` | 150 ms | fade-in of newly rendered tiles. Tiles from the finished-tile cache fade only when retained imagery lies beneath to cross-fade over; with nothing beneath, as on a reopened map or in the ring a zoom-out exposes, ready imagery appears at once rather than fading over the background. `Duration.zero` disables |
 | `labelFadeDuration` | 150 ms | fade of appearing *and* departing labels and icons, one fade state per label identity, so a label carried across a zoom level never re-fades or blinks. Also how often collision is re-decided, capped at 300 ms: camera and candidate changes wait at most one interval, while an unchanged map schedules no further placement work. `Duration.zero` restores instant pops and per-frame collision, and immediately finishes a fade already in progress; on a Nothing Phone (1) that took the peak GPU memory from 391–409 to 317–320 MB and cost frames ([compare/RESULTS.md](compare/RESULTS.md)). No effect with `LabelMode.tile`, where labels fade in with their tile |
 | `showLabels` | `true` | disables the whole symbol pass when `false`; toggling it re-lays-out the tiles already on screen |
@@ -565,7 +565,8 @@ facing the centre show — a 50 m building 300 px from the centre of an
 800 px tall map leans 16.6 px at style zoom 16. Because that changes
 with every pan and zoom, the buildings are not in the tile images: each
 frame projects the ones on screen and draws them over the tiles, the
-lowest roof first, each building's walls before its roof. Roofs and
+lowest roof first, each building's walls before its roof; one of
+height 0 is a roof on the ground, as in MapLibre. Roofs and
 walls are shaded as MapLibre's shader does, by the style's root
 `light` (MapLibre's default when the style has none) and
 `fill-extrusion-vertical-gradient`. Rendered-feature queries find a
@@ -614,7 +615,8 @@ stayed within 1 point, and Chrome within 2.3 except on the first fling
 (5.8 points). The buildings' meshes are cut
 while a tile is decoded and kept with it — 65–550 KB a tile in
 central Munich, counted against `memoryCacheMaxBytes`, so the same
-budget holds fewer decoded tiles; on the iPhone the app's memory at
+budget holds fewer decoded tiles, and, for as long as a finished tile
+in the raster cache holds them, against `rasterCacheMaxBytes` too; on the iPhone the app's memory at
 the first screen rose by about 20 MB. The default,
 `ExtrusionMode.flat`, draws them flat in the tile images instead, at
 no per-frame cost and without the meshes.

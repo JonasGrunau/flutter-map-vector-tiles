@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/painting.dart';
 import 'package:meta/meta.dart';
 
+import '../core/tile_key.dart';
 import '../grid/grid_layout.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
@@ -104,10 +105,22 @@ class ExtrusionPainter {
   /// The tiles on offer, as last marked on [_orders].
   List<ExtrusionTile> _tiles = const [];
 
+  /// The theme's 3D layers, in style order, that [_orders] were last
+  /// matched against: they give the orders their order and their layer
+  /// objects — opacity, translate, zoom range — by id.
+  List<FillThemeLayer>? _layers;
+
   /// How long a data tile no longer on offer keeps its place in the
-  /// orders; the next sort after that leaves it out.
+  /// orders; the first frame after that sorts it out.
   @visibleForTesting
   static Duration keepInactiveFor = const Duration(seconds: 2);
+
+  /// When the first frame sorts out the layouts off offer past
+  /// [keepInactiveFor], in microseconds of [_clock]: twice that after
+  /// the first of them went off, so the ones a zoom sweep takes off one
+  /// after another go in one sort, not one each. Null while every
+  /// layout held is on offer.
+  double? _expiry;
 
   final _clock = Stopwatch()..start();
 
@@ -120,9 +133,12 @@ class ExtrusionPainter {
   /// Per wall direction, its light level this frame.
   final _levels = Uint8List(256);
 
-  final _positions = Float32List(_maxVertices * 2);
-  final _colors = Int32List(_maxVertices);
-  var _indices = Uint16List(1 << 18);
+  // Allocated on the first frame that draws a building: every layer
+  // holds a painter, and most never draw one (`ExtrusionMode.flat`, or
+  // a style without `fill-extrusion`).
+  late final _positions = Float32List(_maxVertices * 2);
+  late final _colors = Int32List(_maxVertices);
+  late var _indices = Uint16List(1 << 18);
   var _vertexCount = 0;
   var _indexCount = 0;
 
@@ -133,14 +149,25 @@ class ExtrusionPainter {
     _generation = null;
     _orders = const [];
     _tiles = const [];
+    _layers = null;
+    _expiry = null;
     _tableLight = null;
     _levelsLight = null;
   }
 
+  /// Lets go of the buildings no longer on offer, grace period or not —
+  /// for `VectorTileLayer.clearMemoryCache`.
+  void trim() {
+    if (_expiry != null) _resort(_tiles, keepMicros: 0);
+  }
+
+  /// Draws the buildings [layouts] offers of [layers] — the theme's 3D
+  /// layers, in style order.
   void paint(
     Canvas canvas, {
     required int generation,
     required Iterable<ExtrusionTile> Function() layouts,
+    required List<FillThemeLayer> layers,
     required double cameraZoom,
     required double styleZoom,
     required Offset worldCenter,
@@ -152,6 +179,13 @@ class ExtrusionPainter {
     final stopwatch = Stopwatch()..start();
     final vertices0 = debugVertices;
     _cullMicros = 0;
+    if (!identical(layers, _layers)) {
+      // A new theme — a sibling one for new global state, say — over
+      // the same buildings: its layers take over, by id, without a sort.
+      _layers = layers;
+      _disposeLast();
+      _orders = _matched(_orders, layers);
+    }
     if (_generation != generation) {
       _generation = generation;
       // The generation moves with every label publish and every display
@@ -163,14 +197,17 @@ class ExtrusionPainter {
       if (!_sameTiles(tiles, _tiles)) {
         _disposeLast();
         _tiles = tiles;
-        if (!_activate(tiles)) {
-          final since = stopwatch.elapsedMicroseconds;
-          _sort(tiles);
-          _tableLight = null;
-          debugRebuilds++;
-          debugRebuildMicros += stopwatch.elapsedMicroseconds - since;
+        if (_activate(tiles)) {
+          _noteExpiry();
+        } else {
+          _resort(tiles);
         }
       }
+    }
+    final expiry = _expiry;
+    if (expiry != null && _clock.elapsedMicroseconds >= expiry) {
+      // A data tile off offer past its grace period: let go of it.
+      _resort(_tiles);
     }
     if (_orders.isEmpty) return;
     final evaluated = ExtrusionLight.of(light, styleZoom);
@@ -263,8 +300,12 @@ class ExtrusionPainter {
   /// one of them is not in the orders.
   bool _activate(List<ExtrusionTile> tiles) {
     final byLayer = {for (final order in _orders) order.layer.id: order};
+    final drawn = {for (final layer in _layers ?? const []) layer.id};
     for (final tile in tiles) {
-      final order = byLayer[tile.layout.layer.id];
+      final id = tile.layout.layer.id;
+      // A layer the theme no longer has is not drawn, and needs no sort.
+      if (!drawn.contains(id)) continue;
+      final order = byLayer[id];
       if (order == null || !order.indexOf.containsKey(tile.layout)) {
         return false;
       }
@@ -274,22 +315,53 @@ class ExtrusionPainter {
       order.deactivate(now);
     }
     for (final tile in tiles) {
-      final order = byLayer[tile.layout.layer.id]!;
+      final order = byLayer[tile.layout.layer.id];
+      if (order == null) continue;
       final l = order.indexOf[tile.layout]!;
       order.active[l] = 1;
-      order.kept[l] = tile.skip == null
-          ? null
-          : _LayerOrder._kept(tile.layout, tile.skip!, tile.side);
+      final skip = tile.skip;
+      order.kept[l] =
+          skip == null ? null : tile.layout.keptUnder(skip, tile.side);
     }
     return true;
   }
 
+  /// [_sort], counted.
+  void _resort(List<ExtrusionTile> tiles, {int? keepMicros}) {
+    final stopwatch = Stopwatch()..start();
+    _disposeLast();
+    _sort(tiles, keepMicros ?? keepInactiveFor.inMicroseconds);
+    _tableLight = null;
+    debugRebuilds++;
+    debugRebuildMicros += stopwatch.elapsedMicroseconds;
+  }
+
+  /// Notes in [_expiry] when the layouts off offer are to be sorted out.
+  void _noteExpiry() {
+    double? first;
+    for (final order in _orders) {
+      for (var l = 0; l < order.layouts.length; l++) {
+        if (order.active[l] == 1) continue;
+        final since = order.inactiveSince[l];
+        if (first == null || since < first) first = since;
+      }
+    }
+    _expiry = first == null ? null : first + 2 * keepInactiveFor.inMicroseconds;
+  }
+
+  /// The data tile, layer and zoom a layout draws: one on offer replaces
+  /// any other of the same — laid out again under a new feature state,
+  /// or from the tile decoded again.
+  static (TileKey, String, int?) _drawsAs(ExtrusionLayout layout) =>
+      (layout.tile, layout.layer.id, layout.zoom);
+
   /// Sorts [_orders] again for [tiles], keeping the layouts that left
-  /// them less than [keepInactiveFor] ago, and marks [tiles] on offer.
-  void _sort(List<ExtrusionTile> tiles) {
+  /// them less than [keep] microseconds ago — unless one on offer
+  /// replaces them — and marks [tiles] on offer.
+  void _sort(List<ExtrusionTile> tiles, int keep) {
     final now = _clock.elapsedMicroseconds.toDouble();
-    final keep = keepInactiveFor.inMicroseconds;
     final seen = Set<ExtrusionLayout>.identity();
+    final offered = {for (final tile in tiles) _drawsAs(tile.layout)};
     // Since when each layout kept from the old orders has been off.
     final offSince = Map<ExtrusionLayout, double>.identity();
     final layouts = <ExtrusionTile>[
@@ -301,19 +373,22 @@ class ExtrusionPainter {
         final layout = order.layouts[l];
         // On offer until now, or off for less than the grace period.
         final since = order.active[l] == 1 ? now : order.inactiveSince[l];
-        if (now - since < keep && seen.add(layout)) {
+        if (now - since < keep &&
+            !offered.contains(_drawsAs(layout)) &&
+            seen.add(layout)) {
           layouts.add((layout: layout, skip: null, side: 1));
           offSince[layout] = since;
         }
       }
     }
-    _orders = _order(layouts..sort(_byTile));
+    _orders = _order(layouts..sort(_byTile), _layers ?? const []);
     for (final order in _orders) {
       for (var l = 0; l < order.layouts.length; l++) {
         order.inactiveSince[l] = offSince[order.layouts[l]] ?? now;
       }
     }
     _activate(tiles);
+    _noteExpiry();
   }
 
   static bool _sameTiles(List<ExtrusionTile> a, List<ExtrusionTile> b) {
@@ -407,7 +482,8 @@ class ExtrusionPainter {
       var lift = layout.heightAt(bi, styleZoom) * ppm;
       if (lift > maxLift) lift = maxLift;
       final kt = d / (d - lift);
-      var baseLift = layout.baseAt(bi, styleZoom) * ppm;
+      final floor0 = layout.baseAt(bi, styleZoom);
+      var baseLift = floor0 * ppm;
       if (baseLift > maxLift) baseLift = maxLift;
       final kb = d / (d - baseLift);
 
@@ -431,6 +507,11 @@ class ExtrusionPainter {
       if (_vertexCount + needVertices > _maxVertices) {
         order.add(_build());
       }
+      // A building too big for one draw even on its own — a polygon of
+      // tens of thousands of vertices, the builder takes up to
+      // [_maxVertices] — goes out over several, split between walls and
+      // before its roof: a draw's indices are 16-bit.
+      final split = needVertices > _maxVertices;
       if (_indexCount + needIndices > idx.length) {
         idx = _indices =
             Uint16List(math.max(idx.length * 2, _indexCount + needIndices))
@@ -445,7 +526,7 @@ class ExtrusionPainter {
       if (wallCount > 0) {
         final walls = mesh.walls;
         final angles = mesh.wallAngle;
-        final floors = layout.wallFloors;
+        final coveredBy = layout.wallCoveredBy;
         final height = layout.heightAt(bi, styleZoom);
         const top = 1 + ExtrusionShading.levels;
         final share = lean < _shareCornersBelow;
@@ -471,17 +552,29 @@ class ExtrusionPainter {
           final head = table[level + top];
           // A wall shared with a neighbour shows above its roof only.
           var kf = kb;
-          if (floors != null) {
-            final floor = floors[w >> 1];
-            if (!floor.isNaN) {
+          if (coveredBy != null) {
+            final cover = coveredBy[w >> 1];
+            if (cover >= 0) {
+              final floor = layout.heightAt(cover, styleZoom);
               if (floor >= height) {
                 openEnd = -1;
                 continue;
               }
-              var floorLift = floor * ppm;
-              if (floorLift > maxLift) floorLift = maxLift;
-              kf = d / (d - floorLift);
+              if (floor > floor0) {
+                var floorLift = floor * ppm;
+                if (floorLift > maxLift) floorLift = maxLift;
+                kf = d / (d - floorLift);
+              }
             }
+          }
+          if (split && v + 4 > _maxVertices) {
+            _vertexCount = v;
+            _indexCount = k;
+            order.add(_build());
+            v = 0;
+            k = 0;
+            // The corner to share went out with the last draw.
+            openEnd = -1;
           }
           int footA, headA;
           if (share && openEnd == ra && kf == kb) {
@@ -522,6 +615,7 @@ class ExtrusionPainter {
       }
 
       // The roof.
+      if (split && _vertexCount + vn > _maxVertices) order.add(_build());
       final roofColor = table[colorAt];
       final ax = x0 * kt, ay = y0 * kt, as = s * kt;
       final base = _vertexCount;
@@ -566,28 +660,45 @@ class ExtrusionPainter {
   }
 
   /// Every building of [layouts] — their skip masks are not applied
-  /// here but marked on the orders (see [_activate]) — per layer in
-  /// theme order, lowest roof first.
+  /// here but marked on the orders (see [_activate]) — per layer in the
+  /// order of [layers], lowest roof first. A layer [layers] does not
+  /// hold is left out.
   ///
   /// Layers are told apart by id: a result cached for a style read
   /// again carries the earlier reading's layer objects — the same style,
   /// so the same layers — and its buildings must sort, and composite,
-  /// with the fresh tiles' as one layer.
-  static List<_LayerOrder> _order(Iterable<ExtrusionTile> layouts) {
+  /// with the fresh tiles' as one layer, the one [layers] holds.
+  static List<_LayerOrder> _order(
+      Iterable<ExtrusionTile> layouts, List<FillThemeLayer> layers) {
     final byLayer = <String, List<ExtrusionTile>>{};
     for (final tile in layouts) {
       (byLayer[tile.layout.layer.id] ??= []).add(tile);
     }
     return [
-      for (final tiles in byLayer.values)
-        _LayerOrder.sorted(tiles.first.layout.layer, tiles),
+      for (final layer in layers)
+        if (byLayer[layer.id] case final tiles?)
+          _LayerOrder.sorted(layer, tiles),
+    ];
+  }
+
+  /// [orders] matched to [layers] by id: in their order, drawn with
+  /// their layer objects, an order of a layer they do not hold left out.
+  static List<_LayerOrder> _matched(
+      List<_LayerOrder> orders, List<FillThemeLayer> layers) {
+    if (orders.isEmpty) return orders;
+    final byId = {for (final order in orders) order.layer.id: order};
+    return [
+      for (final layer in layers)
+        if (byId[layer.id] case final order?) order..layer = layer,
     ];
   }
 }
 
 /// One layer's buildings across all tiles, in drawing order.
 class _LayerOrder {
-  final FillThemeLayer layer;
+  /// The theme's layer — the current theme's, whichever reading of the
+  /// style the buildings were laid out under.
+  FillThemeLayer layer;
   final List<ExtrusionLayout> layouts;
 
   /// Per entry, the layout and the building within it.
@@ -750,8 +861,9 @@ class _LayerOrder {
     }
   }
 
-  /// A counting sort on the roof height in decimetres: linear in the
-  /// buildings, and stable, so equal heights keep tile order. Every
+  /// A counting sort on the roof height in decimetres — halfway through
+  /// the layout's zoom band (`ExtrusionLayout.sortHeight`) — linear in
+  /// the buildings, and stable, so equal heights keep tile order. Every
   /// building is entered; skip masks apply when drawing.
   factory _LayerOrder.sorted(FillThemeLayer layer, List<ExtrusionTile> tiles) {
     final layouts = [for (final tile in tiles) tile.layout];
@@ -767,8 +879,8 @@ class _LayerOrder {
     }
 
     for (final layout in layouts) {
-      for (final height in layout.heights) {
-        counts[keyOf(height) + 1]++;
+      for (var i = 0; i < layout.length; i++) {
+        counts[keyOf(layout.sortHeight(i)) + 1]++;
       }
     }
     for (var i = 1; i <= buckets; i++) {
@@ -777,9 +889,9 @@ class _LayerOrder {
     final layoutOf = Int32List(total);
     final buildingOf = Int32List(total);
     for (var l = 0; l < layouts.length; l++) {
-      final heights = layouts[l].heights;
-      for (var i = 0; i < heights.length; i++) {
-        final slot = counts[keyOf(heights[i])]++;
+      final layout = layouts[l];
+      for (var i = 0; i < layout.length; i++) {
+        final slot = counts[keyOf(layout.sortHeight(i))]++;
         layoutOf[slot] = l;
         buildingOf[slot] = i;
       }
@@ -790,20 +902,4 @@ class _LayerOrder {
   /// The counting sort's buckets, reused: 256 KB is not worth
   /// allocating per tile event.
   static final _counts = Int32List((1 << 16) + 1);
-
-  /// Per building of [layout], 1 unless its footprint centre lies in a
-  /// cell [skip] marks.
-  static Uint8List _kept(ExtrusionLayout layout, Uint8List skip, int side) {
-    final kept = Uint8List(layout.length);
-    final bounds = layout.bounds;
-    final cell = layout.extent / side;
-    for (var i = 0; i < layout.length; i++) {
-      final cx = (bounds[i * 4] + bounds[i * 4 + 2]) / 2;
-      final cy = (bounds[i * 4 + 1] + bounds[i * 4 + 3]) / 2;
-      final col = (cx / cell).floor().clamp(0, side - 1);
-      final row = (cy / cell).floor().clamp(0, side - 1);
-      kept[i] = skip[row * side + col] == 1 ? 0 : 1;
-    }
-    return kept;
-  }
 }

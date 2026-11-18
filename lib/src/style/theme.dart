@@ -303,6 +303,13 @@ class FillThemeLayer extends ThemeLayer {
   @internal
   bool extrusionColorReadsZoom = true;
 
+  /// The property names only `fill-extrusion-height` and `-base` read,
+  /// beyond [referencedProperties]; null when unknown (all of them).
+  /// Decoding keeps them only for a layer drawn as 3D buildings: drawn
+  /// flat, nothing reads them. Assigned by the theme reader.
+  @internal
+  Set<String>? extrusionReferencedProperties;
+
   /// `fill-extrusion-vertical-gradient`: whether walls darken towards
   /// their foot. Null on a plain fill.
   final BoolProp? extrusionVerticalGradient;

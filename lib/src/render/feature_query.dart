@@ -8,7 +8,6 @@ import '../style/expression.dart';
 import '../style/feature_state.dart';
 import '../style/theme.dart';
 import 'display_tile_data.dart';
-import 'extrusion_layouter.dart';
 import 'extrusion_painter.dart';
 import 'hit_test.dart';
 import 'matched_features.dart';
@@ -85,12 +84,12 @@ abstract final class FeatureQuery {
     return hits;
   }
 
-  /// The 3D buildings of [layouts] that [area] touches as
-  /// `ExtrusionPainter` draws them — roof, walls and all — topmost
-  /// first: the higher style layer, then the taller building. [area] is
-  /// in the painter's canvas pixels: world pixels at [cameraZoom],
-  /// relative to [worldCenter], unrotated. Only layers in [layerIds]
-  /// count when it is given.
+  /// The 3D buildings of [tiles] that [area] touches as
+  /// `ExtrusionPainter` draws them — roof, walls and all, less what a
+  /// tile's skip mask leaves out — topmost first: the higher style
+  /// layer, then the taller building. [area] is in the painter's canvas
+  /// pixels: world pixels at [cameraZoom], relative to [worldCenter],
+  /// unrotated. Only layers in [layerIds] count when it is given.
   ///
   /// A building's points at altitude z are its footprint scaled about
   /// the origin by `k(z)`, so it covers the screen point p wherever
@@ -99,7 +98,7 @@ abstract final class FeatureQuery {
   /// hull of its two ends — a segment, for a point query.
   static List<GeometryHit> hitExtrusions({
     required Theme theme,
-    required Iterable<ExtrusionLayout> layouts,
+    required Iterable<ExtrusionTile> tiles,
     required HitArea area,
     required double cameraZoom,
     required double styleZoom,
@@ -115,11 +114,17 @@ abstract final class FeatureQuery {
     };
     final ppm = ExtrusionPainter.pixelsPerMetre(cameraZoom, latitude);
     final box = area.bounds;
-    for (final layout in layouts) {
-      final layer = layout.layer;
-      final index = layerIndex[layer.id];
-      if (index == null || !layer.coversZoom(styleZoom)) continue;
+    for (final tile in tiles) {
+      final layout = tile.layout;
+      final index = layerIndex[layout.layer.id];
+      if (index == null) continue;
+      // The current theme's layer, as the painter draws it.
+      final current = theme.layers[index];
+      final layer = current is FillThemeLayer ? current : layout.layer;
+      if (!layer.coversZoom(styleZoom)) continue;
       if (layerIds != null && !layerIds.contains(layer.id)) continue;
+      final skip = tile.skip;
+      final kept = skip == null ? null : layout.keptUnder(skip, tile.side);
       final rect = displayTileRect(layout.tile, cameraZoom);
       final translate = _translateOf(layer, styleZoom);
       final tx = rect.left - worldCenter.dx + translate.dx;
@@ -129,6 +134,7 @@ abstract final class FeatureQuery {
       final bounds = layout.bounds;
       PreparedFeature? last;
       for (var b = 0; b < layout.length; b++) {
+        if (kept != null && kept[b] == 0) continue;
         final feature = features[layout.mesh.feature[layout.buildings[b]]];
         // A feature's polygons share its height: one test answers for
         // all of them.
@@ -164,7 +170,7 @@ abstract final class FeatureQuery {
         last = feature;
         found.add((
           index,
-          layout.heights[b],
+          layout.heightAt(b, styleZoom),
           found.length,
           (layerIndex: index, layer: theme.layers[index], feature: feature),
         ));
@@ -432,6 +438,15 @@ abstract final class FeatureQuery {
           return true;
         }
       }
+    }
+    return false;
+  }
+
+  /// Whether [sourceLayer] holds a feature with one of [ids], normalized.
+  static bool holdsAny(PreparedSourceLayer sourceLayer, Iterable<Object> ids) {
+    final index = _byId[sourceLayer] ??= _indexById(sourceLayer.features);
+    for (final id in ids) {
+      if (index.containsKey(id)) return true;
     }
     return false;
   }

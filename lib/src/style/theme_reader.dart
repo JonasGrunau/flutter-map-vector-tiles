@@ -146,12 +146,21 @@ class ThemeReader {
       case 'fill-extrusion':
         final extrusion = type == 'fill-extrusion';
         final prefix = extrusion ? 'fill-extrusion' : 'fill';
+        // What height and base read is kept apart: only 3D buildings
+        // read it, and the layer may be drawn flat. Whatever else reads
+        // the same properties puts them back below.
+        final before = {...parser.referencedProperties};
+        final beforeAll = parser.referencesAllProperties;
         final height = extrusion
             ? _doubleReadingZoom(parser, paint['fill-extrusion-height'], 0)
             : null;
         final base = extrusion
             ? _doubleReadingZoom(parser, paint['fill-extrusion-base'], 0)
             : null;
+        final extrusionAll = !beforeAll && parser.referencesAllProperties;
+        final extrusionReads = parser.referencedProperties.difference(before);
+        parser.referencedProperties.removeAll(extrusionReads);
+        parser.referencesAllProperties = beforeAll;
         final color = _colorReadingZoom(
             parser, paint['$prefix-color'], const Color(0xff000000));
         layer = FillThemeLayer(
@@ -184,7 +193,9 @@ class ThemeReader {
         )
           ..extrusionHeightReadsZoom = height?.readsZoom ?? false
           ..extrusionBaseReadsZoom = base?.readsZoom ?? false
-          ..extrusionColorReadsZoom = extrusion && color.readsZoom;
+          ..extrusionColorReadsZoom = extrusion && color.readsZoom
+          ..extrusionReferencedProperties =
+              extrusionAll ? null : extrusionReads;
       case 'line':
         layer = LineThemeLayer(
           id: id,

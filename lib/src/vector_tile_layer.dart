@@ -157,7 +157,9 @@ class VectorTileLayer extends StatefulWidget {
   /// actual device pixel ratio and viewport — see
   /// [autoRasterCacheBytesFor]. A fixed byte count overrides it.
   ///
-  /// These are GPU texture bytes: one tile costs `(256·dpr)²·4` bytes —
+  /// These are GPU texture bytes — with 3D buildings, plus the buildings
+  /// each tile holds, up to a few hundred KB — and one tile costs
+  /// `(256·dpr)²·4` bytes of texture —
   /// ~1 MiB at devicePixelRatio 2, ~2.25 MiB at 3, in either
   /// [labelMode], since [LabelMode.tile] draws its labels into that
   /// same texture — and one phone viewport is ~25-35 tiles per zoom
@@ -329,13 +331,16 @@ class VectorTileLayer extends StatefulWidget {
   /// through several dense cities that is tens of MB, over a hundred with
   /// `TileOffset.none`, and short of eviction at that cap this is the only
   /// call that releases it while the map stays open. The labels of the
-  /// tiles a map is showing stay.
+  /// tiles a map is showing stay. With 3D buildings, those of the tiles a
+  /// map no longer shows are let go of at once, not after their grace
+  /// period of two seconds.
   static void clearMemoryCache() {
     TileStore.clearMemoryCaches();
     RasterTileStore.clearMemoryCaches();
     TileResultCache.clearAll();
     for (final layer in _VectorTileLayerState._mounted) {
       layer._trimLabelCaches();
+      layer._extrusionPainter.trim();
     }
   }
 
@@ -819,6 +824,21 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       }
     }
 
+    // What [layer] reads of its features, null for all of them: 3D
+    // buildings' heights only when they are drawn in 3D.
+    final perspective = _perspectiveExtrusions;
+    Set<String>? readBy(ThemeLayer layer) {
+      if (widget.retainAllProperties) return null;
+      final props = layer.referencedProperties;
+      if (perspective &&
+          layer is FillThemeLayer &&
+          _extrusionLayers.contains(layer)) {
+        final heights = layer.extrusionReferencedProperties;
+        return props == null || heights == null ? null : {...props, ...heights};
+      }
+      return props?.toSet();
+    }
+
     // Per source: source-layer -> union of referenced property names.
     final propsBySource = <String, Map<String, Set<String>?>>{};
     for (final layer in widget.theme.layers) {
@@ -828,15 +848,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       final bySourceLayer = propsBySource[source] ??= {};
       if (bySourceLayer.containsKey(sourceLayer)) {
         final existing = bySourceLayer[sourceLayer];
-        final incoming =
-            widget.retainAllProperties ? null : layer.referencedProperties;
+        final incoming = readBy(layer);
         bySourceLayer[sourceLayer] = (existing == null || incoming == null)
             ? null
             : {...existing, ...incoming};
       } else {
-        bySourceLayer[sourceLayer] = widget.retainAllProperties
-            ? null
-            : layer.referencedProperties?.toSet();
+        bySourceLayer[sourceLayer] = readBy(layer);
       }
     }
 
@@ -2569,20 +2586,40 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   /// levels hold the same buildings, and drawing both would draw them
   /// twice. Only the retained level nearest the current one takes part,
   /// as for [_heatmapTiles].
+  ///
+  /// Each data tile's buildings are offered once per layer and zoom,
+  /// whichever display tiles hold them: two of them can hold different
+  /// layouts of the same buildings — a cached result laid out under an
+  /// earlier reading of the style or an earlier feature state, a data
+  /// tile decoded again — and the painter would draw both.
   Iterable<ExtrusionTile> _extrusionLayouts() {
-    final seen = HashSet<ExtrusionLayout>.identity();
-    final out = <ExtrusionTile>[];
-    // Per layer id, the data tiles the current level draws.
-    final current = <String, Set<TileKey>>{};
-    for (final tile in _tiles.values) {
+    final layers = _extrusionLayers;
+    final chosen = <(String, TileKey, int?), ExtrusionLayout>{};
+    void choose(
+        Map<(String, TileKey, int?), ExtrusionLayout> into, _DisplayTile tile) {
       for (final layout in tile.extrusions ?? const <ExtrusionLayout>[]) {
-        if (!seen.add(layout)) continue;
-        out.add((layout: layout, skip: null, side: 1));
-        (current[layout.layer.id] ??= {}).add(layout.tile);
+        final key = (layout.layer.id, layout.tile, layout.zoom);
+        if (!identical(into, chosen) && chosen.containsKey(key)) continue;
+        final held = into[key];
+        if (held == null || _preferLayout(layout, held, layers)) {
+          into[key] = layout;
+        }
       }
     }
+
+    for (final tile in _tiles.values) {
+      choose(chosen, tile);
+    }
+    final out = <ExtrusionTile>[
+      for (final layout in chosen.values) (layout: layout, skip: null, side: 1),
+    ];
     final level = _currentZoom;
     if (_retained.isEmpty || level == null) return out;
+    // Per layer id, the data tiles the current level draws.
+    final current = <String, Set<TileKey>>{};
+    for (final layout in chosen.values) {
+      (current[layout.layer.id] ??= {}).add(layout.tile);
+    }
     int? nearest;
     for (final key in _retained.keys) {
       final d = (key.z - level).abs();
@@ -2592,54 +2629,67 @@ class _VectorTileLayerState extends State<VectorTileLayer>
         nearest = key.z;
       }
     }
+    final retained = <(String, TileKey, int?), ExtrusionLayout>{};
     for (final tile in _retained.values) {
-      if (tile.key.z != nearest) continue;
-      for (final layout in tile.extrusions ?? const <ExtrusionLayout>[]) {
-        if (!seen.add(layout)) continue;
-        final drawn = current[layout.layer.id] ?? const <TileKey>{};
-        final key = layout.tile;
-        if (drawn.contains(key)) continue;
-        // The current level's data tiles over this one: an ancestor
-        // (a zoom-out) covers it whole, descendants (a zoom-in) cut it
-        // into a side × side grid.
-        int? depth;
-        for (final other in drawn) {
-          final shift = other.z - key.z;
-          if (shift < 0 &&
-              other.x == key.x >> -shift &&
-              other.y == key.y >> -shift) {
-            depth = shift;
-            break;
-          }
-          if (shift > 0 &&
-              shift <= 3 &&
-              other.x >> shift == key.x &&
-              other.y >> shift == key.y) {
-            depth = shift;
-          }
+      if (tile.key.z == nearest) choose(retained, tile);
+    }
+    for (final layout in retained.values) {
+      final drawn = current[layout.layer.id] ?? const <TileKey>{};
+      final key = layout.tile;
+      if (drawn.contains(key)) continue;
+      // The current level's data tiles over this one: an ancestor
+      // (a zoom-out) covers it whole, descendants (a zoom-in) cut it
+      // into a side × side grid.
+      int? depth;
+      for (final other in drawn) {
+        final shift = other.z - key.z;
+        if (shift < 0 &&
+            other.x == key.x >> -shift &&
+            other.y == key.y >> -shift) {
+          depth = shift;
+          break;
         }
-        if (depth == null) {
-          out.add((layout: layout, skip: null, side: 1));
-          continue;
+        if (shift > 0 &&
+            shift <= 3 &&
+            other.x >> shift == key.x &&
+            other.y >> shift == key.y) {
+          depth = shift;
         }
-        if (depth < 0) continue;
-        final side = 1 << depth;
-        final skip = Uint8List(side * side);
-        var covered = 0;
-        for (var dy = 0; dy < side; dy++) {
-          for (var dx = 0; dx < side; dx++) {
-            if (drawn.contains(TileKey(
-                key.z + depth, (key.x << depth) + dx, (key.y << depth) + dy))) {
-              skip[dy * side + dx] = 1;
-              covered++;
-            }
-          }
-        }
-        if (covered == side * side) continue;
-        out.add((layout: layout, skip: skip, side: side));
       }
+      if (depth == null) {
+        out.add((layout: layout, skip: null, side: 1));
+        continue;
+      }
+      if (depth < 0) continue;
+      final side = 1 << depth;
+      final skip = Uint8List(side * side);
+      var covered = 0;
+      for (var dy = 0; dy < side; dy++) {
+        for (var dx = 0; dx < side; dx++) {
+          if (drawn.contains(TileKey(
+              key.z + depth, (key.x << depth) + dx, (key.y << depth) + dy))) {
+            skip[dy * side + dx] = 1;
+            covered++;
+          }
+        }
+      }
+      if (covered == side * side) continue;
+      out.add((layout: layout, skip: skip, side: side));
     }
     return out;
+  }
+
+  /// Whether [a] is the layout to offer over [b], of the same buildings:
+  /// laid out under the newer feature state, then under the current
+  /// theme's layer objects — a fixed choice, so the painter is offered
+  /// the same instance frame after frame.
+  static bool _preferLayout(
+      ExtrusionLayout a, ExtrusionLayout b, List<FillThemeLayer> layers) {
+    if (a.stateVersion != b.stateVersion) {
+      return a.stateVersion > b.stateVersion;
+    }
+    return layers.any((layer) => identical(layer, a.layer)) &&
+        !layers.any((layer) => identical(layer, b.layer));
   }
 
   /// The tiles offering points to a heatmap density pass: every current tile that has its points, and — while
@@ -2853,7 +2903,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
     // 3D buildings are not in the tile images: their layouts are redone
     // under the new state, once per data tile, and drawn next frame.
-    if (buildings) _relayoutExtrusions();
+    if (buildings) _relayoutExtrusions(source, sourceLayer, ids);
     // Screen-space labels evaluate their paint every frame, against a
     // style memo the state version invalidates, so a shown label follows
     // on the next frame. Whether a label shows at all — its opacity may
@@ -2915,14 +2965,17 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
   }
 
-  /// Lays the 3D buildings of every current and retained tile out again
-  /// from the data they were drawn from, under the current feature
-  /// state.
-  void _relayoutExtrusions() {
+  /// Lays the 3D buildings of every current and retained tile whose data
+  /// holds one of [ids] out again from that data, under the current
+  /// feature state. The other tiles keep theirs: a hover changes one
+  /// building, and every new layout costs the painter a sort.
+  void _relayoutExtrusions(String source, String sourceLayer, Set<Object> ids) {
     final states = _featureStates;
     for (final tile in [..._tiles.values, ..._retained.values]) {
       final sources = tile.sources;
       if (tile.extrusions == null || sources == null) continue;
+      final data = sources[source]?.layers[sourceLayer];
+      if (data == null || !FeatureQuery.holdsAny(data, ids)) continue;
       tile.extrusions = _layoutExtrusions(
           DisplayTileData(
               displayKey: tile.key, sources: sources, featureStates: states),
@@ -3014,7 +3067,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     final buildings = perspective
         ? FeatureQuery.hitExtrusions(
             theme: widget.theme,
-            layouts: [for (final t in _extrusionLayouts()) t.layout],
+            tiles: _extrusionLayouts(),
             area: world.map((p) => p - worldCenter),
             cameraZoom: camera.zoom,
             styleZoom: _styleZoomOf(camera.zoom),
@@ -3447,14 +3500,21 @@ class _DisplayTile {
     final previousOver = this.over;
     underlay?.dispose();
     overUnderlay?.dispose();
-    if (!provisional && fadeIn && previous != null && image != null) {
+    final fade = !provisional && fadeIn;
+    if (fade && previous != null && image != null) {
       // A fading raster is replacing visible imagery: keep the old
       // pixels underneath for the duration of the fade.
       underlay = previous;
-      overUnderlay = previousOver;
     } else {
       underlay = null;
       previous?.dispose();
+    }
+    // The layers over the 3D buildings fade on their own: the new ones
+    // in over the old, or the old out when the new tile draws none of
+    // them there.
+    if (fade && previousOver != null) {
+      overUnderlay = previousOver;
+    } else {
       overUnderlay = null;
       previousOver?.dispose();
     }
@@ -3590,6 +3650,7 @@ class _VectorMapPainter extends CustomPainter {
         canvas,
         generation: state._extrusionGeneration,
         layouts: state._extrusionLayouts,
+        layers: state._extrusionLayers,
         cameraZoom: camera.zoom,
         styleZoom: styleZoom,
         worldCenter: worldCenter,
@@ -3662,7 +3723,7 @@ class _VectorMapPainter extends CustomPainter {
       }
     }
     for (final tile in state._tiles.values) {
-      if (tile.over == null) continue;
+      if (tile.over == null && tile.overUnderlay == null) continue;
       _drawTileImage(canvas, tile, tile.fadeProgress(now, fade), worldCenter,
           over: true);
     }
@@ -3674,15 +3735,18 @@ class _VectorMapPainter extends CustomPainter {
       Canvas canvas, _DisplayTile tile, double opacity, Offset worldCenter,
       {bool over = false}) {
     final image = over ? tile.over : tile.image;
-    if (image == null) return;
-    final rect = displayTileRect(tile.key, camera.zoom).shift(-worldCenter);
     final underlay = over ? tile.overUnderlay : tile.underlay;
+    if (image == null && underlay == null) return;
+    final rect = displayTileRect(tile.key, camera.zoom).shift(-worldCenter);
     if (underlay != null && opacity < 1) {
       // The previous raster keeps covering the tile while its
-      // replacement fades in — a swap never dips to the background.
-      _paintTileImage(canvas, underlay, rect, 1);
+      // replacement fades in — a swap never dips to the background —
+      // or, replaced by nothing (an over image only), fades out.
+      _paintTileImage(canvas, underlay, rect, image == null ? 1 - opacity : 1);
     }
-    if (opacity > 0) _paintTileImage(canvas, image, rect, opacity);
+    if (image != null && opacity > 0) {
+      _paintTileImage(canvas, image, rect, opacity);
+    }
   }
 
   void _paintTileImage(

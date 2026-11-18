@@ -68,11 +68,13 @@ class ExtrusionLayout {
   final Int32List classes;
 
   /// Per wall of [mesh], for a wall another drawn building stands in
-  /// front of (`ExtrusionMesh.wallCovers`): the altitude its visible part
-  /// starts at, that building's roof — at or above the building's own
-  /// roof when it hides the wall whole. NaN for the rest; null when no
-  /// wall of the tile has one.
-  final Float32List? wallFloors;
+  /// front of (`ExtrusionMesh.wallCovers`): that building, an index
+  /// into [buildings] — the wall's visible part starts at its roof
+  /// (`heightAt`), and the wall is hidden whole while that roof is at
+  /// or above the building's own. -1 for the rest; null when no wall of
+  /// the tile has one. A building, not an altitude: heights that ramp
+  /// with the zoom move both roofs every frame.
+  final Int32List? wallCoveredBy;
 
   /// Per drawn building: its footprint's bounds in extent units,
   /// `minX, minY, maxX, maxY` — copied out of [mesh] so the painter's
@@ -97,7 +99,7 @@ class ExtrusionLayout {
     required this.nextBases,
     required this.classOf,
     required this.classes,
-    required this.wallFloors,
+    required this.wallCoveredBy,
     required this.bounds,
     required this.maxHeight,
   });
@@ -110,15 +112,19 @@ class ExtrusionLayout {
   /// [classes] under [light]: per class, `ExtrusionShading.stride`
   /// colours — kept with the layout, so a new tile set or a new frame
   /// fills it again only when the light changed.
+  ///
+  /// A new light gets a new table, never the old one filled again: two
+  /// maps over the same data share their layouts, and each holds on to
+  /// the table it was handed under its own light.
   Int32List tableFor(ExtrusionLight light) {
     final table = _table;
     if (table != null && light == _tableLight) return table;
-    final filled = table ??
-        (_table = Int32List(classes.length ~/ 3 * ExtrusionShading.stride));
+    final filled = Int32List(classes.length ~/ 3 * ExtrusionShading.stride);
     for (var c = 0; c * 3 < classes.length; c++) {
       ExtrusionShading.fill(filled, c * ExtrusionShading.stride, classes[c * 3],
           classes[c * 3 + 1], classes[c * 3 + 2], light);
     }
+    _table = filled;
     _tableLight = light;
     return filled;
   }
@@ -131,15 +137,43 @@ class ExtrusionLayout {
       (nextBases?.lengthInBytes ?? 0) +
       classOf.lengthInBytes +
       classes.lengthInBytes +
-      (wallFloors?.lengthInBytes ?? 0) +
+      (wallCoveredBy?.lengthInBytes ?? 0) +
       bounds.lengthInBytes +
       64;
 
   /// Building [i]'s roof and floor at style zoom [styleZoom].
+  @pragma('vm:prefer-inline')
   double heightAt(int i, double styleZoom) =>
       _at(heights, nextHeights, i, styleZoom);
+  @pragma('vm:prefer-inline')
   double baseAt(int i, double styleZoom) => _at(bases, nextBases, i, styleZoom);
 
+  /// Per building, 1 unless its footprint centre lies in a cell of the
+  /// [side] × [side] grid over the tile that [skip] marks — the
+  /// buildings a skip mask leaves (`ExtrusionTile`), for the painter and
+  /// for rendered-feature queries alike.
+  Uint8List keptUnder(Uint8List skip, int side) {
+    final kept = Uint8List(length);
+    final cell = extent / side;
+    for (var i = 0; i < length; i++) {
+      final cx = (bounds[i * 4] + bounds[i * 4 + 2]) / 2;
+      final cy = (bounds[i * 4 + 1] + bounds[i * 4 + 3]) / 2;
+      final col = (cx / cell).floor().clamp(0, side - 1);
+      final row = (cy / cell).floor().clamp(0, side - 1);
+      kept[i] = skip[row * side + col] == 1 ? 0 : 1;
+    }
+    return kept;
+  }
+
+  /// Building [i]'s roof halfway through the layout's zoom band — what
+  /// orders a layer's buildings for the whole band: heights ramping with
+  /// the zoom are 0 at its start, all of them.
+  double sortHeight(int i) {
+    final next = nextHeights;
+    return next == null ? heights[i] : (heights[i] + next[i]) / 2;
+  }
+
+  @pragma('vm:prefer-inline')
   double _at(Float32List at, Float32List? next, int i, double styleZoom) {
     if (next == null) return at[i];
     final t = (styleZoom - zoom!).clamp(0.0, 1.0);
@@ -291,8 +325,9 @@ abstract final class ExtrusionLayouter {
         if (!(height >= 0)) height = 0;
         if (!(base >= 0)) base = 0;
         if (base > height) base = height;
-        // Nothing to draw at either end of the level.
-        if (height == 0 && !(heightNext != null && nextHeight > 0)) continue;
+        // A building of height 0 stays: MapLibre draws its roof on the
+        // ground, roof-shaded — and nothing else draws it, the layer is
+        // not in the tile images.
         final argb = layer.color.eval(ctx).toARGB32();
         final bottom = gradient
             ? ExtrusionShading.gradientKey(0, base, height)
@@ -326,29 +361,37 @@ abstract final class ExtrusionLayouter {
     }
     // A wall another drawn building stands in front of starts at that
     // building's roof — the tallest such one standing no higher than
-    // this one's floor.
-    Float32List? floors;
+    // this one's floor, judged halfway through the zoom band, as the
+    // painter's order is (`sortHeight`).
+    Int32List? coveredBy;
     final coverStart = mesh.wallCoverStart, covers = mesh.wallCovers;
     if (count > 0 && covers.isNotEmpty) {
+      double mid(Float32List at, Float32List? next, int i) =>
+          next == null ? at[i] : (at[i] + next[i]) / 2;
       final drawnAs = Int32List(n)..fillRange(0, n, -1);
       for (var i = 0; i < count; i++) {
         drawnAs[buildings[i]] = i;
       }
       for (var i = 0; i < count; i++) {
         final p = buildings[i];
+        final floorOf = mid(bases, baseNext, i);
         for (var w = mesh.wallStart[p]; w < mesh.wallStart[p + 1]; w += 2) {
           final wall = w >> 1;
-          var floor = double.nan;
+          var cover = -1;
+          var floor = 0.0;
           for (var k = coverStart[wall]; k < coverStart[wall + 1]; k++) {
             final other = drawnAs[covers[k]];
-            if (other < 0 || bases[other] > bases[i]) continue;
-            final roofOf = heights[other];
-            if (roofOf > bases[i] && !(floor >= roofOf)) floor = roofOf;
+            if (other < 0 || mid(bases, baseNext, other) > floorOf) continue;
+            final roofOf = mid(heights, heightNext, other);
+            if (roofOf > floorOf && (cover < 0 || roofOf > floor)) {
+              cover = other;
+              floor = roofOf;
+            }
           }
-          if (floor.isNaN) continue;
-          floors ??= Float32List(coverStart.length - 1)
-            ..fillRange(0, coverStart.length - 1, double.nan);
-          floors[wall] = floor;
+          if (cover < 0) continue;
+          coveredBy ??= Int32List(coverStart.length - 1)
+            ..fillRange(0, coverStart.length - 1, -1);
+          coveredBy[wall] = cover;
         }
       }
     }
@@ -371,7 +414,7 @@ abstract final class ExtrusionLayouter {
           : Float32List.fromList(Float32List.sublistView(baseNext, 0, count)),
       classOf: Uint16List.fromList(Uint16List.sublistView(classOf, 0, count)),
       classes: Int32List.fromList(classes),
-      wallFloors: floors,
+      wallCoveredBy: coveredBy,
       bounds:
           Float32List.fromList(Float32List.sublistView(bounds, 0, count * 4)),
       maxHeight: maxHeight,

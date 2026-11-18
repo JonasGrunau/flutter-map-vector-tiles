@@ -142,7 +142,9 @@ void main() {
   group('style', () {
     Theme read(Map<String, Object?> style) => const ThemeReader().read(style);
 
-    test('height and base keep render_height and render_min_height', () {
+    test(
+        'height and base keep render_height and render_min_height for 3D '
+        'buildings only', () {
       final theme = read({
         'layers': [
           {
@@ -162,8 +164,11 @@ void main() {
         ],
       });
       final layer = theme.layers.single as FillThemeLayer;
-      expect(layer.referencedProperties,
-          containsAll(['render_height', 'render_min_height']));
+      // Apart from what the layer reads drawn flat: the decoder keeps
+      // them only while it is drawn in 3D.
+      expect(layer.extrusionReferencedProperties,
+          {'render_height', 'render_min_height'});
+      expect(layer.referencedProperties, isEmpty);
       expect(layer.extrusionHeightReadsZoom, isFalse);
       expect(layer.extrusionBaseReadsZoom, isTrue);
       expect(

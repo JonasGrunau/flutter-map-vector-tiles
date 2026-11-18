@@ -65,9 +65,9 @@ class ExtrusionMesh {
   /// building part rises out of, a lower part in front of a taller one.
   /// Painter's order cannot hide the stretch of a wall inside such a
   /// building behind its roof, as a depth buffer would: the layout
-  /// raises the wall's foot to that roof instead
-  /// (`ExtrusionLayout.wallFloors`), and leaves it out when the roof is
-  /// as high. Most walls face the street and have none.
+  /// notes that building (`ExtrusionLayout.wallCoveredBy`), and the
+  /// painter raises the wall's foot to its roof, or leaves the wall out
+  /// when the roof is as high. Most walls face the street and have none.
   final Int32List wallCoverStart;
   final Uint16List wallCovers;
 

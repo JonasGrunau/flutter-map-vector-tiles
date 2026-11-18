@@ -1109,7 +1109,9 @@ second one, `_DisplayTile.over`, drawn after the buildings
 (`recordSlice(end:)`, then a second recording from there). Only tiles
 where those layers draw anything get one: in Liberty, three boundary
 layers. The result cache keeps it beside the image and counts its
-bytes; a retained level's over image is clipped out wherever a current
+bytes, and a tile drawn again cross-fades it like the image — fading
+the old one out when the new tile has none; a retained level's over
+image is clipped out wherever a current
 tile has faded in, because unlike the geometry beneath it it is mostly
 transparent and the previous level's lines would show through.
 Queries follow the same order. Google Maps draws its buildings over
@@ -1149,29 +1151,47 @@ style can control. Three stages:
   the wall's foot and top). It runs where a tile image publishes (and
   takes a cached result's), but is cached on the prepared source layer
   by an `Expando`, so every display tile over one data tile — every
-  zoom from 14 to 22 over Liberty's z14 data — shares one instance, and
-  the painter draws each building once by identity. A layout that
+  zoom from 14 to 22 over Liberty's z14 data — shares one instance.
+  Display tiles can still hold two layouts of the same buildings — a
+  cached result laid out under an earlier reading of the style or an
+  earlier state, a data tile decoded again — so the painter is offered
+  one per layer id, data tile and zoom (`_extrusionLayouts`), always
+  the same one: the newest state, then the current theme's layers. A
+  layout that
   reads the zoom is keyed by integer zoom; a height or base reading the
   zoom and the feature is evaluated at both ends of the level and
   blended per frame, MapLibre's two-stop composite evaluation with a
   linear factor. One reading `feature-state` is laid out again under
-  each new state version: a state change re-lays out the tiles'
-  buildings rather than re-rasterizing their images. A wall shared
-  with a drawn neighbour gets the neighbour's roof as its floor.
+  each new state version: a state change re-lays out the buildings of
+  the tiles whose data holds a changed id rather than re-rasterizing
+  their images, and leaves every other tile's as it was — a new layout
+  costs the painter a sort. A wall shared with a drawn neighbour notes
+  the neighbour, whose roof at the frame's zoom is its floor. A
+  building of height 0 stays, a roof on the ground, as MapLibre draws
+  it: nothing else draws the layer.
 - **Painter, every frame** (`ExtrusionPainter`). The current tiles'
   layouts are on offer, and during a zoom crossing the nearest
   retained level's only where the current level draws nothing from the
   same place — a data tile the current level also draws is skipped,
   one it cuts into descendants offers only the buildings outside them
   (a skip mask). Every building of the layouts on offer is sorted by
-  roof height (a counting sort in decimetres, stable), and so are
-  those of the layouts taken off offer in the last 2 seconds: which
-  are on offer, and what their masks leave out, is marked on the
-  order and checked per building as it is drawn. A zoom sweep takes
-  data tiles off and puts them back at every level crossing; sorting
-  again for each change cost 2.2 ms a time on the phone, twenty times
-  a second in a fast sweep, so only a layout the order does not hold
-  sorts it again, and that sort leaves out the ones off for longer. Each frame then culls the
+  roof height halfway through the layout's zoom band (a counting sort
+  in decimetres, stable — a height ramping from 0 over the level would
+  sort every building at 0 at its start), per layer in style order,
+  and so are those of the layouts taken off offer in the last 2
+  seconds, unless one on offer replaces them: which are on offer, and
+  what their masks leave out, is marked on the order and checked per
+  building as it is drawn. A zoom sweep takes data tiles off and puts
+  them back at every level crossing; sorting again for each change
+  cost 2.2 ms a time on the phone, twenty times a second in a fast
+  sweep, so only a layout the order does not hold sorts it again, and
+  that sort leaves out the ones off for longer. The first frame 4
+  seconds after a layout went off sorts out every one off for 2, so a
+  map left where no building shows holds none, at one sort for the
+  layouts a sweep takes off one after another, and `clearMemoryCache()` lets go of every
+  one off offer at once. Layers are told apart by id and drawn with
+  the current theme's layer objects, so a sibling theme's opacity
+  takes effect without a sort. Each frame then culls the
   candidates — the buildings in a window half a viewport larger than
   the screen, gathered again when the view leaves it or the zoom moves
   a quarter level — against the viewport by footprint alone: leaning is
@@ -1179,7 +1199,9 @@ style can control. Three stages:
   For each one left it writes the walls facing the screen centre (the
   sign of `n · p`) and then the roof into reused typed lists, scaled by
   `k(base)` and `k(height)`, and turns them into `ui.Vertices` of at
-  most 65,535 vertices each, drawn with `BlendMode.dst` (the vertex
+  most 65,535 vertices each — a building too big for one, an
+  unsimplified outline of tens of thousands of vertices, is split
+  between walls and before its roof — drawn with `BlendMode.dst` (the vertex
   colours) inside one `saveLayer` at `fill-extrusion-opacity`: every
   face is opaque and the nearest wins, as MapLibre's depth pre-pass
   arranges, and the spec ignores the colour's alpha. Walls leaning
@@ -1199,7 +1221,8 @@ its complement. The light (`Theme.light`, MapLibre's default
 when anchored to the viewport. Colour classes become tables of a roof
 colour and 64 wall levels when the light changes, and the 256 wall
 directions their levels when the rotation does, so a wall costs two
-lookups.
+lookups. A layout keeps its tables, and a new light gets new ones
+rather than filling those another map's painter still draws with.
 
 Painter's order stands in for the depth buffer: it is right wherever
 the taller building is the nearer one, which a camera straight above
@@ -1207,7 +1230,9 @@ almost always makes so. It is wrong where a lower roof leans over a
 detached taller neighbour through a gap narrower than the lean, and
 where one part of a concave building should hide another; a wall with
 another building right in front of it, the common case of terraced
-houses and building parts, is handled by its raised floor.
+houses and building parts, is handled by its raised floor. Within a
+zoom band whose heights ramp at different rates no fixed order is
+right throughout; halfway through it is the compromise.
 
 On a Nothing Phone (1) the pass costs most at style zoom 14, where the
 screen holds the most buildings: 2.4–4.0 ms a frame (median, 33k
@@ -1382,10 +1407,14 @@ the decoded data may be gone while the image stays — a query would find
 no geometry there and a state change could not tell whether to redraw.
 A tile served from the finished-tile cache therefore fetches its data
 at the lowest priority. Without a controller nothing is held, so the
-decoded-tile budget means what it always meant.
+decoded-tile budget means what it always meant — bar 3D buildings,
+whose layouts hold their data tile's building layer and mesh for as
+long as a finished tile holds them; the finished-tile cache counts
+those (below).
 
 Decoded tiles keep only the properties the theme reads (see
-Concurrency), so that is all a result carries unless the layer sets
+Concurrency) — what only a `fill-extrusion` layer's height and base
+read just while it draws in 3D — so that is all a result carries unless the layer sets
 `retainAllProperties`, which decodes with every source layer's keep-list
 lifted. The keep-lists are part of the decoded-tile cache's signature,
 so the two never share entries.
@@ -1530,7 +1559,7 @@ on web.
 | --- | --- | --- |
 | memory: `PreparedTile` | data tile, per source (`provider.cacheKey`) and property keep-lists | entry count + bytes |
 | memory: raster-source `ui.Image` | data tile per raster source | entry count + bytes (handed out as ref-counted clones) |
-| memory: finished display tile (raster `ui.Image` + symbols + heatmap points + 3D-building layouts, the last shared with the data tiles) | display tile, per render signature (theme id, providers, dpr, sprite and glyph *content*, labels, label mode) | GPU texture bytes, plus the heatmap points' bytes (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
+| memory: finished display tile (raster `ui.Image` + symbols + heatmap points + 3D-building layouts, the last shared with the data tiles) | display tile, per render signature (theme id, providers, dpr, sprite and glyph *content*, labels, label mode) | GPU texture bytes, plus the heatmap points' and the 3D-building layouts' and meshes' bytes — each layout counted in full by every tile holding it, which errs towards evicting sooner (`rasterCacheMaxBytes` — by default sized from the live viewport and dpr, see below; cache owns the master image, tiles hold clones); retained signatures bounded by their combined cost |
 | disk: raw tile bytes | hash of `provider.cacheKey` + z/x/y | TTL + total size sweep |
 
 All caches are plain deterministic LRU implementations — no external

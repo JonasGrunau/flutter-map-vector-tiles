@@ -64,7 +64,9 @@ class TileResult {
 /// invalidation, [releaseSignature] or [clearAll].
 ///
 /// Cost is dominated by GPU texture bytes: a tile is
-/// `(256·dpr)² · 4` bytes ≈ 1 MiB at dpr 2, 2.25 MiB at dpr 3.
+/// `(256·dpr)² · 4` bytes ≈ 1 MiB at dpr 2, 2.25 MiB at dpr 3. Heatmap
+/// points and, with 3D buildings, the layouts and meshes a tile holds
+/// count too.
 class TileResultCache {
   /// Keyed by render signature; the latest requested byte budget wins,
   /// mirroring the decoded-tile stores.
@@ -87,6 +89,12 @@ class TileResultCache {
             }
             for (final points in result.heatmap) {
               cost += points.byteSize;
+            }
+            // The 3D buildings it holds on to outlive the decoded tile
+            // they come from: counted here, each in full — conservative,
+            // as the display tiles over one data tile share them.
+            for (final layout in result.extrusions) {
+              cost += layout.byteSize + layout.mesh.byteSize;
             }
             return cost;
           },
