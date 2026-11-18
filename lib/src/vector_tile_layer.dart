@@ -524,6 +524,36 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     }
   }
 
+  /// Shapes the platform's text again once its fonts changed: on the
+  /// web, when the fallback fonts Flutter fetched for a script none of
+  /// its fonts covered (CJK, Thai, Devanagari, …) have arrived. Until
+  /// then such text is laid out in boxes, and kept that way by every
+  /// cache it went into — the label painter's, and with
+  /// [LabelMode.tile] the tile images.
+  ///
+  /// Web only: elsewhere the fallback fonts are the ones installed,
+  /// found while a paragraph is laid out, and a font change — an app
+  /// loading a font of its own — never reaches the default family
+  /// labels are shaped in.
+  void _fontsChanged() {
+    if (!mounted || !_labelPainter.fontsChanged()) return;
+    // A tile shaping its labels when the fonts changed has some of them
+    // shaped with the old ones; it starts over, within the pump's
+    // budget, as after a trim.
+    for (final job in _renderQueue.symbolJobs) {
+      job.shapeCursor = 0;
+    }
+    if (_screenLabels) {
+      // Sizes changed with the fonts; the next pass places by the new.
+      _labelGeneration++;
+      _repaint.trigger();
+    }
+    if (_tileLabels) {
+      _resultCache?.clear();
+      _refreshTiles();
+    }
+  }
+
   /// Restarts the clock behind [_cameraStill].
   void _cameraMoved() => (_sinceCameraMove ??= Stopwatch())
     ..reset()
@@ -694,6 +724,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (kIsWeb) PaintingBinding.instance.systemFonts.addListener(_fontsChanged);
     _mounted.add(this);
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     _foregrounded = _canRasterizeIn(lifecycle);
@@ -1289,6 +1320,9 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   void dispose() {
     widget.controller?.detach(this);
     WidgetsBinding.instance.removeObserver(this);
+    if (kIsWeb) {
+      PaintingBinding.instance.systemFonts.removeListener(_fontsChanged);
+    }
     _mounted.remove(this);
     unawaited(_mapEvents?.cancel());
     _fadeTicker.dispose();

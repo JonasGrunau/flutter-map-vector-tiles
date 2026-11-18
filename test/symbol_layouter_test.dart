@@ -390,6 +390,21 @@ void main() {
       );
       expect(instances.single.text, 'KIRCHHEIM');
     });
+
+    test('text-transform uppercase leaves Georgian in Mkhedruli', () {
+      // Liberty's district labels in Tbilisi. JavaScript, and so Dart
+      // on the web, upper-cases Georgian into Mtavruli, which neither
+      // the glyph ranges nor the fallback fonts draw: boxes.
+      final instances = _layout(
+        _theme(layout: {'text-transform': 'uppercase'}),
+        _data(
+          displayKey: const TileKey(14, 100, 100),
+          dataKey: const TileKey(14, 100, 100),
+          features: [_point(_extent / 2, _extent / 2, 'Rike\nრიყე')],
+        ),
+      );
+      expect(instances.single.text, 'RIKE\nრიყე');
+    });
   });
 
   group('along-line windowed enumeration', () {

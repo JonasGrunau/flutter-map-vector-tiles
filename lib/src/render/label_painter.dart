@@ -311,6 +311,11 @@ class LabelPainter {
   @visibleForTesting
   static int debugJustifiedLayouts = 0;
 
+  /// Texts the platform shaped into paragraphs, across all painters —
+  /// for tests that see a layer, not its painter.
+  @visibleForTesting
+  static int debugParagraphShapes = 0;
+
   /// The part of [debugShapedTextCount] shaped from [glyphs] rather
   /// than by the platform.
   @visibleForTesting
@@ -478,6 +483,34 @@ class LabelPainter {
     _textCache.removeWhere((_, text) => text.pass != _pass);
     _glyphCache.removeWhere((_, glyph) => glyph.pass != _pass);
     _disposeRetired();
+  }
+
+  /// Releases everything the platform shaped, for fonts that changed
+  /// under it — on the web, a fallback font that finished downloading.
+  /// Flutter web lays a paragraph out with the fonts it has at that
+  /// moment, draws what none of them covers as `.notdef` boxes, and
+  /// starts fetching a font that does; the paragraph keeps its boxes
+  /// for good. Text drawn from the style's glyphs does not depend on
+  /// the platform's fonts and stays.
+  ///
+  /// The curved-text atlas goes too: its cells are rasterized from the
+  /// per-grapheme paragraphs.
+  ///
+  /// Returns whether anything went, so that the layer knows whether
+  /// the labels on screen, or drawn into tiles, need shaping again.
+  /// Disposes at once, as [trimCaches] does: this runs between frames.
+  bool fontsChanged() {
+    var dropped = _glyphCache.length;
+    _lastDrawn = const [];
+    _textCache.removeWhere((_, text) {
+      if (text.glyphRun != null) return false;
+      dropped++;
+      return true;
+    });
+    _glyphCache.clear();
+    _glyphAtlas.clear();
+    _disposeRetired();
+    return dropped > 0;
   }
 
   /// Curved-text glyphs rasterized once per style, grapheme and device
@@ -3149,6 +3182,7 @@ class LabelPainter {
 
   /// Shapes [instance]'s text with the platform's paragraph layout.
   _LaidOutText _shapeParagraph(SymbolInstance instance, TextStyleMemo memo) {
+    debugParagraphShapes++;
     final singleLine = instance.alongLine;
     final maxLines = singleLine ? 1 : 4;
     var maxWidth = singleLine

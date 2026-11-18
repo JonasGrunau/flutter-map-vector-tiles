@@ -307,6 +307,34 @@ glyph; the rest are drawn straight along the line. `test/scripts/`
 draws all of it in 23 scripts with bundled fonts and asserts on the
 pixels.
 
+On the web the platform's fonts arrive late. The browser lends
+CanvasKit and Skwasm no system fonts, so Flutter web lays a paragraph
+out with the fonts it has, draws what none of them covers as `.notdef`
+boxes, fetches Noto fonts that cover it (from `fonts.gstatic.com`, the
+engine's `fontFallbackBaseUrl`) and, once a batch has arrived, sends
+`fontsChange` on `flutter/system`. A shaped paragraph never picks a new
+font up, so every cache that holds one would keep the boxes: the text
+cache, the per-grapheme painters of curved text and the glyph atlas
+rasterized from them, and with `LabelMode.tile` the tile images. The
+layer listens to `PaintingBinding.systemFonts` on the web
+(`_fontsChanged`): `LabelPainter.fontsChanged` drops every paragraph
+and grapheme painter and the atlas — not the text drawn from glyphs,
+which no platform font touches — and the layer rewinds the symbol jobs
+still shaping, starts a fresh placement pass (the sizes changed) and,
+for `LabelMode.tile`, empties the finished-tile cache and redraws its
+tiles. The labels on screen are shaped again in the frame that next
+places them. Native platforms find their fallback fonts among the
+installed ones while laying out, and a font an app loads later is the
+app's own, never the default family labels are shaped in, so there the
+listener is not registered.
+
+`text-transform: uppercase` and `upcase` go through
+`text/label_case.dart` rather than `String.toUpperCase`, which on the
+web is JavaScript's: it maps Georgian to Mtavruli (U+1C90–U+1CBF),
+capitals that neither glyph PBFs nor the web's fallback fonts carry.
+Georgian stays as written, as the Dart VM's older case tables already
+left it on native.
+
 **Text from the style's glyphs.** Given the style's `glyphs`
 (`VectorTileLayer.glyphs`, a `GlyphSource`), a label whose text needs
 no complex shaping is not handed to the platform at all. Platform

@@ -9,6 +9,7 @@ import '../pipeline/prepared_tile.dart';
 import '../style/expression.dart';
 import '../style/theme.dart';
 import '../text/glyph_script.dart';
+import '../text/label_case.dart';
 import 'display_tile_data.dart';
 import 'matched_features.dart';
 import 'tile_rasterizer.dart';
@@ -411,7 +412,7 @@ class SymbolLayouter {
         var text = layer.textField.eval(ctx).trim();
         if (text.isNotEmpty) {
           text = switch (layer.textTransform.eval(ctx)) {
-            'uppercase' => text.toUpperCase(),
+            'uppercase' => upperCaseLabel(text),
             'lowercase' => text.toLowerCase(),
             _ => text,
           };

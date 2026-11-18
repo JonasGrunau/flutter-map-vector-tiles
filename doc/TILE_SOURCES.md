@@ -164,6 +164,16 @@ native:
   style's 3D buildings, when they are on, cut while a tile is decoded.
 - **Label collision runs in the frame.** The placement pass that runs on
   an isolate of its own elsewhere costs the frame it is due in.
+- **Fonts for other scripts are fetched.** Labels the style's glyphs
+  don't draw (see [Fonts](LABELS.md#fonts)) — Chinese, Japanese,
+  Korean, Arabic, Hebrew, Thai, the Indic scripts, emoji and the rest —
+  are shaped by the platform, and the browser lends Flutter no system
+  fonts. Flutter lays such a label out with the fonts it has, in boxes,
+  and fetches Noto fonts that cover it from `fonts.gstatic.com`; the
+  layer shapes the label again when they arrive, usually within a
+  second or two. Where that host is blocked or the browser is offline
+  the boxes stay: serve the fonts yourself and set Flutter's
+  `fontFallbackBaseUrl` in the engine configuration to point at them.
 - **CORS.** The browser fetches style.json, TileJSON, sprites, glyphs and
   tiles directly, so every host involved must send
   `Access-Control-Allow-Origin`. MapTiler, OpenFreeMap and Stadia do;
