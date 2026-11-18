@@ -1156,9 +1156,10 @@ A query has two halves, because the map is drawn in two. **Labels and
 icons** come from the label pass: the painter keeps the drawables its
 last frame drew (one reference per frame, nothing computed) and works
 out their shapes only when queried — the icon's rectangle turned about
-its pivot, the text's box turned with it, and for curved text one box
-per glyph, so a diagonal street name is not hit across the whole
-rectangle it spans. Those shapes read the frame's text painters, so
+its pivot, the text's box turned about its text anchor as it is drawn
+(so text moved by `text-offset` or `text-translate` is hit where it
+shows), and for curved text one box per glyph, so a diagonal street
+name is not hit across the whole rectangle it spans. Those shapes read the frame's text painters, so
 everything that disposes painters between frames (`trimCaches`, the
 retirement `paintTile` runs, `reset`, `dispose`) drops the list first.
 Fading-out ghosts and symbols the zoom ramp has retired are not on
