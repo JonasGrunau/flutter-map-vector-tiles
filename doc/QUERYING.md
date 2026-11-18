@@ -83,8 +83,9 @@ a rebuilt or remounted layer; a controller drives the layer that mounted
 last. It changes what is drawn only where a
 paint property reads it, such as
 `"fill-color": ["case", ["boolean", ["feature-state", "selected"],
-false], "#e53935", "#d6d0c4"]`; hosted styles don't, so add a layer of
-your own (the example app appends one over the style's buildings).
+false], "#1e88e5", "#d6d0c4"]`; hosted styles don't, so add a layer of
+your own (the example app appends a fill and an outline over the
+style's buildings).
 A change re-renders only the display tiles that draw the feature from a
 layer that reads state, ahead of other queued work and without a fade;
 labels keep their placement, and screen-space labels whose paint reads
@@ -105,5 +106,9 @@ OpenFreeMap's, for one, join neighbouring buildings with the same
 attributes into a single multipolygon with a single id (up to 1,563
 buildings in one feature in central Munich at z14), so a query returns
 that whole group and selecting it highlights all of it, as MapLibre
-would.
+would. Buildings mapped in parts go the other way: OpenMapTiles keeps
+each `building:part` as a feature of its own, and flags the outline
+around them `hide_3d`, which Liberty's 3D building layer leaves out. So
+from style zoom 14 a tap on the Frauenkirche finds its nave, and
+selecting the nave leaves the towers, separate features, unlit.
 
