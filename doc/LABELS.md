@@ -218,6 +218,12 @@ style was designed with. Without it every label uses the system font.
 - **Your own glyphs.** `GlyphSource(load: …)` reads ranges from
   anywhere, assets included, for a fully offline map with the style's
   fonts.
+- **Upper case leaves Georgian alone.** `text-transform: uppercase` and
+  `upcase` don't turn Georgian into its Mtavruli capitals, which
+  Georgian uses only for emphasis and which glyph PBFs don't carry
+  (OpenFreeMap's don't). The name stays as it is written, in the
+  style's font, as it always did on native platforms; MapLibre GL JS
+  converts it and then draws nothing where it should be.
 
 ## Choosing a label mode
 

@@ -232,6 +232,15 @@ void main() {
       expect(eval(['length', 'abcd']), 4);
     });
 
+    test('upcase leaves Georgian alone and upper-cases the rest', () {
+      // Mkhedruli has no case in use; its Mtavruli capitals, which
+      // JavaScript maps it to, are not in the style's glyph ranges.
+      expect(eval(['upcase', 'Rike რიყე']), 'RIKE რიყე');
+      expect(eval(['upcase', 'რიყე park ქალა']), 'რიყე PARK ქალა');
+      expect(eval(['upcase', 'тбилиси']), 'ТБИЛИСИ');
+      expect(eval(['downcase', 'ᲠᲘᲧᲔ']), 'ᲠᲘᲧᲔ'.toLowerCase());
+    });
+
     test('coercions', () {
       expect(eval(['to-string', 5]), '5');
       expect(eval(['to-number', '42']), 42);

@@ -307,6 +307,43 @@ glyph; the rest are drawn straight along the line. `test/scripts/`
 draws all of it in 23 scripts with bundled fonts and asserts on the
 pixels.
 
+On the web the platform's fonts arrive late. The browser lends
+CanvasKit and Skwasm no system fonts, so Flutter web lays a paragraph
+out with the fonts it has, draws what none of them covers as `.notdef`
+boxes, fetches Noto fonts that cover it (from `fonts.gstatic.com`, the
+engine's `fontFallbackBaseUrl`) and, once a batch has arrived, sends
+`fontsChange` on `flutter/system`. A shaped paragraph never picks a new
+font up, so every cache that holds one would keep the boxes: the text
+cache, the per-grapheme painters of curved text and the glyph atlas
+rasterized from them, and with `LabelMode.tile` the tile images. The
+layer listens to `PaintingBinding.systemFonts` on the web
+(`_fontsChanged`). `LabelPainter.fontsChanged` bumps a font generation
+that every paragraph and grapheme painter is stamped with when shaped
+— the text drawn from glyphs is left alone, no platform font touches
+it — and only `prewarm` shapes a stale one again; the label pass draws
+what it has. The layer queues the labels of every published tile for
+the render pump, which re-shapes them within its budget like a fresh
+tile's (and rewinds the symbol jobs still shaping), then starts a
+fresh placement pass, since the sizes changed. For `LabelMode.tile` it
+empties the finished-tile cache and redraws its tiles, whose symbol
+jobs re-shape as they go. A grapheme painter shaped again gets new
+atlas cells, the generation being part of their key. Dropping the
+caches instead would have the next frame shape every label on screen:
+117 ms over Tokyo in Chrome on an M4 Pro Mac, where the frame the
+fonts arrive in takes 33–50 ms without the change and 50–67 ms with
+it. Native platforms find their fallback fonts among the installed
+ones while laying out, and a font an app loads later is the app's own,
+never the default family labels are shaped in, so there the listener
+is not registered.
+
+`text-transform: uppercase` and `upcase` go through
+`text/label_case.dart` rather than `String.toUpperCase`, which on the
+web is JavaScript's: it maps Georgian to Mtavruli (U+1C90–U+1CBF),
+capitals the glyph PBFs lack, which sent the whole label to the
+platform — boxes until a fallback font arrived, then a different font
+from every other label. Georgian stays as written, drawn from the
+glyphs, as the Dart VM's older case tables already left it on native.
+
 **Text from the style's glyphs.** Given the style's `glyphs`
 (`VectorTileLayer.glyphs`, a `GlyphSource`), a label whose text needs
 no complex shaping is not handed to the platform at all. Platform

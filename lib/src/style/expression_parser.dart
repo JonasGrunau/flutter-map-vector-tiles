@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' show Color;
 
+import '../text/label_case.dart';
 import 'expression.dart';
 import 'geometry_expressions.dart';
 import 'interpolation.dart';
@@ -619,7 +620,7 @@ class ExpressionParser {
         final e = parse(a.length > 1 ? a[1] : null);
         return (ctx) {
           final v = e(ctx);
-          return v is String ? v.toUpperCase() : evalError;
+          return v is String ? upperCaseLabel(v) : evalError;
         };
       case 'downcase':
         final e = parse(a.length > 1 ? a[1] : null);
