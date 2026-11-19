@@ -323,15 +323,16 @@ that every paragraph and grapheme painter is stamped with when shaped
 it — and only `prewarm` shapes a stale one again; the label pass draws
 what it has. The layer queues the labels of every published tile for
 the render pump, which re-shapes them within its budget like a fresh
-tile's (and rewinds the symbol jobs still shaping): at the camera's
-zoom first, then at each tile's. The text cache is keyed by what the
+tile's (and rewinds the symbol jobs still shaping), at the camera's
+zoom rather than each tile's. The text cache is keyed by what the
 style evaluates to at a zoom, and a size under a halo, a colour or an
 opacity that follows the zoom keys the text apart at the camera's
 fractional zoom, where the label pass looks it up, and at the tile's,
 where its symbols job shaped it. Once through, the pump drops what it
-did not shape again (`discardOldFonts`) — the shaping of zooms the
-camera passed through while the fonts were missing, which the label
-pass would otherwise draw, boxes and all, on coming back — and starts
+did not shape again (`discardOldFonts`) — the shaping at the tiles'
+zooms and at zooms the camera passed through while the fonts were
+missing, which the label pass would otherwise draw, boxes and all, on
+coming back — and starts
 a fresh placement pass, since the sizes changed. Until then, text
 shaped since the change never takes a grapheme painter from before it.
 `clearMemoryCache`'s trim keeps stale text as it is
@@ -351,9 +352,10 @@ A grapheme painter shaped again gets new atlas cells, the generation
 being part of their key. Dropping the caches instead would have the
 next frame shape every label on screen: 117 ms over Tokyo in Chrome on
 an M4 Pro Mac, where the frame the fonts arrive in took 33–50 ms
-without the change and 50–67 ms with it (measured when the pump shaped
-at the tiles' zooms alone; the camera's zoom is a second batch, not
-re-measured). The web sends `fontsChange`
+without the change and 50–67 ms with it. Shaping at the tiles' zooms
+as well as the camera's was measured and dropped: over Tokyo it added
+6–14 % to the UI thread's work while fonts were changing, for text no
+frame was drawing. The web sends `fontsChange`
 for every font an app loads too (each `FontLoader`, each google_fonts
 family and weight), and nothing tells that apart from a fallback font
 arriving, which is why the work is kept to what the platform shaped.

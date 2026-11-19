@@ -324,7 +324,7 @@ class LabelPainter {
   static int debugOldFontLookups = 0;
 
   /// Texts shaped outside [prewarm], across all painters: by a frame,
-  /// with no budget.
+  /// with no budget. Counted only with asserts on.
   @visibleForTesting
   static int debugFrameShapes = 0;
 
@@ -511,9 +511,7 @@ class LabelPainter {
   /// the pump is through). Dropping it at once would have the next frame
   /// shape every label on screen: 117 ms over Tokyo in Chrome on an M4
   /// Pro Mac, where that frame took 33–50 ms without the re-shaping and
-  /// 50–67 ms with it spread over the pump — measured when the pump
-  /// shaped at the tiles' zooms alone, before it shaped at the camera's
-  /// too.
+  /// 50–67 ms with it spread over the pump.
   ///
   /// Returns whether any text was shaped by the platform, so that the
   /// layer knows whether the labels need shaping again.
@@ -532,9 +530,9 @@ class LabelPainter {
   /// labels it shapes again, or at once where no frame draws labels.
   ///
   /// The text cache is keyed by what the style evaluates to at a zoom,
-  /// so the pump, shaping each tile's labels at its own zoom and the
-  /// camera's, leaves the shaping of other zooms behind — one the camera
-  /// passed through while the fonts were missing, say. Kept, the label
+  /// so the pump, shaping the labels at the camera's zoom, leaves the
+  /// shaping of other zooms behind — the tiles' own, or one the camera
+  /// passed through while the fonts were missing. Kept, the label
   /// pass would draw it, boxes and all, whenever it came back there;
   /// dropped, the text is shaped afresh then. Disposed at the next
   /// [paint], as an eviction is.
@@ -3182,7 +3180,10 @@ class LabelPainter {
   /// it in the text cache.
   _LaidOutText _shape(SymbolInstance instance, TextStyleMemo memo) {
     debugShapedTextCount++;
-    if (!_prewarming) debugFrameShapes++;
+    assert(() {
+      if (!_prewarming) debugFrameShapes++;
+      return true;
+    }());
     final shapeStopwatch = Stopwatch()..start();
     try {
       return _shapeTimed(instance, memo);

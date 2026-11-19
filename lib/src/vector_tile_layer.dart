@@ -575,18 +575,20 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       // zoom, and a text size under a halo, a colour or an opacity that
       // follows the zoom makes the key at the camera's fractional zoom,
       // where the label pass looks the text up, another than at the
-      // tile's, where its symbols job shaped it. Both are shaped again,
-      // what is on screen first.
+      // tile's, where its symbols job shaped it. The camera's is the
+      // one shaped again: it is what the next frames draw, and the
+      // rest is dropped once the pump is through.
       final camera = _camera;
       final tiles = [
         for (final tile in [..._tiles.values, ..._retained.values])
           if (tile.symbols.isNotEmpty) tile,
       ];
       _reshape = [
-        if (camera != null)
-          for (final tile in tiles) (tile.symbols, _styleZoomOf(camera.zoom)),
         for (final tile in tiles)
-          (tile.symbols, _styleZoomOf(tile.key.z.toDouble())),
+          (
+            tile.symbols,
+            _styleZoomOf(camera?.zoom ?? tile.key.z.toDouble()),
+          ),
       ];
       _reshapeBatch = 0;
       _reshapeCursor = 0;
