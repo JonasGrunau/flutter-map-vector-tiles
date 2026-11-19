@@ -62,7 +62,7 @@ self-contained rewrite of the ideas behind
 ```yaml
 dependencies:
   flutter_map: ^8.2.0
-  flutter_map_vector_tiles: ^2.11.1
+  flutter_map_vector_tiles: ^2.12.0
 ```
 
 ### 2. Load a style & drop in the layer

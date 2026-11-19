@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.12.0
 
 Opt-in 3D buildings, drawn the way MapLibre GL draws them when the
 camera looks straight down, taps on turned labels that find them
