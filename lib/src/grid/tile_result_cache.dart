@@ -41,6 +41,13 @@ class TileResult {
   /// controller to ask, so none were recorded.
   final List<LabelHit>? labelHits;
 
+  /// `LabelMode.tile` on the web only: the count of font changes the
+  /// labels drawn into [image] were shaped after, when the platform
+  /// shaped any of them — null when it shaped none, which no font
+  /// change can alter. A result from before the latest change was
+  /// drawn with fonts that have since arrived missing: `.notdef` boxes.
+  final int? labelFonts;
+
   TileResult({
     required this.image,
     this.over,
@@ -49,6 +56,7 @@ class TileResult {
     this.extrusions = const [],
     required this.renderedWith,
     this.labelHits,
+    this.labelFonts,
   });
 }
 
@@ -176,6 +184,7 @@ class TileResultCache {
     List<ExtrusionLayout> extrusions = const [],
     required Set<String> renderedWith,
     List<LabelHit>? labelHits,
+    int? labelFonts,
   }) {
     _cache.put(
       key,
@@ -186,9 +195,13 @@ class TileResultCache {
           heatmap: heatmap,
           extrusions: extrusions,
           renderedWith: renderedWith,
-          labelHits: labelHits),
+          labelHits: labelHits,
+          labelFonts: labelFonts),
     );
   }
+
+  /// Drops [key]'s entry, disposing its images.
+  void remove(TileKey key) => _cache.removeWhere((k, _) => k == key);
 
   /// Invalidates entries matching [test] (e.g. every display tile a
   /// refreshed data tile serves).

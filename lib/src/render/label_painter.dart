@@ -316,6 +316,18 @@ class LabelPainter {
   @visibleForTesting
   static int debugParagraphShapes = 0;
 
+  /// Lookups outside [prewarm] that found text the platform shaped
+  /// before the fonts last changed (see [fontsChanged]), across all
+  /// painters: what a frame draws in the old fonts. Counted only with
+  /// asserts on.
+  @visibleForTesting
+  static int debugOldFontLookups = 0;
+
+  /// Texts shaped outside [prewarm], across all painters: by a frame,
+  /// with no budget.
+  @visibleForTesting
+  static int debugFrameShapes = 0;
+
   /// The part of [debugShapedTextCount] shaped from [glyphs] rather
   /// than by the platform.
   @visibleForTesting
@@ -493,12 +505,15 @@ class LabelPainter {
   /// Text drawn from the style's glyphs does not depend on the
   /// platform's fonts.
   ///
-  /// Nothing is dropped: [prewarm] shapes such text again, within the
-  /// render pump's budget, and until it has the label pass goes on
-  /// drawing the old shaping. Dropping it would have the next frame
-  /// shape every label on screen at once: 117 ms over Tokyo in Chrome
-  /// on an M4 Pro Mac, where that frame takes 33–50 ms without the
-  /// re-shaping and 50–67 ms with it spread over the pump.
+  /// Nothing is dropped here: [prewarm] shapes such text again, within
+  /// the render pump's budget, and until it has the label pass goes on
+  /// drawing the old shaping ([discardOldFonts] drops what is left once
+  /// the pump is through). Dropping it at once would have the next frame
+  /// shape every label on screen: 117 ms over Tokyo in Chrome on an M4
+  /// Pro Mac, where that frame took 33–50 ms without the re-shaping and
+  /// 50–67 ms with it spread over the pump — measured when the pump
+  /// shaped at the tiles' zooms alone, before it shaped at the camera's
+  /// too.
   ///
   /// Returns whether any text was shaped by the platform, so that the
   /// layer knows whether the labels need shaping again.
@@ -511,13 +526,48 @@ class LabelPainter {
     return false;
   }
 
+  /// Drops what the platform shaped before the fonts last changed (see
+  /// [fontsChanged]) and [prewarm] has not shaped again, for the layer
+  /// once nothing should draw it any more: when the pump is through the
+  /// labels it shapes again, or at once where no frame draws labels.
+  ///
+  /// The text cache is keyed by what the style evaluates to at a zoom,
+  /// so the pump, shaping each tile's labels at its own zoom and the
+  /// camera's, leaves the shaping of other zooms behind — one the camera
+  /// passed through while the fonts were missing, say. Kept, the label
+  /// pass would draw it, boxes and all, whenever it came back there;
+  /// dropped, the text is shaped afresh then. Disposed at the next
+  /// [paint], as an eviction is.
+  void discardOldFonts() {
+    _textCache.removeWhere(
+        (_, text) => text.glyphRun == null && text.fonts != _fonts);
+    _glyphCache.removeWhere((_, glyph) => glyph.fonts != _fonts);
+  }
+
+  /// Whether the platform shaped the text of any of [symbols], as last
+  /// looked up — or may have: text no longer cached counts. For
+  /// `LabelMode.tile`, which draws a tile's labels into its image, so
+  /// that only images holding the platform's text are drawn again when
+  /// its fonts change.
+  bool shapedByPlatform(List<SymbolInstance> symbols) {
+    for (final symbol in symbols) {
+      final memo = symbol.textStyleMemo;
+      if (memo == null || symbol.text.isEmpty) continue;
+      if (_textCache.peek(memo.cacheKey)?.glyphRun == null) return true;
+    }
+    return false;
+  }
+
   /// Counts [fontsChanged] calls: text and grapheme painters shaped by
   /// the platform carry the count they were shaped under.
   var _fonts = 0;
 
   /// Set while [prewarm] runs, the one place that shapes text again
-  /// for new fonts.
+  /// for new fonts — unless its caller asked it not to.
   var _refreshing = false;
+
+  /// Set while [prewarm] runs, for [debugFrameShapes].
+  var _prewarming = false;
 
   /// Curved-text glyphs rasterized once per style, grapheme and device
   /// size, so a curved label draws in one call per pass.
@@ -1789,18 +1839,22 @@ class LabelPainter {
   ///
   /// Text shaped by the platform before its fonts last changed is
   /// shaped again here (see [fontsChanged]), so the pump is what pays
-  /// for it.
+  /// for it — unless [refresh] is false, for a caller with no budget
+  /// that only needs the text kept: [trimCaches] keeps what this
+  /// stamps, stale or not, and the pump shapes it again later.
   int prewarm(
     List<SymbolInstance> symbols,
     double styleZoom, {
     int from = 0,
     bool Function()? outOfBudget,
+    bool refresh = true,
   }) {
-    _refreshing = true;
+    _prewarming = true;
+    _refreshing = refresh;
     try {
       return _prewarm(symbols, styleZoom, from, outOfBudget);
     } finally {
-      _refreshing = false;
+      _prewarming = _refreshing = false;
     }
   }
 
@@ -3109,7 +3163,17 @@ class LabelPainter {
           !awaited.any((r) => glyphs.isLoading(r.$1, r.$2));
       final oldFonts =
           _refreshing && cached.glyphRun == null && cached.fonts != _fonts;
-      if (!glyphsArrived && !oldFonts) return cached;
+      if (!glyphsArrived && !oldFonts) {
+        assert(() {
+          if (!_prewarming &&
+              cached.glyphRun == null &&
+              cached.fonts != _fonts) {
+            debugOldFontLookups++;
+          }
+          return true;
+        }());
+        return cached;
+      }
     }
     return _shape(instance, memo);
   }
@@ -3118,6 +3182,7 @@ class LabelPainter {
   /// it in the text cache.
   _LaidOutText _shape(SymbolInstance instance, TextStyleMemo memo) {
     debugShapedTextCount++;
+    if (!_prewarming) debugFrameShapes++;
     final shapeStopwatch = Stopwatch()..start();
     try {
       return _shapeTimed(instance, memo);
@@ -3846,17 +3911,24 @@ class LabelPainter {
   /// again, a removal and an insertion that also make the map rehash.
   /// The cache stays the owner: a remembered entry is used only while it
   /// has not been evicted (and so disposed).
+  ///
+  /// A glyph shaped before the fonts last changed (see [fontsChanged])
+  /// is shaped again inside [prewarm], and for text shaped since then,
+  /// which would otherwise draw letters a label shaped in the old fonts
+  /// left in the cache — boxes among the new font's letters. Text from
+  /// the old fonts keeps drawing it, until [prewarm] reaches that text.
   _GlyphText _glyphPainters(_Cluster cluster, _LaidOutText text) {
     final known = cluster.glyph;
     if (known != null &&
         known.pass == _pass &&
         !known.evicted &&
-        !(_refreshing && known.fonts != _fonts)) {
+        !(known.fonts != _fonts && (_refreshing || text.fonts == _fonts))) {
       return known;
     }
     final key = known?.key ?? '${text.styleKey}#${cluster.grapheme}';
     final cached = _glyphCache.get(key);
-    if (cached != null && !(_refreshing && cached.fonts != _fonts)) {
+    if (cached != null &&
+        !(cached.fonts != _fonts && (_refreshing || text.fonts == _fonts))) {
       return (cluster.glyph = cached)..pass = _pass;
     }
 
