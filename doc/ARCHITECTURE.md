@@ -323,18 +323,46 @@ that every paragraph and grapheme painter is stamped with when shaped
 it — and only `prewarm` shapes a stale one again; the label pass draws
 what it has. The layer queues the labels of every published tile for
 the render pump, which re-shapes them within its budget like a fresh
-tile's (and rewinds the symbol jobs still shaping), then starts a
-fresh placement pass, since the sizes changed. For `LabelMode.tile` it
-empties the finished-tile cache and redraws its tiles, whose symbol
-jobs re-shape as they go. A grapheme painter shaped again gets new
-atlas cells, the generation being part of their key. Dropping the
-caches instead would have the next frame shape every label on screen:
-117 ms over Tokyo in Chrome on an M4 Pro Mac, where the frame the
-fonts arrive in takes 33–50 ms without the change and 50–67 ms with
-it. Native platforms find their fallback fonts among the installed
-ones while laying out, and a font an app loads later is the app's own,
-never the default family labels are shaped in, so there the listener
-is not registered.
+tile's (and rewinds the symbol jobs still shaping), at the camera's
+zoom rather than each tile's. The text cache is keyed by what the
+style evaluates to at a zoom, and a size under a halo, a colour or an
+opacity that follows the zoom keys the text apart at the camera's
+fractional zoom, where the label pass looks it up, and at the tile's,
+where its symbols job shaped it. Once through, the pump drops what it
+did not shape again (`discardOldFonts`) — the shaping at the tiles'
+zooms and at zooms the camera passed through while the fonts were
+missing, which the label pass would otherwise draw, boxes and all, on
+coming back — and starts
+a fresh placement pass, since the sizes changed. Until then, text
+shaped since the change never takes a grapheme painter from before it.
+`clearMemoryCache`'s trim keeps stale text as it is
+(`prewarm(refresh: false)`): it has no budget to shape it in.
+
+With `LabelMode.tile` the images are the cache. A tile whose labels the
+platform shaped is stamped with a process-wide count of font changes
+(`_DisplayTile.labelFonts`, `TileResult.labelFonts`), kept by a
+listener the first layer registers and none removes, since the fonts
+may arrive while no map is open. A font change draws the stamped tiles
+again, whose symbol jobs re-shape as they go, and the finished-tile
+cache serves no result stamped before the latest change, so a map
+left before the fonts arrived and opened after draws its tiles anew.
+Tiles whose labels all came from the style's glyphs are left alone.
+
+A grapheme painter shaped again gets new atlas cells, the generation
+being part of their key. Dropping the caches instead would have the
+next frame shape every label on screen: 117 ms over Tokyo in Chrome on
+an M4 Pro Mac, where the frame the fonts arrive in took 33–50 ms
+without the change and 50–67 ms with it. Shaping at the tiles' zooms
+as well as the camera's was measured and dropped: over Tokyo it added
+6–14 % to the UI thread's work while fonts were changing, for text no
+frame was drawing. The web sends `fontsChange`
+for every font an app loads too (each `FontLoader`, each google_fonts
+family and weight), and nothing tells that apart from a fallback font
+arriving, which is why the work is kept to what the platform shaped.
+Native platforms find their fallback fonts among the installed ones
+while laying out, and a font an app loads later is the app's own, never
+the default family labels are shaped in, so there the listener is not
+registered.
 
 `text-transform: uppercase` and `upcase` go through
 `text/label_case.dart` rather than `String.toUpperCase`, which on the

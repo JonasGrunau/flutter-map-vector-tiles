@@ -514,9 +514,12 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     // stamped again first — cache hits, short of what the LRU already
     // let go. Trimmed, they would be shaped again in paint, outside every
     // budget, as soon as the map moved toward them.
+    // Not shaped again for new fonts, though (see [_fontsChanged]): that
+    // is the pump's, within its budget, and this has none.
     for (final tile in [..._tiles.values, ..._retained.values]) {
       if (tile.symbols.isEmpty) continue;
-      _labelPainter.prewarm(tile.symbols, _styleZoomOf(tile.key.z.toDouble()));
+      _labelPainter.prewarm(tile.symbols, _styleZoomOf(tile.key.z.toDouble()),
+          refresh: false);
     }
     _labelPainter.trimCaches();
     for (final job in _renderQueue.symbolJobs) {
@@ -533,45 +536,96 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   ///
   /// The shaping is the render pump's: the painter goes on drawing the
   /// old shaping until [LabelPainter.prewarm] has replaced it, rather
-  /// than shape every label on screen in one frame.
+  /// than shape every label on screen in one frame. What it has not
+  /// replaced once through is dropped
+  /// ([LabelPainter.discardOldFonts]). With [LabelMode.tile] the tiles
+  /// whose labels the platform shaped are drawn again
+  /// ([_DisplayTile.labelFonts]), and cached ones once asked for.
   ///
   /// Web only: elsewhere the fallback fonts are the ones installed,
   /// found while a paragraph is laid out, and a font change — an app
   /// loading a font of its own — never reaches the default family
-  /// labels are shaped in.
+  /// labels are shaped in. The web sends the same message for those
+  /// too (every `FontLoader`, every google_fonts family or weight), and
+  /// nothing tells the two apart, which is why the work stays with the
+  /// platform's text.
   void _fontsChanged() {
-    if (!mounted || !_labelPainter.fontsChanged()) return;
+    if (!mounted) return;
+    final platformText = _labelPainter.fontsChanged();
+    if (_tileLabels) {
+      // Drawn by another layer, a cached tile's labels never went
+      // through this one's painter: the stamp, not the painter, says
+      // which images to draw again. [_fontChanges] has already counted
+      // this change, so every stamp is behind it.
+      for (final tile in _tiles.values) {
+        if (tile.labelFonts == null) continue;
+        tile.renderedWith = null; // its cached result is stale too
+        tile.loadGeneration++;
+        unawaited(_loadTile(tile, _priorityOf(tile), fadeIn: false));
+      }
+    }
+    if (!platformText) return;
     // A tile shaping its labels when the fonts changed has some of them
     // shaped with the old ones; it starts over, as after a trim.
     for (final job in _renderQueue.symbolJobs) {
       job.shapeCursor = 0;
     }
     if (_screenLabels) {
-      _reshape = [
+      // The text cache is keyed by what the style evaluates to at a
+      // zoom, and a text size under a halo, a colour or an opacity that
+      // follows the zoom makes the key at the camera's fractional zoom,
+      // where the label pass looks the text up, another than at the
+      // tile's, where its symbols job shaped it. The camera's is the
+      // one shaped again: it is what the next frames draw, and the
+      // rest is dropped once the pump is through.
+      final camera = _camera;
+      final tiles = [
         for (final tile in [..._tiles.values, ..._retained.values])
-          if (tile.symbols.isNotEmpty)
-            (tile.symbols, _styleZoomOf(tile.key.z.toDouble())),
+          if (tile.symbols.isNotEmpty) tile,
+      ];
+      _reshape = [
+        for (final tile in tiles)
+          (
+            tile.symbols,
+            _styleZoomOf(camera?.zoom ?? tile.key.z.toDouble()),
+          ),
       ];
       _reshapeBatch = 0;
       _reshapeCursor = 0;
       if (!_renderTicker.isActive) _renderTicker.start();
-    }
-    if (_tileLabels) {
-      // The tiles' symbol jobs shape again what they draw.
-      _resultCache?.clear();
-      _refreshTiles();
+    } else {
+      // No frame draws labels: what nothing will shape again can go now.
+      _labelPainter.discardOldFonts();
     }
   }
 
+  /// Counts the font changes the web has reported, for as long as the
+  /// app runs: a cached [LabelMode.tile] image whose labels were shaped
+  /// before the latest one may hold `.notdef` boxes (see
+  /// [TileResult.labelFonts]). Counted by a listener of its own,
+  /// registered by the first layer and never removed, since the change
+  /// may come while no layer is mounted — the map left before the
+  /// fallback fonts arrived, and opened again after. Registered before
+  /// any layer's own [_fontsChanged], so that runs with it counted.
+  static var _fontChanges = 0;
+  static var _countingFontChanges = false;
+
+  static void _countFontChanges() {
+    if (_countingFontChanges) return;
+    _countingFontChanges = true;
+    PaintingBinding.instance.systemFonts.addListener(() => _fontChanges++);
+  }
+
   /// The published labels still to be shaped for new fonts (see
-  /// [_fontsChanged]), per tile with its style zoom, and how far the
-  /// pump has got through them.
+  /// [_fontsChanged]), per tile with the style zoom to shape them at,
+  /// and how far the pump has got through them.
   List<(List<SymbolInstance>, double)>? _reshape;
   var _reshapeBatch = 0;
   var _reshapeCursor = 0;
 
   /// One slice of [_reshape], within the pump's [tick]. Once it is
-  /// through, the next label pass places by the new sizes.
+  /// through, what it did not shape again is dropped, and the next
+  /// label pass places by the new sizes.
   void _reshapeLabels(Stopwatch tick) {
     final batches = _reshape!;
     while (_reshapeBatch < batches.length) {
@@ -588,6 +642,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       if (tick.elapsedMicroseconds >= _pumpBudget) return;
     }
     _reshape = null;
+    _labelPainter.discardOldFonts();
     _labelGeneration++;
     _repaint.trigger();
   }
@@ -762,7 +817,10 @@ class _VectorTileLayerState extends State<VectorTileLayer>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (kIsWeb) PaintingBinding.instance.systemFonts.addListener(_fontsChanged);
+    if (kIsWeb) {
+      _countFontChanges();
+      PaintingBinding.instance.systemFonts.addListener(_fontsChanged);
+    }
     _mounted.add(this);
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     _foregrounded = _canRasterizeIn(lifecycle);
@@ -1050,7 +1108,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
 
   void _clearTiles() {
     _renderQueue.clear();
-    _reshape = null;
+    if (_reshape != null) {
+      // The labels it would have shaped again go with their tiles.
+      _reshape = null;
+      _labelPainter.discardOldFonts();
+    }
     _dropParkedJobs();
     for (final tile in _tiles.values) {
       tile.dispose();
@@ -1674,8 +1736,15 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           cached.labelHits == null) {
         cached = null;
       }
+      // Labels drawn into it before the fonts last changed may be boxes
+      // where a font was still on its way (see [TileResult.labelFonts]).
+      if (cached?.labelFonts case final fonts? when fonts != _fontChanges) {
+        _resultCache?.remove(tile.key);
+        cached = null;
+      }
       if (cached != null) {
         tile.renderedWith = cached.renderedWith;
+        tile.labelFonts = cached.labelFonts;
         tile.heatmap = cached.heatmap;
         tile.extrusions = cached.extrusions;
         _extrusionGeneration++;
@@ -2339,6 +2408,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
     tile.extrusions = _layoutExtrusions(data, styleZoom);
     _extrusionGeneration++;
     tile.labelHits = const [];
+    tile.labelFonts = null;
     tile.sources = widget.controller == null ? null : job.sources;
     if (job.keepSymbols) {
       // Drawn again for a feature-state change, which a symbol layout
@@ -2472,6 +2542,11 @@ class _VectorTileLayerState extends State<VectorTileLayer>
           styleZoom);
       tile.extrusions = const [];
       tile.labelHits = labelHits ?? const [];
+      // Only the web's fonts change under a drawn tile (see
+      // [_fontsChanged]).
+      tile.labelFonts = kIsWeb && _labelPainter.shapedByPlatform(symbols)
+          ? _fontChanges
+          : null;
       tile.sources = widget.controller == null ? null : job.sources;
       _setTileSymbols(tile, const [], provisional: job.provisional);
       _cacheResult(tile, job, const [], labelHits: labelHits);
@@ -2629,6 +2704,7 @@ class _VectorTileLayerState extends State<VectorTileLayer>
       extrusions: tile.extrusions ?? const [],
       renderedWith: tile.renderedWith ?? const {},
       labelHits: labelHits,
+      labelFonts: _tileLabels ? tile.labelFonts : null,
     );
   }
 
@@ -3533,6 +3609,12 @@ class _DisplayTile {
   /// rendered-feature queries — the per-frame pass has none to offer.
   List<LabelHit> labelHits = const [];
 
+  /// [LabelMode.tile] on the web only: the count of font changes the
+  /// labels drawn into [image] were shaped after, when the platform
+  /// shaped any of them; null when it shaped none, or [image] has no
+  /// labels drawn into it. See [TileResult.labelFonts].
+  int? labelFonts;
+
   /// With a controller attached only: the decoded data [image] was drawn
   /// from — held so queries and feature-state changes can answer for
   /// the tile after the decoded-tile cache let the data go. Null without
@@ -3678,6 +3760,7 @@ class _DisplayTile {
     heatmap = null;
     extrusions = null;
     labelHits = const [];
+    labelFonts = null;
     sources = null;
     labelIds = _noIds;
     symbolsProvisional = false;
